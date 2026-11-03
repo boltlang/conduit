@@ -1,0 +1,15 @@
+[package]
+name = "conduit-wasm"
+description = "Lowers Conduit IR to WebAssembly"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+conduit-ir = { path = "../conduit-ir" }
+wasm-encoder = "0.263.0"
+
+[dev-dependencies]
+wasmparser = "0.263.0"
+wasmprinter = "0.263.0"
+wasmtime = "50.0.1"
