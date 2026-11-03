@@ -655,6 +655,11 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
         self.emit1(Op::Copy(m), vec![value.into()], None)
     }
 
+    /// `value` as `Imm`, made in place: see [`Op::Freeze`].
+    pub fn freeze(&mut self, value: impl Into<Atom>) -> Var {
+        self.emit1(Op::Freeze, vec![value.into()], None)
+    }
+
     /// Runs a closure under handler `h`. `args` is the handler's
     /// environment, then the closure.
     pub fn handle(&mut self, h: HandlerId, args: impl Atoms) -> Vec<Var> {

@@ -556,6 +556,39 @@ fn write_to_imm_object_is_an_error() {
     assert_eq!(result.unwrap_err().kind, ErrorKind::WriteToImm);
 }
 
+/// `Freeze` makes the objects themselves `Imm`, all the way down, so a
+/// wrong freeze shows up as a write to one of them through an old alias.
+#[test]
+fn write_after_freeze_is_an_error() {
+    let mut f = Func::new(vec![], vec![]);
+    let point = f.new_var(Ty::Data(POINT, Mut));
+    let pair = f.new_var(Ty::Data(PAIR, Mut));
+    let frozen = f.new_var(Ty::Data(PAIR, Imm));
+    f.body = let_(
+        vec![point],
+        Op::New(ctor(POINT, 0)),
+        vec![int(1), int(2)],
+        let_(
+            vec![pair],
+            Op::New(ctor(PAIR, 0)),
+            vec![v(point), v(point)],
+            let_(
+                vec![frozen],
+                Op::Freeze,
+                vec![v(pair)],
+                let_(
+                    vec![],
+                    Op::Set(ctor(POINT, 0), 0),
+                    vec![v(point), int(3)],
+                    ret(vec![]),
+                ),
+            ),
+        ),
+    );
+    let result = run_main(f, vec![]);
+    assert_eq!(result.unwrap_err().kind, ErrorKind::WriteToImm);
+}
+
 fn box_unbox(at: Ty) -> Result<Vec<Value>, Error> {
     let mut f = Func::new(vec![], vec![at.clone()]);
     let boxed = f.new_var(Ty::Any(Imm));

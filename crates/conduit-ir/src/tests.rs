@@ -105,6 +105,7 @@ fn effects() {
         Effects::Unknown
     );
     assert_eq!(Op::Copy(Mutability::Imm).effects(), Effects::Reads);
+    assert_eq!(Op::Freeze.effects(), Effects::Reads);
     assert_eq!(Op::RefSet.effects(), Effects::Writes);
     assert_eq!(Op::Perform(EffectId(0), 0).effects(), Effects::Unknown);
 }

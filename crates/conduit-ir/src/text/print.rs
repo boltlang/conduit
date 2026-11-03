@@ -365,6 +365,7 @@ fn op_name(op: &Op) -> String {
         Op::Box(ty) => format!("box[{ty}]"),
         Op::Unbox(ty) => format!("unbox[{ty}]"),
         Op::Copy(m) => format!("copy[{m}]"),
+        Op::Freeze => "freeze".into(),
         Op::Handle(h) => format!("handle {h}"),
         Op::Perform(e, i) => format!("perform {e}.{i}"),
         Op::Resume => "resume".into(),

@@ -196,6 +196,10 @@ pub(crate) fn op_results<P: Program + ?Sized>(
                 _ => Err("copy needs one value".into()),
             }
         }
+        Op::Freeze => match tys {
+            [ty] => Ok(vec![copy_ty(p, ty, Mutability::Imm)?]),
+            _ => Err("freeze needs one value".into()),
+        },
         Op::Handle(h) => {
             let decl = p
                 .handler(*h)

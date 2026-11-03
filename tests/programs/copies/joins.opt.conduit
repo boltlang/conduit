@@ -1,0 +1,28 @@
+data data0 {
+  (i32, i32)
+}
+
+fn fn0(%0: i32) -> (i32) {
+  let %1: mut data0 = new data0.0(%0, 2i32)
+  join j1(%2: mut data0) =
+    let %3: imm data0 = freeze(%2)
+    let %4: i32 = get data0.0.0(%3)
+    jump ret(%4)
+  in
+  case %0 {
+    0 => jump j1(%1)
+    _ =>
+      let = set data0.0.0(%1, 9i32)
+      jump j1(%1)
+  }
+}
+
+fn fn1(%0: i32) -> (i32) {
+  let %1: mut data0 = new data0.0(%0, 2i32)
+  join j1(%2: mut data0, %3: mut data0) =
+    let %4: imm data0 = copy[imm](%2)
+    let = set data0.0.0(%3, 9i32)
+    let %5: i32 = get data0.0.0(%4)
+    jump ret(%5)
+  in jump j1(%1, %1)
+}

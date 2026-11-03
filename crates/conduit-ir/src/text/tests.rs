@@ -95,6 +95,7 @@ fn fn8(%0: mut data10) -> (imm data10) {
   let %10: mut fn(i32) -> (i32) = closure fn1()
   let %11: i32 = apply(%10, %7)
   let %12: mut data10 = new data10.0(%11, %3)
+  let %13: imm data10 = freeze(%12)
   jump ret(%1)
 }
 "#;

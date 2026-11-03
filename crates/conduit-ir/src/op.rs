@@ -49,6 +49,13 @@ pub enum Op {
     Unbox(Ty),
     /// A copy of a value at another mutability. Args: the value.
     Copy(Mutability),
+    /// The value itself as `Imm`: what `Copy(Imm)` gives, made by turning
+    /// the objects it would copy into `Imm` ones in place. Args: the value.
+    ///
+    /// Undefined behavior if anything other than the result can still reach
+    /// one of those objects afterwards. Optimizations make it from a `Copy`
+    /// that they show is the only way left to the objects.
+    Freeze,
     /// Runs a closure under a handler. Args: the handler's environment,
     /// then the closure.
     Handle(HandlerId),
@@ -79,6 +86,8 @@ impl Op {
             Op::Prim(_) | Op::Closure(_) | Op::Box(_) => Effects::Pure,
             Op::New(_) | Op::ArrayNew | Op::RefNew => Effects::Pure,
             Op::Get(..) | Op::ArrayLen | Op::RefGet | Op::Copy(_) => Effects::Reads,
+            // It changes objects that nothing else can reach any more.
+            Op::Freeze => Effects::Reads,
             Op::Set(..) | Op::RefSet => Effects::Writes,
             // Bounds checks and failed casts trap.
             Op::ArrayFill | Op::ArrayGet | Op::ArraySet | Op::Unbox(_) => Effects::Unknown,

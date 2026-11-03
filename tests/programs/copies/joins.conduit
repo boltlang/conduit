@@ -1,0 +1,39 @@
+// Values passed to a join point are in the same region as its parameters.
+
+data data0 {
+  (i32, i32)
+}
+
+// Both arms pass the object on, and only the copy is used after.
+fn fn0(%0: i32) -> (i32) {
+  let %1: mut data0 = new data0.0(%0, 2i32)
+  join j1(%2: mut data0) =
+    let %3: imm data0 = copy[imm](%2)
+    let %4: i32 = get data0.0.0(%3)
+    jump ret(%4)
+  in
+  case %0 {
+    0 => jump j1(%1)
+    _ =>
+      let = set data0.0.0(%1, 9i32)
+      jump j1(%1)
+  }
+}
+
+// The join point gets the original twice, and writes it through the
+// second after copying the first.
+fn fn1(%0: i32) -> (i32) {
+  let %1: mut data0 = new data0.0(%0, 2i32)
+  join j1(%2: mut data0, %3: mut data0) =
+    let %4: imm data0 = copy[imm](%2)
+    let = set data0.0.0(%3, 9i32)
+    let %5: i32 = get data0.0.0(%4)
+    jump ret(%5)
+  in jump j1(%1, %1)
+}
+
+//# run fn0(0i32) == 0i32
+//# run fn0(1i32) == 9i32
+//# run fn1(1i32) == 1i32
+//# wasm-error: copy isn't supported yet
+//# opt

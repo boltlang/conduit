@@ -11,6 +11,7 @@
 //! [`optimize_func`] runs [`PASSES`] until none of them changes anything,
 //! and [`optimize_module`] does that for every function of a module.
 
+pub mod copies;
 pub mod dce;
 
 use conduit_ir::{Func, FuncId, Module, Program};
@@ -26,7 +27,7 @@ pub trait Pass {
 }
 
 /// The passes [`optimize_func`] runs, in order.
-pub const PASSES: &[&dyn Pass] = &[&dce::Dce];
+pub const PASSES: &[&dyn Pass] = &[&copies::Copies, &dce::Dce];
 
 /// Runs the passes over and over at most this many times, in case some
 /// pair of them keeps undoing each other.

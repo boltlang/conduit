@@ -1,0 +1,23 @@
+// `freeze` makes a value `imm` without copying it.
+
+data data0 {
+  (inherit data1, i32)
+}
+
+data data1 {
+  (i32)
+}
+
+fn fn0(%0: i32) -> (i32) {
+  let %1: mut data1 = new data1.0(%0)
+  let %2: mut data0 = new data0.0(%1, 3i32)
+  let = set data1.0.0(%1, 4i32)
+  let %3: imm data0 = freeze(%2)
+  let %4: imm data1 = get data0.0.0(%3)
+  let %5: i32 = get data1.0.0(%4)
+  let %6: i32 = get data0.0.1(%3)
+  let %7: i32 = add(%5, %6)
+  jump ret(%7)
+}
+
+//# run fn0(1i32) == 7i32

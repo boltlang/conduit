@@ -594,6 +594,7 @@ impl Parser {
                 self.punct("]")?;
                 Op::Copy(m)
             }
+            "freeze" => Op::Freeze,
             "handle" => Op::Handle(HandlerId(self.id("handler")?)),
             "perform" => {
                 let e = EffectId(self.id("effect")?);

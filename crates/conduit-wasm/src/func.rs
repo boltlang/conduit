@@ -561,6 +561,8 @@ impl<'m> FuncCx<'_, 'm> {
                 }
             }
             Op::Copy(_) => return Err("copy isn't supported yet".into()),
+            // Mutability doesn't exist at run time.
+            Op::Freeze => self.atoms(args),
             Op::Handle(_) | Op::Perform(..) | Op::Resume => {
                 return Err(
                     "effect handlers aren't supported yet: lower them with evidence passing first"

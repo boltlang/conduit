@@ -96,6 +96,7 @@ pub enum Op {
     Box(Ty),               // args = a value of that type; result has type Any(_)
     Unbox(Ty),             // args = an Any(_); result has that type
     Copy(Mutability),      // args = a value; a copy at that mutability: see "Mutability"
+    Freeze,                // args = a value; `Copy(Imm)` done in place: see "Mutability"
     Handle(HandlerId),     // args = handler env, then a closure: the body
     Perform(EffectId, u32),// run operation i of the nearest handler of the effect
     Resume,                // args[0] = continuation, rest = values to resume with
@@ -334,6 +335,17 @@ may still exist. `Copy` makes a new value instead:
   `Data` and `Array` it reaches changed.
 - On a `ReadOnly` value, Conduit can't tell which objects are already
   `Imm`, so `Copy` copies all of them.
+
+**`Freeze`** gives what `Copy(Imm)` gives, with the same types, but turns
+the objects `Copy(Imm)` would copy into `Imm` ones in place instead of
+making new ones. It is only allowed when nothing but its result can reach
+those objects afterwards: no other variable, object, closure, ref or `Any`
+that's still used. The verifier can't check this, so breaking it is
+**undefined behavior**, like `Unbox` at the wrong type. Optimizations make
+`Freeze` from a `Copy(Imm)` they show is the only way left to the objects
+(see "Remove copies"), and a frontend can emit it where it already knows a
+value is unique. Its effect is `Reads`, like `Copy`'s: it changes objects
+that nothing else can see.
 
 `Copy` is a single op rather than a call to a generated function because
 removing copies is the main optimization (see "Optimizations"), and an
@@ -616,11 +628,18 @@ Because the IR is so small, the classic simplifications are local rewrites:
   - `Copy(Imm)` of a value just built by `New` or `ArrayNew`, with no other
     uses, becomes building it as `Imm` directly.
   - **Freeze in place.** If nothing else can reach the original objects
-    and the original isn't used afterwards, the copy can reuse them. This
-    needs a region or uniqueness analysis that shows no other reference,
-    closure, ref or `Any` can still reach them. The analysis follows what
-    each closure captures through `Closure`'s arguments, not through the
-    closure's type.
+    and the original isn't used afterwards, the copy becomes a `Freeze`.
+    The `copies` pass shows this with a region analysis: variables that
+    may reach the same `Mut` object are in the same region, because an op
+    stores one in the other, reads one out of the other, captures or boxes
+    it, or passes it to a join point. Values whose type is `Imm` all the
+    way down are left out, since what they reach never changes. A region
+    escapes if a parameter, a call's argument or result, or a returned
+    value is in it. A `Copy(Imm)` is frozen if its argument's region
+    doesn't escape and none of its variables is live after the copy, with
+    liveness following jumps, so a loop that uses the original on its next
+    round keeps the copy. The analysis follows what each closure captures
+    through `Closure`'s arguments, not through the closure's type.
 - **`Imm` closures don't write.** An `Apply` on an `Fn(_, Imm)` whose
   arguments are all `Imm` all the way down allocates and may perform
   effects, but writes nothing that existed before. So an analysis can treat
@@ -710,6 +729,7 @@ Status:
 | `Unbox` to a reference | nothing | `ref.cast` | ✅ |
 | String literal (`Lit`) | data segment | `array.new_data` | ✅ |
 | `Copy` | generated copy function per type | same | ✅ |
+| `Freeze` | nothing | nothing | ✅ |
 | `Handle` | `cont.new` + `resume` with `(on $op ..)` | same | ⚠️ stack switching |
 | `Perform` | `suspend` | same | ⚠️ stack switching |
 | `Resume` | `resume` | same | ⚠️ stack switching |
@@ -781,7 +801,7 @@ fn fn1(%0: i32) -> (i32) {
   `new data10.0(..)`, `get data10.0.1(..)`, `set data10.0.1(..)`,
   `array_new`, `array_fill`, `array_get`, `array_set`, `array_len`,
   `ref_new`, `ref_get`, `ref_set`, `box[i32](..)`, `unbox[i32](..)`,
-  `copy[imm](..)`, `handle handler30(..)`, `perform effect20.0(..)` and
+  `copy[imm](..)`, `freeze(..)`, `handle handler30(..)`, `perform effect20.0(..)` and
   `resume(..)`.
 - **Literals** carry their type: `5i32`, `-1i64`, `1.5f32`, `1e300f64`.
   Finite floats are printed in the shortest form that reads back exactly.
@@ -814,7 +834,9 @@ doesn't need a deep stack.
 - **Objects know their mutability.** Every object that can be `Imm` or
   `Mut` carries an "is mut" flag. A write to an `Imm` object is an error,
   which can only happen if an optimization broke the mutability rules.
-  `Copy` uses the flag to share what's already at the target mutability.
+  `Copy` uses the flag to share what's already at the target mutability,
+  and `Freeze` clears it, so a write through an alias that a wrong
+  `Freeze` left behind is an error too.
 - **Numbers follow Rust for now.** Integers wrap, shift amounts are taken
   modulo the width, and floats use Rust's operations and `as` conversions
   (which saturate). Division and remainder by zero, and division of the

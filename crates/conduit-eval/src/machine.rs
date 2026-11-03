@@ -499,6 +499,11 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                 _ => return Err(unverified("unbox of something that isn't boxed")),
             },
             Op::Copy(m) => vec![self.copy(arg(&args, 0)?, *m == Mutability::Mut)?],
+            Op::Freeze => {
+                let value = arg(&args, 0)?;
+                self.freeze(value)?;
+                vec![value]
+            }
             Op::Handle(h) => return self.handle(*h, args, binds, next),
             Op::Perform(e, i) => return self.perform(*e, *i, args, binds, next),
             Op::Resume => return self.resume(args, binds, next),
@@ -603,28 +608,8 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
         // Copied objects still point at the originals' children until their
         // turn here.
         while let Some(id) = todo.pop() {
-            let (values, follow): (Vec<Value>, Vec<bool>) = match self.object_ref(id)? {
-                Object::Data { ctor, fields, .. } => {
-                    let decl = self
-                        .p
-                        .data(ctor.data)
-                        .ok_or_else(|| unverified(format!("unknown data type {}", ctor.data)))?;
-                    let tys = &decl
-                        .ctors
-                        .get(ctor.index as usize)
-                        .ok_or_else(|| unverified("unknown constructor"))?
-                        .fields;
-                    if tys.len() != fields.len() {
-                        return Err(unverified(format!("{ctor} has the wrong number of fields")));
-                    }
-                    let follow = tys
-                        .iter()
-                        .map(|ty| ty.mutability() == Some(Mutability::Inherit))
-                        .collect();
-                    (fields.clone(), follow)
-                }
-                Object::Array { elems, .. } => (elems.clone(), vec![true; elems.len()]),
-                _ => continue,
+            let Some((values, follow)) = self.children(id)? else {
+                continue;
             };
             let mut copied = Vec::with_capacity(values.len());
             for (value, follow) in values.into_iter().zip(follow) {
@@ -641,6 +626,55 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
             }
         }
         Ok(root)
+    }
+
+    /// `Freeze`: makes `Imm` every object `Copy(Imm)` would copy, instead
+    /// of copying it.
+    fn freeze(&mut self, value: Value) -> Step<()> {
+        let mut todo = vec![value];
+        while let Some(value) = todo.pop() {
+            let Value::Obj(id) = value else { continue };
+            match self.object_mut(id)? {
+                Object::Data { is_mut, .. } | Object::Array { is_mut, .. } if *is_mut => {
+                    *is_mut = false;
+                }
+                // Already `Imm`, so it holds nothing `Mut`.
+                _ => continue,
+            }
+            if let Some((values, follow)) = self.children(id)? {
+                let followed = values.into_iter().zip(follow);
+                todo.extend(followed.filter_map(|(v, f)| f.then_some(v)));
+            }
+        }
+        Ok(())
+    }
+
+    /// The fields or elements of a data object or array, each with whether
+    /// `Copy` follows it: whether it has its object's mutability.
+    fn children(&self, id: ObjId) -> Step<Option<(Vec<Value>, Vec<bool>)>> {
+        Ok(Some(match self.object_ref(id)? {
+            Object::Data { ctor, fields, .. } => {
+                let decl = self
+                    .p
+                    .data(ctor.data)
+                    .ok_or_else(|| unverified(format!("unknown data type {}", ctor.data)))?;
+                let tys = &decl
+                    .ctors
+                    .get(ctor.index as usize)
+                    .ok_or_else(|| unverified("unknown constructor"))?
+                    .fields;
+                if tys.len() != fields.len() {
+                    return Err(unverified(format!("{ctor} has the wrong number of fields")));
+                }
+                let follow = tys
+                    .iter()
+                    .map(|ty| ty.mutability() == Some(Mutability::Inherit))
+                    .collect();
+                (fields.clone(), follow)
+            }
+            Object::Array { elems, .. } => (elems.clone(), vec![true; elems.len()]),
+            _ => return Ok(None),
+        }))
     }
 
     /// The copy of one value: a new object if it has the other mutability,

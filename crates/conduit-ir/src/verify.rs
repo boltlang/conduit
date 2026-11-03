@@ -252,7 +252,7 @@ fn inherit(ty: &Ty, m: Mutability) -> Ty {
 }
 
 /// Whether a type is `Imm` all the way down.
-fn deep_imm<P: Program + ?Sized>(p: &P, ty: &Ty) -> bool {
+pub fn deep_imm<P: Program + ?Sized>(p: &P, ty: &Ty) -> bool {
     deep_imm_in(p, ty, &mut BTreeSet::new())
 }
 
@@ -277,8 +277,9 @@ fn deep_imm_in<P: Program + ?Sized>(p: &P, ty: &Ty, seen: &mut BTreeSet<DataId>)
     }
 }
 
-/// The type of `Copy(m)` of a value of type `ty`.
-fn copy_ty<P: Program + ?Sized>(p: &P, ty: &Ty, m: Mutability) -> Result<Ty, String> {
+/// The type of `Copy(m)` of a value of type `ty`, or why it can't be
+/// copied.
+pub fn copy_ty<P: Program + ?Sized>(p: &P, ty: &Ty, m: Mutability) -> Result<Ty, String> {
     let imm = m == Mutability::Imm;
     match ty {
         Ty::I32 | Ty::I64 | Ty::F32 | Ty::F64 => Ok(ty.clone()),

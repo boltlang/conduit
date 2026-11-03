@@ -457,6 +457,22 @@ fn copy_to_imm() {
     assert_err(f, "can't copy to imm a value that reaches a ref i32");
 }
 
+/// `Freeze` has the types of `Copy(Imm)`.
+#[test]
+fn freeze() {
+    let mut f = Func::new(vec![Ty::Data(POINT, Mut)], vec![Ty::Data(POINT, Imm)]);
+    let p = f.params[0];
+    let q = f.new_var(Ty::Data(POINT, Imm));
+    f.body = let_(vec![q], Op::Freeze, vec![v(p)], ret(vec![v(q)]));
+    assert_ok(f);
+
+    let mut f = Func::new(vec![Ty::Data(HOLDER, Mut)], vec![]);
+    let h = f.params[0];
+    let q = f.new_var(Ty::Data(HOLDER, Imm));
+    f.body = let_(vec![q], Op::Freeze, vec![v(h)], ret(vec![]));
+    assert_err(f, "can't copy mut data12 to imm");
+}
+
 #[test]
 fn inherit_only_in_fields() {
     let mut f = Func::new(vec![Ty::Data(POINT, Mutability::Inherit)], vec![]);
