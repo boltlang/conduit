@@ -1,13 +1,9 @@
-data data0 {
-  (i32, i32)
-}
-
-fn fn0(%0: i32) -> (i32) vars(%2: imm data0, %4: mut data0) {
-  let %1: imm data0 = new data0.0(%0, 2i32)
-  let %3: mut data0 = new data0.0(%0, 3i32)
-  let = set data0.0.0(%3, 7i32)
-  let %5: i32 = get data0.0.0(%1)
-  let %6: i32 = get data0.0.0(%3)
+fn fn0(%0: i32) -> (i32) vars(%2: imm [i32], %3: imm [i32]) {
+  let %1: imm [i32] = array_new(%0, 2i32)
+  let %4: mut [i32] = array_clone(%1)
+  let = array_set(%4, 0i32, 7i32)
+  let %5: i32 = array_get(%1, 0i32)
+  let %6: i32 = array_get(%4, 0i32)
   let %7: i32 = add(%5, %6)
   jump ret(%7)
 }

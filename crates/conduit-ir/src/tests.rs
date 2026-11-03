@@ -104,7 +104,7 @@ fn effects() {
         Op::Prim(Prim::Div(Sign::Signed)).effects(),
         Effects::Unknown
     );
-    assert_eq!(Op::Copy(Mutability::Imm).effects(), Effects::Reads);
+    assert_eq!(Op::ArrayClone.effects(), Effects::Reads);
     assert_eq!(Op::Freeze.effects(), Effects::Reads);
     assert_eq!(Op::RefSet.effects(), Effects::Writes);
     assert_eq!(Op::Perform(EffectId(0), 0).effects(), Effects::Unknown);

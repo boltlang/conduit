@@ -3,8 +3,8 @@
 //! "Operations per target" in `docs/ir.md`.
 //!
 //! The output needs the GC, function references and tail call proposals,
-//! all part of Wasm 3.0. Not supported yet: `Copy`, and effect handlers
-//! (`Handle`, `Perform`, `Resume` and continuation types). Handlers can be
+//! all part of Wasm 3.0. Not supported yet: effect handlers (`Handle`,
+//! `Perform`, `Resume` and continuation types). Handlers can be
 //! lowered by evidence passing before this.
 //!
 //! [`emit_module`] lowers a whole module at once. Each extern becomes an

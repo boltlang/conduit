@@ -1,10 +1,9 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use conduit_ir::verify::{inherit, resolve};
 use conduit_ir::{
-    Atom, Block, CtorId, EffectId, Extern, ExternId, Func, FuncId, HandlerId, JoinDef, Label,
-    Mutability, Op, Program, SourceId, Tag, Tail, Ty, Var,
+    Atom, Block, EffectId, Extern, ExternId, Func, FuncId, HandlerId, JoinDef, Label, Mutability,
+    Op, Program, SourceId, Tag, Tail, Ty, Var,
 };
 
 use crate::error::{Error, ErrorKind, unverified};
@@ -163,7 +162,7 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
         if let Some(l) = at.block.lets.get(at.index) {
             self.source = l.source;
             let args = self.atoms(&l.args)?;
-            self.op(&l.op, &l.args, args, &l.binds, at.next())?;
+            self.op(&l.op, args, &l.binds, at.next())?;
             return Ok(None);
         }
         match &at.block.tail {
@@ -353,32 +352,7 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
             .ok_or_else(|| unverified("an op that gives a value binds nothing"))
     }
 
-    /// The type of an argument, as the function running sees it.
-    fn atom_ty(&self, a: &Atom) -> Step<Ty> {
-        match a {
-            Atom::Lit(l) => Ok(l.ty()),
-            Atom::Var(v) => {
-                let code = self.code_ref()?;
-                let f = self
-                    .p
-                    .func(code.func)
-                    .ok_or_else(|| unverified("unknown function"))?;
-                f.vars
-                    .get(v.0 as usize)
-                    .cloned()
-                    .ok_or_else(|| unverified(format!("{v} has no type")))
-            }
-        }
-    }
-
-    fn op(
-        &mut self,
-        op: &'p Op,
-        atoms: &[Atom],
-        args: Vec<Value>,
-        binds: &'p [Var],
-        next: At<'p>,
-    ) -> Step<()> {
+    fn op(&mut self, op: &'p Op, args: Vec<Value>, binds: &'p [Var], next: At<'p>) -> Step<()> {
         let results = match op {
             Op::Prim(prim) => vec![prim::eval(prim, &args)?],
             Op::Call(f) => return self.call_from(*f, args, binds, next),
@@ -508,6 +482,22 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                 Object::Array { elems, .. } => vec![Value::I32(elems.len() as i32)],
                 _ => return Err(unverified("array len on something that isn't an array")),
             },
+            Op::ArrayClone => {
+                let elems = match self.object_ref(obj(arg(&args, 0)?)?)? {
+                    Object::Array { elems, .. } => elems.clone(),
+                    _ => return Err(unverified("array clone of something that isn't an array")),
+                };
+                let is_mut = self.binds_mut(binds)?;
+                vec![self.alloc(Object::Array { elems, is_mut })]
+            }
+            Op::Freeze => {
+                let array = arg(&args, 0)?;
+                match self.object_mut(obj(array)?)? {
+                    Object::Array { is_mut, .. } => *is_mut = false,
+                    _ => return Err(unverified("freeze of something that isn't an array")),
+                }
+                vec![array]
+            }
             Op::RefNew => vec![self.alloc(Object::Ref(arg(&args, 0)?))],
             Op::RefGet => match self.object_ref(obj(arg(&args, 0)?)?)? {
                 Object::Ref(value) => vec![*value],
@@ -535,17 +525,6 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                 _ => return Err(unverified("unbox of something that isn't boxed")),
             },
             // The type of what it binds says what's copied.
-            Op::Copy(_) => {
-                let from =
-                    self.atom_ty(atoms.first().ok_or_else(|| unverified("copy of nothing"))?)?;
-                let to = self.bind_ty(binds)?;
-                vec![self.copy(arg(&args, 0)?, &from, &to)?]
-            }
-            Op::Freeze => {
-                let value = arg(&args, 0)?;
-                self.freeze(value)?;
-                vec![value]
-            }
             Op::Handle(h) => return self.handle(*h, args, binds, next),
             Op::Perform(e, i) => return self.perform(*e, *i, args, binds, next),
             Op::Resume => return self.resume(args, binds, next),
@@ -637,143 +616,6 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
         }
         self.stack.extend(frames);
         self.deliver(values.to_vec())
-    }
-
-    /// `Copy`: turns a value of type `from` into one of type `to`, which
-    /// differ only in mutabilities. Where the two types are equal, the value
-    /// is kept with what it holds; where they differ, a data object or
-    /// array is copied to the mutability `to` gives, and its fields and
-    /// elements are walked the same way. The types decide, not the objects,
-    /// as in compiled code, which doesn't know an object's mutability. Each
-    /// object is copied once, so sharing and cycles stay the same.
-    fn copy(&mut self, value: Value, from: &Ty, to: &Ty) -> Step<Value> {
-        let mut copies = HashMap::new();
-        // Copies whose children are still the originals', with the types of
-        // the original and of the copy.
-        let mut todo = Vec::new();
-        let root = self.copy_one(value, from, to, &mut copies, &mut todo)?;
-        while let Some((id, from, to)) = todo.pop() {
-            let children: Vec<(Value, Ty, Ty)> = match (self.object_ref(id)?, &from, &to) {
-                (Object::Data { ctor, fields, .. }, Ty::Data(_, m1, a1), Ty::Data(_, m2, a2)) => {
-                    let tys = self.field_tys(*ctor, fields.len())?;
-                    let pairs = tys
-                        .iter()
-                        .map(|field| (resolve(field, *m1, a1), resolve(field, *m2, a2)));
-                    fields
-                        .iter()
-                        .zip(pairs)
-                        .map(|(&v, (from, to))| (v, from, to))
-                        .collect()
-                }
-                (Object::Array { elems, .. }, Ty::Array(e1, m1), Ty::Array(e2, m2)) => {
-                    let (from, to) = (inherit(e1, *m1), inherit(e2, *m2));
-                    elems
-                        .iter()
-                        .map(|&v| (v, from.clone(), to.clone()))
-                        .collect()
-                }
-                _ => return Err(unverified("a copy of an object of another type")),
-            };
-            let mut copied = Vec::with_capacity(children.len());
-            for (value, from, to) in children {
-                copied.push(self.copy_one(value, &from, &to, &mut copies, &mut todo)?);
-            }
-            match self.object_mut(id)? {
-                Object::Data { fields, .. } => *fields = copied,
-                Object::Array { elems, .. } => *elems = copied,
-                _ => {}
-            }
-        }
-        Ok(root)
-    }
-
-    /// The copy of one value of type `from` as a `to`: the value itself if
-    /// the types are equal, otherwise a new object.
-    fn copy_one(
-        &mut self,
-        value: Value,
-        from: &Ty,
-        to: &Ty,
-        copies: &mut HashMap<ObjId, ObjId>,
-        todo: &mut Vec<(ObjId, Ty, Ty)>,
-    ) -> Step<Value> {
-        let Value::Obj(id) = value else {
-            return Ok(value);
-        };
-        if from == to || !matches!(to, Ty::Data(..) | Ty::Array(..)) {
-            // Kept, or a closure, ref, `any` or continuation, which `Copy`
-            // doesn't look into.
-            return Ok(value);
-        }
-        if let Some(&copy) = copies.get(&id) {
-            return Ok(Value::Obj(copy));
-        }
-        let is_mut = to.mutability() == Some(Mutability::Mut);
-        let copy = match self.object_ref(id)? {
-            Object::Data { ctor, fields, .. } => Object::Data {
-                ctor: *ctor,
-                fields: fields.clone(),
-                is_mut,
-            },
-            Object::Array { elems, .. } => Object::Array {
-                elems: elems.clone(),
-                is_mut,
-            },
-            _ => return Err(unverified("a copy of an object of another type")),
-        };
-        let copy = self.alloc_id(copy);
-        copies.insert(id, copy);
-        todo.push((copy, from.clone(), to.clone()));
-        Ok(Value::Obj(copy))
-    }
-
-    /// `Freeze`: makes `Imm` every object `Copy(Imm)` would copy, instead
-    /// of copying it.
-    fn freeze(&mut self, value: Value) -> Step<()> {
-        let mut todo = vec![value];
-        while let Some(value) = todo.pop() {
-            let Value::Obj(id) = value else { continue };
-            match self.object_mut(id)? {
-                Object::Data { is_mut, .. } | Object::Array { is_mut, .. } if *is_mut => {
-                    *is_mut = false;
-                }
-                // Already `Imm`, so it holds nothing `Mut`.
-                _ => continue,
-            }
-            // A valid `Freeze` leaves nothing `Mut` that its result reaches,
-            // so everything it holds can be followed.
-            if let Some(values) = self.children(id)? {
-                todo.extend(values);
-            }
-        }
-        Ok(())
-    }
-
-    /// The fields or elements of a data object or array.
-    fn children(&self, id: ObjId) -> Step<Option<Vec<Value>>> {
-        Ok(match self.object_ref(id)? {
-            Object::Data { fields, .. } => Some(fields.clone()),
-            Object::Array { elems, .. } => Some(elems.clone()),
-            _ => None,
-        })
-    }
-
-    /// The declared field types of constructor `c`, for an object with `n`
-    /// fields.
-    fn field_tys(&self, c: CtorId, n: usize) -> Step<&'p [Ty]> {
-        let p = self.p;
-        let decl = p
-            .data(c.data)
-            .ok_or_else(|| unverified(format!("unknown data type {}", c.data)))?;
-        let tys = &decl
-            .ctors
-            .get(c.index as usize)
-            .ok_or_else(|| unverified("unknown constructor"))?
-            .fields;
-        if tys.len() != n {
-            return Err(unverified(format!("{c} has the wrong number of fields")));
-        }
-        Ok(tys)
     }
 }
 

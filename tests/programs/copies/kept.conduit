@@ -1,52 +1,47 @@
-// Copies that must stay copies, because something other than the copy can
-// still reach the objects afterwards.
-
-data data0 {
-  (i32, i32)
-}
+// Clones that must stay clones, because something other than the clone can
+// still reach the array afterwards.
 
 data data1 {
-  (mut data0)
+  (mut [i32])
 }
 
-// The original is written after the copy.
+// The original is written after the clone.
 fn fn0(%0: i32) -> (i32) {
-  let %1: mut data0 = new data0.0(%0, 2i32)
-  let %2: imm data0 = copy[imm](%1)
-  let = set data0.0.0(%1, 5i32)
-  let %3: i32 = get data0.0.0(%2)
+  let %1: mut [i32] = array_fill(1i32, %0)
+  let %2: imm [i32] = array_clone(%1)
+  let = array_set(%1, 0i32, 5i32)
+  let %3: i32 = array_get(%2, 0i32)
   jump ret(%3)
 }
 
-// Another object holds the original, and it's used after the copy.
+// An object holds the original, and it's used after the clone.
 fn fn1(%0: i32) -> (i32) {
-  let %1: mut data0 = new data0.0(%0, 2i32)
+  let %1: mut [i32] = array_fill(1i32, %0)
   let %2: mut data1 = new data1.0(%1)
-  let %3: imm data0 = copy[imm](%1)
-  let %4: mut data0 = get data1.0.0(%2)
-  let = set data0.0.0(%4, 5i32)
-  let %5: i32 = get data0.0.0(%3)
+  let %3: imm [i32] = array_clone(%1)
+  let %4: mut [i32] = get data1.0.0(%2)
+  let = array_set(%4, 0i32, 5i32)
+  let %5: i32 = array_get(%3, 0i32)
   jump ret(%5)
 }
 
 // A parameter: the caller may still hold it.
-fn fn2(%0: mut data0) -> (i32) {
-  let %1: imm data0 = copy[imm](%0)
-  let %2: i32 = get data0.0.0(%1)
+fn fn2(%0: mut [i32]) -> (i32) {
+  let %1: imm [i32] = array_clone(%0)
+  let %2: i32 = array_get(%1, 0i32)
   jump ret(%2)
 }
 
 // The original was passed to a call, which may have kept it.
 fn fn3(%0: i32) -> (i32) {
-  let %1: mut data0 = new data0.0(%0, 2i32)
+  let %1: mut [i32] = array_fill(1i32, %0)
   let %2: i32 = call fn2(%1)
-  let %3: imm data0 = copy[imm](%1)
-  let %4: i32 = get data0.0.0(%3)
+  let %3: imm [i32] = array_clone(%1)
+  let %4: i32 = array_get(%3, 0i32)
   jump ret(%4)
 }
 
 //# run fn0(1i32) == 1i32
 //# run fn1(1i32) == 1i32
 //# run fn3(1i32) == 1i32
-//# wasm-error: copy isn't supported yet
 //# opt: copies

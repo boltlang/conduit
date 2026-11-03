@@ -86,7 +86,7 @@ fn fn7() -> () {
 
 fn fn8(%0: mut data10) -> (imm data10) {
   let = set data10.0.1(%0, 2i32)
-  let %1: imm data10 = copy[imm](%0)
+  let %1: imm data10 = new data10.0(1i32, 2i32)
   let %2: imm any = box[i32](1i32)
   let %3: i32 = unbox[i32](%2)
   let %4: mut [f64] = array_new(1.5f64, -0.0f64, 1e300f64)
@@ -99,7 +99,8 @@ fn fn8(%0: mut data10) -> (imm data10) {
   let %10: mut fn(i32) -> (i32) = closure fn1()
   let %11: i32 = apply(%10, %7)
   let %12: mut data10 = new data10.0(%11, %3)
-  let %13: imm data10 = freeze(%12)
+  let %13: imm [i64] = array_clone(%5)
+  let %14: imm [f64] = freeze(%4)
   jump ret(%1)
 }
 
@@ -404,8 +405,8 @@ fn parse_errors() {
             "1:30: `1` isn't a literal: it needs a type, like `1i32`",
         ),
         (
-            "fn fn1() -> () { let %0: i32 = copy[frob](1i32) jump ret() }",
-            "1:37: expected `imm`, `mut`, `ro` or `inherit`, found `frob`",
+            "fn fn1(%0: mut data1[frob]) -> () { jump ret() }",
+            "1:22: expected `imm`, `mut`, `ro` or `inherit`, found `frob`",
         ),
     ];
     for (src, expected) in cases {

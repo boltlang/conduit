@@ -1,20 +1,16 @@
-data data0 {
-  (i32, i32)
-}
-
 data data1 {
-  (mut data0, mut data0)
+  (mut [i32], mut [i32])
 }
 
 fn fn0(%0: i32) -> (i32) vars(%5: mut data1) {
-  let %1: mut data0 = new data0.0(%0, 2i32)
-  let %2: imm data0 = freeze(%1)
-  let %3: mut data0 = new data0.0(0i32, 0i32)
+  let %1: mut [i32] = array_fill(1i32, %0)
+  let %2: imm [i32] = freeze(%1)
+  let %3: mut [i32] = array_fill(1i32, 0i32)
   let %4: i32 = call fn1(%3)
-  let %6: i32 = get data0.0.0(%2)
+  let %6: i32 = array_get(%2, 0i32)
   jump ret(%6)
 }
 
-fn fn1(%0: mut data0) -> (i32) {
+fn fn1(%0: mut [i32]) -> (i32) {
   jump ret(0i32)
 }

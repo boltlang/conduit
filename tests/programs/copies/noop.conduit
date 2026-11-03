@@ -1,23 +1,17 @@
-// A copy whose type shows it changes nothing is the value itself: an
-// `imm` value copied to `imm`, and a `mut` one copied to `mut` whose
-// fields all have its mutability.
-
-data data0 {
-  (i32, i32)
-}
+// An `imm` array cloned to `imm` can't be told apart from the array
+// itself, so the clone goes. A clone to `mut` is a new array, and stays.
 
 fn fn0(%0: i32) -> (i32) {
-  let %1: imm data0 = new data0.0(%0, 2i32)
-  let %2: imm data0 = copy[imm](%1)
-  let %3: mut data0 = new data0.0(%0, 3i32)
-  let %4: mut data0 = copy[mut](%3)
-  let = set data0.0.0(%4, 7i32)
-  let %5: i32 = get data0.0.0(%2)
-  let %6: i32 = get data0.0.0(%3)
+  let %1: imm [i32] = array_new(%0, 2i32)
+  let %2: imm [i32] = array_clone(%1)
+  let %3: imm [i32] = array_clone(%2)
+  let %4: mut [i32] = array_clone(%3)
+  let = array_set(%4, 0i32, 7i32)
+  let %5: i32 = array_get(%3, 0i32)
+  let %6: i32 = array_get(%4, 0i32)
   let %7: i32 = add(%5, %6)
   jump ret(%7)
 }
 
 //# run fn0(1i32) == 8i32
-//# wasm-error: copy isn't supported yet
 //# opt: copies

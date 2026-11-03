@@ -90,13 +90,13 @@ pub enum Op {
     ArrayNew,              // args = the elements
     ArrayFill,             // args = a length, then the value to repeat
     ArrayGet, ArraySet, ArrayLen,   // ArraySet: Mut arrays only
+    ArrayClone,            // args = an array; a new one with the same elements: see "Mutability"
+    Freeze,                // args = an array; `ArrayClone` to `Imm` done in place
     RefNew,                // args = initial value; result has type Ref(ty)
     RefGet,                // args = the ref
     RefSet,                // args = the ref, then the new value; binds nothing
     Box(Ty),               // args = a value of that type; result has type Any(_)
     Unbox(Ty),             // args = an Any(_); result has that type
-    Copy(Mutability),      // args = a value; a copy at that mutability: see "Mutability"
-    Freeze,                // args = a value; `Copy(Imm)` done in place: see "Mutability"
     Handle(HandlerId),     // args = handler env, then a closure: the body
     Perform(EffectId, u32),// run operation i of the nearest handler of the effect
     Resume,                // args[0] = continuation, rest = values to resume with
@@ -316,11 +316,9 @@ The other two mutabilities:
   `Inherit` says that what it's on belongs to the object holding it,
   while an explicit mutability says it's shared:
 
-  - Seen as `ReadOnly`, an `Array(Data(E, Inherit), Mut)` holds
-    `ReadOnly` elements, so the view is deep. An `Array(Data(E, Mut), Mut)`
-    seen as `ReadOnly` still holds `Mut` ones.
-  - `Copy` follows what inherits and shares the rest, unless the type it
-    gives says otherwise (see below).
+  Seen as `ReadOnly`, an `Array(Data(E, Inherit), Mut)` holds `ReadOnly`
+  elements, so the view is deep. An `Array(Data(E, Mut), Mut)` seen as
+  `ReadOnly` still holds `Mut` ones.
 
 - **`Param(i)`**, a mutability parameter, is chosen by each data type of
   the declaration. `data D['m1] { ('m1 [i32]) }` is used as `mut D[imm]`
@@ -345,52 +343,39 @@ Rules the verifier checks:
    fields can be written, so a covariant argument would let code store a
    `Mut` value where another alias expects `Imm`. An argument to `Call`,
    `Apply`, `Jump` or `New` may have a subtype of the expected type.
-   Nothing else converts between mutabilities: that's `Copy`.
+   Nothing else converts between mutabilities: a value of another
+   mutability is a new value (see below).
 
 ### Copying between mutabilities
 
 A `Mut` value can't become `Imm` in place, since a `Mut` reference to it
-may still exist. `Copy(m)` makes a new value instead. It turns a value of
-the argument's type into one of **the type of the variable it binds**,
-which says what's copied. The two types have the same shape and differ
-only in mutabilities. The types decide, not the objects, since compiled
-code doesn't know an object's mutability:
+may still exist. A value of another mutability is a new value, which the
+frontend builds: a data object with `New`, from the original's fields,
+and an array with **`ArrayClone`**.
 
-- Where the two types are equal, the value is kept as it is, with
-  everything it holds.
-- Where they differ, a `Data` or `Array` value is copied into a new object
-  of the mutability the result's type gives, and its fields and elements
-  are walked the same way, with their types in both. So a field that has
-  the same type in both is shared.
-- Scalars, closures, refs, `Any` and continuations are never looked into,
-  so their types must be equal. The verifier rejects a `Copy(Imm)` whose
-  value can reach a `Fn(_, Mut)`, a `Ref`, a `Cont` or an `Any(Mut)`,
-  which can't become `Imm`.
-- Each object is copied once, even if it's reachable along several paths,
-  so sharing and cycles stay intact.
-- The result's own mutability is `m`, objects are only made `Imm` or `Mut`,
-  and a `Copy(Imm)` gives what's `Imm` all the way down.
+`ArrayClone` makes a new array of the mutability the variable it binds
+says, with the original's elements, which it shares. So the elements must
+fit the new array: an `Imm` clone needs elements that are `Imm` all the
+way down, and an `Array(Data(E, Inherit), Mut)` clones to `Imm` only if
+its elements are rebuilt first. `ArrayClone` is the one conversion a
+frontend can't write itself: `ArrayNew` at `Imm` needs every element up
+front, so an `Imm` array whose elements are computed, like the buffer of
+a growing array, needs a `Mut` one cloned. A deeper copy, of a value and
+what it holds, is the frontend's to write, type by type, which also lets
+it handle the sharing and cycles its own data structures have.
 
-For example, `Copy(Mut)` of a `mut [imm data0]` can give a
-`mut [imm data0]`, the array itself, or a `mut [mut data0]`, with a new
-array and new cells. `Copy(Mut)` of an `imm D[imm]` can give a new
-`mut D[imm]` that shares the array, or a new `mut D[mut]` that copies it.
-`Copy(Imm)` of a `mut [mut data0]` can only give an `imm [imm data0]`. A
-`ReadOnly` value is copied wherever the result asks for `Imm` or `Mut`,
-even when it's really of that mutability already.
-
-**`Freeze`** gives what `Copy(Imm)` gives, with the same types, but turns
-the objects `Copy(Imm)` would copy into `Imm` ones in place instead of
-making new ones. It is only allowed when nothing but its result can reach
-those objects afterwards: no other variable, object, closure, ref or `Any`
-that's still used. The verifier can't check this, so breaking it is
-**undefined behavior**, like `Unbox` at the wrong type. Optimizations make
-`Freeze` from a `Copy(Imm)` they show is the only way left to the objects
-(see "Remove copies"), and a frontend can emit it where it already knows a
-value is unique. Its effect is `Reads`, like `Copy`'s: it changes objects
+**`Freeze`** gives what an `ArrayClone` to `Imm` gives, with the same
+types, but makes the array itself `Imm` instead of making a new one. It is
+only allowed when nothing but its result can reach the array afterwards:
+no other variable, object, closure, ref or `Any` that's still used. The
+verifier can't check this, so breaking it is **undefined behavior**, like
+`Unbox` at the wrong type. Optimizations make `Freeze` from an
+`ArrayClone` they show is the only way left to the array (see "Remove
+copies"), and a frontend can emit it where it already knows an array is
+unique. Its effect is `Reads`, like `ArrayClone`'s: it changes an array
 that nothing else can see.
 
-`Copy` is a single op rather than a call to a generated function because
+`ArrayClone` is an op rather than a loop the frontend writes because
 removing copies is the main optimization (see "Optimizations"), and an
 analysis can only remove what it can recognize. Its effect is `Reads`: it
 allocates, but it writes nothing that existed before.
@@ -665,24 +650,22 @@ Because the IR is so small, the classic simplifications are local rewrites:
   extra parameter for its current value, every `Jump` passes the current
   value, `RefGet` becomes that value, and `RefSet` makes a new value
   current. A ref that does escape stays a heap cell.
-- **Remove copies.** In order of how easy they are:
-  - If the type shows the value reaches nothing `Copy` would change (for
-    `Copy(Imm)`: nothing `Mut`), the copy is the value itself.
-  - `Copy(Imm)` of a value just built by `New` or `ArrayNew`, with no other
-    uses, becomes building it as `Imm` directly.
-  - **Freeze in place.** If nothing else can reach the original objects
-    and the original isn't used afterwards, the copy becomes a `Freeze`.
-    The `copies` pass shows this with a region analysis: variables that
-    may reach the same `Mut` object are in the same region, because an op
-    stores one in the other, reads one out of the other, captures or boxes
-    it, or passes it to a join point. Values whose type is `Imm` all the
-    way down are left out, since what they reach never changes. A region
-    escapes if a parameter, a call's argument or result, or a returned
-    value is in it. A `Copy(Imm)` is frozen if its argument's region
-    doesn't escape and none of its variables is live after the copy, with
-    liveness following jumps, so a loop that uses the original on its next
-    round keeps the copy. The analysis follows what each closure captures
-    through `Closure`'s arguments, not through the closure's type.
+- **Remove copies.** The `copies` pass does two things:
+  - An `ArrayClone` of an `Imm` array to `Imm` is the array itself, since
+    nothing can tell the two apart.
+  - **Freeze in place.** If nothing else can reach the original array and
+    it isn't used afterwards, an `ArrayClone` to `Imm` becomes a `Freeze`.
+    The pass shows this with a region analysis: variables that may reach
+    the same `Mut` object are in the same region, because an op stores one
+    in the other, reads one out of the other, captures or boxes it, or
+    passes it to a join point. Values whose type is `Imm` all the way down
+    are left out, since what they reach never changes. A region escapes if
+    a parameter, a call's argument or result, or a returned value is in
+    it. A clone is frozen if its argument's region doesn't escape and none
+    of its variables is live after the clone, with liveness following
+    jumps, so a loop that uses the original on its next round keeps the
+    clone. The analysis follows what each closure captures through
+    `Closure`'s arguments, not through the closure's type.
 - **`Imm` closures don't write.** An `Apply` on an `Fn(_, Imm)` whose
   arguments are all `Imm` all the way down allocates and may perform
   effects, but writes nothing that existed before. So an analysis can treat
@@ -763,6 +746,7 @@ Status:
 | `ArrayGet` | bounds check + `*.load` | `array.get` | ✅ |
 | `ArraySet` | bounds check + `*.store` | `array.set` | ✅ |
 | `ArrayLen` | `i32.load` of the length | `array.len` | ✅ |
+| `ArrayClone` | allocate + `memory.copy` | `array.new_default` + `array.copy` | ✅ |
 | `RefNew` | allocate one slot + store, or a local if promoted | `struct.new` of a one-field mutable struct, or a local if promoted | ✅ |
 | `RefGet` | `*.load` | `struct.get` | ✅ |
 | `RefSet` | `*.store` | `struct.set` | ✅ |
@@ -771,7 +755,6 @@ Status:
 | `Unbox` to a scalar | `*.load` | `i31.get_s`, or `ref.cast` + `struct.get` | ✅ |
 | `Unbox` to a reference | nothing | `ref.cast` | ✅ |
 | String literal (`Lit`) | data segment | `array.new_data` | ✅ |
-| `Copy` | generated copy function per type | same | ✅ |
 | `Freeze` | nothing | nothing | ✅ |
 | `Handle` | `cont.new` + `resume` with `(on $op ..)` | same | ⚠️ stack switching |
 | `Perform` | `suspend` | same | ⚠️ stack switching |
@@ -791,9 +774,6 @@ Notes:
   is declared mutable, even for `Imm` objects, so that freezing in place
   doesn't change an object's Wasm type. Engines barely optimize immutable
   fields, so little is lost.
-- A copy function walks the value's type, recursing for recursive types,
-  and keeps a table of objects it has already copied, to preserve sharing
-  and cycles.
 
 ## Text format
 
@@ -849,8 +829,9 @@ fn fn1(%0: i32) -> (i32) {
   `call fn2(..)`, `call_extern extern1(..)`, `closure fn2(..)`, `apply(..)`,
   `new data10.0(..)`, `get data10.0.1(..)`, `set data10.0.1(..)`,
   `array_new`, `array_fill`, `array_get`, `array_set`, `array_len`,
+  `array_clone`, `freeze`,
   `ref_new`, `ref_get`, `ref_set`, `box[i32](..)`, `unbox[i32](..)`,
-  `copy[imm](..)`, `freeze(..)`, `handle handler30(..)`, `perform effect20.0(..)` and
+  `handle handler30(..)`, `perform effect20.0(..)` and
   `resume(..)`.
 - **Literals** carry their type: `5i32`, `-1i64`, `1.5f32`, `1e300f64`.
   Finite floats are printed in the shortest form that reads back exactly.
@@ -883,9 +864,8 @@ doesn't need a deep stack.
 - **Objects know their mutability.** Every object that can be `Imm` or
   `Mut` carries an "is mut" flag. A write to an `Imm` object is an error,
   which can only happen if an optimization broke the mutability rules.
-  `Copy` doesn't use the flag: it follows the types, as compiled code
-  does. `Freeze` clears it, so a write through an alias that a wrong
-  `Freeze` left behind is an error too.
+  `Freeze` clears it, so a write through an alias that a wrong `Freeze`
+  left behind is an error too.
 - **Numbers follow Wasm.** Integers wrap, shift amounts are taken modulo
   the width, and `min` and `max` give NaN if either operand is NaN and
   treat `-0.0` as less than `0.0`. Division and remainder by zero,
@@ -918,16 +898,14 @@ doesn't need a deep stack.
    the evidence-passing lowering, not with Wasm stack switching.
 4. Shallow handlers: needed for anything frontends want to express, or can
    deep handlers plus state cover it?
-5. Should compiled objects carry a mutability bit at run time, as the
-   evaluator's do? `Copy` on a `ReadOnly` value could then skip objects
-   that are already `Imm`, instead of copying everything. It costs a
-   header bit per object.
-6. Should `Copy(Imm)` follow `Mut` closures instead of rejecting them? That
-   needs a copy function per closure, stored next to its wrapper, and it
-   would turn a closure's captured refs into snapshots.
 
 Decided:
 
+- **No deep copy.** Conduit used to have a `Copy` op that converted a whole
+  value to another mutability, keeping sharing and cycles. Compiling that
+  needs a table of copied objects, which Wasm can't key by identity, and a
+  frontend that knows its data structures can copy them for less, type by
+  type. So copies are the frontend's, built with `New` and `ArrayClone`.
 - **Closure conversion** is split: the frontend lambda-lifts (captures
   first, then parameters) and Conduit does the rest. See "Closures" right
   after "Modules". If several frontends end up writing the same free-variable
@@ -946,8 +924,8 @@ yet:
   recursion (see "Polymorphism"). Any interpreter that runs on Conduit then
   runs that code too.
 - **Mutability.** A language with `imm` and `mut` views of the same data
-  maps them to the mutability in Conduit's types, and its copies between
-  them to `Copy`. See "Mutability".
+  maps them to the mutability in Conduit's types, and builds its copies
+  between them with `New` and `ArrayClone`. See "Mutability".
 - **Sources.** Frontends need to map code back to source, for errors and
   for limits on how long an interpreter runs. `Let` and `Jump` carry a
   `source`, which is opaque to Conduit and carried through inlining.

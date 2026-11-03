@@ -1,5 +1,5 @@
 use crate::id::{CtorId, EffectId, ExternId, FuncId, HandlerId};
-use crate::ty::{Mutability, Ty};
+use crate::ty::Ty;
 
 /// Everything that isn't control flow. Passes that move code around don't
 /// look inside an `Op`: they ask it for its [`Effects`].
@@ -37,6 +37,16 @@ pub enum Op {
     ArraySet,
     /// Args: the array.
     ArrayLen,
+    /// A new array with the same elements, which it shares, of the
+    /// mutability the variable it binds says. Args: the array.
+    ArrayClone,
+    /// The array itself as `Imm`: what an `ArrayClone` to `Imm` gives, made
+    /// by turning the array `Imm` in place. Args: the array.
+    ///
+    /// Undefined behavior if anything other than the result can still reach
+    /// the array afterwards. Optimizations make it from an `ArrayClone` that
+    /// they show is the only way left to the array.
+    Freeze,
     /// Allocates a ref. Args: the initial value.
     RefNew,
     /// Args: the ref.
@@ -47,15 +57,6 @@ pub enum Op {
     Box(Ty),
     /// An `Any` as a value of this type. Args: the `Any`.
     Unbox(Ty),
-    /// A copy of a value at another mutability. Args: the value.
-    Copy(Mutability),
-    /// The value itself as `Imm`: what `Copy(Imm)` gives, made by turning
-    /// the objects it would copy into `Imm` ones in place. Args: the value.
-    ///
-    /// Undefined behavior if anything other than the result can still reach
-    /// one of those objects afterwards. Optimizations make it from a `Copy`
-    /// that they show is the only way left to the objects.
-    Freeze,
     /// Runs a closure under a handler. Args: the handler's environment,
     /// then the closure.
     Handle(HandlerId),
@@ -85,7 +86,7 @@ impl Op {
             Op::Prim(p) if p.may_trap() => Effects::Unknown,
             Op::Prim(_) | Op::Closure(_) | Op::Box(_) => Effects::Pure,
             Op::New(_) | Op::ArrayNew | Op::RefNew => Effects::Pure,
-            Op::Get(..) | Op::ArrayLen | Op::RefGet | Op::Copy(_) => Effects::Reads,
+            Op::Get(..) | Op::ArrayLen | Op::ArrayClone | Op::RefGet => Effects::Reads,
             // It changes objects that nothing else can reach any more.
             Op::Freeze => Effects::Reads,
             Op::Set(..) | Op::RefSet => Effects::Writes,

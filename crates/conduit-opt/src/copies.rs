@@ -1,10 +1,12 @@
-//! Removes `Copy` ops. See "Remove copies" in `docs/ir.md`.
+//! Removes array copies: `ArrayClone` ops. See "Remove copies" in
+//! `docs/ir.md`.
 //!
-//! - **Copies that change nothing.** If the type shows that the value
-//!   reaches nothing of the other mutability, the copy is the value itself,
-//!   and its uses use the value instead.
-//! - **Freeze in place.** A `Copy(Imm)` becomes an [`Op::Freeze`] when
-//!   nothing but the copy can reach the original objects any more.
+//! - **Clones that change nothing.** An `Imm` array cloned to `Imm` can't
+//!   be told apart from the array itself, so the clone is the array, and
+//!   its uses use the array instead.
+//! - **Freeze in place.** An `ArrayClone` to `Imm` becomes an
+//!   [`Op::Freeze`] when nothing but the clone can reach the original array
+//!   any more.
 //!
 //! Freezing needs a region analysis. Two variables are in the same region
 //! if they may reach the same `Mut` object: an op that stores a value in an
@@ -13,15 +15,15 @@
 //! function may hold one of its objects: parameters, values passed to or
 //! returned from calls, and returned values. Variables whose type is `Imm`
 //! all the way down only reach objects that never change, so they are left
-//! out: this is what keeps the copy's result out of the original's region.
+//! out: this is what keeps the clone's result out of the original's region.
 //!
-//! A `Copy(Imm)` of `x` is frozen in place if `x`'s region doesn't escape
-//! and no variable of the region is live after the copy. Every object of
-//! the region was then made by this run of the function, no object outside
-//! the region points at it, and nothing left in the function can reach it,
-//! so the copy's result is the only way left to the objects. Liveness
-//! follows jumps into join points, so a loop that uses `x` again on its
-//! next round keeps the copy.
+//! An `ArrayClone` of `x` to `Imm` is frozen in place if `x`'s region
+//! doesn't escape and no variable of the region is live after the clone.
+//! Every object of the region was then made by this run of the function,
+//! no object outside the region points at it, and nothing left in the
+//! function can reach it, so the clone is the only way left to the array.
+//! Liveness follows jumps into join points, so a loop that uses `x` again
+//! on its next round keeps the clone.
 //!
 //! The analysis is flow-insensitive and doesn't look into callees, so any
 //! call that sees a value makes its region escape.
@@ -29,7 +31,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use conduit_ir::verify::deep_imm;
-use conduit_ir::{Atom, Block, Func, FuncId, Label, Let, Mutability, Op, Program, Tail, Var};
+use conduit_ir::{Atom, Block, Func, FuncId, Label, Let, Mutability, Op, Program, Tail, Ty, Var};
 
 use crate::Pass;
 
@@ -54,24 +56,21 @@ pub fn copies(p: &dyn Program, f: &mut Func) -> bool {
     removed || frozen
 }
 
-/// Drops each copy whose type shows it changes nothing, and uses its
-/// argument instead of its result.
+/// Drops each clone of an `Imm` array to `Imm`, and uses its argument
+/// instead of its result.
 fn remove_noop_copies(f: &mut Func) -> bool {
     let mut subst = BTreeMap::new();
     let vars = &f.vars;
     for_each_block_mut(&mut f.body, &mut |b| {
         b.lets.retain(|l| {
-            let (Op::Copy(_), [arg], [bind]) = (&l.op, &l.args[..], &l.binds[..]) else {
+            let (Op::ArrayClone, [Atom::Var(arg)], [bind]) = (&l.op, &l.args[..], &l.binds[..])
+            else {
                 return true;
             };
-            let arg_ty = match arg {
-                Atom::Var(v) => vars[v.0 as usize].clone(),
-                Atom::Lit(l) => l.ty(),
-            };
-            // The type of what it binds says what's copied, so a copy that
-            // gives the type it takes keeps everything.
-            if vars[bind.0 as usize] == arg_ty {
-                subst.insert(*bind, arg.clone());
+            let arg_ty = &vars[arg.0 as usize];
+            if matches!(arg_ty, Ty::Array(_, Mutability::Imm)) && vars[bind.0 as usize] == *arg_ty {
+                let arg = Atom::Var(*arg);
+                subst.insert(*bind, arg);
                 return false;
             }
             true
@@ -84,19 +83,19 @@ fn remove_noop_copies(f: &mut Func) -> bool {
     true
 }
 
-/// Turns each `Copy(Imm)` that is the only way left to its objects into a
-/// [`Op::Freeze`].
+/// Turns each `ArrayClone` to `Imm` that is the only way left to its array
+/// into a [`Op::Freeze`].
 fn freeze_in_place(p: &dyn Program, f: &mut Func) -> bool {
     let tracked: Vec<bool> = f.vars.iter().map(|ty| !deep_imm(p, ty)).collect();
     let regions = Regions::new(f, &tracked);
 
-    // The copies that might be frozen: by their result, the region of
+    // The clones that might be frozen: by their result, the region of
     // their argument.
     let mut candidates = BTreeMap::new();
     for_each_block(&f.body, &mut |b| {
         for l in &b.lets {
-            if let (Op::Copy(Mutability::Imm), [Atom::Var(x)], [y]) =
-                (&l.op, &l.args[..], &l.binds[..])
+            if let (Op::ArrayClone, [Atom::Var(x)], [y]) = (&l.op, &l.args[..], &l.binds[..])
+                && matches!(f.vars[y.0 as usize], Ty::Array(_, Mutability::Imm))
                 && tracked[x.0 as usize]
                 && regions.of(*x) != regions.escaped
             {
@@ -122,7 +121,7 @@ fn freeze_in_place(p: &dyn Program, f: &mut Func) -> bool {
     for_each_block_mut(&mut f.body, &mut |b| {
         for l in &mut b.lets {
             if let [y] = l.binds[..]
-                && l.op == Op::Copy(Mutability::Imm)
+                && l.op == Op::ArrayClone
                 && candidates.contains_key(&y)
                 && !blocked.contains(&y)
             {
@@ -261,9 +260,9 @@ impl RegionCx<'_> {
             }
             // Anything else may link its arguments and results: `New`,
             // `Set`, `Get` and the like store and load them, `Closure` and
-            // `Box` hold them, and `Copy(Mut)` keeps what's already `Mut`.
-            // The result of a `Copy(Imm)` or a `Freeze` isn't tracked, and
-            // neither are scalars, so those link nothing.
+            // `Box` hold them, and an `ArrayClone` shares the elements. An
+            // `Imm` result isn't tracked, and neither are scalars, so those
+            // link nothing.
             _ => self.unite(all),
         }
     }

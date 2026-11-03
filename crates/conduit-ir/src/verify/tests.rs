@@ -438,42 +438,56 @@ fn imm_closure_cant_capture_a_ref() {
     assert_eq!(closure_capturing_ref(Mut), Vec::<String>::new());
 }
 
-#[test]
-fn copy_to_imm() {
-    let mut f = Func::new(vec![Ty::data(POINT, Mut)], vec![Ty::data(POINT, Imm)]);
-    let p = f.params[0];
-    let q = f.new_var(Ty::data(POINT, Imm));
-    f.body = let_(vec![q], Op::Copy(Imm), vec![v(p)], ret(vec![v(q)]));
-    assert_ok(f);
-
-    // HOLDER's field is mut whatever the holder is, so it can't be imm.
-    let mut f = Func::new(vec![Ty::data(HOLDER, Mut)], vec![]);
-    let h = f.params[0];
-    let q = f.new_var(Ty::data(HOLDER, Imm));
-    f.body = let_(vec![q], Op::Copy(Imm), vec![v(h)], ret(vec![]));
-    assert_err(f, "can't copy mut data12 to imm");
-
-    let mut f = Func::new(vec![Ty::Ref(Box::new(Ty::I32))], vec![]);
-    let r = f.params[0];
-    let q = f.new_var(Ty::Ref(Box::new(Ty::I32)));
-    f.body = let_(vec![q], Op::Copy(Imm), vec![v(r)], ret(vec![]));
-    assert_err(f, "can't copy to imm a value that reaches a ref i32");
+fn array(elem: Ty, m: Mutability) -> Ty {
+    Ty::Array(Box::new(elem), m)
 }
 
-/// `Freeze` has the types of `Copy(Imm)`.
+/// An `ArrayClone` shares the elements, so they must fit the new array.
 #[test]
-fn freeze() {
-    let mut f = Func::new(vec![Ty::data(POINT, Mut)], vec![Ty::data(POINT, Imm)]);
-    let p = f.params[0];
-    let q = f.new_var(Ty::data(POINT, Imm));
-    f.body = let_(vec![q], Op::Freeze, vec![v(p)], ret(vec![v(q)]));
+fn array_clone() {
+    let mut f = Func::new(vec![array(Ty::data(POINT, Imm), Mut)], vec![]);
+    let xs = f.params[0];
+    let ys = f.new_var(array(Ty::data(POINT, Imm), Imm));
+    f.body = let_(vec![ys], Op::ArrayClone, vec![v(xs)], ret(vec![]));
     assert_ok(f);
 
-    let mut f = Func::new(vec![Ty::data(HOLDER, Mut)], vec![]);
-    let h = f.params[0];
-    let q = f.new_var(Ty::data(HOLDER, Imm));
-    f.body = let_(vec![q], Op::Freeze, vec![v(h)], ret(vec![]));
-    assert_err(f, "can't copy mut data12 to imm");
+    // The points are mut, so an imm array can't share them.
+    let mut f = Func::new(vec![array(Ty::data(POINT, Mut), Mut)], vec![]);
+    let xs = f.params[0];
+    let ys = f.new_var(array(Ty::data(POINT, Mut), Imm));
+    f.body = let_(vec![ys], Op::ArrayClone, vec![v(xs)], ret(vec![]));
+    assert_err(f, "an imm array can't hold elements of type mut data10");
+
+    let mut f = Func::new(vec![array(Ty::data(POINT, Mut), Mut)], vec![]);
+    let xs = f.params[0];
+    let ys = f.new_var(array(Ty::data(POINT, Imm), Mut));
+    f.body = let_(vec![ys], Op::ArrayClone, vec![v(xs)], ret(vec![]));
+    assert_err(
+        f,
+        "array clone of a mut [mut data10] can't give a mut [imm data10]: its elements are mut data10",
+    );
+
+    let mut f = Func::new(vec![Ty::data(POINT, Mut)], vec![]);
+    let p = f.params[0];
+    let q = f.new_var(Ty::data(POINT, Imm));
+    f.body = let_(vec![q], Op::ArrayClone, vec![v(p)], ret(vec![]));
+    assert_err(f, "array clone needs one array");
+}
+
+/// `Freeze` has the types of an `ArrayClone` to `Imm`.
+#[test]
+fn freeze() {
+    let mut f = Func::new(vec![array(Ty::I32, Mut)], vec![array(Ty::I32, Imm)]);
+    let xs = f.params[0];
+    let ys = f.new_var(array(Ty::I32, Imm));
+    f.body = let_(vec![ys], Op::Freeze, vec![v(xs)], ret(vec![v(ys)]));
+    assert_ok(f);
+
+    let mut f = Func::new(vec![array(Ty::I32, Mut)], vec![]);
+    let xs = f.params[0];
+    let ys = f.new_var(array(Ty::I32, Mut));
+    f.body = let_(vec![ys], Op::Freeze, vec![v(xs)], ret(vec![]));
+    assert_err(f, "freeze must bind one imm array");
 }
 
 #[test]

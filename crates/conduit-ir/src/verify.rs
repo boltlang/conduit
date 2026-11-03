@@ -7,7 +7,7 @@
 //! function separately. [`verify_module`] checks a whole [`Module`],
 //! declarations included.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use crate::*;
@@ -362,96 +362,6 @@ fn deep_imm_in<P: Program + ?Sized>(
         Ty::Array(elem, Mutability::Imm) => deep_imm_in(p, &inherit(elem, Mutability::Imm), seen),
         Ty::Fn(_, Mutability::Imm) | Ty::Any(Mutability::Imm) => true,
         _ => false,
-    }
-}
-
-/// The type `Copy(m)` of a value of type `ty` gives when nothing says
-/// otherwise, as when a builder isn't given one: a data object or an
-/// array whose type is already `m` is kept, and any other one is copied
-/// to `m`, with its arguments made `m` too. Fields and elements with a
-/// mutability of their own are shared. Whether that's a valid copy is up
-/// to [`copy_check`].
-pub fn copy_ty(ty: &Ty, m: Mutability) -> Ty {
-    match ty {
-        Ty::Data(_, own, _) | Ty::Array(_, own) if *own == m => ty.clone(),
-        Ty::Data(d, _, args) => Ty::Data(*d, m, vec![m; args.len()]),
-        Ty::Array(elem, _) => Ty::Array(elem.clone(), m),
-        _ => ty.clone(),
-    }
-}
-
-/// Checks that `Copy(m)` can turn a value of type `from` into one of type
-/// `to`, which says what's copied. The two have the same shape and differ
-/// only in mutabilities. Where they're equal, the value is kept with what
-/// it holds; where they differ, a data object or array is copied to the
-/// mutability `to` gives, and its fields and elements are checked the same
-/// way. `Copy` doesn't look into closures, refs, `Any` or continuations, so
-/// those must be equal.
-pub fn copy_check<P: Program + ?Sized>(
-    p: &P,
-    from: &Ty,
-    to: &Ty,
-    m: Mutability,
-) -> Result<(), String> {
-    // A data object or array that's kept already has the mutability `m`.
-    if let Ty::Data(..) | Ty::Array(..) = to
-        && to.mutability() != Some(m)
-    {
-        return Err(format!("copy[{m}] gives a {m} value, but binds a {to}"));
-    }
-    if m == Mutability::Imm
-        && matches!(from, Ty::Fn(..) | Ty::Ref(_) | Ty::Any(_) | Ty::Cont(_))
-        && !deep_imm(p, from)
-    {
-        return Err(format!("can't copy to imm a value that reaches a {from}"));
-    }
-    convert(p, from, to, &mut HashSet::new())?;
-    if m == Mutability::Imm && !deep_imm(p, to) {
-        return Err(format!(
-            "can't copy {from} to {to}: it isn't imm all the way down"
-        ));
-    }
-    Ok(())
-}
-
-fn convert<P: Program + ?Sized>(
-    p: &P,
-    from: &Ty,
-    to: &Ty,
-    seen: &mut HashSet<(Ty, Ty)>,
-) -> Result<(), String> {
-    if from == to {
-        return Ok(());
-    }
-    let made = |m: &Mutability| match m {
-        Mutability::Imm | Mutability::Mut => Ok(()),
-        _ => Err(format!("copy can't make a {to}: a copy is imm or mut")),
-    };
-    match (from, to) {
-        (Ty::Data(d1, m1, a1), Ty::Data(d2, m2, a2)) if d1 == d2 && a1.len() == a2.len() => {
-            made(m2)?;
-            // A data type already being checked is assumed fine, so that
-            // recursive types terminate.
-            if !seen.insert((from.clone(), to.clone())) {
-                return Ok(());
-            }
-            let Some(decl) = p.data(*d1) else {
-                return Err(format!("unknown data type {d1}"));
-            };
-            for field in decl.ctors.iter().flat_map(|c| &c.fields) {
-                convert(p, &resolve(field, *m1, a1), &resolve(field, *m2, a2), seen)?;
-            }
-            Ok(())
-        }
-        (Ty::Array(e1, m1), Ty::Array(e2, m2)) => {
-            made(m2)?;
-            convert(p, &inherit(e1, *m1), &inherit(e2, *m2), seen)
-        }
-        (Ty::Fn(..) | Ty::Ref(_) | Ty::Any(_) | Ty::Cont(_), _) => Err(format!(
-            "copy can't make a {to} from a {from}: it doesn't look into closures, refs, \
-             `any` or continuations"
-        )),
-        _ => Err(format!("copy can't make a {to} from a {from}")),
     }
 }
 

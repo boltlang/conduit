@@ -631,6 +631,18 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
         self.emit1(Op::ArrayLen, vec![array.into()], None)
     }
 
+    /// A new array of mutability `m` with the elements of `array`, which it
+    /// shares.
+    pub fn array_clone(&mut self, m: Mutability, array: impl Into<Atom>) -> Var {
+        let array = array.into();
+        let elem = self
+            .atom_ty(&array)
+            .as_ref()
+            .and_then(crate::verify::elem_ty);
+        let out = elem.map(|elem| Ty::Array(Box::new(elem), m));
+        self.emit1(Op::ArrayClone, vec![array], out)
+    }
+
     /// A ref holding `value`, of `value`'s type.
     pub fn ref_new(&mut self, value: impl Into<Atom>) -> Var {
         let value = value.into();
@@ -664,19 +676,7 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
         self.emit1(Op::Unbox(ty), vec![value.into()], None)
     }
 
-    /// A copy of `value` at mutability `m`, with the type
-    /// [`copy_ty`](crate::verify::copy_ty) gives.
-    pub fn copy(&mut self, m: Mutability, value: impl Into<Atom>) -> Var {
-        self.emit1(Op::Copy(m), vec![value.into()], None)
-    }
-
-    /// A copy of `value` of type `ty`, which says what's copied: see
-    /// [`copy_check`](crate::verify::copy_check).
-    pub fn copy_to(&mut self, m: Mutability, ty: Ty, value: impl Into<Atom>) -> Var {
-        self.emit1(Op::Copy(m), vec![value.into()], Some(ty))
-    }
-
-    /// `value` as `Imm`, made in place: see [`Op::Freeze`].
+    /// The array `value` as `Imm`, made in place: see [`Op::Freeze`].
     pub fn freeze(&mut self, value: impl Into<Atom>) -> Var {
         self.emit1(Op::Freeze, vec![value.into()], None)
     }

@@ -638,17 +638,12 @@ impl Parser {
             "array_get" => Op::ArrayGet,
             "array_set" => Op::ArraySet,
             "array_len" => Op::ArrayLen,
+            "array_clone" => Op::ArrayClone,
             "ref_new" => Op::RefNew,
             "ref_get" => Op::RefGet,
             "ref_set" => Op::RefSet,
             "box" => Op::Box(in_brackets(self)?),
             "unbox" => Op::Unbox(in_brackets(self)?),
-            "copy" => {
-                self.punct("[")?;
-                let m = self.mutability()?;
-                self.punct("]")?;
-                Op::Copy(m)
-            }
             "freeze" => Op::Freeze,
             "handle" => Op::Handle(HandlerId(self.id("handler")?)),
             "perform" => {

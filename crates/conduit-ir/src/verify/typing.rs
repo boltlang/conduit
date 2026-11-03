@@ -2,8 +2,8 @@
 //! [`crate::build`]), so that they agree.
 
 use super::{
-    Allowed, Checked, copy_check, copy_ty, deep_imm, elem_ty, fits, inherit, object_mutability,
-    prim_results, resolve, sub, ty_ok,
+    Allowed, Checked, deep_imm, elem_ty, fits, inherit, object_mutability, prim_results, resolve,
+    sub, ty_ok,
 };
 use crate::*;
 
@@ -194,17 +194,8 @@ pub(crate) fn op_results<P: Program + ?Sized>(
                 _ => Err("unbox needs one any".into()),
             }
         }
-        Op::Copy(m) => {
-            object_mutability(*m)?;
-            match tys {
-                [ty] => Ok(vec![copy_result(p, ty, out, *m)?]),
-                _ => Err("copy needs one value".into()),
-            }
-        }
-        Op::Freeze => match tys {
-            [ty] => Ok(vec![copy_result(p, ty, out, Mutability::Imm)?]),
-            _ => Err("freeze needs one value".into()),
-        },
+        Op::ArrayClone => array_clone(p, tys, out, false),
+        Op::Freeze => array_clone(p, tys, out, true),
         Op::Handle(h) => {
             let decl = p
                 .handler(*h)
@@ -275,16 +266,40 @@ fn field<P: Program + ?Sized>(
     Ok(resolve(field, m, args))
 }
 
-/// What a `Copy(m)` of a value of type `from` gives: the type of the
-/// variable it binds, `out`, which says what's copied, or when it binds
-/// nothing yet, as for a builder, [`copy_ty`].
-fn copy_result<P: Program + ?Sized>(p: &P, from: &Ty, out: &[Ty], m: Mutability) -> Checked<Ty> {
-    let to = match out {
-        [to] => to.clone(),
-        _ => copy_ty(from, m),
+/// The types an `ArrayClone` gives, or with `freeze`, a `Freeze`: an array
+/// of the type it binds, `out`, whose elements are those of the array in
+/// `tys`. A `Freeze` gives an `Imm` array, which a builder that doesn't
+/// say gets with the same elements.
+fn array_clone<P: Program + ?Sized>(
+    p: &P,
+    tys: &[Ty],
+    out: &[Ty],
+    freeze: bool,
+) -> Checked<Vec<Ty>> {
+    let what = if freeze { "freeze" } else { "array clone" };
+    let [from @ Ty::Array(..)] = tys else {
+        return Err(format!("{what} needs one array"));
     };
-    copy_check(p, from, &to, m)?;
-    Ok(to)
+    let have = elem_ty(from).unwrap();
+    let default;
+    let out = match out {
+        [] if freeze => {
+            default = [Ty::Array(Box::new(have.clone()), Mutability::Imm)];
+            &default[..]
+        }
+        out => out,
+    };
+    if freeze && !matches!(out, [Ty::Array(_, Mutability::Imm)]) {
+        return Err("freeze must bind one imm array".into());
+    }
+    let elem = new_array(p, out)?;
+    if !sub(&have, &elem) {
+        return Err(format!(
+            "{what} of a {from} can't give a {}: its elements are {have}",
+            out[0]
+        ));
+    }
+    Ok(out.to_vec())
 }
 
 /// Checks that `obj`, of data type `d`, is known to be built by `c`:

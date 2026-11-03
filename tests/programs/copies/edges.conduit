@@ -1,118 +1,103 @@
-// Edge cases of removing copies.
+// Edge cases of freezing clones.
 
-data data0 {
-  (i32, i32)
-}
-
-data data1 {
-  ()
-  (i32)
-}
-
-// A copy of a literal is the literal, a copy of a copy that changes
-// nothing is the value, and a removed copy used as a case's scrutinee is
-// replaced there too.
-fn fn0(%0: i32) -> (i32) {
-  let %1: i32 = copy[imm](5i32)
-  let %2: imm data1 = new data1.1(%0)
-  let %3: imm data1 = copy[imm](%2)
-  let %4: imm data1 = copy[imm](%3)
-  case %4 {
-    data1.1 =>
-      let %5: i32 = get data1.1.0(%4)
-      let %6: i32 = add(%5, %1)
-      jump ret(%6)
-    _ => jump ret(0i32)
-  }
-}
-
-// Only the default arm uses the original after the copy, which is enough
+// Only the default arm uses the original after the clone, which is enough
 // to keep it. The other arm ends in `unreachable`.
-fn fn1(%0: i32) -> (i32) {
-  let %1: mut data0 = new data0.0(%0, 1i32)
-  let %2: imm data0 = copy[imm](%1)
+fn fn0(%0: i32) -> (i32) {
+  let %1: mut [i32] = array_fill(1i32, %0)
+  let %2: imm [i32] = array_clone(%1)
   case %0 {
     0 => unreachable
     _ =>
-      let = set data0.0.0(%1, 9i32)
-      let %3: i32 = get data0.0.0(%2)
+      let = array_set(%1, 0i32, 9i32)
+      let %3: i32 = array_get(%2, 0i32)
       jump ret(%3)
   }
 }
 
-// Two loops that jump to each other: the second writes the object made
-// before both, so copying it in the first stays a copy.
-fn fn2(%0: i32) -> (i32) {
-  let %1: mut data0 = new data0.0(0i32, 0i32)
+// Two loops that jump to each other: the second writes the array made
+// before both, so cloning it in the first stays a clone.
+fn fn1(%0: i32) -> (i32) {
+  let %1: mut [i32] = array_fill(1i32, 0i32)
   join rec j1(%2: i32, %3: i32) =
-    let %4: imm data0 = copy[imm](%1)
-    let %5: i32 = get data0.0.0(%4)
+    let %4: imm [i32] = array_clone(%1)
+    let %5: i32 = array_get(%4, 0i32)
     let %6: i32 = add(%3, %5)
     case %2 {
       0 => jump ret(%6)
       _ => jump j2(%2, %6)
     }
   and j2(%7: i32, %8: i32) =
-    let = set data0.0.0(%1, %7)
+    let = array_set(%1, 0i32, %7)
     let %9: i32 = sub(%7, 1i32)
     jump j1(%9, %8)
   in jump j1(%0, 0i32)
 }
 
-// A ref holds the original, and is read after the copy.
-fn fn3(%0: i32) -> (i32) {
-  let %1: mut data0 = new data0.0(%0, 0i32)
-  let %2: ref mut data0 = ref_new(%1)
-  let %3: imm data0 = copy[imm](%1)
-  let %4: mut data0 = ref_get(%2)
-  let = set data0.0.0(%4, 9i32)
-  let %5: i32 = get data0.0.0(%3)
+// A ref holds the original, and is read after the clone.
+fn fn2(%0: i32) -> (i32) {
+  let %1: mut [i32] = array_fill(1i32, %0)
+  let %2: ref mut [i32] = ref_new(%1)
+  let %3: imm [i32] = array_clone(%1)
+  let %4: mut [i32] = ref_get(%2)
+  let = array_set(%4, 0i32, 9i32)
+  let %5: i32 = array_get(%3, 0i32)
   jump ret(%5)
 }
 
-// A closure captured the original, and is called after the copy.
-fn fn4(%0: i32) -> (i32) {
-  let %1: mut data0 = new data0.0(%0, 0i32)
-  let %2: mut fn() -> () = closure fn5(%1)
-  let %3: imm data0 = copy[imm](%1)
+// A closure captured the original, and is called after the clone.
+fn fn3(%0: i32) -> (i32) {
+  let %1: mut [i32] = array_fill(1i32, %0)
+  let %2: mut fn() -> () = closure fn4(%1)
+  let %3: imm [i32] = array_clone(%1)
   let = apply(%2)
-  let %4: i32 = get data0.0.0(%3)
+  let %4: i32 = array_get(%3, 0i32)
   jump ret(%4)
 }
 
-fn fn5(%0: mut data0) -> () {
-  let = set data0.0.0(%0, 9i32)
+fn fn4(%0: mut [i32]) -> () {
+  let = array_set(%0, 0i32, 9i32)
   jump ret()
 }
 
-// A box holds the original, and is unboxed after the copy.
-fn fn6(%0: i32) -> (i32) {
-  let %1: mut data0 = new data0.0(%0, 0i32)
-  let %2: mut any = box[mut data0](%1)
-  let %3: imm data0 = copy[imm](%1)
-  let %4: mut data0 = unbox[mut data0](%2)
-  let = set data0.0.0(%4, 9i32)
-  let %5: i32 = get data0.0.0(%3)
+// A box holds the original, and is unboxed after the clone.
+fn fn5(%0: i32) -> (i32) {
+  let %1: mut [i32] = array_fill(1i32, %0)
+  let %2: mut any = box[mut [i32]](%1)
+  let %3: imm [i32] = array_clone(%1)
+  let %4: mut [i32] = unbox[mut [i32]](%2)
+  let = array_set(%4, 0i32, 9i32)
+  let %5: i32 = array_get(%3, 0i32)
   jump ret(%5)
 }
 
-// The original is only read from after the copy, but even that keeps it,
+// The original is only read after the clone, but even that keeps it,
 // since the analysis doesn't tell reads from writes.
-fn fn7(%0: i32) -> (i32) {
-  let %1: mut data0 = new data0.0(%0, 2i32)
-  let %2: imm data0 = copy[imm](%1)
-  let %3: i32 = get data0.0.0(%1)
-  let %4: i32 = get data0.0.1(%2)
+fn fn6(%0: i32) -> (i32) {
+  let %1: mut [i32] = array_fill(1i32, %0)
+  let %2: imm [i32] = array_clone(%1)
+  let %3: i32 = array_get(%1, 0i32)
+  let %4: i32 = array_get(%2, 0i32)
   let %5: i32 = add(%3, %4)
   jump ret(%5)
 }
 
-//# run fn0(1i32) == 6i32
-//# run fn1(1i32) == 1i32
-//# run fn2(3i32) == 6i32
+// The elements are shared, so a clone of an array of `mut` arrays to
+// `mut` shares them with the original: it's in the same region.
+fn fn7(%0: i32) -> (i32) {
+  let %1: mut [i32] = array_fill(1i32, %0)
+  let %2: mut [mut [i32]] = array_new(%1)
+  let %3: mut [mut [i32]] = array_clone(%2)
+  let %4: mut [i32] = array_get(%3, 0i32)
+  let = array_set(%4, 0i32, 9i32)
+  let %5: i32 = array_get(%1, 0i32)
+  jump ret(%5)
+}
+
+//# run fn0(1i32) == 1i32
+//# run fn1(3i32) == 6i32
+//# run fn2(1i32) == 1i32
 //# run fn3(1i32) == 1i32
-//# run fn4(1i32) == 1i32
-//# run fn6(1i32) == 1i32
-//# run fn7(1i32) == 3i32
-//# wasm-error: copy isn't supported yet
+//# run fn5(1i32) == 1i32
+//# run fn6(1i32) == 2i32
+//# run fn7(1i32) == 9i32
 //# opt: copies

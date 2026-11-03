@@ -456,99 +456,21 @@ fn arrays() {
     );
 }
 
-/// MAIN: p = mut Point(1, 2); pair = mut Pair(p, p); q = imm copy of pair;
-/// p.0 = 10; then gives q.0.0, and whether q's two fields are the same
-/// object.
-fn copy_program() -> (Module, Var) {
-    let mut f = Func::new(vec![], vec![Ty::I32, Ty::data(PAIR, Imm)]);
-    let p = f.new_var(Ty::data(POINT, Mut));
-    let pair = f.new_var(Ty::data(PAIR, Mut));
-    let q = f.new_var(Ty::data(PAIR, Imm));
-    let q0 = f.new_var(Ty::data(POINT, Imm));
-    let x = f.new_var(Ty::I32);
-    f.body = let_(
-        vec![p],
-        Op::New(ctor(POINT, 0)),
-        vec![int(1), int(2)],
-        let_(
-            vec![pair],
-            Op::New(ctor(PAIR, 0)),
-            vec![v(p), v(p)],
-            let_(
-                vec![q],
-                Op::Copy(Imm),
-                vec![v(pair)],
-                let_(
-                    vec![],
-                    Op::Set(ctor(POINT, 0), 0),
-                    vec![v(p), int(10)],
-                    let_(
-                        vec![q0],
-                        Op::Get(ctor(PAIR, 0), 0),
-                        vec![v(q)],
-                        let_(
-                            vec![x],
-                            Op::Get(ctor(POINT, 0), 0),
-                            vec![v(q0)],
-                            ret(vec![v(x), v(q)]),
-                        ),
-                    ),
-                ),
-            ),
-        ),
-    );
-    let mut m = module();
-    m.funcs.insert(MAIN, f);
-    (m, q)
-}
-
-#[test]
-fn copy_to_imm_keeps_sharing() {
-    let (m, _) = copy_program();
-    verify_module(&m).unwrap();
-    let mut machine = Machine::new(&m, NoHost);
-    let results = machine.call(MAIN, vec![]).unwrap();
-    // The copy doesn't see the later write to p.
-    assert_eq!(results[0], Value::I32(1));
-    let Value::Obj(q) = results[1] else {
-        panic!("not an object")
-    };
-    let Some(Object::Data { fields, is_mut, .. }) = machine.object(q) else {
-        panic!("not data")
-    };
-    assert!(!is_mut);
-    // Both fields are the same copy of p, and it's imm.
-    assert_eq!(fields[0], fields[1]);
-    let Value::Obj(p_copy) = fields[0] else {
-        panic!("not an object")
-    };
-    assert!(matches!(
-        machine.object(p_copy),
-        Some(Object::Data { is_mut: false, .. })
-    ));
-}
-
 #[test]
 fn write_to_imm_object_is_an_error() {
     // Verified IR can't do this, so build it by hand: a Set on a point
     // that was created imm, through a variable typed mut.
     let mut f = Func::new(vec![], vec![]);
     let p = f.new_var(Ty::data(POINT, Imm));
-    let alias = f.new_var(Ty::data(POINT, Mut));
     f.body = let_(
         vec![p],
         Op::New(ctor(POINT, 0)),
         vec![int(1), int(2)],
         let_(
-            vec![alias],
-            Op::Copy(Mut),
-            vec![v(p)],
-            let_(
-                vec![],
-                Op::Set(ctor(POINT, 0), 0),
-                vec![v(p), int(3)],
-                ret(vec![]),
-            ),
+            vec![],
+            Op::Set(ctor(POINT, 0), 0),
+            vec![v(p), int(3)],
+            ret(vec![]),
         ),
     );
     let mut m = module();
@@ -557,32 +479,26 @@ fn write_to_imm_object_is_an_error() {
     assert_eq!(result.unwrap_err().kind, ErrorKind::WriteToImm);
 }
 
-/// `Freeze` makes the objects themselves `Imm`, all the way down, so a
-/// wrong freeze shows up as a write to one of them through an old alias.
+/// `Freeze` makes the array itself `Imm`, so a wrong freeze shows up as a
+/// write to it through an old alias.
 #[test]
 fn write_after_freeze_is_an_error() {
     let mut f = Func::new(vec![], vec![]);
-    let point = f.new_var(Ty::data(POINT, Mut));
-    let pair = f.new_var(Ty::data(PAIR, Mut));
-    let frozen = f.new_var(Ty::data(PAIR, Imm));
+    let xs = f.new_var(Ty::Array(Box::new(Ty::I32), Mut));
+    let frozen = f.new_var(Ty::Array(Box::new(Ty::I32), Imm));
     f.body = let_(
-        vec![point],
-        Op::New(ctor(POINT, 0)),
-        vec![int(1), int(2)],
+        vec![xs],
+        Op::ArrayFill,
+        vec![int(2), int(0)],
         let_(
-            vec![pair],
-            Op::New(ctor(PAIR, 0)),
-            vec![v(point), v(point)],
+            vec![frozen],
+            Op::Freeze,
+            vec![v(xs)],
             let_(
-                vec![frozen],
-                Op::Freeze,
-                vec![v(pair)],
-                let_(
-                    vec![],
-                    Op::Set(ctor(POINT, 0), 0),
-                    vec![v(point), int(3)],
-                    ret(vec![]),
-                ),
+                vec![],
+                Op::ArraySet,
+                vec![v(xs), int(0), int(3)],
+                ret(vec![]),
             ),
         ),
     );

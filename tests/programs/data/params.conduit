@@ -35,27 +35,32 @@ fn fn1() -> (i32) {
   jump ret(%3)
 }
 
-// `copy[imm]` of a `mut` box of a `mut` array copies both.
+// An `imm` box rebuilt from a `mut` box of a `mut` array, around an `imm`
+// clone of the array: later writes to the original don't show in it.
 fn fn2() -> (i32) {
   let %0: mut [i32] = array_fill(1i32, 1i32)
   let %1: mut data0[mut] = new data0.0(%0)
-  let %2: imm data0[imm] = copy[imm](%1)
+  let %2: mut [i32] = get data0.0.0(%1)
+  let %3: imm [i32] = array_clone(%2)
+  let %4: imm data0[imm] = new data0.0(%3)
   let = array_set(%0, 0i32, 8i32)
-  let %3: imm [i32] = get data0.0.0(%2)
-  let %4: i32 = array_get(%3, 0i32)
-  jump ret(%4)
+  let %5: imm [i32] = get data0.0.0(%4)
+  let %6: i32 = array_get(%5, 0i32)
+  jump ret(%6)
 }
 
-// `copy[mut]` of an `imm` box: the type it binds says whether the array is
-// shared or copied too.
+// Two `mut` boxes rebuilt from an `imm` one: one shares the array, and the
+// other holds a `mut` clone of it.
 fn fn3() -> (i32) {
   let %0: imm [i32] = array_new(1i32)
   let %1: imm data0[imm] = new data0.0(%0)
-  let %2: mut data0[imm] = copy[mut](%1)
-  let %3: mut data0[mut] = copy[mut](%1)
-  let %4: mut [i32] = get data0.0.0(%3)
+  let %2: imm [i32] = get data0.0.0(%1)
+  let %3: mut data0[imm] = new data0.0(%2)
+  let %10: mut [i32] = array_clone(%2)
+  let %11: mut data0[mut] = new data0.0(%10)
+  let %4: mut [i32] = get data0.0.0(%11)
   let = array_set(%4, 0i32, 4i32)
-  let %5: imm [i32] = get data0.0.0(%2)
+  let %5: imm [i32] = get data0.0.0(%3)
   let %6: i32 = array_get(%5, 0i32)
   let %7: i32 = array_get(%4, 0i32)
   let %8: i32 = mul(%7, 10i32)
@@ -78,8 +83,7 @@ fn fn5(%0: ro data0[mut]) -> () {
   jump ret()
 }
 
-// A list of two boxes of `imm` arrays, summed after an `imm` copy of the
-// list, which copies its cells and shares the arrays.
+// A list of two boxes of `imm` arrays, summed through an `ro` view.
 fn fn6() -> (i32) {
   let %0: mut data1[imm] = new data1.0()
   let %1: imm [i32] = array_new(2i32)
@@ -88,21 +92,20 @@ fn fn6() -> (i32) {
   let %4: imm [i32] = array_new(5i32)
   let %5: mut data0[imm] = new data0.0(%4)
   let %6: mut data1[imm] = new data1.1(%5, %3)
-  let %7: imm data1[imm] = copy[imm](%6)
-  let %8: i32 = call fn7(%7)
-  jump ret(%8)
+  let %7: i32 = call fn7(%6)
+  jump ret(%7)
 }
 
-fn fn7(%0: imm data1[imm]) -> (i32) {
-  join rec j1(%1: imm data1[imm], %2: i32) =
+fn fn7(%0: ro data1[imm]) -> (i32) {
+  join rec j1(%1: ro data1[imm], %2: i32) =
     case %1 {
       data1.0 => jump ret(%2)
       data1.1 =>
-        let %3: imm data0[imm] = get data1.1.0(%1)
+        let %3: ro data0[imm] = get data1.1.0(%1)
         let %4: imm [i32] = get data0.0.0(%3)
         let %5: i32 = array_get(%4, 0i32)
         let %6: i32 = add(%2, %5)
-        let %7: imm data1[imm] = get data1.1.1(%1)
+        let %7: ro data1[imm] = get data1.1.1(%1)
         jump j1(%7, %6)
     }
   in jump j1(%0, 0i32)
@@ -114,4 +117,3 @@ fn fn7(%0: imm data1[imm]) -> (i32) {
 //# run fn3() == 41i32
 //# run fn4() == 3i32
 //# run fn6() == 7i32
-//# wasm-error: copy isn't supported yet

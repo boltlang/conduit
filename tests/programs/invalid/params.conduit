@@ -4,10 +4,6 @@ data data0['m1] {
   ('m1 [i32])
 }
 
-data data1['m1] {
-  ('m1 fn() -> ())
-}
-
 // A type gives one argument per parameter.
 fn fn0(%0: mut data0) -> () {
   jump ret()
@@ -29,40 +25,14 @@ fn fn3(%0: mut data0[mut]) -> () {
   jump ret()
 }
 
-// `copy` doesn't look into closures, so it can't change their mutability.
-fn fn4(%0: imm data1[imm]) -> () {
-  let %1: mut data1[mut] = copy[mut](%0)
-  jump ret()
-}
-
-// A copy is `imm` or `mut`, never `ro`.
-fn fn5(%0: imm data0[imm]) -> () {
-  let %1: ro data0[imm] = copy[mut](%0)
-  jump ret()
-}
-
-fn fn6(%0: imm data0[imm]) -> () {
-  let %1: mut data0[ro] = copy[mut](%0)
-  jump ret()
-}
-
-// `copy[imm]` gives what's `imm` all the way down.
-fn fn7(%0: mut data0[mut]) -> () {
-  let %1: imm data0[mut] = copy[imm](%0)
-  jump ret()
-}
-
-// The types of a copy have the same shape.
-fn fn8(%0: mut data0[mut]) -> () {
-  let %1: imm [i32] = copy[imm](%0)
+// A clone of an array of boxes shares the boxes, so an `imm` clone needs
+// boxes that are `imm` all the way down.
+fn fn4(%0: mut [imm data0[mut]]) -> () {
+  let %1: imm [imm data0[mut]] = array_clone(%0)
   jump ret()
 }
 
 //# verify-error: fn0: type of %0: data0 takes 1 mutability arguments, but mut data0 gives 0
 //# verify-error: fn1: an imm data0.0 can't hold field 0 of type mut [i32]
 //# verify-error: fn2: call of fn3: value 0 has type mut data0[imm], but should have mut data0[mut]
-//# verify-error: fn4: copy can't make a mut fn() -> () from a imm fn() -> ()
-//# verify-error: fn5: copy[mut] gives a mut value, but binds a ro data0[imm]
-//# verify-error: fn6: copy can't make a ro [i32]: a copy is imm or mut
-//# verify-error: fn7: can't copy mut data0[mut] to imm data0[mut]: it isn't imm all the way down
-//# verify-error: fn8: copy can't make a imm [i32] from a mut data0[mut]
+//# verify-error: fn4: an imm array can't hold elements of type imm data0[mut]

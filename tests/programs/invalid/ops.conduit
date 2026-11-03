@@ -170,17 +170,17 @@ fn fn30() -> () {
 }
 
 fn fn31() -> () {
-  let %0: i32 = copy[imm](1i32, 2i32)
+  let %0: mut [i32] = array_clone(1i32)
   jump ret()
 }
 
 fn fn32() -> () {
-  let %0: i32 = freeze(1i32, 2i32)
+  let %0: imm [i32] = freeze(1i32, 2i32)
   jump ret()
 }
 
-fn fn33(%0: mut data0) -> () {
-  let %1: ro data0 = copy[ro](%0)
+fn fn33(%0: mut [i32]) -> () {
+  let %1: ro [i32] = array_clone(%0)
   jump ret()
 }
 
@@ -224,13 +224,13 @@ fn fn41(%0: imm fn() -> ()) -> () {
   jump ret()
 }
 
-fn fn42(%0: mut fn(i32) -> ()) -> () {
-  let %1: imm fn(i32) -> () = copy[imm](%0)
+fn fn42(%0: mut [i32]) -> () {
+  let %1: mut [i32] = freeze(%0)
   jump ret()
 }
 
-fn fn43(%0: ref i32) -> () {
-  let %1: ref i32 = copy[imm](%0)
+fn fn43(%0: mut [mut data0]) -> () {
+  let %1: mut [imm data0] = array_clone(%0)
   jump ret()
 }
 
@@ -269,8 +269,8 @@ fn fn90(%0: i32) -> (i32) {
 //# verify-error: fn28: ref set needs a ref and a value
 //# verify-error: fn29: box of i32 gets a i64
 //# verify-error: fn30: unbox needs one any
-//# verify-error: fn31: copy needs one value
-//# verify-error: fn32: freeze needs one value
+//# verify-error: fn31: array clone needs one array
+//# verify-error: fn32: freeze needs one array
 //# verify-error: fn33: a new object is imm or mut, not ro
 //# verify-error: fn34: unknown handler handler99
 //# verify-error: fn35: effect20 has no operation 5
@@ -280,5 +280,5 @@ fn fn90(%0: i32) -> (i32) {
 //# verify-error: fn39: an imm array can't hold elements of type mut data0
 //# verify-error: fn40: an array op must bind one array
 //# verify-error: fn41: apply: expected 0 values, but got 1
-//# verify-error: fn42: can't copy to imm a value that reaches a mut fn(i32) -> ()
-//# verify-error: fn43: can't copy to imm a value that reaches a ref i32
+//# verify-error: fn42: freeze must bind one imm array
+//# verify-error: fn43: array clone of a mut [mut data0] can't give a mut [imm data0]: its elements are mut data0

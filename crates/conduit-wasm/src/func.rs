@@ -515,6 +515,28 @@ impl<'m> FuncCx<'_, 'm> {
                 self.atoms(args);
                 self.emit(I::ArrayLen);
             }
+            Op::ArrayClone => {
+                // A new array as long as the original, then all of the
+                // original's elements copied into it. Mutability doesn't
+                // exist at run time, so both have the same Wasm type.
+                let array = self.array_of(self.var_ty(binds[0]))?;
+                let val = self.cx.types.val(self.var_ty(binds[0]))?;
+                let copy = self.new_local(val);
+                self.atom(&args[0]);
+                self.emit(I::ArrayLen);
+                self.emit(I::ArrayNewDefault(array));
+                self.emit(I::LocalTee(copy));
+                self.emit(I::I32Const(0));
+                self.atom(&args[0]);
+                self.emit(I::I32Const(0));
+                self.atom(&args[0]);
+                self.emit(I::ArrayLen);
+                self.emit(I::ArrayCopy {
+                    array_type_index_dst: array,
+                    array_type_index_src: array,
+                });
+                self.emit(I::LocalGet(copy));
+            }
             Op::RefNew => {
                 let cell = self.cell_of(self.var_ty(binds[0]))?;
                 self.atoms(args);
@@ -560,7 +582,6 @@ impl<'m> FuncCx<'_, 'm> {
                     _ => {}
                 }
             }
-            Op::Copy(_) => return Err("copy isn't supported yet".into()),
             // Mutability doesn't exist at run time.
             Op::Freeze => self.atoms(args),
             Op::Handle(_) | Op::Perform(..) | Op::Resume => {

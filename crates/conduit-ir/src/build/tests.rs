@@ -486,10 +486,12 @@ fn other_ops() {
     let r = f.ref_new(first);
     f.ref_set(r, one);
     let obj = f.new_object(cell, Mutability::Mut, [x]);
-    let copied = f.copy(Mutability::Imm, obj);
-    let frozen = f.freeze(obj);
-    let _ = f.get(cell, 0, copied);
-    let _ = f.get(cell, 0, frozen);
+    let _ = f.get(cell, 0, obj);
+    let buffer = f.array_fill(I32, Mutability::Mut, 2i32, x);
+    let cloned = f.array_clone(Mutability::Imm, buffer);
+    let frozen = f.freeze(buffer);
+    let _ = f.array_len(cloned);
+    let _ = f.array_len(frozen);
     let got = f.perform(EffectId(20), 0, [x]);
     let resumed = f.resume(k, [got[0]]);
     let start = f.current();
@@ -520,16 +522,18 @@ fn other_ops() {
   let %14: ref i32 = ref_new(%13)
   let = ref_set(%14, %11)
   let %15: mut data0 = new data0.0(%0)
-  let %16: imm data0 = copy[imm](%15)
-  let %17: imm data0 = freeze(%15)
-  let %18: i32 = get data0.0.0(%16)
-  let %19: i32 = get data0.0.0(%17)
-  let %20: i64 = perform effect20.0(%0)
-  let %21: i32 = resume(%1, %20)
-  join j1(%22: i32) = jump ret(%22)
+  let %16: i32 = get data0.0.0(%15)
+  let %17: mut [i32] = array_fill(2i32, %0)
+  let %18: imm [i32] = array_clone(%17)
+  let %19: imm [i32] = freeze(%17)
+  let %20: i32 = array_len(%18)
+  let %21: i32 = array_len(%19)
+  let %22: i64 = perform effect20.0(%0)
+  let %23: i32 = resume(%1, %22)
+  join j1(%24: i32) = jump ret(%24)
   in
-  case %21 {
-    7 => jump j1(%21)
+  case %23 {
+    7 => jump j1(%23)
     _ => unreachable
   }
 }"
@@ -589,7 +593,7 @@ fn params_panics_on_the_wrong_count() {
 }
 
 /// A data type with a mutability parameter, built with its arguments, and
-/// copies whose types say what's copied.
+/// rebuilt as `imm` around a clone of its array.
 #[test]
 fn mutability_arguments() {
     let decls = "
@@ -605,22 +609,23 @@ data data0['m1] {
     let mut f = FuncBuilder::new(&m, vec![], vec![I32]);
     let xs = f.array_fill(I32, Mutability::Mut, 1i32, 0i32);
     let b = f.new_object_with(boxed, Mutability::Mut, vec![Mutability::Mut], [xs]);
-    let frozen = f.copy(Mutability::Imm, b);
-    let to = Ty::Data(DataId(0), Mutability::Mut, vec![Mutability::Mut]);
-    let fresh = f.copy_to(Mutability::Mut, to, frozen);
-    let inner = f.get(boxed, 0, fresh);
-    let x = f.array_get(inner, 0i32);
+    let inner = f.get(boxed, 0, b);
+    let shared = f.array_clone(Mutability::Imm, inner);
+    let held = f.new_object_with(boxed, Mutability::Imm, vec![Mutability::Imm], [shared]);
+    let back = f.get(boxed, 0, held);
+    let x = f.array_get(back, 0i32);
     f.ret([x]);
     assert_eq!(
         text(f),
         "fn fn0() -> (i32) {
   let %0: mut [i32] = array_fill(1i32, 0i32)
   let %1: mut data0[mut] = new data0.0(%0)
-  let %2: imm data0[imm] = copy[imm](%1)
-  let %3: mut data0[mut] = copy[mut](%2)
-  let %4: mut [i32] = get data0.0.0(%3)
-  let %5: i32 = array_get(%4, 0i32)
-  jump ret(%5)
+  let %2: mut [i32] = get data0.0.0(%1)
+  let %3: imm [i32] = array_clone(%2)
+  let %4: imm data0[imm] = new data0.0(%3)
+  let %5: imm [i32] = get data0.0.0(%4)
+  let %6: i32 = array_get(%5, 0i32)
+  jump ret(%6)
 }"
     );
 }

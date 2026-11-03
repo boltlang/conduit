@@ -1,33 +1,29 @@
 // Values passed to a join point are in the same region as its parameters.
 
-data data0 {
-  (i32, i32)
-}
-
-// Both arms pass the object on, and only the copy is used after.
+// Both arms pass the array on, and only the clone is used after.
 fn fn0(%0: i32) -> (i32) {
-  let %1: mut data0 = new data0.0(%0, 2i32)
-  join j1(%2: mut data0) =
-    let %3: imm data0 = copy[imm](%2)
-    let %4: i32 = get data0.0.0(%3)
+  let %1: mut [i32] = array_fill(1i32, %0)
+  join j1(%2: mut [i32]) =
+    let %3: imm [i32] = array_clone(%2)
+    let %4: i32 = array_get(%3, 0i32)
     jump ret(%4)
   in
   case %0 {
     0 => jump j1(%1)
     _ =>
-      let = set data0.0.0(%1, 9i32)
+      let = array_set(%1, 0i32, 9i32)
       jump j1(%1)
   }
 }
 
 // The join point gets the original twice, and writes it through the
-// second after copying the first.
+// second after cloning the first.
 fn fn1(%0: i32) -> (i32) {
-  let %1: mut data0 = new data0.0(%0, 2i32)
-  join j1(%2: mut data0, %3: mut data0) =
-    let %4: imm data0 = copy[imm](%2)
-    let = set data0.0.0(%3, 9i32)
-    let %5: i32 = get data0.0.0(%4)
+  let %1: mut [i32] = array_fill(1i32, %0)
+  join j1(%2: mut [i32], %3: mut [i32]) =
+    let %4: imm [i32] = array_clone(%2)
+    let = array_set(%3, 0i32, 9i32)
+    let %5: i32 = array_get(%4, 0i32)
     jump ret(%5)
   in jump j1(%1, %1)
 }
@@ -35,5 +31,4 @@ fn fn1(%0: i32) -> (i32) {
 //# run fn0(0i32) == 0i32
 //# run fn0(1i32) == 9i32
 //# run fn1(1i32) == 1i32
-//# wasm-error: copy isn't supported yet
 //# opt: copies

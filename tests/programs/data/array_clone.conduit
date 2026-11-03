@@ -1,0 +1,80 @@
+// `array_clone` makes a new array of the mutability it binds, with the
+// same elements, which it shares.
+
+// An `imm` clone doesn't see later writes to the original.
+fn fn0(%0: i32) -> (i32) {
+  let %1: mut [i32] = array_fill(2i32, %0)
+  let %2: imm [i32] = array_clone(%1)
+  let = array_set(%1, 0i32, 5i32)
+  let %3: i32 = array_get(%2, 0i32)
+  jump ret(%3)
+}
+
+// A `mut` clone of an `imm` array can be written, and the original stays.
+fn fn1() -> (i32) {
+  let %0: imm [i32] = array_new(1i32, 2i32)
+  let %1: mut [i32] = array_clone(%0)
+  let = array_set(%1, 1i32, 7i32)
+  let %2: i32 = array_get(%0, 1i32)
+  let %3: i32 = array_get(%1, 1i32)
+  let %4: i32 = mul(%3, 10i32)
+  let %5: i32 = add(%4, %2)
+  jump ret(%5)
+}
+
+// A `mut` clone of a `mut` array is a new array too.
+fn fn2() -> (i32) {
+  let %0: mut [i64] = array_fill(1i32, 1i64)
+  let %1: mut [i64] = array_clone(%0)
+  let = array_set(%1, 0i32, 3i64)
+  let %2: i64 = array_get(%0, 0i32)
+  let %3: i32 = convert.s[i32](%2)
+  jump ret(%3)
+}
+
+// The elements are shared, not copied: a write to an element of the clone
+// is seen through the original.
+fn fn3() -> (i32) {
+  let %0: mut [i32] = array_fill(1i32, 0i32)
+  let %1: mut [mut [i32]] = array_new(%0, %0)
+  let %2: mut [mut [i32]] = array_clone(%1)
+  let %3: mut [i32] = array_get(%2, 1i32)
+  let = array_set(%3, 0i32, 6i32)
+  let %4: mut [i32] = array_get(%1, 0i32)
+  let %5: i32 = array_get(%4, 0i32)
+  jump ret(%5)
+}
+
+// An `ro` view can be cloned to `imm`, whatever the array really is.
+fn fn4() -> (i32) {
+  let %0: mut [i32] = array_fill(1i32, 2i32)
+  let %1: imm [i32] = call fn5(%0)
+  let = array_set(%0, 0i32, 9i32)
+  let %2: i32 = array_get(%1, 0i32)
+  jump ret(%2)
+}
+
+fn fn5(%0: ro [i32]) -> (imm [i32]) {
+  let %1: imm [i32] = array_clone(%0)
+  jump ret(%1)
+}
+
+// An empty array clones to an empty array, and floats clone exactly.
+fn fn6() -> (f64) {
+  let %0: mut [f64] = array_new()
+  let %1: imm [f64] = array_clone(%0)
+  let %2: i32 = array_len(%1)
+  let %3: mut [f64] = array_new(-0.5f64, 2.25f64)
+  let %4: imm [f64] = array_clone(%3)
+  let %5: f64 = array_get(%4, 1i32)
+  let %6: f64 = convert.s[f64](%2)
+  let %7: f64 = add(%5, %6)
+  jump ret(%7)
+}
+
+//# run fn0(1i32) == 1i32
+//# run fn1() == 72i32
+//# run fn2() == 1i32
+//# run fn3() == 6i32
+//# run fn4() == 2i32
+//# run fn6() == 2.25f64

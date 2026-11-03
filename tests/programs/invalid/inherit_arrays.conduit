@@ -11,9 +11,9 @@ fn fn0(%0: ro [inherit data0]) -> () {
   jump ret()
 }
 
-// Cells with their own `mut` are shared by a copy, so it can't be `imm`.
-fn fn1(%0: mut [mut data0]) -> () {
-  let %1: imm [mut data0] = copy[imm](%0)
+// A clone shares the cells, so an `imm` clone needs `imm` cells.
+fn fn1(%0: mut [inherit data0]) -> () {
+  let %1: imm [inherit data0] = array_clone(%0)
   jump ret()
 }
 
@@ -39,7 +39,7 @@ fn fn5(%0: mut [imm fn(inherit data0) -> ()]) -> () {
 }
 
 //# verify-error: fn0: can't set a field of a ro data0
-//# verify-error: fn1: can't copy mut [mut data0] to imm [mut data0]: it isn't imm all the way down
+//# verify-error: fn1: array clone of a mut [inherit data0] can't give a imm [inherit data0]: its elements are mut data0
 //# verify-error: fn2: type of %0: `inherit` in inherit data0 is only allowed in field types and array elements
 //# verify-error: fn3: array of mut data0 gets an element of type imm data0
 //# verify-error: fn4: array of imm data0 gets an element of type mut data0
