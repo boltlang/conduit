@@ -38,15 +38,10 @@ impl Lit {
     }
 }
 
+/// As in the text format.
 impl std::fmt::Display for Atom {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Atom::Var(v) => write!(f, "{v}"),
-            Atom::Lit(Lit::I32(n)) => write!(f, "{n}i32"),
-            Atom::Lit(Lit::I64(n)) => write!(f, "{n}i64"),
-            Atom::Lit(Lit::F32(bits)) => write!(f, "{}f32", f32::from_bits(*bits)),
-            Atom::Lit(Lit::F64(bits)) => write!(f, "{}f64", f64::from_bits(*bits)),
-        }
+        f.write_str(&crate::text::atom_text(self))
     }
 }
 

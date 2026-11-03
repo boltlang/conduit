@@ -720,6 +720,69 @@ Notes:
   and keeps a table of objects it has already copied, to preserve sharing
   and cycles.
 
+## Text format
+
+`conduit_ir::text` reads (`parse`) and writes (`print`) a text form of a
+module. Printing then parsing gives back the same module, and text that
+`print` wrote parses and prints back unchanged. Names are the ones the
+verifier's messages use: `fn1`, `data10`, `data10.1` (constructor 1),
+`extern1`, `effect20`, `handler30`, `%3`, `j1` and `ret`.
+
+```
+data data11 {
+  ()
+  (i32, inherit data11)
+}
+
+extern extern1 "env" "print" (i32) -> ()
+
+effect effect20 {
+  (i32) -> ()
+}
+
+handler handler30 for effect20 env(ref i32) ops(fn4) ret fn5
+
+fn fn1(%0: i32) -> (i32) {
+  join rec j1(%1: i32, %2: i32) =
+    let %3: i32 = ge.s(%1, %0)
+    case %3 {
+      1 => jump ret(%2)
+      _ =>
+        let %4: i32 = add(%1, 1i32)
+        let %5: i32 = add(%2, %1) @src7
+        jump j1(%4, %5)
+    }
+  in jump j1(0i32, 0i32)
+}
+```
+
+- **Types** are written as the verifier prints them: `i32`, `mut data10`,
+  `imm [i32]`, `ro fn(i32) -> ()`, `cont() -> ()`, `ref i32`, `imm any`.
+  Mutabilities are `imm`, `mut`, `ro` and `inherit`.
+- **Binders carry types:** function and join parameters, and the variables
+  a `let` binds (`let %3: i32 = ..`; `let = ..` binds nothing). The header
+  of a function can add `vars(%5: i32)` for variables nothing binds, and
+  `labels N` when the function has more labels than its body defines.
+- **Ops** are a name, what the op takes in its name, and the arguments:
+  `add`, `div.s`, `lt.u`, `convert.s[i64]`, `reinterpret[f32]`,
+  `call fn2(..)`, `call_extern extern1(..)`, `closure fn2(..)`, `apply(..)`,
+  `new data10.0(..)`, `get data10.0.1(..)`, `set data10.0.1(..)`,
+  `array_new`, `array_fill`, `array_get`, `array_set`, `array_len`,
+  `ref_new`, `ref_get`, `ref_set`, `box[i32](..)`, `unbox[i32](..)`,
+  `copy[imm](..)`, `handle handler30(..)`, `perform effect20.0(..)` and
+  `resume(..)`.
+- **Literals** carry their type: `5i32`, `-1i64`, `1.5f32`, `1e300f64`.
+  Finite floats are printed in the shortest form that reads back exactly.
+  NaNs and infinities are written by their bits: `f32_bits(2143289344)`.
+- **Sources** follow a `let` or a `jump`: `@src7`.
+- `case` arms are `1 =>`, `data10.1 =>` or `_ =>` for the default.
+  `join` definitions are separated by `and`, and the body follows `in`.
+- Line comments start with `//`.
+
+The parser and the printer walk chains of `let`s with a loop, so a long
+function doesn't need a deep stack. Dropping, cloning and comparing terms
+still recurse, as does the verifier.
+
 ## Evaluator
 
 `conduit-eval` runs Conduit IR directly, for testing frontends and passes.

@@ -14,6 +14,7 @@ pub mod id;
 mod module;
 mod op;
 mod term;
+pub mod text;
 mod ty;
 pub mod verify;
 
