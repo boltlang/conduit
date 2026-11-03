@@ -239,7 +239,7 @@ fn sig_ok<P: Program + ?Sized>(p: &P, sig: &Sig) -> Result<(), String> {
 }
 
 /// A field type in an object of mutability `m`: `Inherit` becomes `m`.
-fn inherit(ty: &Ty, m: Mutability) -> Ty {
+pub fn inherit(ty: &Ty, m: Mutability) -> Ty {
     let pick = |own: Mutability| if own == Mutability::Inherit { m } else { own };
     match ty {
         Ty::Data(d, own) => Ty::Data(*d, pick(*own)),
@@ -278,7 +278,10 @@ fn deep_imm_in<P: Program + ?Sized>(p: &P, ty: &Ty, seen: &mut BTreeSet<DataId>)
 }
 
 /// The type of `Copy(m)` of a value of type `ty`, or why it can't be
-/// copied.
+/// copied. The type decides what's copied: a data object or an array whose
+/// type is already `m` is kept with everything it holds, and any other one,
+/// `ro` included, is copied, with the same rule for what it holds through
+/// fields that inherit its mutability and through its elements.
 pub fn copy_ty<P: Program + ?Sized>(p: &P, ty: &Ty, m: Mutability) -> Result<Ty, String> {
     let imm = m == Mutability::Imm;
     match ty {
@@ -292,6 +295,8 @@ pub fn copy_ty<P: Program + ?Sized>(p: &P, ty: &Ty, m: Mutability) -> Result<Ty,
             }
             Ok(copied)
         }
+        // An array that's already `m` is kept as it is, with what it holds.
+        Ty::Array(_, own) if *own == m => Ok(ty.clone()),
         Ty::Array(elem, _) => Ok(Ty::Array(Box::new(copy_ty(p, elem, m)?), m)),
         Ty::Fn(_, Mutability::Imm) | Ty::Any(Mutability::Imm) => Ok(ty.clone()),
         Ty::Fn(..) | Ty::Any(_) | Ty::Ref(_) | Ty::Cont(_) if imm => {

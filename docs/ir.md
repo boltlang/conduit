@@ -320,21 +320,29 @@ Rules the verifier checks:
 ### Copying between mutabilities
 
 A `Mut` value can't become `Imm` in place, since a `Mut` reference to it
-may still exist. `Copy` makes a new value instead:
+may still exist. `Copy(m)` makes a new value instead. **The type decides
+what's copied, not the objects**, since compiled code doesn't know an
+object's mutability:
 
-- **`Copy(Imm)`** copies every `Mut` `Data` and `Array` object the value
-  reaches into a new `Imm` one, and shares what's already `Imm`. Each
-  object is copied once, even if it's reachable along several paths, so
-  sharing and cycles stay intact. It doesn't follow closures: the verifier
-  rejects a `Copy(Imm)` whose value can reach a `Fn(_, Mut)`, a `Ref`, a
-  `Cont` or an `Any(Mut)`.
-- **`Copy(Mut)`** goes the other way: it copies the `Imm` `Data` and `Array`
-  objects it reaches into new `Mut` ones and keeps what's already `Mut`.
-  Closures are kept as they are.
+- A `Data` or `Array` value whose type is already `m` is kept as it is,
+  with everything it holds.
+- Any other `Data` or `Array` value, of the other mutability or `ReadOnly`,
+  is copied into a new object of mutability `m`. What the copy holds is
+  decided by the same rule, by type: the fields that inherit their
+  object's mutability, and every element of an array. Fields with a
+  mutability of their own are shared.
+- Scalars, closures, refs, `Any` and continuations are kept as they are.
+  So the verifier rejects a `Copy(Imm)` whose value can reach a
+  `Fn(_, Mut)`, a `Ref`, a `Cont` or an `Any(Mut)`, which can't become
+  `Imm`.
+- Each object is copied once, even if it's reachable along several paths,
+  so sharing and cycles stay intact.
 - The result type is the argument's type with the mutability of each
-  `Data` and `Array` it reaches changed.
-- On a `ReadOnly` value, Conduit can't tell which objects are already
-  `Imm`, so `Copy` copies all of them.
+  `Data` and `Array` that's copied changed. For example, `Copy(Mut)` of
+  `mut [imm data0]` is the array itself, of the same type, while `Copy(Mut)`
+  of `ro [imm data0]` is a new `mut [mut data0]`.
+- So a `ReadOnly` value is always copied, even when it's really of the
+  target mutability.
 
 **`Freeze`** gives what `Copy(Imm)` gives, with the same types, but turns
 the objects `Copy(Imm)` would copy into `Imm` ones in place instead of
@@ -834,8 +842,8 @@ doesn't need a deep stack.
 - **Objects know their mutability.** Every object that can be `Imm` or
   `Mut` carries an "is mut" flag. A write to an `Imm` object is an error,
   which can only happen if an optimization broke the mutability rules.
-  `Copy` uses the flag to share what's already at the target mutability,
-  and `Freeze` clears it, so a write through an alias that a wrong
+  `Copy` doesn't use the flag: it follows the types, as compiled code
+  does. `Freeze` clears it, so a write through an alias that a wrong
   `Freeze` left behind is an error too.
 - **Numbers follow Wasm.** Integers wrap, shift amounts are taken modulo
   the width, and `min` and `max` give NaN if either operand is NaN and

@@ -1,0 +1,81 @@
+// The type decides what `copy` copies, not the objects: an array or data
+// object whose type is already the target mutability is kept, with what it
+// holds, and any other one is copied, `ro` ones included, with the same
+// rule for what it holds.
+
+data data0 {
+  (i32)
+}
+
+// A `mut` array of `imm` cells copied to `mut` is the array itself, and
+// its cells stay `imm`: a write through the copy is seen in the original.
+fn fn0() -> (i32) {
+  let %0: imm data0 = new data0.0(1i32)
+  let %1: mut [imm data0] = array_new(%0)
+  let %2: mut [imm data0] = copy[mut](%1)
+  let %3: imm data0 = new data0.0(7i32)
+  let = array_set(%2, 0i32, %3)
+  let %4: imm data0 = array_get(%1, 0i32)
+  let %5: i32 = get data0.0.0(%4)
+  jump ret(%5)
+}
+
+// An `ro` array that's really `mut` is copied anyway, since its type
+// doesn't say it's `mut`, and so are its `imm` cells: the copy's cells can
+// be written without changing the original's.
+fn fn1() -> (i32) {
+  let %0: imm data0 = new data0.0(1i32)
+  let %1: mut [imm data0] = array_new(%0)
+  let %2: i32 = call fn2(%1)
+  let %3: imm data0 = array_get(%1, 0i32)
+  let %4: i32 = get data0.0.0(%3)
+  let %5: i32 = mul(%2, 10i32)
+  let %6: i32 = add(%5, %4)
+  jump ret(%6)
+}
+
+fn fn2(%0: ro [imm data0]) -> (i32) {
+  let %1: mut [mut data0] = copy[mut](%0)
+  let %2: mut data0 = array_get(%1, 0i32)
+  let = set data0.0.0(%2, 5i32)
+  let %3: i32 = get data0.0.0(%2)
+  jump ret(%3)
+}
+
+// An `ro` array of `mut` cells: the array is copied, but the cells' type
+// already says `mut`, so they're shared with the original.
+fn fn3() -> (i32) {
+  let %0: mut data0 = new data0.0(1i32)
+  let %1: mut [mut data0] = array_new(%0)
+  let %2: i32 = call fn4(%1)
+  let %3: i32 = get data0.0.0(%0)
+  jump ret(%3)
+}
+
+fn fn4(%0: ro [mut data0]) -> (i32) {
+  let %1: mut [mut data0] = copy[mut](%0)
+  let %2: mut data0 = array_get(%1, 0i32)
+  let = set data0.0.0(%2, 9i32)
+  let = array_set(%1, 0i32, %2)
+  jump ret(0i32)
+}
+
+// An `imm` array of `imm` cells copied to `mut`: both are copied.
+fn fn5() -> (i32) {
+  let %0: imm data0 = new data0.0(1i32)
+  let %1: imm [imm data0] = array_new(%0)
+  let %2: mut [mut data0] = copy[mut](%1)
+  let %3: mut data0 = array_get(%2, 0i32)
+  let = set data0.0.0(%3, 6i32)
+  let %4: i32 = get data0.0.0(%3)
+  let %5: i32 = get data0.0.0(%0)
+  let %6: i32 = mul(%4, 10i32)
+  let %7: i32 = add(%6, %5)
+  jump ret(%7)
+}
+
+//# run fn0() == 7i32
+//# run fn1() == 51i32
+//# run fn3() == 9i32
+//# run fn5() == 61i32
+//# wasm-error: copy isn't supported yet
