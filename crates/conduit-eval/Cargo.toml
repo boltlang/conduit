@@ -7,3 +7,10 @@ publish.workspace = true
 
 [dependencies]
 conduit-ir = { path = "../conduit-ir" }
+
+[dev-dependencies]
+conduit-test = { path = "../conduit-test" }
+
+[[test]]
+name = "programs"
+harness = false

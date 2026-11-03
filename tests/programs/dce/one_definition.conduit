@@ -1,0 +1,12 @@
+// Of the definitions of a join, only the unused ones go.
+
+fn fn0(%0: i32) -> (i32) {
+  join j1(%1: i32) = jump ret(%1)
+  and j2() = jump ret(0i32)
+  in
+  let %2: i32 = add(%0, 1i32)
+  jump j1(%2)
+}
+
+//# run fn0(5i32) == 6i32
+//# opt

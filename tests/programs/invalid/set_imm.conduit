@@ -1,0 +1,12 @@
+// Only `mut` objects can be written.
+
+data data0 {
+  (i32, i32)
+}
+
+fn fn0(%0: imm data0) -> () {
+  let = set data0.0.0(%0, 1i32)
+  jump ret()
+}
+
+//# verify-error: can't set a field of a imm data0

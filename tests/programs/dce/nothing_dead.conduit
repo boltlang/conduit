@@ -1,0 +1,9 @@
+// Nothing here is dead, so the snapshot is the program itself.
+
+fn fn0(%0: i32) -> (i32) {
+  let %1: i32 = add(%0, 1i32)
+  jump ret(%1)
+}
+
+//# run fn0(5i32) == 6i32
+//# opt

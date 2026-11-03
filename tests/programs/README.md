@@ -1,0 +1,62 @@
+# Test programs
+
+Each `.conduit` file here is a module in the text format (see "Text
+format" in `docs/ir.md`), with checks in comments that start with `//#`.
+Every part of Conduit runs the checks that apply to it:
+
+| Crate | What it does with each program |
+|---|---|
+| `conduit-ir` | Parses it, checks that printing and parsing gives the same module, and verifies it |
+| `conduit-eval` | Runs its `run` checks |
+| `conduit-wasm` | Lowers it, validates the Wasm, compares `wat` snapshots and runs its `run` checks with Wasmtime |
+| `conduit-opt` | Optimizes it, verifies the result, compares `opt` snapshots and runs its `run` checks on the result with the evaluator |
+
+So a `run` check is checked by the evaluator, by Wasm and after
+optimization, and they all have to agree.
+
+`cargo test` shows one test per file in each crate, named after its path,
+like `control/factorial`. `cargo test factorial` runs only the files whose
+path contains `factorial`. A crate lists a file as ignored when none of its
+checks apply to that crate.
+
+## Checks
+
+| Check | Meaning |
+|---|---|
+| `//# run fn1(5i32, 2i64) == 120i32` | Calling `fn1` gives `120i32`. Several results are `== (1i32, 2i32)`, none are `== ()`. |
+| `//# run fn1(0i32) traps` | Calling `fn1` stops with a trap: a division by zero, an index out of bounds, `unreachable`, or a continuation resumed twice. |
+| `//# verify-error: message` | The verifier rejects the program with an error containing `message`. Only `conduit-ir` looks at such programs. |
+| `//# wasm-error: message` | The Wasm backend can't lower the program, with an error containing `message`. |
+| `//# wasm-skip: reason` | The Wasm backend doesn't look at the program, for example because it uses effect handlers. |
+| `//# wat` | The program's Wasm, as text, matches `<name>.wat` next to it. |
+| `//# opt` | The program after optimization matches `<name>.opt.conduit` next to it. |
+
+Arguments and results are literals as the text format writes them: `5i32`,
+`-1i64`, `1.5f32`, `1e300f64`, `f32_bits(2143289344)`. Floats are compared
+by their bits, so `-0.0f64` and `0.0f64` differ. A function under test can
+only take and give scalars.
+
+A check that doesn't parse, or an unknown check, fails the file in every
+crate.
+
+## Snapshots
+
+`wat` and `opt` compare against a file next to the program. When one is
+missing or differs, the test fails with the lines that differ. To create or
+update them, run the tests with `BLESS=1`:
+
+```sh
+BLESS=1 cargo test --workspace --test programs
+```
+
+and review the changes with `git diff` before committing them.
+
+## Host functions
+
+Programs can import these host functions, which every runner provides:
+
+| Module | Name | Signature | Gives |
+|---|---|---|---|
+| `"test"` | `"double"` | `(i32) -> (i32)` | twice its argument |
+
+For example: `extern extern0 "test" "double" (i32) -> (i32)`.

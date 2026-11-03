@@ -6,3 +6,10 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+
+[dev-dependencies]
+conduit-test = { path = "../conduit-test" }
+
+[[test]]
+name = "programs"
+harness = false

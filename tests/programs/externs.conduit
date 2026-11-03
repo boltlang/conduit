@@ -1,0 +1,11 @@
+// `test.double` is a host function every test runner provides.
+
+extern extern0 "test" "double" (i32) -> (i32)
+
+fn fn0(%0: i32) -> (i32) {
+  let %1: i32 = call_extern extern0(%0)
+  let %2: i32 = add(%1, 1i32)
+  jump ret(%2)
+}
+
+//# run fn0(20i32) == 41i32

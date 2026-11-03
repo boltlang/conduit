@@ -1,0 +1,11 @@
+// A recursive join point that only jumps to itself is dead.
+
+fn fn0(%0: i32) -> (i32) {
+  join rec j1() =
+    let %1: i32 = add(%0, 1i32)
+    jump j1()
+  in jump ret(%0)
+}
+
+//# run fn0(1i32) == 1i32
+//# opt

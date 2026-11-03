@@ -1,0 +1,27 @@
+// Unused `new`s, closures and refs are pure and go. Calls and writes
+// stay, and so does the `new` whose object is written.
+
+data data0 {
+  (i32, i32)
+}
+
+fn fn0(%0: i32) -> (i32) {
+  let %1: mut data0 = new data0.0(%0, %0)
+  let = set data0.0.0(%1, 1i32)
+  let %2: imm data0 = new data0.0(1i32, 2i32)
+  let %3: imm fn() -> (i32) = closure fn2(%0)
+  let %4: ref i32 = ref_new(%0)
+  let %5: i32 = call fn1(%0)
+  jump ret(%0)
+}
+
+fn fn1(%0: i32) -> (i32) {
+  jump ret(%0)
+}
+
+fn fn2(%0: i32) -> (i32) {
+  jump ret(%0)
+}
+
+//# run fn0(3i32) == 3i32
+//# opt

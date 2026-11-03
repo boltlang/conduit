@@ -9,4 +9,8 @@ publish.workspace = true
 conduit-ir = { path = "../conduit-ir" }
 
 [dev-dependencies]
-conduit-eval = { path = "../conduit-eval" }
+conduit-test = { path = "../conduit-test" }
+
+[[test]]
+name = "programs"
+harness = false

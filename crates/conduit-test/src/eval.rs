@@ -1,0 +1,73 @@
+//! Running `run` checks with the evaluator.
+
+use conduit_eval::{ErrorKind, Host, Machine, Value};
+use conduit_ir::{Extern, ExternId, Lit, Module};
+
+use crate::{Outcome, Program};
+
+/// How many steps a test program may take in the evaluator, so a program
+/// that loops forever fails instead of hanging.
+const FUEL: u64 = 100_000_000;
+
+/// Runs every `run` check of `p` on `m` with the evaluator. `m` is usually
+/// `p`'s module, but can be one derived from it, like after optimization.
+pub fn check_runs(p: &Program, m: &Module) -> Result<(), String> {
+    for run in p.runs() {
+        let mut machine = Machine::new(m, TestHost);
+        machine.fuel = Some(FUEL);
+        let args = run.args.iter().map(|&l| Value::from(l)).collect();
+        let got = match machine.call(run.func, args) {
+            Ok(values) => values
+                .into_iter()
+                .map(lit)
+                .collect::<Result<_, _>>()
+                .map(Outcome::Values),
+            Err(e) if is_trap(&e.kind) => Ok(Outcome::Trap(e.to_string())),
+            Err(e) => Err(e.to_string()),
+        };
+        run.check(p, got)?;
+    }
+    Ok(())
+}
+
+/// Errors a program can cause on purpose, which Wasm traps on too.
+fn is_trap(kind: &ErrorKind) -> bool {
+    matches!(
+        kind,
+        ErrorKind::DivideByZero
+            | ErrorKind::IntegerOverflow
+            | ErrorKind::OutOfBounds { .. }
+            | ErrorKind::Unreachable
+            | ErrorKind::ContinuationResumedTwice
+    )
+}
+
+fn lit(v: Value) -> Result<Lit, String> {
+    Ok(match v {
+        Value::I32(n) => Lit::I32(n),
+        Value::I64(n) => Lit::I64(n),
+        Value::F32(x) => Lit::f32(x),
+        Value::F64(x) => Lit::f64(x),
+        Value::Obj(_) => {
+            return Err("gave an object, but a test can only check scalars".into());
+        }
+    })
+}
+
+/// The host functions test programs can import, from the module `"test"`.
+/// Every backend's runner provides the same ones.
+///
+/// - `double(i32) -> i32` gives twice its argument.
+pub struct TestHost;
+
+impl Host for TestHost {
+    fn call(&mut self, _: ExternId, decl: &Extern, args: &[Value]) -> Result<Vec<Value>, String> {
+        match (&*decl.module, &*decl.name, args) {
+            ("test", "double", [Value::I32(n)]) => Ok(vec![Value::I32(n.wrapping_mul(2))]),
+            _ => Err(format!(
+                "no test host function {:?} {:?} taking these arguments",
+                decl.module, decl.name
+            )),
+        }
+    }
+}

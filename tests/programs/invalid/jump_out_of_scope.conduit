@@ -1,0 +1,13 @@
+// A join point's label is only in scope in the join's body, not in the
+// code before it.
+
+fn fn0(%0: i32) -> (i32) labels 2 {
+  case %0 {
+    0 => jump j1()
+    _ =>
+      join j1() = jump ret(1i32)
+      in jump j1()
+  }
+}
+
+//# verify-error: jump to j1, which isn't in scope

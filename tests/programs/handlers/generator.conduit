@@ -1,0 +1,40 @@
+// The generator from docs/ir.md: `produce` yields 1, 2 and 3, and a
+// handler adds them up in a ref.
+
+effect effect0 {
+  (i32) -> ()
+}
+
+handler handler0 for effect0 env(ref i32) ops(fn1) ret fn2
+
+fn fn0() -> (i32) {
+  let %0: ref i32 = ref_new(0i32)
+  let %1: imm fn() -> () = closure fn3()
+  let = handle handler0(%0, %1)
+  let %2: i32 = ref_get(%0)
+  jump ret(%2)
+}
+
+// yield(x, k): acc += x, then resume
+fn fn1(%0: ref i32, %1: i32, %2: cont() -> ()) -> () {
+  let %3: i32 = ref_get(%0)
+  let %4: i32 = add(%3, %1)
+  let = ref_set(%0, %4)
+  let = resume(%2)
+  jump ret()
+}
+
+fn fn2(%0: ref i32) -> () {
+  jump ret()
+}
+
+// produce()
+fn fn3() -> () {
+  let = perform effect0.0(1i32)
+  let = perform effect0.0(2i32)
+  let = perform effect0.0(3i32)
+  jump ret()
+}
+
+//# run fn0() == 6i32
+//# wasm-skip: effect handlers aren't supported yet

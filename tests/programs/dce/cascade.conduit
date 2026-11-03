@@ -1,0 +1,10 @@
+// Dropping a `let` can make the ones above it dead.
+
+fn fn0(%0: i32) -> (i32) {
+  let %1: i32 = add(%0, 1i32)
+  let %2: i32 = mul(%1, 2i32)
+  jump ret(%0)
+}
+
+//# run fn0(4i32) == 4i32
+//# opt

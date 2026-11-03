@@ -1,0 +1,18 @@
+// A jump that swaps two parameters mustn't overwrite one before it's read.
+
+fn fn0(%0: i32, %1: i32, %2: i32) -> (i32) {
+  join rec j1(%3: i32, %4: i32, %5: i32) =
+    case %5 {
+      0 =>
+        let %6: i32 = sub(%3, %4)
+        jump ret(%6)
+      _ =>
+        let %7: i32 = sub(%5, 1i32)
+        jump j1(%4, %3, %7)
+    }
+  in jump j1(%0, %1, %2)
+}
+
+//# run fn0(10i32, 3i32, 0i32) == 7i32
+//# run fn0(10i32, 3i32, 1i32) == -7i32
+//# run fn0(10i32, 3i32, 2i32) == 7i32
