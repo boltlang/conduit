@@ -555,7 +555,19 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
 
     /// `new c(fields)`, as an object of mutability `m`.
     pub fn new_object(&mut self, c: CtorId, m: Mutability, fields: impl Atoms) -> Var {
-        self.emit1(Op::New(c), fields.atoms(), Some(Ty::Data(c.data, m)))
+        self.new_object_with(c, m, Vec::new(), fields)
+    }
+
+    /// `new c(fields)`, as an object of mutability `m` whose declaration
+    /// has mutability parameters, with `args` for them.
+    pub fn new_object_with(
+        &mut self,
+        c: CtorId,
+        m: Mutability,
+        args: Vec<Mutability>,
+        fields: impl Atoms,
+    ) -> Var {
+        self.emit1(Op::New(c), fields.atoms(), Some(Ty::Data(c.data, m, args)))
     }
 
     /// Field `i` of `obj`, which must be known to be built by `c`.
@@ -652,9 +664,16 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
         self.emit1(Op::Unbox(ty), vec![value.into()], None)
     }
 
-    /// A copy of `value` at mutability `m`.
+    /// A copy of `value` at mutability `m`, with the type
+    /// [`copy_ty`](crate::verify::copy_ty) gives.
     pub fn copy(&mut self, m: Mutability, value: impl Into<Atom>) -> Var {
         self.emit1(Op::Copy(m), vec![value.into()], None)
+    }
+
+    /// A copy of `value` of type `ty`, which says what's copied: see
+    /// [`copy_check`](crate::verify::copy_check).
+    pub fn copy_to(&mut self, m: Mutability, ty: Ty, value: impl Into<Atom>) -> Var {
+        self.emit1(Op::Copy(m), vec![value.into()], Some(ty))
     }
 
     /// `value` as `Imm`, made in place: see [`Op::Freeze`].
@@ -881,7 +900,7 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
                 "the case on {scrut} is on an i32, so it can't have a tag {n}"
             )),
             (Ty::I32 | Ty::I64, Tag::Int(_)) => None,
-            (Ty::Data(d, _), Tag::Ctor(ctor)) => {
+            (Ty::Data(d, ..), Tag::Ctor(ctor)) => {
                 let ctors = self.p.data(*d).map_or(0, |decl| decl.ctors.len());
                 (ctor.data != *d || ctor.index as usize >= ctors)
                     .then(|| format!("{ctor} isn't a constructor of {d}"))
@@ -904,7 +923,7 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
                 continue;
             }
             let missing = match &c.scrut_ty {
-                Ty::Data(d, _) => {
+                Ty::Data(d, ..) => {
                     let ctors = self.p.data(*d).map_or(0, |decl| decl.ctors.len()) as u32;
                     (0..ctors).any(|index| {
                         let tag = Tag::Ctor(CtorId { data: *d, index });

@@ -1,0 +1,22 @@
+// Mutability arguments don't exist at run time: a data type with them
+// lowers like any other.
+
+data data0['m1] {
+  ('m1 [i32])
+}
+
+fn fn0(%0: i32) -> (i32) {
+  let %1: mut [i32] = array_fill(2i32, %0)
+  let %2: mut data0[mut] = new data0.0(%1)
+  let %3: imm [i32] = array_new(10i32)
+  let %4: mut data0[imm] = new data0.0(%3)
+  let %5: mut [i32] = get data0.0.0(%2)
+  let = array_set(%5, 0i32, 7i32)
+  let %6: i32 = array_get(%1, 0i32)
+  let %7: imm [i32] = get data0.0.0(%4)
+  let %8: i32 = array_get(%7, 0i32)
+  let %9: i32 = add(%6, %8)
+  jump ret(%9)
+}
+
+//# run fn0(1i32) == 17i32

@@ -39,7 +39,7 @@ fn fn5(%0: mut [imm fn(inherit data0) -> ()]) -> () {
 }
 
 //# verify-error: fn0: can't set a field of a ro data0
-//# verify-error: fn1: can't copy mut [mut data0] to imm: its elements can't be imm
+//# verify-error: fn1: can't copy mut [mut data0] to imm [mut data0]: it isn't imm all the way down
 //# verify-error: fn2: type of %0: `inherit` in inherit data0 is only allowed in field types and array elements
 //# verify-error: fn3: array of mut data0 gets an element of type imm data0
 //# verify-error: fn4: array of imm data0 gets an element of type mut data0

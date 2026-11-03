@@ -28,7 +28,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use conduit_ir::verify::{copy_ty, deep_imm};
+use conduit_ir::verify::deep_imm;
 use conduit_ir::{Atom, Block, Func, FuncId, Label, Let, Mutability, Op, Program, Tail, Var};
 
 use crate::Pass;
@@ -49,27 +49,28 @@ impl Pass for Copies {
 /// Removes or freezes the copies of `f` that can be. Returns whether
 /// anything changed.
 pub fn copies(p: &dyn Program, f: &mut Func) -> bool {
-    let removed = remove_noop_copies(p, f);
+    let removed = remove_noop_copies(f);
     let frozen = freeze_in_place(p, f);
     removed || frozen
 }
 
 /// Drops each copy whose type shows it changes nothing, and uses its
 /// argument instead of its result.
-fn remove_noop_copies(p: &dyn Program, f: &mut Func) -> bool {
+fn remove_noop_copies(f: &mut Func) -> bool {
     let mut subst = BTreeMap::new();
     let vars = &f.vars;
     for_each_block_mut(&mut f.body, &mut |b| {
         b.lets.retain(|l| {
-            let (Op::Copy(m), [arg], [bind]) = (&l.op, &l.args[..], &l.binds[..]) else {
+            let (Op::Copy(_), [arg], [bind]) = (&l.op, &l.args[..], &l.binds[..]) else {
                 return true;
             };
             let arg_ty = match arg {
                 Atom::Var(v) => vars[v.0 as usize].clone(),
                 Atom::Lit(l) => l.ty(),
             };
-            let unchanged = copy_ty(p, &arg_ty, *m).is_ok_and(|ty| ty == arg_ty);
-            if unchanged && vars[bind.0 as usize] == arg_ty {
+            // The type of what it binds says what's copied, so a copy that
+            // gives the type it takes keeps everything.
+            if vars[bind.0 as usize] == arg_ty {
                 subst.insert(*bind, arg.clone());
                 return false;
             }

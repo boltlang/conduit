@@ -67,15 +67,16 @@ fn ctor(data: DataId, index: u32) -> CtorId {
 fn module() -> Module {
     let mut m = Module::default();
     let ctors = |fields: Vec<Vec<Ty>>| DataDecl {
+        params: 0,
         ctors: fields
             .into_iter()
             .map(|fields| CtorDecl { fields })
             .collect(),
     };
     m.data.insert(POINT, ctors(vec![vec![Ty::I32, Ty::I32]]));
-    let point = Ty::Data(POINT, Mutability::Inherit);
+    let point = Ty::data(POINT, Mutability::Inherit);
     m.data.insert(PAIR, ctors(vec![vec![point.clone(), point]]));
-    let list = Ty::Data(LIST, Mutability::Inherit);
+    let list = Ty::data(LIST, Mutability::Inherit);
     m.data
         .insert(LIST, ctors(vec![vec![], vec![Ty::I32, list]]));
     m
@@ -264,7 +265,7 @@ fn conversions() {
 
 /// `sum_list(xs) = case xs { Nil => 0, Cons => xs.0 + sum_list(xs.1) }`
 fn sum_list() -> Func {
-    let list = Ty::Data(LIST, Imm);
+    let list = Ty::data(LIST, Imm);
     let mut f = Func::new(vec![list.clone()], vec![Ty::I32]);
     let xs = f.params[0];
     let [head, rest_sum, total] = [(); 3].map(|_| f.new_var(Ty::I32));
@@ -310,7 +311,7 @@ fn sum_list() -> Func {
 #[test]
 fn data_and_case() {
     // MAIN builds [1, 2, 3] and sums it with G.
-    let list = Ty::Data(LIST, Imm);
+    let list = Ty::data(LIST, Imm);
     let mut main = Func::new(vec![], vec![Ty::I32]);
     let [nil, l3, l2, l1] = [(); 4].map(|_| main.new_var(list.clone()));
     let r = main.new_var(Ty::I32);
@@ -459,11 +460,11 @@ fn arrays() {
 /// p.0 = 10; then gives q.0.0, and whether q's two fields are the same
 /// object.
 fn copy_program() -> (Module, Var) {
-    let mut f = Func::new(vec![], vec![Ty::I32, Ty::Data(PAIR, Imm)]);
-    let p = f.new_var(Ty::Data(POINT, Mut));
-    let pair = f.new_var(Ty::Data(PAIR, Mut));
-    let q = f.new_var(Ty::Data(PAIR, Imm));
-    let q0 = f.new_var(Ty::Data(POINT, Imm));
+    let mut f = Func::new(vec![], vec![Ty::I32, Ty::data(PAIR, Imm)]);
+    let p = f.new_var(Ty::data(POINT, Mut));
+    let pair = f.new_var(Ty::data(PAIR, Mut));
+    let q = f.new_var(Ty::data(PAIR, Imm));
+    let q0 = f.new_var(Ty::data(POINT, Imm));
     let x = f.new_var(Ty::I32);
     f.body = let_(
         vec![p],
@@ -532,8 +533,8 @@ fn write_to_imm_object_is_an_error() {
     // Verified IR can't do this, so build it by hand: a Set on a point
     // that was created imm, through a variable typed mut.
     let mut f = Func::new(vec![], vec![]);
-    let p = f.new_var(Ty::Data(POINT, Imm));
-    let alias = f.new_var(Ty::Data(POINT, Mut));
+    let p = f.new_var(Ty::data(POINT, Imm));
+    let alias = f.new_var(Ty::data(POINT, Mut));
     f.body = let_(
         vec![p],
         Op::New(ctor(POINT, 0)),
@@ -561,9 +562,9 @@ fn write_to_imm_object_is_an_error() {
 #[test]
 fn write_after_freeze_is_an_error() {
     let mut f = Func::new(vec![], vec![]);
-    let point = f.new_var(Ty::Data(POINT, Mut));
-    let pair = f.new_var(Ty::Data(PAIR, Mut));
-    let frozen = f.new_var(Ty::Data(PAIR, Imm));
+    let point = f.new_var(Ty::data(POINT, Mut));
+    let pair = f.new_var(Ty::data(PAIR, Mut));
+    let frozen = f.new_var(Ty::data(PAIR, Imm));
     f.body = let_(
         vec![point],
         Op::New(ctor(POINT, 0)),

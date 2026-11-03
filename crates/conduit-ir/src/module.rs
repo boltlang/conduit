@@ -71,8 +71,11 @@ impl Func {
 }
 
 /// An ADT. A tuple or a struct has one constructor.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct DataDecl {
+    /// How many mutability parameters the field types can use, as
+    /// [`Mutability::Param`](crate::Mutability::Param) 1 to `params`.
+    pub params: u32,
     pub ctors: Vec<CtorDecl>,
 }
 

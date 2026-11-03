@@ -15,6 +15,10 @@ data data11 {
 data data12 {
 }
 
+data data13['m1, 'm2] {
+  ('m1 [i32], 'm2 data10, inherit data13['m2, 'm1])
+}
+
 extern extern1 "env" "print \"it\"" (i32) -> ()
 
 effect effect20 {
@@ -97,6 +101,10 @@ fn fn8(%0: mut data10) -> (imm data10) {
   let %12: mut data10 = new data10.0(%11, %3)
   let %13: imm data10 = freeze(%12)
   jump ret(%1)
+}
+
+fn fn9(%0: mut data13[imm, mut]) -> (ro data13[imm, mut]) {
+  jump ret(%0)
 }
 "#;
 
@@ -248,6 +256,22 @@ fn long_functions_dont_need_a_deep_stack() {
 #[test]
 fn parse_errors() {
     let cases: &[(&str, &str)] = &[
+        (
+            "data data1['m1, 'm1] { }",
+            "1:17: `'m1` is declared more than once",
+        ),
+        (
+            "data data1[m1] { }",
+            "1:12: expected a mutability parameter like `'m1`, found `m1`",
+        ),
+        (
+            "fn fn1(%0: 'm1 [i32]) -> () { jump ret() }",
+            "1:12: unknown mutability parameter `'m1`: only a data declaration's fields can use its parameters",
+        ),
+        (
+            "data data1['m1] { ('m2 [i32]) }",
+            "1:20: unknown mutability parameter `'m2`: only a data declaration's fields can use its parameters",
+        ),
         (
             "frob",
             "1:1: expected `data`, `extern`, `effect`, `handler` or `fn`, found `frob`",

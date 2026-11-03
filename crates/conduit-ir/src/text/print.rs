@@ -6,7 +6,14 @@ use crate::*;
 pub(super) fn module(m: &Module) -> String {
     let mut items = Vec::new();
     for (id, decl) in &m.data {
-        let mut s = format!("data {id} {{\n");
+        let params: Vec<String> = (1..=decl.params)
+            .map(|i| Mutability::Param(i).to_string())
+            .collect();
+        let mut s = if params.is_empty() {
+            format!("data {id} {{\n")
+        } else {
+            format!("data {id}[{}] {{\n", params.join(", "))
+        };
         for ctor in &decl.ctors {
             let _ = writeln!(s, "  ({})", types(&ctor.fields));
         }

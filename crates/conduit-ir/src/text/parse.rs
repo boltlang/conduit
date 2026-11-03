@@ -9,6 +9,7 @@ pub fn parse(src: &str) -> Result<Module, Error> {
     let mut p = Parser {
         toks: lex(src)?,
         i: 0,
+        params: Vec::new(),
     };
     p.module()
 }
@@ -18,6 +19,9 @@ type Res<T> = Result<T, Error>;
 struct Parser {
     toks: Vec<(Tok, Pos)>,
     i: usize,
+    /// The mutability parameters of the data declaration being read, by
+    /// name: `Param(i + 1)` is `params[i]`.
+    params: Vec<String>,
 }
 
 /// What a function's body says about its variables and labels.
@@ -250,14 +254,42 @@ impl Parser {
     }
 
     fn data(&mut self) -> Res<DataDecl> {
-        self.punct("{")?;
-        let mut ctors = Vec::new();
-        while !self.eat_punct("}") {
-            ctors.push(CtorDecl {
-                fields: self.list(Self::ty)?,
-            });
+        let mut params = Vec::new();
+        if self.eat_punct("[") {
+            loop {
+                let pos = self.pos();
+                let name = self.ident("a mutability parameter like `'m1`")?;
+                if !name.starts_with('\'') {
+                    return self.error_at(
+                        pos,
+                        format!("expected a mutability parameter like `'m1`, found `{name}`"),
+                    );
+                }
+                if params.contains(&name) {
+                    return self.error_at(pos, format!("`{name}` is declared more than once"));
+                }
+                params.push(name);
+                if self.eat_punct("]") {
+                    break;
+                }
+                self.punct(",")?;
+            }
         }
-        Ok(DataDecl { ctors })
+        self.punct("{")?;
+        self.params = params;
+        let mut ctors = Vec::new();
+        let result = loop {
+            if self.eat_punct("}") {
+                break Ok(());
+            }
+            match self.list(Self::ty) {
+                Ok(fields) => ctors.push(CtorDecl { fields }),
+                Err(e) => break Err(e),
+            }
+        };
+        let params = std::mem::take(&mut self.params).len() as u32;
+        result?;
+        Ok(DataDecl { params, ctors })
     }
 
     fn mutability(&mut self) -> Res<Mutability> {
@@ -266,6 +298,16 @@ impl Parser {
             Tok::Ident(s) if s == "mut" => Mutability::Mut,
             Tok::Ident(s) if s == "ro" => Mutability::ReadOnly,
             Tok::Ident(s) if s == "inherit" => Mutability::Inherit,
+            Tok::Ident(s) if s.starts_with('\'') => match self.params.iter().position(|p| p == s) {
+                Some(i) => Mutability::Param(i as u32 + 1),
+                None => {
+                    let s = s.clone();
+                    return self.error(format!(
+                        "unknown mutability parameter `{s}`: only a data declaration's fields \
+                         can use its parameters"
+                    ));
+                }
+            },
             _ => return self.unexpected("`imm`, `mut`, `ro` or `inherit`"),
         };
         self.next();
@@ -282,7 +324,7 @@ impl Parser {
             "f64" => Ty::F64,
             "cont" => Ty::Cont(Box::new(self.sig()?)),
             "ref" => Ty::Ref(Box::new(self.ty()?)),
-            "imm" | "mut" | "ro" | "inherit" => {
+            m if matches!(m, "imm" | "mut" | "ro" | "inherit") || m.starts_with('\'') => {
                 self.i -= 1;
                 let m = self.mutability()?;
                 if self.eat_punct("[") {
@@ -294,7 +336,18 @@ impl Parser {
                 } else if self.eat_keyword("any") {
                     Ty::Any(m)
                 } else {
-                    Ty::Data(DataId(self.id("data")?), m)
+                    let d = DataId(self.id("data")?);
+                    let mut args = Vec::new();
+                    if self.eat_punct("[") {
+                        loop {
+                            args.push(self.mutability()?);
+                            if self.eat_punct("]") {
+                                break;
+                            }
+                            self.punct(",")?;
+                        }
+                    }
+                    Ty::Data(d, m, args)
                 }
             }
             _ => return self.error_at(pos, format!("expected a type, found `{name}`")),

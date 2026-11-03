@@ -2,7 +2,8 @@
 //! [`crate::build`]), so that they agree.
 
 use super::{
-    Checked, copy_ty, deep_imm, elem_ty, fits, inherit, object_mutability, prim_results, sub, ty_ok,
+    Allowed, Checked, copy_check, copy_ty, deep_imm, elem_ty, fits, inherit, object_mutability,
+    prim_results, resolve, sub, ty_ok,
 };
 use crate::*;
 
@@ -66,7 +67,7 @@ pub(crate) fn op_results<P: Program + ?Sized>(
             Ok(sig.results.clone())
         }
         Op::New(c) => {
-            let [Ty::Data(d, m)] = out else {
+            let [Ty::Data(d, m, margs)] = out else {
                 return Err(format!("new {c} must bind one value of its data type"));
             };
             if *d != c.data {
@@ -82,7 +83,7 @@ pub(crate) fn op_results<P: Program + ?Sized>(
                 ));
             }
             for (i, (ty, field)) in tys.iter().zip(fields).enumerate() {
-                let field = inherit(field, *m);
+                let field = resolve(field, *m, margs);
                 if *m == Mutability::Imm && !deep_imm(p, &field) {
                     return Err(format!("an imm {c} can't hold field {i} of type {field}"));
                 }
@@ -95,21 +96,21 @@ pub(crate) fn op_results<P: Program + ?Sized>(
             Ok(out.to_vec())
         }
         Op::Get(c, i) => {
-            let [Ty::Data(d, m)] = tys else {
+            let [Ty::Data(d, m, margs)] = tys else {
                 return Err(format!("get of {c} needs one object"));
             };
             field_access(p, known, c, *d, &args[0])?;
-            Ok(vec![field(p, *c, *i, *m)?])
+            Ok(vec![field(p, *c, *i, *m, margs)?])
         }
         Op::Set(c, i) => {
-            let [Ty::Data(d, m), value] = tys else {
+            let [Ty::Data(d, m, margs), value] = tys else {
                 return Err(format!("set of {c} needs an object and a value"));
             };
             if *m != Mutability::Mut {
                 return Err(format!("can't set a field of a {}", tys[0]));
             }
             field_access(p, known, c, *d, &args[0])?;
-            let field = field(p, *c, *i, Mutability::Mut)?;
+            let field = field(p, *c, *i, Mutability::Mut, margs)?;
             if !sub(value, &field) {
                 return Err(format!(
                     "field {i} of {c} has type {field}, but gets a {value}"
@@ -173,7 +174,7 @@ pub(crate) fn op_results<P: Program + ?Sized>(
             _ => Err("ref set needs a ref and a value".into()),
         },
         Op::Box(ty) => {
-            ty_ok(p, ty, false)?;
+            ty_ok(p, ty, Allowed::PLAIN)?;
             match tys {
                 [arg] if sub(arg, ty) => {}
                 [arg] => return Err(format!("box of {ty} gets a {arg}")),
@@ -187,7 +188,7 @@ pub(crate) fn op_results<P: Program + ?Sized>(
             Ok(vec![Ty::Any(m)])
         }
         Op::Unbox(ty) => {
-            ty_ok(p, ty, false)?;
+            ty_ok(p, ty, Allowed::PLAIN)?;
             match tys {
                 [Ty::Any(_)] => Ok(vec![ty.clone()]),
                 _ => Err("unbox needs one any".into()),
@@ -196,12 +197,12 @@ pub(crate) fn op_results<P: Program + ?Sized>(
         Op::Copy(m) => {
             object_mutability(*m)?;
             match tys {
-                [ty] => Ok(vec![copy_ty(p, ty, *m)?]),
+                [ty] => Ok(vec![copy_result(p, ty, out, *m)?]),
                 _ => Err("copy needs one value".into()),
             }
         }
         Op::Freeze => match tys {
-            [ty] => Ok(vec![copy_ty(p, ty, Mutability::Imm)?]),
+            [ty] => Ok(vec![copy_result(p, ty, out, Mutability::Imm)?]),
             _ => Err("freeze needs one value".into()),
         },
         Op::Handle(h) => {
@@ -259,13 +260,31 @@ fn fields<P: Program + ?Sized>(p: &P, c: CtorId) -> Checked<&[Ty]> {
     Ok(&ctor.fields)
 }
 
-/// The type of field `i` of an object of constructor `c` and
-/// mutability `m`.
-fn field<P: Program + ?Sized>(p: &P, c: CtorId, i: u32, m: Mutability) -> Checked<Ty> {
+/// The type of field `i` of an object of constructor `c`, mutability `m`
+/// and mutability arguments `args`.
+fn field<P: Program + ?Sized>(
+    p: &P,
+    c: CtorId,
+    i: u32,
+    m: Mutability,
+    args: &[Mutability],
+) -> Checked<Ty> {
     let field = fields(p, c)?
         .get(i as usize)
         .ok_or_else(|| format!("{c} has no field {i}"))?;
-    Ok(inherit(field, m))
+    Ok(resolve(field, m, args))
+}
+
+/// What a `Copy(m)` of a value of type `from` gives: the type of the
+/// variable it binds, `out`, which says what's copied, or when it binds
+/// nothing yet, as for a builder, [`copy_ty`].
+fn copy_result<P: Program + ?Sized>(p: &P, from: &Ty, out: &[Ty], m: Mutability) -> Checked<Ty> {
+    let to = match out {
+        [to] => to.clone(),
+        _ => copy_ty(from, m),
+    };
+    copy_check(p, from, &to, m)?;
+    Ok(to)
 }
 
 /// Checks that `obj`, of data type `d`, is known to be built by `c`:

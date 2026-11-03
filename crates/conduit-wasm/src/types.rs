@@ -135,7 +135,7 @@ impl<'m> Types<'m> {
             Ty::I64 => ValType::I64,
             Ty::F32 => ValType::F32,
             Ty::F64 => ValType::F64,
-            Ty::Data(d, _) => nullable(self.data(*d)?),
+            Ty::Data(d, ..) => nullable(self.data(*d)?),
             Ty::Array(elem, _) => nullable(self.array(elem)?),
             Ty::Fn(sig, _) => {
                 let sig = self.sig(sig)?;

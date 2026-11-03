@@ -148,7 +148,7 @@ fn sum_loop() {
 /// their types inferred from the data type.
 #[test]
 fn match_on_a_list() {
-    let list = Ty::Data(DataId(0), Mutability::Imm);
+    let list = Ty::data(DataId(0), Mutability::Imm);
     let m = module(LIST, vec![list.clone()], vec![I32]);
     let mut f = FuncBuilder::new(&m, vec![list.clone()], vec![I32]);
     let [l] = f.params();
@@ -192,7 +192,7 @@ data data0 {
         data: DataId(0),
         index: 1,
     };
-    let opt = Ty::Data(DataId(0), Mutability::Imm);
+    let opt = Ty::data(DataId(0), Mutability::Imm);
     let m = module(option, vec![opt.clone()], vec![I32]);
     let mut f = FuncBuilder::new(&m, vec![opt], vec![I32]);
     let [o] = f.params();
@@ -344,7 +344,7 @@ fn reports_jumps_with_the_wrong_arguments() {
 
 #[test]
 fn reports_fields_of_unknown_constructors() {
-    let list = Ty::Data(DataId(0), Mutability::Imm);
+    let list = Ty::data(DataId(0), Mutability::Imm);
     let m = module(LIST, vec![list.clone()], vec![I32]);
     let mut f = FuncBuilder::new(&m, vec![list], vec![I32]);
     let [l] = f.params();
@@ -358,7 +358,7 @@ fn reports_fields_of_unknown_constructors() {
 
 #[test]
 fn reports_bad_arms() {
-    let list = Ty::Data(DataId(0), Mutability::Imm);
+    let list = Ty::data(DataId(0), Mutability::Imm);
     let m = module(LIST, vec![list.clone(), I32], vec![I32]);
     let mut f = FuncBuilder::new(&m, vec![list, I32], vec![I32]);
     let [l, n] = f.params();
@@ -411,7 +411,7 @@ fn reports_ops_whose_result_type_cant_be_inferred() {
     let m = module(LIST, vec![], vec![]);
     let mut f = FuncBuilder::new(&m, vec![], vec![]);
     f.op(Op::New(NIL), ());
-    let list = Ty::Data(DataId(0), Mutability::Imm);
+    let list = Ty::data(DataId(0), Mutability::Imm);
     let built = f.op_as(Op::New(NIL), (), vec![list.clone()]);
     assert_eq!(f.var_ty(built[0]), Some(&list));
     f.ret(());
@@ -553,7 +553,7 @@ fn reports_misuse() {
     f.ret([x]);
     f.default(on_nothing);
     f.ret([x]);
-    let cell = Ty::Data(DataId(0), Mutability::Imm);
+    let cell = Ty::data(DataId(0), Mutability::Imm);
     let mut g = FuncBuilder::new(&m, vec![cell], vec![I32]);
     let [c] = g.params();
     let on_cell = g.case(c);
@@ -586,4 +586,41 @@ fn params_panics_on_the_wrong_count() {
     let m = module("", vec![I32], vec![]);
     let f = FuncBuilder::new(&m, vec![I32], vec![]);
     let [_, _] = f.params();
+}
+
+/// A data type with a mutability parameter, built with its arguments, and
+/// copies whose types say what's copied.
+#[test]
+fn mutability_arguments() {
+    let decls = "
+data data0['m1] {
+  ('m1 [i32])
+}
+";
+    let boxed = CtorId {
+        data: DataId(0),
+        index: 0,
+    };
+    let m = module(decls, vec![], vec![I32]);
+    let mut f = FuncBuilder::new(&m, vec![], vec![I32]);
+    let xs = f.array_fill(I32, Mutability::Mut, 1i32, 0i32);
+    let b = f.new_object_with(boxed, Mutability::Mut, vec![Mutability::Mut], [xs]);
+    let frozen = f.copy(Mutability::Imm, b);
+    let to = Ty::Data(DataId(0), Mutability::Mut, vec![Mutability::Mut]);
+    let fresh = f.copy_to(Mutability::Mut, to, frozen);
+    let inner = f.get(boxed, 0, fresh);
+    let x = f.array_get(inner, 0i32);
+    f.ret([x]);
+    assert_eq!(
+        text(f),
+        "fn fn0() -> (i32) {
+  let %0: mut [i32] = array_fill(1i32, 0i32)
+  let %1: mut data0[mut] = new data0.0(%0)
+  let %2: imm data0[imm] = copy[imm](%1)
+  let %3: mut data0[mut] = copy[mut](%2)
+  let %4: mut [i32] = get data0.0.0(%3)
+  let %5: i32 = array_get(%4, 0i32)
+  jump ret(%5)
+}"
+    );
 }

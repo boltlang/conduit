@@ -121,7 +121,7 @@ integer conversions (out of range), array accesses (out of bounds),
 ```rust
 pub enum Ty {
     I32, I64, F32, F64,
-    Data(DataId, Mutability),     // GC'd ADT value
+    Data(DataId, Mutability, Vec<Mutability>),  // GC'd ADT value, with its arguments
     Array(Box<Ty>, Mutability),   // GC'd array
     Fn(Box<Sig>, Mutability),     // closure
     Cont(Box<Sig>),               // one-shot continuation captured by a handler
@@ -129,20 +129,22 @@ pub enum Ty {
     Any(Mutability),              // a boxed value of any type: see "Polymorphism"
 }
 
-pub enum Mutability { Imm, Mut, ReadOnly, Inherit }
+pub enum Mutability { Imm, Mut, ReadOnly, Inherit, Param(u32) }
 
 impl Ty {
     fn mutability(&self) -> Option<Mutability>;   // None for scalars and Cont
     fn with_mutability(&self, m: Mutability) -> Ty;
 }
 
-pub struct DataDecl { ctors: Vec<CtorDecl> }
+pub struct DataDecl { params: u32, ctors: Vec<CtorDecl> }
 pub struct CtorDecl { fields: Vec<Ty> }
 ```
 
 Mutability is part of the types that are objects: see "Mutability".
 `Inherit` is only valid in the field types of a `CtorDecl` and in the
-element type of an `Array`.
+element type of an `Array`, and `Param(i)` only in the field types of a
+`DataDecl` with at least `i` parameters. A `Data` type gives exactly one
+argument per parameter of its declaration: `Imm`, `Mut` or `ReadOnly`.
 
 A tuple or struct is a `DataDecl` with one constructor. `Bool` and
 field-less enums are `I32`. Unit is zero values and `!` is zero results, so
@@ -317,7 +319,18 @@ The other two mutabilities:
   - Seen as `ReadOnly`, an `Array(Data(E, Inherit), Mut)` holds
     `ReadOnly` elements, so the view is deep. An `Array(Data(E, Mut), Mut)`
     seen as `ReadOnly` still holds `Mut` ones.
-  - `Copy` copies what inherits and shares the rest (see below).
+  - `Copy` follows what inherits and shares the rest, unless the type it
+    gives says otherwise (see below).
+
+- **`Param(i)`**, a mutability parameter, is chosen by each data type of
+  the declaration. `data D['m1] { ('m1 [i32]) }` is used as `mut D[imm]`
+  (a `mut` object holding an `imm` array), `mut D[mut]` or `imm D[imm]`,
+  all of one declaration. A `Get` on a `Data(D, m, args)` gives a field the
+  type with `args[i - 1]` in place of `Param(i)` and `m` in place of
+  `Inherit`. `Inherit` is in effect parameter 0: every data type and array
+  has it, and it's always the object's own mutability. A declared
+  parameter is the same without that tie, which is what lets a value's
+  parts have mutabilities other than its own.
 
 Rules the verifier checks:
 
@@ -327,39 +340,44 @@ Rules the verifier checks:
    `ReadOnly`. This is checked at `New`, `ArrayNew`, `Closure` and `Box`.
 2. **Only `Mut` can be written.** `Set` and `ArraySet` need a `Mut` object.
    `RefSet` always works, since refs are always `Mut`.
-3. **Subtyping.** `Imm ≤ ReadOnly` and `Mut ≤ ReadOnly`. An argument to
-   `Call`, `Apply`, `Jump` or `New` may have a subtype of the expected
-   type. Nothing else converts between mutabilities: that's `Copy`.
+3. **Subtyping.** `Imm ≤ ReadOnly` and `Mut ≤ ReadOnly`, for an object's own
+   mutability. A data type's arguments must be equal: a `Mut` object's
+   fields can be written, so a covariant argument would let code store a
+   `Mut` value where another alias expects `Imm`. An argument to `Call`,
+   `Apply`, `Jump` or `New` may have a subtype of the expected type.
+   Nothing else converts between mutabilities: that's `Copy`.
 
 ### Copying between mutabilities
 
 A `Mut` value can't become `Imm` in place, since a `Mut` reference to it
-may still exist. `Copy(m)` makes a new value instead. **The type decides
-what's copied, not the objects**, since compiled code doesn't know an
-object's mutability:
+may still exist. `Copy(m)` makes a new value instead. It turns a value of
+the argument's type into one of **the type of the variable it binds**,
+which says what's copied. The two types have the same shape and differ
+only in mutabilities. The types decide, not the objects, since compiled
+code doesn't know an object's mutability:
 
-- A `Data` or `Array` value whose type is already `m` is kept as it is,
-  with everything it holds.
-- Any other `Data` or `Array` value, of the other mutability or `ReadOnly`,
-  is copied into a new object of mutability `m`. What the copy holds
-  through fields and elements that inherit its mutability is decided by
-  the same rule, by type. Fields and elements with a mutability of their
-  own are shared, so a `Copy(Imm)` of a value whose shared parts aren't
-  `Imm` is rejected.
-- Scalars, closures, refs, `Any` and continuations are kept as they are.
-  So the verifier rejects a `Copy(Imm)` whose value can reach a
-  `Fn(_, Mut)`, a `Ref`, a `Cont` or an `Any(Mut)`, which can't become
-  `Imm`.
+- Where the two types are equal, the value is kept as it is, with
+  everything it holds.
+- Where they differ, a `Data` or `Array` value is copied into a new object
+  of the mutability the result's type gives, and its fields and elements
+  are walked the same way, with their types in both. So a field that has
+  the same type in both is shared.
+- Scalars, closures, refs, `Any` and continuations are never looked into,
+  so their types must be equal. The verifier rejects a `Copy(Imm)` whose
+  value can reach a `Fn(_, Mut)`, a `Ref`, a `Cont` or an `Any(Mut)`,
+  which can't become `Imm`.
 - Each object is copied once, even if it's reachable along several paths,
   so sharing and cycles stay intact.
-- The result type is the argument's type with the mutability of each
-  `Data` and `Array` that's copied changed. For example, `Copy(Mut)` of
-  `mut [imm data0]` is the array itself, of the same type. `Copy(Mut)` of
-  `ro [imm data0]` is a new `mut [imm data0]` that shares the elements,
-  and of `ro [inherit data0]` a new `mut [inherit data0]` with new
-  elements too. `Copy(Imm)` of `mut [mut data0]` is rejected.
-- So a `ReadOnly` value is always copied, even when it's really of the
-  target mutability.
+- The result's own mutability is `m`, objects are only made `Imm` or `Mut`,
+  and a `Copy(Imm)` gives what's `Imm` all the way down.
+
+For example, `Copy(Mut)` of a `mut [imm data0]` can give a
+`mut [imm data0]`, the array itself, or a `mut [mut data0]`, with a new
+array and new cells. `Copy(Mut)` of an `imm D[imm]` can give a new
+`mut D[imm]` that shares the array, or a new `mut D[mut]` that copies it.
+`Copy(Imm)` of a `mut [mut data0]` can only give an `imm [imm data0]`. A
+`ReadOnly` value is copied wherever the result asks for `Imm` or `Mut`,
+even when it's really of that mutability already.
 
 **`Freeze`** gives what `Copy(Imm)` gives, with the same types, but turns
 the objects `Copy(Imm)` would copy into `Imm` ones in place instead of
@@ -815,7 +833,13 @@ fn fn1(%0: i32) -> (i32) {
 
 - **Types** are written as the verifier prints them: `i32`, `mut data10`,
   `imm [i32]`, `ro fn(i32) -> ()`, `cont() -> ()`, `ref i32`, `imm any`.
-  Mutabilities are `imm`, `mut`, `ro` and `inherit`.
+  Mutabilities are `imm`, `mut`, `ro` and `inherit`. A data type gives its
+  mutability arguments in brackets, `mut data10[imm, mut]`, and a
+  declaration names its parameters the same way, as Bolt does:
+  `data data10['m1, 'm2] { ('m1 [i32]) }`. Any `'name` parses, and
+  parameters print as `'m1`, `'m2`, .. by position. Brackets after a data
+  ID never clash with an array type, whose `[` always follows a
+  mutability.
 - **Binders carry types:** function and join parameters, and the variables
   a `let` binds (`let %3: i32 = ..`; `let = ..` binds nothing). The header
   of a function can add `vars(%5: i32)` for variables nothing binds, and

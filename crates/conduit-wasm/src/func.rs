@@ -292,7 +292,7 @@ impl<'m> FuncCx<'_, 'm> {
     ) -> Result<(), String> {
         let ty = self.atom_ty(scrut);
         let data = match ty {
-            Ty::Data(d, _) => Some(d),
+            Ty::Data(d, ..) => Some(d),
             _ => None,
         };
         // A value of an ADT with one constructor can only be that one.

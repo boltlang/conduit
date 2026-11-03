@@ -79,11 +79,11 @@ fn sum_loop() {
 
 #[test]
 fn mutability() {
-    let point = Ty::Data(DataId(7), Mutability::Mut);
+    let point = Ty::data(DataId(7), Mutability::Mut);
     assert_eq!(point.mutability(), Some(Mutability::Mut));
     assert_eq!(
         point.with_mutability(Mutability::Imm),
-        Ty::Data(DataId(7), Mutability::Imm)
+        Ty::data(DataId(7), Mutability::Imm)
     );
     assert_eq!(Ty::I32.mutability(), None);
     assert_eq!(

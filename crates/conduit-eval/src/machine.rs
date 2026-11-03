@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use conduit_ir::verify::inherit;
+use conduit_ir::verify::{inherit, resolve};
 use conduit_ir::{
     Atom, Block, CtorId, EffectId, Extern, ExternId, Func, FuncId, HandlerId, JoinDef, Label,
     Mutability, Op, Program, SourceId, Tag, Tail, Ty, Var,
@@ -338,14 +338,19 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
     /// Whether the variable an op binds is `Mut`, for ops that create an
     /// object of the variable's mutability.
     fn binds_mut(&self, binds: &[Var]) -> Step<bool> {
+        Ok(self.bind_ty(binds)?.mutability() == Some(Mutability::Mut))
+    }
+
+    /// The type of the variable an op that gives one value binds.
+    fn bind_ty(&self, binds: &[Var]) -> Step<Ty> {
         let code = self.code_ref()?;
         let f = self
             .p
             .func(code.func)
             .ok_or_else(|| unverified("unknown function"))?;
         let ty = binds.first().and_then(|b| f.vars.get(b.0 as usize));
-        let ty = ty.ok_or_else(|| unverified("an op that creates an object binds nothing"))?;
-        Ok(ty.mutability() == Some(Mutability::Mut))
+        ty.cloned()
+            .ok_or_else(|| unverified("an op that gives a value binds nothing"))
     }
 
     /// The type of an argument, as the function running sees it.
@@ -529,10 +534,12 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                 }
                 _ => return Err(unverified("unbox of something that isn't boxed")),
             },
-            Op::Copy(m) => {
-                let ty =
+            // The type of what it binds says what's copied.
+            Op::Copy(_) => {
+                let from =
                     self.atom_ty(atoms.first().ok_or_else(|| unverified("copy of nothing"))?)?;
-                vec![self.copy(arg(&args, 0)?, &ty, *m)?]
+                let to = self.bind_ty(binds)?;
+                vec![self.copy(arg(&args, 0)?, &from, &to)?]
             }
             Op::Freeze => {
                 let value = arg(&args, 0)?;
@@ -632,43 +639,44 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
         self.deliver(values.to_vec())
     }
 
-    /// `Copy`: copies each data object and array that the value's type
-    /// doesn't already give mutability `m`, following the fields and array
-    /// elements that inherit their object's mutability, and shares the
-    /// rest.
-    /// The type decides, not the object, as in compiled code, which doesn't
-    /// know an object's mutability: so a `ro` value is copied even if it's
-    /// already `m`. Each object is copied once, so sharing and cycles stay
-    /// the same.
-    fn copy(&mut self, value: Value, ty: &Ty, m: Mutability) -> Step<Value> {
+    /// `Copy`: turns a value of type `from` into one of type `to`, which
+    /// differ only in mutabilities. Where the two types are equal, the value
+    /// is kept with what it holds; where they differ, a data object or
+    /// array is copied to the mutability `to` gives, and its fields and
+    /// elements are walked the same way. The types decide, not the objects,
+    /// as in compiled code, which doesn't know an object's mutability. Each
+    /// object is copied once, so sharing and cycles stay the same.
+    fn copy(&mut self, value: Value, from: &Ty, to: &Ty) -> Step<Value> {
         let mut copies = HashMap::new();
-        // Copies whose children are still the originals', with the type of
-        // the original.
+        // Copies whose children are still the originals', with the types of
+        // the original and of the copy.
         let mut todo = Vec::new();
-        let root = self.copy_one(value, ty, m, &mut copies, &mut todo)?;
-        while let Some((id, ty)) = todo.pop() {
-            let children: Vec<(Value, Option<Ty>)> = match (self.object_ref(id)?, &ty) {
-                (Object::Data { ctor, fields, .. }, Ty::Data(_, own)) => {
+        let root = self.copy_one(value, from, to, &mut copies, &mut todo)?;
+        while let Some((id, from, to)) = todo.pop() {
+            let children: Vec<(Value, Ty, Ty)> = match (self.object_ref(id)?, &from, &to) {
+                (Object::Data { ctor, fields, .. }, Ty::Data(_, m1, a1), Ty::Data(_, m2, a2)) => {
                     let tys = self.field_tys(*ctor, fields.len())?;
-                    let follow = tys.iter().map(|field| {
-                        (field.mutability() == Some(Mutability::Inherit))
-                            .then(|| inherit(field, *own))
-                    });
-                    fields.iter().copied().zip(follow).collect()
+                    let pairs = tys
+                        .iter()
+                        .map(|field| (resolve(field, *m1, a1), resolve(field, *m2, a2)));
+                    fields
+                        .iter()
+                        .zip(pairs)
+                        .map(|(&v, (from, to))| (v, from, to))
+                        .collect()
                 }
-                (Object::Array { elems, .. }, Ty::Array(elem, own)) => {
-                    let follow = (elem.mutability() == Some(Mutability::Inherit))
-                        .then(|| inherit(elem, *own));
-                    elems.iter().map(|&v| (v, follow.clone())).collect()
+                (Object::Array { elems, .. }, Ty::Array(e1, m1), Ty::Array(e2, m2)) => {
+                    let (from, to) = (inherit(e1, *m1), inherit(e2, *m2));
+                    elems
+                        .iter()
+                        .map(|&v| (v, from.clone(), to.clone()))
+                        .collect()
                 }
                 _ => return Err(unverified("a copy of an object of another type")),
             };
             let mut copied = Vec::with_capacity(children.len());
-            for (value, ty) in children {
-                copied.push(match ty {
-                    Some(ty) => self.copy_one(value, &ty, m, &mut copies, &mut todo)?,
-                    None => value,
-                });
+            for (value, from, to) in children {
+                copied.push(self.copy_one(value, &from, &to, &mut copies, &mut todo)?);
             }
             match self.object_mut(id)? {
                 Object::Data { fields, .. } => *fields = copied,
@@ -679,28 +687,28 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
         Ok(root)
     }
 
-    /// The copy of one value of type `ty`: a new object if its type isn't
-    /// already `m`, otherwise the value itself, with what it holds.
+    /// The copy of one value of type `from` as a `to`: the value itself if
+    /// the types are equal, otherwise a new object.
     fn copy_one(
         &mut self,
         value: Value,
-        ty: &Ty,
-        m: Mutability,
+        from: &Ty,
+        to: &Ty,
         copies: &mut HashMap<ObjId, ObjId>,
-        todo: &mut Vec<(ObjId, Ty)>,
+        todo: &mut Vec<(ObjId, Ty, Ty)>,
     ) -> Step<Value> {
-        let (Value::Obj(id), Ty::Data(_, own) | Ty::Array(_, own)) = (value, ty) else {
-            // A scalar, or a closure, ref, `any` or continuation, which
-            // `Copy` doesn't look into.
+        let Value::Obj(id) = value else {
             return Ok(value);
         };
-        if *own == m {
+        if from == to || !matches!(to, Ty::Data(..) | Ty::Array(..)) {
+            // Kept, or a closure, ref, `any` or continuation, which `Copy`
+            // doesn't look into.
             return Ok(value);
         }
         if let Some(&copy) = copies.get(&id) {
             return Ok(Value::Obj(copy));
         }
-        let is_mut = m == Mutability::Mut;
+        let is_mut = to.mutability() == Some(Mutability::Mut);
         let copy = match self.object_ref(id)? {
             Object::Data { ctor, fields, .. } => Object::Data {
                 ctor: *ctor,
@@ -715,7 +723,7 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
         };
         let copy = self.alloc_id(copy);
         copies.insert(id, copy);
-        todo.push((copy, ty.clone()));
+        todo.push((copy, from.clone(), to.clone()));
         Ok(Value::Obj(copy))
     }
 
@@ -732,29 +740,22 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                 // Already `Imm`, so it holds nothing `Mut`.
                 _ => continue,
             }
-            if let Some((values, follow)) = self.children(id)? {
-                let followed = values.into_iter().zip(follow);
-                todo.extend(followed.filter_map(|(v, f)| f.then_some(v)));
+            // A valid `Freeze` leaves nothing `Mut` that its result reaches,
+            // so everything it holds can be followed.
+            if let Some(values) = self.children(id)? {
+                todo.extend(values);
             }
         }
         Ok(())
     }
 
-    /// The fields or elements of a data object or array, each with whether
-    /// `Copy` follows it: whether it has its object's mutability.
-    fn children(&self, id: ObjId) -> Step<Option<(Vec<Value>, Vec<bool>)>> {
-        Ok(Some(match self.object_ref(id)? {
-            Object::Data { ctor, fields, .. } => {
-                let tys = self.field_tys(*ctor, fields.len())?;
-                let follow = tys
-                    .iter()
-                    .map(|ty| ty.mutability() == Some(Mutability::Inherit))
-                    .collect();
-                (fields.clone(), follow)
-            }
-            Object::Array { elems, .. } => (elems.clone(), vec![true; elems.len()]),
-            _ => return Ok(None),
-        }))
+    /// The fields or elements of a data object or array.
+    fn children(&self, id: ObjId) -> Step<Option<Vec<Value>>> {
+        Ok(match self.object_ref(id)? {
+            Object::Data { fields, .. } => Some(fields.clone()),
+            Object::Array { elems, .. } => Some(elems.clone()),
+            _ => None,
+        })
     }
 
     /// The declared field types of constructor `c`, for an object with `n`

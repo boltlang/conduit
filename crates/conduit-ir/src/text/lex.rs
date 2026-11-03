@@ -4,7 +4,8 @@ use super::Error;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum Tok {
-    /// A keyword, a name like `add`, or an ID like `fn1` or `data10`.
+    /// A keyword, a name like `add`, an ID like `fn1` or `data10`, or a
+    /// mutability parameter like `'m1`.
     Ident(String),
     /// `%3`
     Var(u32),
@@ -54,7 +55,12 @@ pub(super) fn lex(src: &str) -> Result<Vec<(Tok, Pos)>, Error> {
             continue;
         }
 
-        let tok = if c.is_ascii_alphabetic() || c == '_' {
+        let tok = if c.is_ascii_alphabetic()
+            || c == '_'
+            || (c == '\'' && chars.get(i + 1).is_some_and(|c| c.is_ascii_alphabetic()))
+        {
+            // A mutability parameter like `'m1` is a name too, quote and all.
+            i += 1;
             while i < chars.len() && (chars[i].is_ascii_alphanumeric() || chars[i] == '_') {
                 i += 1;
             }

@@ -7,7 +7,7 @@
 //! function separately. [`verify_module`] checks a whole [`Module`],
 //! declarations included.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt;
 
 use crate::*;
@@ -128,7 +128,7 @@ fn decl_error(item: Item, message: String) -> Error {
 fn check_data<P: Program + ?Sized>(p: &P, id: DataId, decl: &DataDecl, errors: &mut Vec<Error>) {
     for (c, ctor) in decl.ctors.iter().enumerate() {
         for (i, field) in ctor.fields.iter().enumerate() {
-            if let Err(message) = ty_ok(p, field, true) {
+            if let Err(message) = ty_ok(p, field, Allowed::field(decl.params)) {
                 errors.push(decl_error(
                     Item::Data(id),
                     format!("field {i} of constructor {c}: {message}"),
@@ -146,7 +146,7 @@ fn check_handler<P: Program + ?Sized>(
 ) {
     let mut err = |message: String| errors.push(decl_error(Item::Handler(id), message));
     for ty in &h.env {
-        if let Err(message) = ty_ok(p, ty, false) {
+        if let Err(message) = ty_ok(p, ty, Allowed::PLAIN) {
             err(format!("environment: {message}"));
         }
     }
@@ -198,39 +198,81 @@ fn sub(a: &Ty, b: &Ty) -> bool {
     a.is_subtype(b)
 }
 
-/// Checks that a type only refers to known data types, and only uses
-/// `Inherit` where it's allowed: in field types and in the element type of
-/// an array, outside signatures.
-fn ty_ok<P: Program + ?Sized>(p: &P, ty: &Ty, inherit_ok: bool) -> Result<(), String> {
-    let mut_ok = |m: &Mutability| {
-        if *m == Mutability::Inherit && !inherit_ok {
-            Err(format!(
-                "`inherit` in {ty} is only allowed in field types and array elements"
-            ))
-        } else {
-            Ok(())
+/// Where [`ty_ok`] checks a type: which mutabilities it may use besides
+/// `Imm`, `Mut` and `ReadOnly`.
+#[derive(Clone, Copy)]
+struct Allowed {
+    /// `Inherit`: in field types, and in an array's element type.
+    inherit: bool,
+    /// `Param(1)` to `Param(params)`: in the field types of a declaration
+    /// with that many parameters.
+    params: u32,
+}
+
+impl Allowed {
+    /// A type outside declarations: a variable's, a signature's.
+    const PLAIN: Allowed = Allowed {
+        inherit: false,
+        params: 0,
+    };
+
+    /// A field type of a declaration with `params` parameters.
+    fn field(params: u32) -> Allowed {
+        Allowed {
+            inherit: true,
+            params,
         }
+    }
+}
+
+/// Checks that a type only refers to known data types, gives each the
+/// right number of arguments, and only uses `Inherit` and mutability
+/// parameters where they're allowed.
+fn ty_ok<P: Program + ?Sized>(p: &P, ty: &Ty, allowed: Allowed) -> Result<(), String> {
+    let mut_ok = |m: &Mutability| match m {
+        Mutability::Inherit if !allowed.inherit => Err(format!(
+            "`inherit` in {ty} is only allowed in field types and array elements"
+        )),
+        Mutability::Param(0) => Err(format!("{ty} has a parameter 0, which is `inherit`")),
+        Mutability::Param(i) if *i > allowed.params => Err(format!(
+            "{m} in {ty} is only allowed in the fields of a data type with that parameter"
+        )),
+        _ => Ok(()),
     };
     match ty {
         Ty::I32 | Ty::I64 | Ty::F32 | Ty::F64 => Ok(()),
-        Ty::Data(d, m) => {
+        Ty::Data(d, m, args) => {
             mut_ok(m)?;
-            match p.data(*d) {
-                Some(_) => Ok(()),
-                None => Err(format!("unknown data type {d}")),
+            let Some(decl) = p.data(*d) else {
+                return Err(format!("unknown data type {d}"));
+            };
+            if args.len() != decl.params as usize {
+                return Err(format!(
+                    "{d} takes {} mutability arguments, but {ty} gives {}",
+                    decl.params,
+                    args.len()
+                ));
             }
+            args.iter().try_for_each(mut_ok)
         }
         // An element can have the array's mutability.
         Ty::Array(elem, m) => {
             mut_ok(m)?;
-            ty_ok(p, elem, true)
+            ty_ok(
+                p,
+                elem,
+                Allowed {
+                    inherit: true,
+                    ..allowed
+                },
+            )
         }
         Ty::Fn(sig, m) => {
             mut_ok(m)?;
             sig_ok(p, sig)
         }
         Ty::Cont(sig) => sig_ok(p, sig),
-        Ty::Ref(ty) => ty_ok(p, ty, inherit_ok),
+        Ty::Ref(ty) => ty_ok(p, ty, allowed),
         Ty::Any(m) => mut_ok(m),
     }
 }
@@ -239,7 +281,7 @@ fn sig_ok<P: Program + ?Sized>(p: &P, sig: &Sig) -> Result<(), String> {
     sig.params
         .iter()
         .chain(&sig.results)
-        .try_for_each(|ty| ty_ok(p, ty, false))
+        .try_for_each(|ty| ty_ok(p, ty, Allowed::PLAIN))
 }
 
 /// A field or element type in an object of mutability `m`: `Inherit`
@@ -248,13 +290,40 @@ fn sig_ok<P: Program + ?Sized>(p: &P, sig: &Sig) -> Result<(), String> {
 pub fn inherit(ty: &Ty, m: Mutability) -> Ty {
     let pick = |own: Mutability| if own == Mutability::Inherit { m } else { own };
     match ty {
-        Ty::Data(d, own) => Ty::Data(*d, pick(*own)),
+        Ty::Data(d, own, args) => Ty::Data(*d, pick(*own), args.iter().map(|&a| pick(a)).collect()),
         Ty::Array(elem, own) => Ty::Array(elem.clone(), pick(*own)),
         Ty::Fn(sig, own) => Ty::Fn(sig.clone(), pick(*own)),
         Ty::Ref(inner) => Ty::Ref(Box::new(inherit(inner, m))),
         Ty::Any(own) => Ty::Any(pick(*own)),
         other => other.clone(),
     }
+}
+
+/// `ty` with each mutability parameter `Param(i)` replaced by `args[i - 1]`,
+/// wherever it is.
+pub fn subst_params(ty: &Ty, args: &[Mutability]) -> Ty {
+    if args.is_empty() {
+        return ty.clone();
+    }
+    let pick = |m: Mutability| match m {
+        Mutability::Param(i) => args.get(i as usize - 1).copied().unwrap_or(m),
+        m => m,
+    };
+    match ty {
+        Ty::Data(d, own, a) => Ty::Data(*d, pick(*own), a.iter().map(|&m| pick(m)).collect()),
+        Ty::Array(elem, own) => Ty::Array(Box::new(subst_params(elem, args)), pick(*own)),
+        Ty::Fn(sig, own) => Ty::Fn(sig.clone(), pick(*own)),
+        Ty::Ref(inner) => Ty::Ref(Box::new(subst_params(inner, args))),
+        Ty::Any(own) => Ty::Any(pick(*own)),
+        other => other.clone(),
+    }
+}
+
+/// The type of a field declared as `field` in an object of type
+/// `Data(_, m, args)`: the arguments in place of the parameters, and `m`
+/// in place of `Inherit`.
+pub fn resolve(field: &Ty, m: Mutability, args: &[Mutability]) -> Ty {
+    inherit(&subst_params(field, args), m)
 }
 
 /// The type of the elements of an array of type `ty`, with `Inherit`
@@ -271,20 +340,24 @@ pub fn deep_imm<P: Program + ?Sized>(p: &P, ty: &Ty) -> bool {
     deep_imm_in(p, ty, &mut BTreeSet::new())
 }
 
-fn deep_imm_in<P: Program + ?Sized>(p: &P, ty: &Ty, seen: &mut BTreeSet<DataId>) -> bool {
+fn deep_imm_in<P: Program + ?Sized>(
+    p: &P,
+    ty: &Ty,
+    seen: &mut BTreeSet<(DataId, Vec<Mutability>)>,
+) -> bool {
     match ty {
         Ty::I32 | Ty::I64 | Ty::F32 | Ty::F64 => true,
-        Ty::Data(d, Mutability::Imm) => {
+        Ty::Data(d, Mutability::Imm, args) => {
             // A data type already being checked is assumed fine, so that
             // recursive types terminate.
-            if !seen.insert(*d) {
+            if !seen.insert((*d, args.clone())) {
                 return true;
             }
             let Some(decl) = p.data(*d) else { return false };
             decl.ctors
                 .iter()
                 .flat_map(|c| &c.fields)
-                .all(|field| deep_imm_in(p, &inherit(field, Mutability::Imm), seen))
+                .all(|field| deep_imm_in(p, &resolve(field, Mutability::Imm, args), seen))
         }
         Ty::Array(elem, Mutability::Imm) => deep_imm_in(p, &inherit(elem, Mutability::Imm), seen),
         Ty::Fn(_, Mutability::Imm) | Ty::Any(Mutability::Imm) => true,
@@ -292,39 +365,93 @@ fn deep_imm_in<P: Program + ?Sized>(p: &P, ty: &Ty, seen: &mut BTreeSet<DataId>)
     }
 }
 
-/// The type of `Copy(m)` of a value of type `ty`, or why it can't be
-/// copied. The type decides what's copied: a data object or an array whose
-/// type is already `m` is kept with everything it holds, and any other one,
-/// `ro` included, is copied, with the same rule for what it holds through
-/// fields and elements that inherit its mutability. Fields and elements
-/// with a mutability of their own are shared, so their types stay.
-pub fn copy_ty<P: Program + ?Sized>(p: &P, ty: &Ty, m: Mutability) -> Result<Ty, String> {
-    let imm = m == Mutability::Imm;
+/// The type `Copy(m)` of a value of type `ty` gives when nothing says
+/// otherwise, as when a builder isn't given one: a data object or an
+/// array whose type is already `m` is kept, and any other one is copied
+/// to `m`, with its arguments made `m` too. Fields and elements with a
+/// mutability of their own are shared. Whether that's a valid copy is up
+/// to [`copy_check`].
+pub fn copy_ty(ty: &Ty, m: Mutability) -> Ty {
     match ty {
-        Ty::I32 | Ty::I64 | Ty::F32 | Ty::F64 => Ok(ty.clone()),
-        Ty::Data(d, _) => {
-            let copied = Ty::Data(*d, m);
-            if imm && !deep_imm(p, &copied) {
-                return Err(format!(
-                    "can't copy {ty} to imm: it has a field that can't be imm"
-                ));
+        Ty::Data(_, own, _) | Ty::Array(_, own) if *own == m => ty.clone(),
+        Ty::Data(d, _, args) => Ty::Data(*d, m, vec![m; args.len()]),
+        Ty::Array(elem, _) => Ty::Array(elem.clone(), m),
+        _ => ty.clone(),
+    }
+}
+
+/// Checks that `Copy(m)` can turn a value of type `from` into one of type
+/// `to`, which says what's copied. The two have the same shape and differ
+/// only in mutabilities. Where they're equal, the value is kept with what
+/// it holds; where they differ, a data object or array is copied to the
+/// mutability `to` gives, and its fields and elements are checked the same
+/// way. `Copy` doesn't look into closures, refs, `Any` or continuations, so
+/// those must be equal.
+pub fn copy_check<P: Program + ?Sized>(
+    p: &P,
+    from: &Ty,
+    to: &Ty,
+    m: Mutability,
+) -> Result<(), String> {
+    // A data object or array that's kept already has the mutability `m`.
+    if let Ty::Data(..) | Ty::Array(..) = to
+        && to.mutability() != Some(m)
+    {
+        return Err(format!("copy[{m}] gives a {m} value, but binds a {to}"));
+    }
+    if m == Mutability::Imm
+        && matches!(from, Ty::Fn(..) | Ty::Ref(_) | Ty::Any(_) | Ty::Cont(_))
+        && !deep_imm(p, from)
+    {
+        return Err(format!("can't copy to imm a value that reaches a {from}"));
+    }
+    convert(p, from, to, &mut HashSet::new())?;
+    if m == Mutability::Imm && !deep_imm(p, to) {
+        return Err(format!(
+            "can't copy {from} to {to}: it isn't imm all the way down"
+        ));
+    }
+    Ok(())
+}
+
+fn convert<P: Program + ?Sized>(
+    p: &P,
+    from: &Ty,
+    to: &Ty,
+    seen: &mut HashSet<(Ty, Ty)>,
+) -> Result<(), String> {
+    if from == to {
+        return Ok(());
+    }
+    let made = |m: &Mutability| match m {
+        Mutability::Imm | Mutability::Mut => Ok(()),
+        _ => Err(format!("copy can't make a {to}: a copy is imm or mut")),
+    };
+    match (from, to) {
+        (Ty::Data(d1, m1, a1), Ty::Data(d2, m2, a2)) if d1 == d2 && a1.len() == a2.len() => {
+            made(m2)?;
+            // A data type already being checked is assumed fine, so that
+            // recursive types terminate.
+            if !seen.insert((from.clone(), to.clone())) {
+                return Ok(());
             }
-            Ok(copied)
-        }
-        // An array that's already `m` is kept as it is, with what it holds.
-        Ty::Array(_, own) if *own == m => Ok(ty.clone()),
-        Ty::Array(elem, _) => {
-            let copied = Ty::Array(elem.clone(), m);
-            if imm && !deep_imm(p, &copied) {
-                return Err(format!("can't copy {ty} to imm: its elements can't be imm"));
+            let Some(decl) = p.data(*d1) else {
+                return Err(format!("unknown data type {d1}"));
+            };
+            for field in decl.ctors.iter().flat_map(|c| &c.fields) {
+                convert(p, &resolve(field, *m1, a1), &resolve(field, *m2, a2), seen)?;
             }
-            Ok(copied)
+            Ok(())
         }
-        Ty::Fn(_, Mutability::Imm) | Ty::Any(Mutability::Imm) => Ok(ty.clone()),
-        Ty::Fn(..) | Ty::Any(_) | Ty::Ref(_) | Ty::Cont(_) if imm => {
-            Err(format!("can't copy to imm a value that reaches a {ty}"))
+        (Ty::Array(e1, m1), Ty::Array(e2, m2)) => {
+            made(m2)?;
+            convert(p, &inherit(e1, *m1), &inherit(e2, *m2), seen)
         }
-        Ty::Fn(..) | Ty::Any(_) | Ty::Ref(_) | Ty::Cont(_) => Ok(ty.clone()),
+        (Ty::Fn(..) | Ty::Ref(_) | Ty::Any(_) | Ty::Cont(_), _) => Err(format!(
+            "copy can't make a {to} from a {from}: it doesn't look into closures, refs, \
+             `any` or continuations"
+        )),
+        _ => Err(format!("copy can't make a {to} from a {from}")),
     }
 }
 
@@ -359,12 +486,12 @@ impl<P: Program + ?Sized> Cx<'_, P> {
     fn func(&mut self) {
         let f = self.f;
         for (i, ty) in f.vars.iter().enumerate() {
-            if let Err(message) = ty_ok(self.p, ty, false) {
+            if let Err(message) = ty_ok(self.p, ty, Allowed::PLAIN) {
                 self.err(format!("type of %{i}: {message}"));
             }
         }
         for ty in &f.results {
-            if let Err(message) = ty_ok(self.p, ty, false) {
+            if let Err(message) = ty_ok(self.p, ty, Allowed::PLAIN) {
                 self.err(format!("result type: {message}"));
             }
         }
@@ -581,7 +708,7 @@ impl<P: Program + ?Sized> Cx<'_, P> {
                     self.err(format!("case on {ty} has no default"));
                 }
             }
-            Ty::Data(d, _) => {
+            Ty::Data(d, ..) => {
                 let Some(decl) = self.p.data(*d) else { return };
                 let ctors = decl.ctors.len();
                 let mut seen = BTreeSet::new();

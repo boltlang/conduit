@@ -4,16 +4,16 @@ use crate::id::DataId;
 
 /// A type.
 ///
-/// Types are compared structurally: there's exactly one way to write each
-/// type, so the derived `Eq` is type equality.
+/// Types are compared structurally, so the derived `Eq` is type equality.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Ty {
     I32,
     I64,
     F32,
     F64,
-    /// A GC'd ADT value.
-    Data(DataId, Mutability),
+    /// A GC'd ADT value: its own mutability, then one argument for each
+    /// mutability parameter its declaration has.
+    Data(DataId, Mutability, Vec<Mutability>),
     /// A GC'd array.
     Array(Box<Ty>, Mutability),
     /// A closure. `Imm` means it captured only what's `Imm` all the way down.
@@ -28,20 +28,26 @@ pub enum Ty {
 }
 
 impl Ty {
+    /// A data type whose declaration has no mutability parameters.
+    pub fn data(d: DataId, m: Mutability) -> Ty {
+        Ty::Data(d, m, Vec::new())
+    }
+
     /// The mutability of an object type; `None` for scalars and `Cont`.
     pub fn mutability(&self) -> Option<Mutability> {
         match self {
             Ty::I32 | Ty::I64 | Ty::F32 | Ty::F64 | Ty::Cont(_) => None,
-            Ty::Data(_, m) | Ty::Array(_, m) | Ty::Fn(_, m) | Ty::Any(m) => Some(*m),
+            Ty::Data(_, m, _) | Ty::Array(_, m) | Ty::Fn(_, m) | Ty::Any(m) => Some(*m),
             Ty::Ref(_) => Some(Mutability::Mut),
         }
     }
 
     /// Whether a value of this type can be used where `other` is expected.
-    /// Only mutabilities can differ: `Imm` and `Mut` both fit `ReadOnly`.
+    /// Only an object's own mutability can differ: `Imm` and `Mut` both fit
+    /// `ReadOnly`. A data type's arguments must be equal.
     pub fn is_subtype(&self, other: &Ty) -> bool {
         match (self, other) {
-            (Ty::Data(d1, m1), Ty::Data(d2, m2)) => d1 == d2 && m1.is_sub(*m2),
+            (Ty::Data(d1, m1, a1), Ty::Data(d2, m2, a2)) => d1 == d2 && a1 == a2 && m1.is_sub(*m2),
             (Ty::Array(e1, m1), Ty::Array(e2, m2)) => e1 == e2 && m1.is_sub(*m2),
             (Ty::Fn(s1, m1), Ty::Fn(s2, m2)) => s1 == s2 && m1.is_sub(*m2),
             (Ty::Any(m1), Ty::Any(m2)) => m1.is_sub(*m2),
@@ -53,7 +59,7 @@ impl Ty {
     /// mutability of its own (scalars, `Cont`, `Ref`).
     pub fn with_mutability(&self, m: Mutability) -> Ty {
         match self {
-            Ty::Data(d, _) => Ty::Data(*d, m),
+            Ty::Data(d, _, args) => Ty::Data(*d, m, args.clone()),
             Ty::Array(elem, _) => Ty::Array(elem.clone(), m),
             Ty::Fn(sig, _) => Ty::Fn(sig.clone(), m),
             Ty::Any(_) => Ty::Any(m),
@@ -72,8 +78,12 @@ pub enum Mutability {
     ReadOnly,
     /// Only in a [`CtorDecl`]'s field types and in an array's element
     /// type: the mutability of the data object or array holding the field
-    /// or element.
+    /// or element. It's parameter 0 of every data type and array.
     Inherit,
+    /// Only in a [`CtorDecl`]'s field types: the declaration's mutability
+    /// parameter `i`, counted from 1, which each data type of the
+    /// declaration gives as an argument.
+    Param(u32),
 }
 
 impl Mutability {
@@ -98,7 +108,11 @@ impl fmt::Display for Ty {
             Ty::I64 => write!(f, "i64"),
             Ty::F32 => write!(f, "f32"),
             Ty::F64 => write!(f, "f64"),
-            Ty::Data(d, m) => write!(f, "{m} {d}"),
+            Ty::Data(d, m, args) if args.is_empty() => write!(f, "{m} {d}"),
+            Ty::Data(d, m, args) => {
+                let args: Vec<String> = args.iter().map(Mutability::to_string).collect();
+                write!(f, "{m} {d}[{}]", args.join(", "))
+            }
             Ty::Array(elem, m) => write!(f, "{m} [{elem}]"),
             Ty::Fn(sig, m) => write!(f, "{m} fn{sig}"),
             Ty::Cont(sig) => write!(f, "cont{sig}"),
@@ -110,12 +124,13 @@ impl fmt::Display for Ty {
 
 impl fmt::Display for Mutability {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Mutability::Imm => "imm",
-            Mutability::Mut => "mut",
-            Mutability::ReadOnly => "ro",
-            Mutability::Inherit => "inherit",
-        })
+        match self {
+            Mutability::Imm => f.write_str("imm"),
+            Mutability::Mut => f.write_str("mut"),
+            Mutability::ReadOnly => f.write_str("ro"),
+            Mutability::Inherit => f.write_str("inherit"),
+            Mutability::Param(i) => write!(f, "'m{i}"),
+        }
     }
 }
 

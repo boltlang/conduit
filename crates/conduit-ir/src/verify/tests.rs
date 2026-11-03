@@ -46,6 +46,7 @@ fn module() -> Module {
     m.data.insert(
         POINT,
         DataDecl {
+            params: 0,
             ctors: vec![CtorDecl {
                 fields: vec![Ty::I32, Ty::I32],
             }],
@@ -54,6 +55,7 @@ fn module() -> Module {
     m.data.insert(
         OPTION,
         DataDecl {
+            params: 0,
             ctors: vec![
                 CtorDecl { fields: vec![] },
                 CtorDecl {
@@ -65,8 +67,9 @@ fn module() -> Module {
     m.data.insert(
         HOLDER,
         DataDecl {
+            params: 0,
             ctors: vec![CtorDecl {
-                fields: vec![Ty::Data(POINT, Mut)],
+                fields: vec![Ty::data(POINT, Mut)],
             }],
         },
     );
@@ -258,7 +261,7 @@ fn integer_case_needs_a_default() {
 
 #[test]
 fn data_case_must_cover_every_constructor() {
-    let mut f = Func::new(vec![Ty::Data(OPTION, Imm)], vec![]);
+    let mut f = Func::new(vec![Ty::data(OPTION, Imm)], vec![]);
     let o = f.params[0];
     f.body = Block::from(Tail::Case {
         scrut: v(o),
@@ -274,7 +277,7 @@ fn data_case_must_cover_every_constructor() {
 /// `unwrap_or` from the design doc, reading the field of `Some` in `body`'s
 /// place.
 fn unwrap_or(read_in_arm: bool) -> Func {
-    let mut f = Func::new(vec![Ty::Data(OPTION, Imm), Ty::I32], vec![Ty::I32]);
+    let mut f = Func::new(vec![Ty::data(OPTION, Imm), Ty::I32], vec![Ty::I32]);
     let (o, d) = (f.params[0], f.params[1]);
     let x = f.new_var(Ty::I32);
     let read = let_(
@@ -320,7 +323,7 @@ fn field_read_needs_a_known_constructor() {
 
 #[test]
 fn single_constructor_fields_can_always_be_read() {
-    let mut f = Func::new(vec![Ty::Data(POINT, ReadOnly)], vec![Ty::I32]);
+    let mut f = Func::new(vec![Ty::data(POINT, ReadOnly)], vec![Ty::I32]);
     let p = f.params[0];
     let x = f.new_var(Ty::I32);
     f.body = let_(
@@ -335,7 +338,7 @@ fn single_constructor_fields_can_always_be_read() {
 #[test]
 fn only_mut_objects_can_be_set() {
     for (m, ok) in [(Mut, true), (Imm, false), (ReadOnly, false)] {
-        let mut f = Func::new(vec![Ty::Data(POINT, m)], vec![]);
+        let mut f = Func::new(vec![Ty::data(POINT, m)], vec![]);
         let p = f.params[0];
         f.body = let_(
             vec![],
@@ -353,18 +356,18 @@ fn only_mut_objects_can_be_set() {
 
 #[test]
 fn imm_object_cant_hold_a_mut_field() {
-    let mut f = Func::new(vec![Ty::Data(POINT, Mut)], vec![]);
+    let mut f = Func::new(vec![Ty::data(POINT, Mut)], vec![]);
     let p = f.params[0];
-    let h = f.new_var(Ty::Data(HOLDER, Imm));
+    let h = f.new_var(Ty::data(HOLDER, Imm));
     f.body = let_(vec![h], Op::New(ctor(HOLDER, 0)), vec![v(p)], ret(vec![]));
     assert_err(f, "an imm data12.0 can't hold field 0 of type mut data10");
 }
 
 #[test]
 fn mut_object_can_hold_a_mut_field() {
-    let mut f = Func::new(vec![Ty::Data(POINT, Mut)], vec![]);
+    let mut f = Func::new(vec![Ty::data(POINT, Mut)], vec![]);
     let p = f.params[0];
-    let h = f.new_var(Ty::Data(HOLDER, Mut));
+    let h = f.new_var(Ty::data(HOLDER, Mut));
     f.body = let_(vec![h], Op::New(ctor(HOLDER, 0)), vec![v(p)], ret(vec![]));
     assert_ok(f);
 }
@@ -373,20 +376,20 @@ fn mut_object_can_hold_a_mut_field() {
 fn mut_and_imm_fit_read_only() {
     // G takes a read-only point. F passes it a mut one, then a read-only one
     // to a function that wants mut.
-    let mut g = Func::new(vec![Ty::Data(POINT, ReadOnly)], vec![]);
+    let mut g = Func::new(vec![Ty::data(POINT, ReadOnly)], vec![]);
     g.body = ret(vec![]);
     let mut m = module();
     m.funcs.insert(G, g);
 
-    let mut f = Func::new(vec![Ty::Data(POINT, Mut)], vec![]);
+    let mut f = Func::new(vec![Ty::data(POINT, Mut)], vec![]);
     let p = f.params[0];
     f.body = let_(vec![], Op::Call(G), vec![v(p)], ret(vec![]));
     assert_eq!(check_in(m.clone(), f), Vec::<String>::new());
 
-    let mut h = Func::new(vec![Ty::Data(POINT, Mut)], vec![]);
+    let mut h = Func::new(vec![Ty::data(POINT, Mut)], vec![]);
     h.body = ret(vec![]);
     m.funcs.insert(G, h);
-    let mut f = Func::new(vec![Ty::Data(POINT, ReadOnly)], vec![]);
+    let mut f = Func::new(vec![Ty::data(POINT, ReadOnly)], vec![]);
     let p = f.params[0];
     f.body = let_(vec![], Op::Call(G), vec![v(p)], ret(vec![]));
     let errors = check_in(m, f);
@@ -437,16 +440,16 @@ fn imm_closure_cant_capture_a_ref() {
 
 #[test]
 fn copy_to_imm() {
-    let mut f = Func::new(vec![Ty::Data(POINT, Mut)], vec![Ty::Data(POINT, Imm)]);
+    let mut f = Func::new(vec![Ty::data(POINT, Mut)], vec![Ty::data(POINT, Imm)]);
     let p = f.params[0];
-    let q = f.new_var(Ty::Data(POINT, Imm));
+    let q = f.new_var(Ty::data(POINT, Imm));
     f.body = let_(vec![q], Op::Copy(Imm), vec![v(p)], ret(vec![v(q)]));
     assert_ok(f);
 
     // HOLDER's field is mut whatever the holder is, so it can't be imm.
-    let mut f = Func::new(vec![Ty::Data(HOLDER, Mut)], vec![]);
+    let mut f = Func::new(vec![Ty::data(HOLDER, Mut)], vec![]);
     let h = f.params[0];
-    let q = f.new_var(Ty::Data(HOLDER, Imm));
+    let q = f.new_var(Ty::data(HOLDER, Imm));
     f.body = let_(vec![q], Op::Copy(Imm), vec![v(h)], ret(vec![]));
     assert_err(f, "can't copy mut data12 to imm");
 
@@ -460,22 +463,22 @@ fn copy_to_imm() {
 /// `Freeze` has the types of `Copy(Imm)`.
 #[test]
 fn freeze() {
-    let mut f = Func::new(vec![Ty::Data(POINT, Mut)], vec![Ty::Data(POINT, Imm)]);
+    let mut f = Func::new(vec![Ty::data(POINT, Mut)], vec![Ty::data(POINT, Imm)]);
     let p = f.params[0];
-    let q = f.new_var(Ty::Data(POINT, Imm));
+    let q = f.new_var(Ty::data(POINT, Imm));
     f.body = let_(vec![q], Op::Freeze, vec![v(p)], ret(vec![v(q)]));
     assert_ok(f);
 
-    let mut f = Func::new(vec![Ty::Data(HOLDER, Mut)], vec![]);
+    let mut f = Func::new(vec![Ty::data(HOLDER, Mut)], vec![]);
     let h = f.params[0];
-    let q = f.new_var(Ty::Data(HOLDER, Imm));
+    let q = f.new_var(Ty::data(HOLDER, Imm));
     f.body = let_(vec![q], Op::Freeze, vec![v(h)], ret(vec![]));
     assert_err(f, "can't copy mut data12 to imm");
 }
 
 #[test]
 fn inherit_only_in_fields() {
-    let mut f = Func::new(vec![Ty::Data(POINT, Mutability::Inherit)], vec![]);
+    let mut f = Func::new(vec![Ty::data(POINT, Mutability::Inherit)], vec![]);
     f.body = ret(vec![]);
     assert_err(
         f,
