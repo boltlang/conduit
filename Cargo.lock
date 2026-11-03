@@ -109,6 +109,14 @@ name = "conduit-ir"
 version = "0.1.0"
 
 [[package]]
+name = "conduit-opt"
+version = "0.1.0"
+dependencies = [
+ "conduit-eval",
+ "conduit-ir",
+]
+
+[[package]]
 name = "conduit-wasm"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,12 @@
+[package]
+name = "conduit-opt"
+description = "Optimization passes on Conduit IR"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+conduit-ir = { path = "../conduit-ir" }
+
+[dev-dependencies]
+conduit-eval = { path = "../conduit-eval" }
