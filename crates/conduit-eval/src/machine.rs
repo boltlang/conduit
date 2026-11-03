@@ -435,7 +435,12 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                     return Err(unverified("array fill needs a length"));
                 };
                 let is_mut = self.binds_mut(binds)?;
-                let len = len as u32 as usize;
+                // Lengths are unsigned, as in Wasm, but an array is at most
+                // `i32::MAX` long, so that `ArrayLen` can give its length.
+                if len < 0 {
+                    return Err(out_of_bounds(len as u32 as usize, i32::MAX as usize));
+                }
+                let len = len as usize;
                 vec![self.alloc(Object::Array {
                     elems: vec![value; len],
                     is_mut,

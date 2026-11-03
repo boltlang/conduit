@@ -1,0 +1,7 @@
+// A continuation type has no Wasm type yet.
+
+fn fn0(%0: cont() -> ()) -> () {
+  jump ret()
+}
+
+//# wasm-error: continuations aren't supported yet

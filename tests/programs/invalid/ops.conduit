@@ -1,0 +1,284 @@
+// Ops given arguments or results of the wrong types: one mistake in each
+// function, so each error names the function it's in.
+
+data data0 {
+  (i32, i32)
+}
+
+data data1 {
+  ()
+  (i32)
+}
+
+effect effect20 {
+  () -> ()
+}
+
+fn fn0(%0: i32) -> () {
+  let %1: i32 = call fn99(%0)
+  jump ret()
+}
+
+fn fn1(%0: i32) -> () {
+  let %1: i32 = call_extern extern99(%0)
+  jump ret()
+}
+
+fn fn2(%0: i32) -> () {
+  let %1: imm fn() -> () = closure fn99(%0)
+  jump ret()
+}
+
+fn fn3(%0: i32) -> () {
+  let %1: i32 = closure fn90()
+  jump ret()
+}
+
+fn fn4(%0: i32) -> () {
+  let %1: imm fn() -> (i64) = closure fn90(%0)
+  jump ret()
+}
+
+fn fn5(%0: i32) -> () {
+  let %1: i32 = apply(%0)
+  jump ret()
+}
+
+fn fn6() -> () {
+  let %0: imm data1 = new data0.0(1i32, 2i32)
+  jump ret()
+}
+
+fn fn7() -> () {
+  let %0: imm data0 = new data0.0(1i32)
+  jump ret()
+}
+
+fn fn8() -> () {
+  let %0: imm data0 = new data0.0(1i64, 2i32)
+  jump ret()
+}
+
+fn fn9() -> () {
+  let %0: ro data0 = new data0.0(1i32, 2i32)
+  jump ret()
+}
+
+fn fn10(%0: i32) -> () {
+  let %1: i32 = get data0.0.0(%0)
+  jump ret()
+}
+
+fn fn11(%0: mut data0) -> () {
+  let = set data0.0.0(%0)
+  jump ret()
+}
+
+fn fn12(%0: mut data0) -> () {
+  let = set data0.0.0(%0, 1i64)
+  jump ret()
+}
+
+fn fn13(%0: imm data0) -> () {
+  let %1: i32 = get data0.0.5(%0)
+  jump ret()
+}
+
+fn fn14(%0: imm data0) -> () {
+  let %1: i32 = get data0.3.0(%0)
+  jump ret()
+}
+
+fn fn15(%0: imm data0) -> () {
+  let %1: i32 = get data1.1.0(%0)
+  jump ret()
+}
+
+fn fn16() -> () {
+  let %0: mut [i32] = array_new(1i64)
+  jump ret()
+}
+
+fn fn17() -> () {
+  let %0: mut [i32] = array_fill(1i64, 1i32)
+  jump ret()
+}
+
+fn fn18() -> () {
+  let %0: mut [i32] = array_fill(1i32, 1i64)
+  jump ret()
+}
+
+fn fn19(%0: mut [i32]) -> () {
+  let %1: i32 = array_get(%0, 1i64)
+  jump ret()
+}
+
+fn fn20(%0: mut [i32]) -> () {
+  let = array_set(%0, 0i32, 1i64)
+  jump ret()
+}
+
+fn fn21(%0: imm [i32]) -> () {
+  let = array_set(%0, 0i32, 1i32)
+  jump ret()
+}
+
+fn fn22(%0: mut [i32]) -> () {
+  let = array_set(%0, 0i32)
+  jump ret()
+}
+
+fn fn23() -> () {
+  let %0: i32 = array_len(1i32)
+  jump ret()
+}
+
+fn fn24() -> () {
+  let %0: ref i32 = ref_new(1i64)
+  jump ret()
+}
+
+fn fn25() -> () {
+  let %0: i32 = ref_new(1i32)
+  jump ret()
+}
+
+fn fn26() -> () {
+  let %0: i32 = ref_get(1i32)
+  jump ret()
+}
+
+fn fn27(%0: ref i32) -> () {
+  let = ref_set(%0, 1i64)
+  jump ret()
+}
+
+fn fn28() -> () {
+  let = ref_set(1i32, 1i32)
+  jump ret()
+}
+
+fn fn29() -> () {
+  let %0: imm any = box[i32](1i64)
+  jump ret()
+}
+
+fn fn30() -> () {
+  let %0: i32 = unbox[i32](1i32)
+  jump ret()
+}
+
+fn fn31() -> () {
+  let %0: i32 = copy[imm](1i32, 2i32)
+  jump ret()
+}
+
+fn fn32() -> () {
+  let %0: i32 = freeze(1i32, 2i32)
+  jump ret()
+}
+
+fn fn33(%0: mut data0) -> () {
+  let %1: ro data0 = copy[ro](%0)
+  jump ret()
+}
+
+fn fn34(%0: imm fn() -> ()) -> () {
+  let = handle handler99(%0)
+  jump ret()
+}
+
+fn fn35() -> () {
+  let = perform effect20.5()
+  jump ret()
+}
+
+fn fn36() -> () {
+  let = resume(1i32)
+  jump ret()
+}
+
+fn fn37() -> () {
+  let %0: i32, %1: i32 = add(1i32, 2i32)
+  jump ret()
+}
+
+fn fn38() -> () {
+  let %0: i64 = add(1i32, 2i32)
+  jump ret()
+}
+
+fn fn39() -> () {
+  let %0: imm [mut data0] = array_new()
+  jump ret()
+}
+
+fn fn40() -> () {
+  let %0: i32 = array_new()
+  jump ret()
+}
+
+fn fn41(%0: imm fn() -> ()) -> () {
+  let %1: i32 = apply(%0, 1i32)
+  jump ret()
+}
+
+fn fn42(%0: mut fn(i32) -> ()) -> () {
+  let %1: imm fn(i32) -> () = copy[imm](%0)
+  jump ret()
+}
+
+fn fn43(%0: ref i32) -> () {
+  let %1: ref i32 = copy[imm](%0)
+  jump ret()
+}
+
+fn fn90(%0: i32) -> (i32) {
+  jump ret(%0)
+}
+
+//# verify-error: fn0: unknown function fn99
+//# verify-error: fn1: unknown extern extern99
+//# verify-error: fn2: unknown function fn99
+//# verify-error: fn3: closure of fn90 must bind one closure
+//# verify-error: fn4: fn90 has type (i32) -> (i32), which doesn't end with () -> (i64)
+//# verify-error: fn5: apply needs a closure as its first argument
+//# verify-error: fn6: new data0.0 binds a imm data1
+//# verify-error: fn7: data0.0 has 2 fields, but new gives 1
+//# verify-error: fn8: field 0 of data0.0 has type i32, but gets a i64
+//# verify-error: fn9: a new object is imm or mut, not ro
+//# verify-error: fn10: get of data0.0 needs one object
+//# verify-error: fn11: set of data0.0 needs an object and a value
+//# verify-error: fn12: field 0 of data0.0 has type i32, but gets a i64
+//# verify-error: fn13: data0.0 has no field 5
+//# verify-error: fn14: unknown constructor data0.3
+//# verify-error: fn15: data1.1 isn't a constructor of data0
+//# verify-error: fn16: array of i32 gets an element of type i64
+//# verify-error: fn17: array fill needs an i32 length and a value
+//# verify-error: fn18: array of i32 gets an element of type i64
+//# verify-error: fn19: array get needs an array and an i32 index
+//# verify-error: fn20: array of i32 gets an element of type i64
+//# verify-error: fn21: can't set an element of a imm [i32]
+//# verify-error: fn22: array set needs an array, an i32 index and a value
+//# verify-error: fn23: array len needs an array
+//# verify-error: fn24: ref of i32 gets a i64
+//# verify-error: fn25: ref new needs one value and binds one ref
+//# verify-error: fn26: ref get needs a ref
+//# verify-error: fn27: ref of i32 gets a i64
+//# verify-error: fn28: ref set needs a ref and a value
+//# verify-error: fn29: box of i32 gets a i64
+//# verify-error: fn30: unbox needs one any
+//# verify-error: fn31: copy needs one value
+//# verify-error: fn32: freeze needs one value
+//# verify-error: fn33: a new object is imm or mut, not ro
+//# verify-error: fn34: unknown handler handler99
+//# verify-error: fn35: effect20 has no operation 5
+//# verify-error: fn36: resume needs a continuation as its first argument
+//# verify-error: fn37: binds 2 values, but the op gives 1
+//# verify-error: fn38: the op gives a i32, but %0 has type i64
+//# verify-error: fn39: an imm array can't hold elements of type mut data0
+//# verify-error: fn40: an array op must bind one array
+//# verify-error: fn41: apply: expected 0 values, but got 1
+//# verify-error: fn42: can't copy to imm a value that reaches a mut fn(i32) -> ()
+//# verify-error: fn43: can't copy to imm a value that reaches a ref i32

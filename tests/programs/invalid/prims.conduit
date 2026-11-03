@@ -1,0 +1,62 @@
+// Scalar ops on operands of the wrong types.
+
+fn fn0() -> () {
+  let %0: i32 = add(1i32, 1i64)
+  jump ret()
+}
+
+fn fn1() -> () {
+  let %0: f64 = rem.s(1.0f64, 2.0f64)
+  jump ret()
+}
+
+fn fn2() -> () {
+  let %0: i32 = min(1i32, 2i32)
+  jump ret()
+}
+
+fn fn3() -> () {
+  let %0: i32 = sqrt(4i32)
+  jump ret()
+}
+
+fn fn4() -> () {
+  let %0: i32 = neg(1i32, 2i32)
+  jump ret()
+}
+
+fn fn5(%0: imm [i32]) -> () {
+  let %1: i32 = eq(%0, %0)
+  jump ret()
+}
+
+fn fn6() -> () {
+  let %0: ref i32 = convert.s[ref i32](1i32)
+  jump ret()
+}
+
+fn fn7() -> () {
+  let %0: i64 = reinterpret[i64](1.0f32)
+  jump ret()
+}
+
+fn fn8() -> () {
+  let %0: f32 = reinterpret[f32](1.0f32)
+  jump ret()
+}
+
+fn fn9() -> () {
+  let %0: i32 = add(1i32)
+  jump ret()
+}
+
+//# verify-error: fn0: Add needs two numbers of the same type, but got (i32, i64)
+//# verify-error: fn1: Rem(Signed) needs two integers of the same type, but got (f64, f64)
+//# verify-error: fn2: Min needs two floats of the same type, but got (i32, i32)
+//# verify-error: fn3: Sqrt needs one float, but got (i32)
+//# verify-error: fn4: Neg needs one number, but got (i32, i32)
+//# verify-error: fn5: Eq needs two numbers of the same type, but got (imm [i32], imm [i32])
+//# verify-error: fn6: can't convert to ref i32
+//# verify-error: fn7: can't reinterpret a f32 as a i64
+//# verify-error: fn8: can't reinterpret a f32 as a f32
+//# verify-error: fn9: Add needs two numbers of the same type, but got (i32)

@@ -1,0 +1,12 @@
+// The Wasm backend doesn't lower effect handlers or continuations yet.
+
+effect effect20 {
+  () -> ()
+}
+
+fn fn0() -> () {
+  let = perform effect20.0()
+  jump ret()
+}
+
+//# wasm-error: effect handlers aren't supported yet

@@ -1,0 +1,48 @@
+// Variables and labels used out of scope, bound twice, or given values of
+// the wrong types.
+
+fn fn0(%0: i32) -> (i32) {
+  join j1() = jump ret(%1)
+  in
+  let %1: i32 = add(%0, 1i32)
+  jump j1()
+}
+
+fn fn1(%0: i32) -> (i32) {
+  let %0: i32 = add(%0, 1i32)
+  jump ret(%0)
+}
+
+fn fn2(%0: i32) -> (i32) {
+  join j1() = jump ret(%0)
+  in
+  join j1() = jump ret(%0)
+  in jump j1()
+}
+
+fn fn3(%0: i32) -> (i32) {
+  join j1(%1: i32) = jump ret(%1)
+  in jump j1(1i64)
+}
+
+fn fn4(%0: i32) -> (i32) {
+  join j1(%1: i32) = jump ret(%1)
+  in jump j1()
+}
+
+fn fn5(%0: i32) -> (i32) {
+  join j1() = jump j1()
+  in jump j1()
+}
+
+fn fn6(%0: i32) -> (i32) {
+  jump ret(1i64)
+}
+
+//# verify-error: fn0: %1 is used where it isn't in scope
+//# verify-error: fn1: %0 is bound more than once
+//# verify-error: fn2: j1 is bound more than once
+//# verify-error: fn3: jump to j1: value 0 has type i64, but should have i32
+//# verify-error: fn4: jump to j1: expected 1 values, but got 0
+//# verify-error: fn5: jump to j1, which isn't in scope
+//# verify-error: fn6: jump to ret: value 0 has type i64, but should have i32

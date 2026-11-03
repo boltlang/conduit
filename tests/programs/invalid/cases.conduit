@@ -1,0 +1,84 @@
+// Cases whose tags don't fit what they branch on.
+
+data data0 {
+  ()
+  (i32)
+}
+
+data data1 {
+  ()
+}
+
+fn fn0(%0: i32) -> () {
+  case %0 {
+    4294967296 => jump ret()
+    _ => jump ret()
+  }
+}
+
+fn fn1(%0: i64) -> () {
+  case %0 {
+    1 => jump ret()
+    1 => jump ret()
+    _ => jump ret()
+  }
+}
+
+fn fn2(%0: i32) -> () {
+  case %0 {
+    data0.0 => jump ret()
+    _ => jump ret()
+  }
+}
+
+fn fn3(%0: imm data0) -> () {
+  case %0 {
+    data1.0 => jump ret()
+    data0.5 => jump ret()
+    _ => jump ret()
+  }
+}
+
+fn fn4(%0: imm data0) -> () {
+  case %0 {
+    data0.0 => jump ret()
+    data0.0 => jump ret()
+    data0.1 => jump ret()
+  }
+}
+
+fn fn5(%0: imm data0) -> () {
+  case %0 {
+    3 => jump ret()
+    _ => jump ret()
+  }
+}
+
+fn fn6(%0: f64) -> () {
+  case %0 {
+    _ => jump ret()
+  }
+}
+
+fn fn7(%0: imm data0) -> () {
+  case %0 {
+    data0.1 => jump ret()
+  }
+}
+
+fn fn8(%0: i32) -> () {
+  case %0 {
+    0 => jump ret()
+  }
+}
+
+//# verify-error: fn0: case on an i32 has a tag 4294967296, which isn't an i32
+//# verify-error: fn1: case has the tag 1 more than once
+//# verify-error: fn2: case on i32 has a constructor tag data0.0
+//# verify-error: fn3: case on imm data0 has the tag data1.0, which isn't one of its constructors
+//# verify-error: fn3: case on imm data0 has the tag data0.5, which isn't one of its constructors
+//# verify-error: fn4: case has the tag data0.0 more than once
+//# verify-error: fn5: case on imm data0 has an integer tag 3
+//# verify-error: fn6: can't branch on a value of type f64
+//# verify-error: fn7: case on imm data0 has no default and doesn't cover every constructor
+//# verify-error: fn8: case on i32 has no default

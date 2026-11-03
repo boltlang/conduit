@@ -113,7 +113,7 @@ control-flow pass needs to change.
 
 An op that can trap has effect `Unknown`, so that dead-code elimination
 never removes a trap: integer division and remainder (on zero), float to
-integer conversions (out of range), array accesses (out of bounds), and
+integer conversions (out of range), array accesses (out of bounds), `ArrayFill` with a length above `i32::MAX`, and
 `Unbox` (a failed cast).
 
 ### Types
