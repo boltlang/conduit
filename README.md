@@ -8,6 +8,7 @@ languages that are bare-metal.
 
 Some of its properties:
 
+ - Mutations and cycles are allowed.
  - ADTs are the default way to construct and manipulate structured data.
  - No need for manual memory management. The compiler optimises allocations
    away where possible and only uses a GC as a fallback.
