@@ -2,14 +2,15 @@
 
 Conduit's IR is a typed, monomorphic, A-normal-form tree with join points,
 with a boxed `Any` type for code that can't be monomorphized.
-It is meant to be small: a pass handles **5 kinds of term**. Everything that
-isn't control flow is a single `Let` node holding an operation, so a pass that
-doesn't care about a particular operation never has to match on it.
+It is meant to be small: a pass handles **5 kinds of thing**, a `let` and
+the 4 kinds of tail that end a block. Everything that isn't control flow is a
+single `let` holding an operation, so a pass that doesn't care about a
+particular operation never has to match on it.
 
 ## Goals
 
-- **Few cases.** Control flow has 5 term kinds. Operands have 2 kinds. Every
-  operation has the same shape, `let xs = op(args)`.
+- **Few cases.** A block is a list of `let`s and one of 4 tails. Operands
+  have 2 kinds. Every operation has the same shape, `let xs = op(args)`.
 - **Correct by construction where possible.** A jump can only appear in tail
   position, because the grammar has no other place to put one. The only
   checks left for join points are "is the label in scope?" and "do the
@@ -20,7 +21,7 @@ doesn't care about a particular operation never has to match on it.
 - **Room for real languages.** ADTs, closures, mutable fields, arrays,
   GC'd values and effect handlers. See "What frontends need" for what a
   frontend's own mid-level IR usually carries that Conduit must carry too.
-- **Handlers add no terms.** Effect handlers are three more `Op`s and one
+- **Handlers add no control flow.** Effect handlers are three more `Op`s and one
   more type. Passes that ignore them keep working unchanged.
 
 ## The whole IR
@@ -32,27 +33,33 @@ pub enum Atom {
     Lit(Lit),          // integer or float constant
 }
 
-pub enum Term {
-    /// `let x1, .., xn = op(a1, .., am); body`
-    Let { binds: Vec<Var>, op: Op, args: Vec<Atom>, body: Box<Term>, source: Option<SourceId> },
+/// Straight-line code, then what ends it. The `let`s are a list, so a long
+/// function is a long `Vec`, not a deep chain: dropping, cloning, comparing
+/// or walking one never recurses per statement. Blocks only nest through
+/// `join` and `case`.
+pub struct Block { lets: Vec<Let>, tail: Tail }
 
-    /// `join [rec] j1(params) = t1, .., jn(params) = tn in body`
-    Join { rec: bool, defs: Vec<JoinDef>, body: Box<Term> },
+/// `let x1, .., xn = op(a1, .., am)`
+pub struct Let { binds: Vec<Var>, op: Op, args: Vec<Atom>, source: Option<SourceId> }
+
+pub enum Tail {
+    /// `join [rec] j1(params) = b1, .., jn(params) = bn in body`
+    Join { rec: bool, defs: Vec<JoinDef>, body: Box<Block> },
 
     /// `jump j(a1, .., an)`, which also covers return: see "Returning" below.
     Jump { target: Label, args: Vec<Atom>, source: Option<SourceId> },
 
     /// Branch on an integer or on the constructor of an ADT value.
     /// `default` runs when no arm's tag matches.
-    Case { scrut: Atom, arms: Vec<Arm>, default: Option<Box<Term>> },
+    Case { scrut: Atom, arms: Vec<Arm>, default: Option<Box<Block>> },
 
     /// This point is never reached (a failed match, a call to a `!` function).
     Unreachable,
 }
 
-pub struct JoinDef { label: Label, params: Vec<Var>, body: Term }
+pub struct JoinDef { label: Label, params: Vec<Var>, body: Block }
 
-pub struct Arm { tag: Tag, body: Term }
+pub struct Arm { tag: Tag, body: Block }
 
 pub enum Tag { Int(i64), Ctor(CtorId) }
 
@@ -154,7 +161,7 @@ pub struct Module {
 pub struct Func {
     params: Vec<Var>,
     results: Vec<Ty>,
-    body: Term,            // `ret` is in scope: see below
+    body: Block,           // `ret` is in scope: see below
 }
 ```
 
@@ -336,16 +343,16 @@ allocates, but it writes nothing that existed before.
 ## Rules
 
 1. **Variables are SSA.** Each one is bound once, by a function parameter, a
-   join parameter or a `Let`. It is in scope in the term below its binder.
+   join parameter or a `let`. It is in scope in the rest of its block (the
+   later `let`s and the tail) and in everything nested in it.
 2. **Labels are scoped.** A non-recursive `Join` puts its labels in scope
    in `body`. A recursive one also puts them in scope in every `defs[i].body`.
-3. **Jumps are tail calls by construction.** `Jump` is a `Term`, and terms
-   only appear in tail positions: a `Let` body, a `Case` arm, a join
-   definition or a join body. There is no `let x = case ...`. Nothing needs to
-   check for escaping join points, and no pass can accidentally make one.
+3. **Jumps are tail calls by construction.** `Jump` is a `Tail`, and a
+   tail can only end a block. There is no `let x = case ...`. Nothing needs
+   to check for escaping join points, and no pass can accidentally make one.
 4. **Returning is jumping.** Every function body has the label `ret` in
    scope, whose parameters are the function's results. So return needs no
-   term of its own. A tail call is just `let r = call f(..); jump ret(r)`,
+   tail of its own. A tail call is just `let r = call f(..); jump ret(r)`,
    which a backend can recognize and emit as `return_call`.
 5. **Field reads happen where they're written.** A `Case` on an ADT binds
    no fields. `Get(C, i)` on `x` is valid in an arm `C` of a case on `x`,
@@ -473,9 +480,9 @@ let x = perform E.op(args)      -- nearest enclosing handler of E (dynamic)
 let r = resume(k, vals)         -- continue a captured computation
 ```
 
-### Why the body is a closure and not a term
+### Why the body is a closure and not a block
 
-A handler could be a 6th term with a nested body, but then a jump in the
+A handler could be a 5th kind of tail with a nested body, but then a jump in the
 body could target a label outside it. Once `perform` has captured the body
 as a continuation, that jump would run code that's outside what was
 captured. Making the body a function keeps rule 2 unchanged: labels never
@@ -619,8 +626,13 @@ Because the IR is so small, the classic simplifications are local rewrites:
   effects, but writes nothing that existed before. So an analysis can treat
   it as `Reads`, unless it performs, instead of `Unknown`.
 
-A pass is usually a single recursive function with 5 arms, and most passes
-only do real work in one or two of them.
+Several of these replace a tail with a block, like a `case` with its arm or
+a jump with the join point's body: the block's `let`s then go after the
+enclosing block's, and its tail becomes the new tail.
+
+A pass is usually a loop over a block's `let`s and a match with 4 arms on
+its tail, recursing only into nested blocks. Most passes only do real work
+in one or two places.
 
 ## Lowering
 
@@ -779,9 +791,8 @@ fn fn1(%0: i32) -> (i32) {
   `join` definitions are separated by `and`, and the body follows `in`.
 - Line comments start with `//`.
 
-The parser and the printer walk chains of `let`s with a loop, so a long
-function doesn't need a deep stack. Dropping, cloning and comparing terms
-still recurse, as does the verifier.
+A long function is a long list of `let`s, so parsing and printing it
+doesn't need a deep stack.
 
 ## Evaluator
 
@@ -791,8 +802,9 @@ still recurse, as does the verifier.
   IR the verifier would reject gives an "invalid IR" error or a wrong
   result, but never a crash.
 - **Control flow doesn't use Rust's stack.** The evaluator runs a loop over
-  an explicit stack of frames. Jumps, loops and `case` replace the current
-  term, calls push a frame, and tail calls and tail resumes reuse the
+  an explicit stack of frames. A frame holds a place in a block: `let`s
+  move it forward, and jumps, loops and `case` move it to another block.
+  Calls push a frame, and tail calls and tail resumes reuse the
   caller's frame. A deeply recursive program hits a frame limit, which is
   an error.
 - **Handlers move frames.** `handle` pushes a handler frame. `perform`

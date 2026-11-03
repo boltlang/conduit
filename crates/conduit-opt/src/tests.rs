@@ -21,34 +21,33 @@ fn int(n: i32) -> Atom {
     Atom::Lit(Lit::I32(n))
 }
 
-fn let_(binds: &[Var], op: Op, args: Vec<Atom>, body: Term) -> Term {
-    Term::Let {
+fn let_(binds: &[Var], op: Op, args: Vec<Atom>, body: Block) -> Block {
+    (body).with_let(Let {
         binds: binds.to_vec(),
         op,
         args,
-        body: Box::new(body),
         source: None,
-    }
+    })
 }
 
-fn prim(bind: Var, p: Prim, args: Vec<Atom>, body: Term) -> Term {
+fn prim(bind: Var, p: Prim, args: Vec<Atom>, body: Block) -> Block {
     let_(&[bind], Op::Prim(p), args, body)
 }
 
-fn jump(target: Label, args: Vec<Atom>) -> Term {
-    Term::Jump {
+fn jump(target: Label, args: Vec<Atom>) -> Block {
+    Block::from(Tail::Jump {
         target,
         args,
         source: None,
-    }
+    })
 }
 
-fn ret(args: Vec<Atom>) -> Term {
+fn ret(args: Vec<Atom>) -> Block {
     jump(Label::RET, args)
 }
 
-fn join(rec: bool, defs: Vec<(Label, Vec<Var>, Term)>, body: Term) -> Term {
-    Term::Join {
+fn join(rec: bool, defs: Vec<(Label, Vec<Var>, Block)>, body: Block) -> Block {
+    Block::from(Tail::Join {
         rec,
         defs: defs
             .into_iter()
@@ -59,7 +58,7 @@ fn join(rec: bool, defs: Vec<(Label, Vec<Var>, Term)>, body: Term) -> Term {
             })
             .collect(),
         body: Box::new(body),
-    }
+    })
 }
 
 fn module(funcs: Vec<(FuncId, Func)>) -> Module {
@@ -68,39 +67,34 @@ fn module(funcs: Vec<(FuncId, Func)>) -> Module {
     m
 }
 
-/// The ops left in a term, from top to bottom.
-fn ops(t: &Term) -> Vec<Op> {
+/// The ops left in a block, from top to bottom.
+fn ops(b: &Block) -> Vec<Op> {
     let mut out = Vec::new();
-    walk(t, &mut |t| {
-        if let Term::Let { op, .. } = t {
-            out.push(op.clone());
-        }
-    });
+    walk(b, &mut |b| out.extend(b.lets.iter().map(|l| l.op.clone())));
     out
 }
 
-/// The join points left in a term.
-fn labels(t: &Term) -> Vec<Label> {
+/// The join points left in a block.
+fn labels(b: &Block) -> Vec<Label> {
     let mut out = Vec::new();
-    walk(t, &mut |t| {
-        if let Term::Join { defs, .. } = t {
+    walk(b, &mut |b| {
+        if let Tail::Join { defs, .. } = &b.tail {
             out.extend(defs.iter().map(|d| d.label));
         }
     });
     out
 }
 
-fn walk(t: &Term, f: &mut impl FnMut(&Term)) {
-    f(t);
-    match t {
-        Term::Let { body, .. } => walk(body, f),
-        Term::Join { defs, body, .. } => {
+fn walk(b: &Block, f: &mut impl FnMut(&Block)) {
+    f(b);
+    match &b.tail {
+        Tail::Join { defs, body, .. } => {
             walk(body, f);
             for d in defs {
                 walk(&d.body, f);
             }
         }
-        Term::Case { arms, default, .. } => {
+        Tail::Case { arms, default, .. } => {
             for a in arms {
                 walk(&a.body, f);
             }
@@ -108,7 +102,7 @@ fn walk(t: &Term, f: &mut impl FnMut(&Term)) {
                 walk(d, f);
             }
         }
-        Term::Jump { .. } | Term::Unreachable => {}
+        Tail::Jump { .. } | Tail::Unreachable => {}
     }
 }
 
@@ -295,18 +289,20 @@ fn keeps_only_reachable_join_points_of_a_group() {
     let n = f.params[0];
     let [even, odd, dead] = [(); 3].map(|_| f.new_label());
     let [k1, k1m, k2, k2m] = [(); 4].map(|_| f.new_var(I32));
-    let step = |k, km, result, other| Term::Case {
-        scrut: v(k),
-        arms: vec![Arm {
-            tag: Tag::Int(0),
-            body: ret(vec![int(result)]),
-        }],
-        default: Some(Box::new(prim(
-            km,
-            Prim::Sub,
-            vec![v(k), int(1)],
-            jump(other, vec![v(km)]),
-        ))),
+    let step = |k, km, result, other| {
+        Block::from(Tail::Case {
+            scrut: v(k),
+            arms: vec![Arm {
+                tag: Tag::Int(0),
+                body: ret(vec![int(result)]),
+            }],
+            default: Some(Box::new(prim(
+                km,
+                Prim::Sub,
+                vec![v(k), int(1)],
+                jump(other, vec![v(km)]),
+            ))),
+        })
     };
     f.body = join(
         true,
@@ -393,9 +389,15 @@ fn long_functions() {
     let x = f.params[0];
     let vars: Vec<Var> = (0..200_000).map(|_| f.new_var(I32)).collect();
     let mut body = ret(vec![v(x)]);
-    for &a in vars.iter().rev() {
-        body = prim(a, Prim::Add, vec![v(x), int(1)], body);
-    }
+    body.lets = vars
+        .iter()
+        .map(|&a| Let {
+            binds: vec![a],
+            op: Op::Prim(Prim::Add),
+            args: vec![v(x), int(1)],
+            source: None,
+        })
+        .collect();
     f.body = body;
     assert!(dce(&mut f));
     assert_eq!(f.body, ret(vec![v(x)]));

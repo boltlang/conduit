@@ -122,9 +122,9 @@ fn parsed_module_has_the_right_shape() {
     );
     assert_eq!(m.data[&DataId(12)].ctors, vec![]);
     assert_eq!(&*m.externs[&ExternId(1)].name, "print \"it\"");
-    let Term::Join {
+    let Tail::Join {
         rec: true, defs, ..
-    } = &m.funcs[&FuncId(1)].body
+    } = &m.funcs[&FuncId(1)].body.tail
     else {
         panic!("not a recursive join");
     };
@@ -145,20 +145,19 @@ fn literals_round_trip_exactly() {
         Lit::F64(f64::NAN.to_bits() | 5),
     ];
     let mut f = Func::new(vec![], vec![]);
-    let mut body = Term::Jump {
+    let mut body = Block::from(Tail::Jump {
         target: Label::RET,
         args: vec![],
         source: None,
-    };
+    });
     for lit in lits.iter().rev() {
         let v = f.new_var(lit.ty());
-        body = Term::Let {
+        body = (body).with_let(Let {
             binds: vec![v],
             op: Op::Prim(Prim::Add),
             args: vec![Atom::Lit(*lit), Atom::Lit(*lit)],
-            body: Box::new(body),
             source: None,
-        };
+        });
     }
     f.body = body;
     let mut m = Module::default();
@@ -238,7 +237,8 @@ fn long_functions_dont_need_a_deep_stack() {
     src.push_str(&format!("  jump ret(%{})\n}}\n", n - 1));
     let m = parse(&src).unwrap();
     assert_eq!(print(&m), src);
-    // Dropping a long chain of terms still recurses (the derived drop
-    // does), so keep it from overflowing this test's stack.
-    std::mem::forget(m);
+    // A block's `let`s are a list, so cloning, comparing and dropping a
+    // long function don't recurse either.
+    assert_eq!(m.clone(), m);
+    drop(m);
 }

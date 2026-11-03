@@ -346,7 +346,7 @@ impl<P: Program + ?Sized> Cx<'_, P> {
         for &param in &f.params {
             self.bind(param);
         }
-        self.term(&f.body);
+        self.block(&f.body);
 
         let counts = Linear {
             f,
@@ -413,29 +413,19 @@ impl<P: Program + ?Sized> Cx<'_, P> {
         tys.into_iter().collect()
     }
 
-    fn term(&mut self, t: &Term) {
-        match t {
-            Term::Let {
-                binds,
-                op,
-                args,
-                body,
-                source,
-            } => {
-                self.source = *source;
-                if let Some(tys) = self.atoms(args) {
-                    self.op(op, args, &tys, binds);
-                }
-                for &b in binds {
-                    self.bind(b);
-                }
-                self.term(body);
-                for &b in binds {
-                    self.unbind(b);
-                }
+    fn block(&mut self, b: &Block) {
+        for l in &b.lets {
+            self.source = l.source;
+            if let Some(tys) = self.atoms(&l.args) {
+                self.op(&l.op, &l.args, &tys, &l.binds);
             }
-            Term::Join { rec, defs, body } => self.join(*rec, defs, body),
-            Term::Jump {
+            for &v in &l.binds {
+                self.bind(v);
+            }
+        }
+        match &b.tail {
+            Tail::Join { rec, defs, body } => self.join(*rec, defs, body),
+            Tail::Jump {
                 target,
                 args,
                 source,
@@ -443,16 +433,21 @@ impl<P: Program + ?Sized> Cx<'_, P> {
                 self.source = *source;
                 self.jump(*target, args);
             }
-            Term::Case {
+            Tail::Case {
                 scrut,
                 arms,
                 default,
             } => self.case(scrut, arms, default.as_deref()),
-            Term::Unreachable => {}
+            Tail::Unreachable => {}
+        }
+        for l in &b.lets {
+            for &v in &l.binds {
+                self.unbind(v);
+            }
         }
     }
 
-    fn join(&mut self, rec: bool, defs: &[JoinDef], body: &Term) {
+    fn join(&mut self, rec: bool, defs: &[JoinDef], body: &Block) {
         let mut labels = Vec::new();
         for def in defs {
             let l = def.label;
@@ -483,7 +478,7 @@ impl<P: Program + ?Sized> Cx<'_, P> {
             for &p in &def.params {
                 self.bind(p);
             }
-            self.term(&def.body);
+            self.block(&def.body);
             for &p in &def.params {
                 self.unbind(p);
             }
@@ -491,7 +486,7 @@ impl<P: Program + ?Sized> Cx<'_, P> {
         if !rec {
             self.scope_labels(&labels);
         }
-        self.term(body);
+        self.block(body);
         for (l, _) in labels {
             self.label_params[l.0 as usize] = None;
         }
@@ -514,7 +509,7 @@ impl<P: Program + ?Sized> Cx<'_, P> {
         }
     }
 
-    fn case(&mut self, scrut: &Atom, arms: &[Arm], default: Option<&Term>) {
+    fn case(&mut self, scrut: &Atom, arms: &[Arm], default: Option<&Block>) {
         if let Some(ty) = self.atom(scrut) {
             self.case_tags(&ty, arms, default.is_some());
         }
@@ -526,13 +521,13 @@ impl<P: Program + ?Sized> Cx<'_, P> {
             if let Some(fact) = fact {
                 self.known.push(fact);
             }
-            self.term(&arm.body);
+            self.block(&arm.body);
             if fact.is_some() {
                 self.known.pop();
             }
         }
         if let Some(default) = default {
-            self.term(default);
+            self.block(default);
         }
     }
 
@@ -1014,21 +1009,20 @@ impl Linear<'_> {
         counts
     }
 
-    fn uses(&mut self, t: &Term) -> Counts {
-        match t {
-            Term::Let { args, body, .. } => {
-                let mut c = self.atoms(args);
-                add(&mut c, &self.uses(body));
-                c
-            }
-            Term::Jump { target, args, .. } => {
+    fn uses(&mut self, b: &Block) -> Counts {
+        let mut c = Counts::new();
+        for l in &b.lets {
+            add(&mut c, &self.atoms(&l.args));
+        }
+        let tail = match &b.tail {
+            Tail::Jump { target, args, .. } => {
                 let mut c = self.atoms(args);
                 if let Some(l) = self.labels.get(target) {
                     add(&mut c, l);
                 }
                 c
             }
-            Term::Case {
+            Tail::Case {
                 scrut,
                 arms,
                 default,
@@ -1044,7 +1038,7 @@ impl Linear<'_> {
                 add(&mut c, &paths);
                 c
             }
-            Term::Join { rec, defs, body } => {
+            Tail::Join { rec, defs, body } => {
                 if *rec {
                     for def in defs {
                         self.labels.insert(def.label, Counts::new());
@@ -1071,8 +1065,10 @@ impl Linear<'_> {
                 }
                 self.uses(body)
             }
-            Term::Unreachable => Counts::new(),
-        }
+            Tail::Unreachable => Counts::new(),
+        };
+        add(&mut c, &tail);
+        c
     }
 
     /// What a join point's body uses, of variables bound outside it: those
@@ -1086,21 +1082,20 @@ impl Linear<'_> {
     }
 }
 
-/// Every variable a term binds.
-fn binds(t: &Term, out: &mut BTreeSet<Var>) {
-    match t {
-        Term::Let { binds: b, body, .. } => {
-            out.extend(b.iter().copied());
-            binds(body, out);
-        }
-        Term::Join { defs, body, .. } => {
+/// Every variable a block binds.
+fn binds(b: &Block, out: &mut BTreeSet<Var>) {
+    for l in &b.lets {
+        out.extend(l.binds.iter().copied());
+    }
+    match &b.tail {
+        Tail::Join { defs, body, .. } => {
             for def in defs {
                 out.extend(def.params.iter().copied());
                 binds(&def.body, out);
             }
             binds(body, out);
         }
-        Term::Case { arms, default, .. } => {
+        Tail::Case { arms, default, .. } => {
             for arm in arms {
                 binds(&arm.body, out);
             }
@@ -1108,7 +1103,7 @@ fn binds(t: &Term, out: &mut BTreeSet<Var>) {
                 binds(default, out);
             }
         }
-        Term::Jump { .. } | Term::Unreachable => {}
+        Tail::Jump { .. } | Tail::Unreachable => {}
     }
 }
 

@@ -24,41 +24,40 @@ fn int(n: i32) -> Atom {
     Atom::Lit(Lit::I32(n))
 }
 
-fn let_(binds: Vec<Var>, op: Op, args: Vec<Atom>, body: Term) -> Term {
-    Term::Let {
+fn let_(binds: Vec<Var>, op: Op, args: Vec<Atom>, body: Block) -> Block {
+    (body).with_let(Let {
         binds,
         op,
         args,
-        body: Box::new(body),
         source: None,
-    }
+    })
 }
 
-fn prim(bind: Var, p: Prim, args: Vec<Atom>, body: Term) -> Term {
+fn prim(bind: Var, p: Prim, args: Vec<Atom>, body: Block) -> Block {
     let_(vec![bind], Op::Prim(p), args, body)
 }
 
-fn jump(target: Label, args: Vec<Atom>) -> Term {
-    Term::Jump {
+fn jump(target: Label, args: Vec<Atom>) -> Block {
+    Block::from(Tail::Jump {
         target,
         args,
         source: None,
-    }
+    })
 }
 
-fn ret(args: Vec<Atom>) -> Term {
+fn ret(args: Vec<Atom>) -> Block {
     jump(Label::RET, args)
 }
 
-fn if_(cond: Var, then: Term, otherwise: Term) -> Term {
-    Term::Case {
+fn if_(cond: Var, then: Block, otherwise: Block) -> Block {
+    Block::from(Tail::Case {
         scrut: v(cond),
         arms: vec![Arm {
             tag: Tag::Int(1),
             body: then,
         }],
         default: Some(Box::new(otherwise)),
-    }
+    })
 }
 
 fn ctor(data: DataId, index: u32) -> CtorId {
@@ -119,7 +118,7 @@ fn sum() -> Func {
         vec![v(i), v(n)],
         if_(done, ret(vec![v(acc)]), step),
     );
-    f.body = Term::Join {
+    f.body = Block::from(Tail::Join {
         rec: true,
         defs: vec![JoinDef {
             label: lp,
@@ -127,7 +126,7 @@ fn sum() -> Func {
             body,
         }],
         body: Box::new(jump(lp, vec![int(0), int(0)])),
-    };
+    });
     f
 }
 
@@ -291,7 +290,7 @@ fn sum_list() -> Func {
             ),
         ),
     );
-    f.body = Term::Case {
+    f.body = Block::from(Tail::Case {
         scrut: v(xs),
         arms: vec![
             Arm {
@@ -304,7 +303,7 @@ fn sum_list() -> Func {
             },
         ],
         default: None,
-    };
+    });
     f
 }
 
@@ -588,7 +587,7 @@ fn unbox_at_another_type_is_undefined() {
 fn fuel_stops_an_infinite_loop() {
     let mut f = Func::new(vec![], vec![]);
     let lp = f.new_label();
-    f.body = Term::Join {
+    f.body = Block::from(Tail::Join {
         rec: true,
         defs: vec![JoinDef {
             label: lp,
@@ -596,7 +595,7 @@ fn fuel_stops_an_infinite_loop() {
             body: jump(lp, vec![]),
         }],
         body: Box::new(jump(lp, vec![])),
-    };
+    });
     let mut m = module();
     m.funcs.insert(MAIN, f);
     verify_module(&m).unwrap();
@@ -663,7 +662,7 @@ fn unit_sig() -> Sig {
 /// The generator from the design doc: `G` yields 1 to `n`, and the handler
 /// `SUM`, whose environment is a ref, adds what's yielded to it.
 /// `clause(acc, x, k)` is built by `clause`.
-fn generator(n: i32, clause: impl FnOnce(&mut Func, Var, Var, Var) -> Term) -> Module {
+fn generator(n: i32, clause: impl FnOnce(&mut Func, Var, Var, Var) -> Block) -> Module {
     let mut m = module();
     m.effects.insert(
         YIELD,
@@ -711,7 +710,7 @@ fn generator(n: i32, clause: impl FnOnce(&mut Func, Var, Var, Var) -> Term) -> M
         vec![v(i), int(n)],
         if_(done, ret(vec![]), step),
     );
-    g.body = Term::Join {
+    g.body = Block::from(Tail::Join {
         rec: true,
         defs: vec![JoinDef {
             label: lp,
@@ -719,7 +718,7 @@ fn generator(n: i32, clause: impl FnOnce(&mut Func, Var, Var, Var) -> Term) -> M
             body,
         }],
         body: Box::new(jump(lp, vec![int(1)])),
-    };
+    });
     m.funcs.insert(G, g);
 
     // MAIN: acc = ref 0; handle SUM(acc, closure G()); ret(acc)
@@ -748,7 +747,7 @@ fn generator(n: i32, clause: impl FnOnce(&mut Func, Var, Var, Var) -> Term) -> M
 }
 
 /// The sum clause: `acc += x; resume(k)`, as a tail resume.
-fn add_and_resume(f: &mut Func, acc: Var, x: Var, k: Var) -> Term {
+fn add_and_resume(f: &mut Func, acc: Var, x: Var, k: Var) -> Block {
     let [old, new] = [(); 2].map(|_| f.new_var(Ty::I32));
     let_(
         vec![old],
@@ -851,13 +850,12 @@ fn perform_without_a_handler_is_an_error() {
 fn errors_say_where_they_happened() {
     let mut f = Func::new(vec![], vec![Ty::I32]);
     let r = f.new_var(Ty::I32);
-    f.body = Term::Let {
+    f.body = (ret(vec![v(r)])).with_let(Let {
         binds: vec![r],
         op: Op::Prim(Prim::Div(Sign::Signed)),
         args: vec![int(1), int(0)],
-        body: Box::new(ret(vec![v(r)])),
         source: Some(SourceId(42)),
-    };
+    });
     let error = run_main(f, vec![]).unwrap_err();
     assert_eq!(error.to_string(), "fn1 (src42): division by zero");
 }

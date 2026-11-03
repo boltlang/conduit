@@ -20,25 +20,24 @@ fn int(n: i32) -> Atom {
     Atom::Lit(Lit::I32(n))
 }
 
-fn let_(binds: Vec<Var>, op: Op, args: Vec<Atom>, body: Term) -> Term {
-    Term::Let {
+fn let_(binds: Vec<Var>, op: Op, args: Vec<Atom>, body: Block) -> Block {
+    (body).with_let(Let {
         binds,
         op,
         args,
-        body: Box::new(body),
         source: None,
-    }
+    })
 }
 
-fn jump(target: Label, args: Vec<Atom>) -> Term {
-    Term::Jump {
+fn jump(target: Label, args: Vec<Atom>) -> Block {
+    Block::from(Tail::Jump {
         target,
         args,
         source: None,
-    }
+    })
 }
 
-fn ret(args: Vec<Atom>) -> Term {
+fn ret(args: Vec<Atom>) -> Block {
     jump(Label::RET, args)
 }
 
@@ -124,16 +123,16 @@ fn sum() -> Func {
         vec![done],
         Op::Prim(Prim::Ge(Sign::Signed)),
         vec![v(i), v(n)],
-        Term::Case {
+        Block::from(Tail::Case {
             scrut: v(done),
             arms: vec![Arm {
                 tag: Tag::Int(1),
                 body: ret(vec![v(acc)]),
             }],
             default: Some(Box::new(step)),
-        },
+        }),
     );
-    f.body = Term::Join {
+    f.body = Block::from(Tail::Join {
         rec: true,
         defs: vec![JoinDef {
             label: lp,
@@ -141,7 +140,7 @@ fn sum() -> Func {
             body,
         }],
         body: Box::new(jump(lp, vec![int(0), int(0)])),
-    };
+    });
     f
 }
 
@@ -163,7 +162,7 @@ fn var_must_be_in_scope() {
     let mut f = Func::new(vec![], vec![Ty::I32]);
     let k = f.new_label();
     let x = f.new_var(Ty::I32);
-    f.body = Term::Join {
+    f.body = Block::from(Tail::Join {
         rec: false,
         defs: vec![JoinDef {
             label: k,
@@ -171,7 +170,7 @@ fn var_must_be_in_scope() {
             body: ret(vec![v(x)]),
         }],
         body: Box::new(ret(vec![v(x)])),
-    };
+    });
     assert_err(f, "%0 is used where it isn't in scope");
 }
 
@@ -188,7 +187,7 @@ fn var_is_bound_once() {
 fn non_recursive_join_cant_jump_to_itself() {
     let mut f = Func::new(vec![], vec![]);
     let k = f.new_label();
-    f.body = Term::Join {
+    f.body = Block::from(Tail::Join {
         rec: false,
         defs: vec![JoinDef {
             label: k,
@@ -196,7 +195,7 @@ fn non_recursive_join_cant_jump_to_itself() {
             body: jump(k, vec![]),
         }],
         body: Box::new(jump(k, vec![])),
-    };
+    });
     assert_err(f, "jump to j1, which isn't in scope");
 }
 
@@ -205,7 +204,7 @@ fn label_scope_ends_with_the_join() {
     // case 0 { 0 => join k() = ret() in ret(), _ => jump k() }
     let mut f = Func::new(vec![], vec![]);
     let k = f.new_label();
-    let join = Term::Join {
+    let join = Block::from(Tail::Join {
         rec: false,
         defs: vec![JoinDef {
             label: k,
@@ -213,15 +212,15 @@ fn label_scope_ends_with_the_join() {
             body: ret(vec![]),
         }],
         body: Box::new(ret(vec![])),
-    };
-    f.body = Term::Case {
+    });
+    f.body = Block::from(Tail::Case {
         scrut: int(0),
         arms: vec![Arm {
             tag: Tag::Int(0),
             body: join,
         }],
         default: Some(Box::new(jump(k, vec![]))),
-    };
+    });
     assert_err(f, "jump to j1, which isn't in scope");
 }
 
@@ -230,7 +229,7 @@ fn jump_arguments_must_match() {
     let mut f = Func::new(vec![], vec![]);
     let k = f.new_label();
     let x = f.new_var(Ty::I32);
-    f.body = Term::Join {
+    f.body = Block::from(Tail::Join {
         rec: false,
         defs: vec![JoinDef {
             label: k,
@@ -238,7 +237,7 @@ fn jump_arguments_must_match() {
             body: ret(vec![]),
         }],
         body: Box::new(jump(k, vec![])),
-    };
+    });
     assert_err(f, "jump to j1: expected 1 values, but got 0");
 }
 
@@ -246,14 +245,14 @@ fn jump_arguments_must_match() {
 fn integer_case_needs_a_default() {
     let mut f = Func::new(vec![Ty::I32], vec![]);
     let n = f.params[0];
-    f.body = Term::Case {
+    f.body = Block::from(Tail::Case {
         scrut: v(n),
         arms: vec![Arm {
             tag: Tag::Int(0),
             body: ret(vec![]),
         }],
         default: None,
-    };
+    });
     assert_err(f, "case on i32 has no default");
 }
 
@@ -261,14 +260,14 @@ fn integer_case_needs_a_default() {
 fn data_case_must_cover_every_constructor() {
     let mut f = Func::new(vec![Ty::Data(OPTION, Imm)], vec![]);
     let o = f.params[0];
-    f.body = Term::Case {
+    f.body = Block::from(Tail::Case {
         scrut: v(o),
         arms: vec![Arm {
             tag: Tag::Ctor(ctor(OPTION, 1)),
             body: ret(vec![]),
         }],
         default: None,
-    };
+    });
     assert_err(f, "doesn't cover every constructor");
 }
 
@@ -289,7 +288,7 @@ fn unwrap_or(read_in_arm: bool) -> Func {
     } else {
         (ret(vec![v(d)]), read)
     };
-    f.body = Term::Case {
+    f.body = Block::from(Tail::Case {
         scrut: v(o),
         arms: vec![
             Arm {
@@ -302,7 +301,7 @@ fn unwrap_or(read_in_arm: bool) -> Func {
             },
         ],
         default: None,
-    };
+    });
     f
 }
 
@@ -482,7 +481,7 @@ fn unit_sig() -> Sig {
 
 /// `effect Yield { yield(i32) -> () }` and a handler of it whose clause has
 /// body `body`, with `k` its continuation.
-fn handler_module(body: impl FnOnce(&mut Func, Var) -> Term) -> Module {
+fn handler_module(body: impl FnOnce(&mut Func, Var) -> Block) -> Module {
     let mut m = module();
     m.effects.insert(
         YIELD,
@@ -512,7 +511,7 @@ fn handler_module(body: impl FnOnce(&mut Func, Var) -> Term) -> Module {
     m
 }
 
-fn resume(k: Var, body: Term) -> Term {
+fn resume(k: Var, body: Block) -> Block {
     let_(vec![], Op::Resume, vec![v(k)], body)
 }
 
@@ -543,13 +542,15 @@ fn continuation_is_used_at_most_once() {
 
 #[test]
 fn continuation_in_different_arms_is_used_once() {
-    let m = handler_module(|_, k| Term::Case {
-        scrut: int(0),
-        arms: vec![Arm {
-            tag: Tag::Int(0),
-            body: resume(k, ret(vec![])),
-        }],
-        default: Some(Box::new(resume(k, ret(vec![])))),
+    let m = handler_module(|_, k| {
+        Block::from(Tail::Case {
+            scrut: int(0),
+            arms: vec![Arm {
+                tag: Tag::Int(0),
+                body: resume(k, ret(vec![])),
+            }],
+            default: Some(Box::new(resume(k, ret(vec![])))),
+        })
     });
     assert_eq!(verify(&m), Vec::<String>::new());
 }
@@ -559,15 +560,15 @@ fn continuation_resumed_when_a_loop_ends_is_used_once() {
     // join rec loop() = case 0 { 0 => resume(k); ret(), _ => jump loop() }
     let m = handler_module(|f, k| {
         let lp = f.new_label();
-        let body = Term::Case {
+        let body = Block::from(Tail::Case {
             scrut: int(0),
             arms: vec![Arm {
                 tag: Tag::Int(0),
                 body: resume(k, ret(vec![])),
             }],
             default: Some(Box::new(jump(lp, vec![]))),
-        };
-        Term::Join {
+        });
+        Block::from(Tail::Join {
             rec: true,
             defs: vec![JoinDef {
                 label: lp,
@@ -575,7 +576,7 @@ fn continuation_resumed_when_a_loop_ends_is_used_once() {
                 body,
             }],
             body: Box::new(jump(lp, vec![])),
-        }
+        })
     });
     assert_eq!(verify(&m), Vec::<String>::new());
 }
@@ -585,7 +586,7 @@ fn continuation_resumed_in_every_iteration_is_used_more_than_once() {
     // join rec loop() = resume(k); jump loop()
     let m = handler_module(|f, k| {
         let lp = f.new_label();
-        Term::Join {
+        Block::from(Tail::Join {
             rec: true,
             defs: vec![JoinDef {
                 label: lp,
@@ -593,7 +594,7 @@ fn continuation_resumed_in_every_iteration_is_used_more_than_once() {
                 body: resume(k, jump(lp, vec![])),
             }],
             body: Box::new(jump(lp, vec![])),
-        }
+        })
     });
     let errors = verify(&m);
     assert!(
@@ -609,7 +610,7 @@ fn continuation_used_before_a_jump_and_in_the_join_point() {
     // join j() = resume(k); ret() in resume(k); jump j()
     let m = handler_module(|f, k| {
         let j = f.new_label();
-        Term::Join {
+        Block::from(Tail::Join {
             rec: false,
             defs: vec![JoinDef {
                 label: j,
@@ -617,7 +618,7 @@ fn continuation_used_before_a_jump_and_in_the_join_point() {
                 body: resume(k, ret(vec![])),
             }],
             body: Box::new(resume(k, jump(j, vec![]))),
-        }
+        })
     });
     let errors = verify(&m);
     assert!(
@@ -757,23 +758,23 @@ fn branches_on_the_same_condition_are_rejected() {
     // cases test the same value, so it sees a path with two uses.
     let m = handler_module(|f, k| {
         let rest = f.new_label();
-        let second = Term::Case {
+        let second = Block::from(Tail::Case {
             scrut: int(0),
             arms: vec![Arm {
                 tag: Tag::Int(0),
                 body: resume(k, ret(vec![])),
             }],
             default: Some(Box::new(ret(vec![]))),
-        };
-        let first = Term::Case {
+        });
+        let first = Block::from(Tail::Case {
             scrut: int(0),
             arms: vec![Arm {
                 tag: Tag::Int(1),
                 body: resume(k, jump(rest, vec![])),
             }],
             default: Some(Box::new(jump(rest, vec![]))),
-        };
-        Term::Join {
+        });
+        Block::from(Tail::Join {
             rec: false,
             defs: vec![JoinDef {
                 label: rest,
@@ -781,7 +782,7 @@ fn branches_on_the_same_condition_are_rejected() {
                 body: second,
             }],
             body: Box::new(first),
-        }
+        })
     });
     let errors = verify(&m);
     assert!(
@@ -797,22 +798,48 @@ fn branches_through_a_join_point_are_counted_per_path() {
     // join j() = resume(k); ret() in case 0 { 0 => resume(k); ret(), _ => jump j() }
     let m = handler_module(|f, k| {
         let j = f.new_label();
-        Term::Join {
+        Block::from(Tail::Join {
             rec: false,
             defs: vec![JoinDef {
                 label: j,
                 params: vec![],
                 body: resume(k, ret(vec![])),
             }],
-            body: Box::new(Term::Case {
+            body: Box::new(Block::from(Tail::Case {
                 scrut: int(0),
                 arms: vec![Arm {
                     tag: Tag::Int(0),
                     body: resume(k, ret(vec![])),
                 }],
                 default: Some(Box::new(jump(j, vec![]))),
-            }),
-        }
+            })),
+        })
     });
     assert_eq!(verify(&m), Vec::<String>::new());
+}
+
+#[test]
+fn long_functions_dont_need_a_deep_stack() {
+    let mut f = Func::new(vec![Ty::I32], vec![Ty::I32]);
+    let mut last = f.params[0];
+    let mut lets = Vec::new();
+    for _ in 0..200_000 {
+        let next = f.new_var(Ty::I32);
+        lets.push(Let {
+            binds: vec![next],
+            op: Op::Prim(Prim::Add),
+            args: vec![v(last), int(1)],
+            source: None,
+        });
+        last = next;
+    }
+    f.body = Block {
+        lets,
+        tail: Tail::Jump {
+            target: Label::RET,
+            args: vec![v(last)],
+            source: None,
+        },
+    };
+    assert_ok(f);
 }

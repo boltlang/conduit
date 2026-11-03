@@ -11,7 +11,7 @@
 //! uses in dead code never keep anything else alive, and a recursive join
 //! point that only jumps to itself is dropped.
 
-use conduit_ir::{Atom, Effects, Func, FuncId, JoinDef, Label, Op, Program, SourceId, Term, Var};
+use conduit_ir::{Atom, Block, Effects, Func, FuncId, JoinDef, Label, Program, Tail, Var};
 
 use crate::Pass;
 
@@ -37,8 +37,8 @@ pub fn dce(f: &mut Func) -> bool {
         jumped_to: vec![false; f.labels.max(1) as usize],
         changed: false,
     };
-    let body = std::mem::replace(&mut f.body, Term::Unreachable);
-    f.body = cx.term(body);
+    let body = std::mem::replace(&mut f.body, Tail::Unreachable.into());
+    f.body = cx.block(body);
     cx.changed
 }
 
@@ -46,14 +46,6 @@ struct Cx {
     used: Vec<bool>,
     jumped_to: Vec<bool>,
     changed: bool,
-}
-
-/// A `let` without its body.
-struct Binding {
-    binds: Vec<Var>,
-    op: Op,
-    args: Vec<Atom>,
-    source: Option<SourceId>,
 }
 
 impl Cx {
@@ -73,64 +65,51 @@ impl Cx {
         self.jumped_to[l.0 as usize]
     }
 
-    fn term(&mut self, t: Term) -> Term {
-        // Take the chain of `let`s apart without recursing, so a long
-        // function doesn't overflow the stack, then put back the live ones
-        // from the bottom up.
-        let mut chain = Vec::new();
-        let mut t = t;
-        while let Term::Let {
-            binds,
-            op,
-            args,
-            body,
-            source,
-        } = t
-        {
-            chain.push(Binding {
-                binds,
-                op,
-                args,
-                source,
-            });
-            t = *body;
-        }
-        let mut t = self.tail(t);
-        while let Some(b) = chain.pop() {
-            if b.op.effects() == Effects::Pure && !b.binds.iter().any(|&v| self.is_used(v)) {
+    fn block(&mut self, b: Block) -> Block {
+        // Bottom-up: the tail first, then the `let`s from the last one, so
+        // each `let` is seen after everything that could use its results.
+        // A join whose definitions are all dead is left without any: its
+        // body then runs right after this block's `let`s, so it becomes
+        // the rest of this block.
+        let mut after = Vec::new();
+        let tail = match self.tail(b.tail) {
+            Tail::Join { defs, body, .. } if defs.is_empty() => {
+                let body = *body;
+                after = body.lets;
+                body.tail
+            }
+            tail => tail,
+        };
+        let mut lets = Vec::with_capacity(b.lets.len() + after.len());
+        for l in b.lets.into_iter().rev() {
+            if l.op.effects() == Effects::Pure && !l.binds.iter().any(|&v| self.is_used(v)) {
                 self.changed = true;
                 continue;
             }
-            self.use_atoms(&b.args);
-            t = Term::Let {
-                binds: b.binds,
-                op: b.op,
-                args: b.args,
-                body: Box::new(t),
-                source: b.source,
-            };
+            self.use_atoms(&l.args);
+            lets.push(l);
         }
-        t
+        lets.reverse();
+        lets.extend(after);
+        Block { lets, tail }
     }
 
-    /// A term that isn't a `let`.
-    fn tail(&mut self, t: Term) -> Term {
+    fn tail(&mut self, t: Tail) -> Tail {
         match t {
-            Term::Let { .. } => unreachable!("`term` takes `let`s apart"),
-            Term::Jump {
+            Tail::Jump {
                 target,
                 args,
                 source,
             } => {
                 self.jumped_to[target.0 as usize] = true;
                 self.use_atoms(&args);
-                Term::Jump {
+                Tail::Jump {
                     target,
                     args,
                     source,
                 }
             }
-            Term::Case {
+            Tail::Case {
                 scrut,
                 arms,
                 default,
@@ -138,25 +117,27 @@ impl Cx {
                 let arms = arms
                     .into_iter()
                     .map(|mut arm| {
-                        arm.body = self.term(arm.body);
+                        arm.body = self.block(arm.body);
                         arm
                     })
                     .collect();
-                let default = default.map(|d| Box::new(self.term(*d)));
+                let default = default.map(|d| Box::new(self.block(*d)));
                 self.use_atoms(std::slice::from_ref(&scrut));
-                Term::Case {
+                Tail::Case {
                     scrut,
                     arms,
                     default,
                 }
             }
-            Term::Join { rec, defs, body } => self.join(rec, defs, *body),
-            Term::Unreachable => Term::Unreachable,
+            Tail::Join { rec, defs, body } => self.join(rec, defs, *body),
+            Tail::Unreachable => Tail::Unreachable,
         }
     }
 
-    fn join(&mut self, rec: bool, defs: Vec<JoinDef>, body: Term) -> Term {
-        let body = self.term(body);
+    /// A join without live definitions is left without any, for
+    /// [`Cx::block`] to replace with its body.
+    fn join(&mut self, rec: bool, defs: Vec<JoinDef>, body: Block) -> Tail {
+        let body = self.block(body);
         let mut defs: Vec<(bool, JoinDef)> = defs.into_iter().map(|d| (false, d)).collect();
         // A definition is live once the body or a live definition jumps to
         // it. Only recursive definitions can jump to each other, so others
@@ -167,8 +148,8 @@ impl Cx {
                 if !*live && self.is_jumped_to(def.label) {
                     *live = true;
                     found = true;
-                    let body = std::mem::replace(&mut def.body, Term::Unreachable);
-                    def.body = self.term(body);
+                    let body = std::mem::replace(&mut def.body, Tail::Unreachable.into());
+                    def.body = self.block(body);
                 }
             }
             if !rec || !found {
@@ -184,9 +165,13 @@ impl Cx {
             self.changed = true;
         }
         if defs.is_empty() {
-            return body;
+            return Tail::Join {
+                rec,
+                defs,
+                body: Box::new(body),
+            };
         }
-        Term::Join {
+        Tail::Join {
             rec,
             defs,
             body: Box::new(body),

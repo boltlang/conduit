@@ -367,7 +367,7 @@ impl Parser {
             self.list(|p| p.binder(&mut info))?;
         }
         self.punct("{")?;
-        let body = self.term(&mut info)?;
+        let body = self.block(&mut info)?;
         self.punct("}")?;
 
         let len = info.vars.last_key_value().map_or(0, |(&n, _)| n + 1);
@@ -395,9 +395,7 @@ impl Parser {
         }
     }
 
-    fn term(&mut self, info: &mut FuncInfo) -> Res<Term> {
-        // A chain of lets is read with a loop, so that a long function
-        // doesn't need a deep stack.
+    fn block(&mut self, info: &mut FuncInfo) -> Res<Block> {
         let mut lets = Vec::new();
         while self.eat_keyword("let") {
             let mut binds = Vec::new();
@@ -413,23 +411,19 @@ impl Parser {
             let op = self.op()?;
             let args = self.list(Self::atom)?;
             let source = self.source()?;
-            lets.push((binds, op, args, source));
-        }
-        let mut t = self.end_term(info)?;
-        for (binds, op, args, source) in lets.into_iter().rev() {
-            t = Term::Let {
+            lets.push(Let {
                 binds,
                 op,
                 args,
-                body: Box::new(t),
                 source,
-            };
+            });
         }
-        Ok(t)
+        let tail = self.tail(info)?;
+        Ok(Block { lets, tail })
     }
 
-    /// A term that isn't a `let`.
-    fn end_term(&mut self, info: &mut FuncInfo) -> Res<Term> {
+    /// What ends a block.
+    fn tail(&mut self, info: &mut FuncInfo) -> Res<Tail> {
         let pos = self.pos();
         let name = self.ident("`let`, `join`, `jump`, `case` or `unreachable`")?;
         match name.as_str() {
@@ -445,7 +439,7 @@ impl Parser {
                     info.max_label = info.max_label.max(label.0);
                     let params = self.list(|p| p.binder(info))?;
                     self.punct("=")?;
-                    let body = self.term(info)?;
+                    let body = self.block(info)?;
                     defs.push(JoinDef {
                         label,
                         params,
@@ -456,14 +450,14 @@ impl Parser {
                     }
                 }
                 self.keyword("in")?;
-                let body = Box::new(self.term(info)?);
-                Ok(Term::Join { rec, defs, body })
+                let body = Box::new(self.block(info)?);
+                Ok(Tail::Join { rec, defs, body })
             }
             "jump" => {
                 let target = self.label()?;
                 let args = self.list(Self::atom)?;
                 let source = self.source()?;
-                Ok(Term::Jump {
+                Ok(Tail::Jump {
                     target,
                     args,
                     source,
@@ -487,7 +481,7 @@ impl Parser {
                         Some(Tag::Ctor(self.ctor()?))
                     };
                     self.punct("=>")?;
-                    let body = self.term(info)?;
+                    let body = self.block(info)?;
                     match tag {
                         Some(tag) => arms.push(Arm { tag, body }),
                         None if default.is_some() => {
@@ -496,13 +490,13 @@ impl Parser {
                         None => default = Some(Box::new(body)),
                     }
                 }
-                Ok(Term::Case {
+                Ok(Tail::Case {
                     scrut,
                     arms,
                     default,
                 })
             }
-            "unreachable" => Ok(Term::Unreachable),
+            "unreachable" => Ok(Tail::Unreachable),
             _ => self.error_at(
                 pos,
                 format!("expected `let`, `join`, `jump`, `case` or `unreachable`, found `{name}`"),

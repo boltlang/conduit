@@ -8,22 +8,21 @@ fn int(n: i32) -> Atom {
     Atom::Lit(Lit::I32(n))
 }
 
-fn prim(binds: Vec<Var>, p: Prim, args: Vec<Atom>, body: Term) -> Term {
-    Term::Let {
+fn prim(binds: Vec<Var>, p: Prim, args: Vec<Atom>, body: Block) -> Block {
+    (body).with_let(Let {
         binds,
         op: Op::Prim(p),
         args,
-        body: Box::new(body),
         source: None,
-    }
+    })
 }
 
-fn jump(target: Label, args: Vec<Atom>) -> Term {
-    Term::Jump {
+fn jump(target: Label, args: Vec<Atom>) -> Block {
+    Block::from(Tail::Jump {
         target,
         args,
         source: None,
-    }
+    })
 }
 
 /// `sum` from the design doc: a loop with two mutable locals, as a
@@ -54,16 +53,16 @@ fn sum_loop() {
         vec![done],
         Prim::Ge(Sign::Signed),
         vec![var(i), var(n)],
-        Term::Case {
+        Block::from(Tail::Case {
             scrut: var(done),
             arms: vec![Arm {
                 tag: Tag::Int(1),
                 body: jump(Label::RET, vec![var(acc)]),
             }],
             default: Some(Box::new(step)),
-        },
+        }),
     );
-    f.body = Term::Join {
+    f.body = Block::from(Tail::Join {
         rec: true,
         defs: vec![JoinDef {
             label: lp,
@@ -71,7 +70,7 @@ fn sum_loop() {
             body: loop_body,
         }],
         body: Box::new(jump(lp, vec![int(0), int(0)])),
-    };
+    });
 
     assert_eq!(f.labels, 2);
     assert_eq!(f.var_ty(acc2), &Ty::I32);

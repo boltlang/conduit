@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use conduit_ir::{
-    Atom, EffectId, Extern, ExternId, Func, FuncId, HandlerId, JoinDef, Label, Mutability, Op,
-    Program, SourceId, Tag, Term, Var,
+    Atom, Block, EffectId, Extern, ExternId, Func, FuncId, HandlerId, JoinDef, Label, Mutability,
+    Op, Program, SourceId, Tag, Tail, Var,
 };
 
 use crate::error::{Error, ErrorKind, unverified};
@@ -44,10 +44,31 @@ pub(crate) struct Code<'p> {
     labels: Labels<'p>,
     vars: Vec<Option<Value>>,
     /// What runs next.
-    term: &'p Term,
-    /// The variables and body of a `let` that waits for a call, `perform`,
-    /// `resume` or `handle` to give its results.
-    waiting: Option<(&'p [Var], &'p Term)>,
+    at: At<'p>,
+    /// The variables of a `let` that waits for a call, `perform`, `resume`
+    /// or `handle` to give its results, and where to go on after it.
+    waiting: Option<(&'p [Var], At<'p>)>,
+}
+
+/// A place in a block: the `let` at `index`, or the tail once `index`
+/// reaches the end of the `let`s.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct At<'p> {
+    block: &'p Block,
+    index: usize,
+}
+
+impl<'p> At<'p> {
+    fn start(block: &'p Block) -> At<'p> {
+        At { block, index: 0 }
+    }
+
+    fn next(self) -> At<'p> {
+        At {
+            index: self.index + 1,
+            ..self
+        }
+    }
 }
 
 type Step<T> = Result<T, ErrorKind>;
@@ -134,24 +155,20 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
         }
     }
 
-    /// Runs one term. Gives the results once the first function returns.
+    /// Runs one `let` or tail. Gives the results once the first function
+    /// returns.
     fn step(&mut self) -> Step<Option<Vec<Value>>> {
-        let term = self.code()?.term;
-        match term {
-            Term::Let {
-                binds,
-                op,
-                args,
-                body,
-                source,
-            } => {
-                self.source = *source;
-                let args = self.atoms(args)?;
-                self.op(op, args, binds, body)?;
-            }
+        let at = self.code()?.at;
+        if let Some(l) = at.block.lets.get(at.index) {
+            self.source = l.source;
+            let args = self.atoms(&l.args)?;
+            self.op(&l.op, args, &l.binds, at.next())?;
+            return Ok(None);
+        }
+        match &at.block.tail {
             // Join definitions are found through the function's labels.
-            Term::Join { body, .. } => self.code()?.term = body,
-            Term::Jump {
+            Tail::Join { body, .. } => self.code()?.at = At::start(body),
+            Tail::Jump {
                 target,
                 args,
                 source,
@@ -165,9 +182,9 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                 let def = code.labels.get(target.0 as usize).copied().flatten();
                 let def = def.ok_or_else(|| unverified(format!("{target} isn't defined")))?;
                 bind(code, &def.params, args)?;
-                code.term = &def.body;
+                code.at = At::start(&def.body);
             }
-            Term::Case {
+            Tail::Case {
                 scrut,
                 arms,
                 default,
@@ -183,9 +200,10 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                 };
                 let arm = arms.iter().find(|arm| arm.tag == tag).map(|arm| &arm.body);
                 let next = arm.or(default.as_deref());
-                self.code()?.term = next.ok_or_else(|| unverified("no arm of a case matches"))?;
+                let next = next.ok_or_else(|| unverified("no arm of a case matches"))?;
+                self.code()?.at = At::start(next);
             }
-            Term::Unreachable => return Err(ErrorKind::Unreachable),
+            Tail::Unreachable => return Err(ErrorKind::Unreachable),
         }
         Ok(None)
     }
@@ -248,7 +266,7 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
             func,
             labels,
             vars: vec![None; f.vars.len()],
-            term: &f.body,
+            at: At::start(&f.body),
             waiting: None,
         };
         bind(&mut code, &f.params, args)?;
@@ -287,7 +305,7 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
             .take()
             .ok_or_else(|| unverified("results for code that doesn't wait"))?;
         bind(code, binds, results)?;
-        code.term = next;
+        code.at = next;
         Ok(())
     }
 
@@ -298,20 +316,20 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
         func: FuncId,
         args: Vec<Value>,
         binds: &'p [Var],
-        body: &'p Term,
+        next: At<'p>,
     ) -> Step<()> {
-        self.wait_or_leave(binds, body)?;
+        self.wait_or_leave(binds, next)?;
         self.enter(func, args)
     }
 
     /// Before control leaves the running function from a `let`: makes it
     /// wait for the `let`'s results, or, if the `let` only returns them,
     /// removes the function so the results go straight to its caller.
-    fn wait_or_leave(&mut self, binds: &'p [Var], body: &'p Term) -> Step<()> {
-        if is_tail(binds, body) {
+    fn wait_or_leave(&mut self, binds: &'p [Var], next: At<'p>) -> Step<()> {
+        if is_tail(binds, next) {
             self.stack.pop();
         } else {
-            self.code()?.waiting = Some((binds, body));
+            self.code()?.waiting = Some((binds, next));
         }
         Ok(())
     }
@@ -329,10 +347,10 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
         Ok(ty.mutability() == Some(Mutability::Mut))
     }
 
-    fn op(&mut self, op: &'p Op, args: Vec<Value>, binds: &'p [Var], body: &'p Term) -> Step<()> {
+    fn op(&mut self, op: &'p Op, args: Vec<Value>, binds: &'p [Var], next: At<'p>) -> Step<()> {
         let results = match op {
             Op::Prim(prim) => vec![prim::eval(prim, &args)?],
-            Op::Call(f) => return self.call_from(*f, args, binds, body),
+            Op::Call(f) => return self.call_from(*f, args, binds, next),
             Op::CallExtern(e) => {
                 let decl = self
                     .p
@@ -357,7 +375,7 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                     _ => return Err(unverified("apply of something that isn't a closure")),
                 };
                 all.extend_from_slice(rest);
-                return self.call_from(func, all, binds, body);
+                return self.call_from(func, all, binds, next);
             }
             Op::New(c) => {
                 let is_mut = self.binds_mut(binds)?;
@@ -481,13 +499,13 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                 _ => return Err(unverified("unbox of something that isn't boxed")),
             },
             Op::Copy(m) => vec![self.copy(arg(&args, 0)?, *m == Mutability::Mut)?],
-            Op::Handle(h) => return self.handle(*h, args, binds, body),
-            Op::Perform(e, i) => return self.perform(*e, *i, args, binds, body),
-            Op::Resume => return self.resume(args, binds, body),
+            Op::Handle(h) => return self.handle(*h, args, binds, next),
+            Op::Perform(e, i) => return self.perform(*e, *i, args, binds, next),
+            Op::Resume => return self.resume(args, binds, next),
         };
         let code = self.code()?;
         bind(code, binds, results)?;
-        code.term = body;
+        code.at = next;
         Ok(())
     }
 
@@ -496,7 +514,7 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
         handler: HandlerId,
         mut args: Vec<Value>,
         binds: &'p [Var],
-        body: &'p Term,
+        next: At<'p>,
     ) -> Step<()> {
         let closure = args
             .pop()
@@ -505,7 +523,7 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
             Object::Closure { func, captures, .. } => (*func, captures.clone()),
             _ => return Err(unverified("the body of a handle isn't a closure")),
         };
-        self.code()?.waiting = Some((binds, body));
+        self.code()?.waiting = Some((binds, next));
         self.stack.push(Frame::Handler { handler, env: args });
         self.enter(func, captures)
     }
@@ -516,7 +534,7 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
         op: u32,
         args: Vec<Value>,
         binds: &'p [Var],
-        body: &'p Term,
+        next: At<'p>,
     ) -> Step<()> {
         let p = self.p;
         let handles = |frame: &Frame| match frame {
@@ -530,7 +548,7 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
             .iter()
             .rposition(handles)
             .ok_or(ErrorKind::Unhandled(effect))?;
-        self.code()?.waiting = Some((binds, body));
+        self.code()?.waiting = Some((binds, next));
         // The continuation is the handler's frame and everything above it,
         // so that the resumed computation is handled again.
         let frames = self.stack.split_off(at);
@@ -553,7 +571,7 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
         self.enter(clause, clause_args)
     }
 
-    fn resume(&mut self, args: Vec<Value>, binds: &'p [Var], body: &'p Term) -> Step<()> {
+    fn resume(&mut self, args: Vec<Value>, binds: &'p [Var], next: At<'p>) -> Step<()> {
         let (k, values) = args
             .split_first()
             .ok_or_else(|| unverified("resume without a continuation"))?;
@@ -566,7 +584,7 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
         };
         // The resumed computation returns, through the handler's return
         // clause, to this `let`.
-        self.wait_or_leave(binds, body)?;
+        self.wait_or_leave(binds, next)?;
         if self.stack.len() + frames.len() > self.max_frames {
             return Err(ErrorKind::StackOverflow);
         }
@@ -681,14 +699,17 @@ fn bind(code: &mut Code, vars: &[Var], values: Vec<Value>) -> Step<()> {
     Ok(())
 }
 
-/// Whether a `let`'s body only returns what the `let` binds.
-fn is_tail(binds: &[Var], body: &Term) -> bool {
-    match body {
-        Term::Jump {
+/// Whether what follows a `let`, at `next`, only returns what the `let`
+/// binds.
+fn is_tail(binds: &[Var], next: At) -> bool {
+    match &next.block.tail {
+        Tail::Jump {
             target: Label::RET,
             args,
             ..
-        } => args.len() == binds.len() && args.iter().zip(binds).all(|(a, b)| *a == Atom::Var(*b)),
+        } if next.index == next.block.lets.len() => {
+            args.len() == binds.len() && args.iter().zip(binds).all(|(a, b)| *a == Atom::Var(*b))
+        }
         _ => false,
     }
 }
@@ -725,10 +746,9 @@ fn out_of_bounds(index: usize, len: usize) -> ErrorKind {
 fn join_defs(f: &Func) -> Labels<'_> {
     let mut table = vec![None; f.labels as usize];
     let mut todo = vec![&f.body];
-    while let Some(term) = todo.pop() {
-        match term {
-            Term::Let { body, .. } => todo.push(body),
-            Term::Join { defs, body, .. } => {
+    while let Some(block) = todo.pop() {
+        match &block.tail {
+            Tail::Join { defs, body, .. } => {
                 for def in defs {
                     if let Some(slot) = table.get_mut(def.label.0 as usize) {
                         *slot = Some(def);
@@ -737,11 +757,11 @@ fn join_defs(f: &Func) -> Labels<'_> {
                 }
                 todo.push(body);
             }
-            Term::Case { arms, default, .. } => {
+            Tail::Case { arms, default, .. } => {
                 todo.extend(arms.iter().map(|arm| &arm.body));
                 todo.extend(default.as_deref());
             }
-            Term::Jump { .. } | Term::Unreachable => {}
+            Tail::Jump { .. } | Tail::Unreachable => {}
         }
     }
     table.into()

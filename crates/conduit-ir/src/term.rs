@@ -45,27 +45,56 @@ impl std::fmt::Display for Atom {
     }
 }
 
-/// A term. Terms only appear in tail position, so every [`Term::Jump`] is a
-/// tail jump by construction.
+/// Straight-line code: `let`s, then the tail that ends it.
+///
+/// The `let`s are a list rather than nested, so that a long function is a
+/// long `Vec`: dropping, cloning, comparing or walking it doesn't recurse.
+/// Blocks only nest through `join` and `case`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Term {
-    /// `let x1, .., xn = op(a1, .., am); body`
-    Let {
-        binds: Vec<Var>,
-        op: Op,
-        args: Vec<Atom>,
-        body: Box<Term>,
-        source: Option<SourceId>,
-    },
+pub struct Block {
+    pub lets: Vec<Let>,
+    pub tail: Tail,
+}
 
-    /// `join [rec] j1(params) = t1, .., jn(params) = tn in body`
+impl Block {
+    /// This block with `l` run first.
+    pub fn with_let(mut self, l: Let) -> Block {
+        self.lets.insert(0, l);
+        self
+    }
+}
+
+/// A block without `let`s.
+impl From<Tail> for Block {
+    fn from(tail: Tail) -> Block {
+        Block {
+            lets: Vec::new(),
+            tail,
+        }
+    }
+}
+
+/// `let x1, .., xn = op(a1, .., am)`
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Let {
+    pub binds: Vec<Var>,
+    pub op: Op,
+    pub args: Vec<Atom>,
+    pub source: Option<SourceId>,
+}
+
+/// What ends a block. A block's tail is its only exit, so every
+/// [`Tail::Jump`] is a tail jump by construction.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Tail {
+    /// `join [rec] j1(params) = b1, .., jn(params) = bn in body`
     ///
     /// The labels are in scope in `body`, and if `rec`, in every
     /// definition's body too.
     Join {
         rec: bool,
         defs: Vec<JoinDef>,
-        body: Box<Term>,
+        body: Box<Block>,
     },
 
     /// `jump j(a1, .., an)`. A jump to [`Label::RET`] returns.
@@ -80,30 +109,30 @@ pub enum Term {
     Case {
         scrut: Atom,
         arms: Vec<Arm>,
-        default: Option<Box<Term>>,
+        default: Option<Box<Block>>,
     },
 
     /// This point is never reached.
     Unreachable,
 }
 
-/// One definition of a [`Term::Join`].
+/// One definition of a [`Tail::Join`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct JoinDef {
     pub label: Label,
     pub params: Vec<Var>,
-    pub body: Term,
+    pub body: Block,
 }
 
-/// One arm of a [`Term::Case`]. An arm binds nothing: fields are read with
+/// One arm of a [`Tail::Case`]. An arm binds nothing: fields are read with
 /// [`Op::Get`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Arm {
     pub tag: Tag,
-    pub body: Term,
+    pub body: Block,
 }
 
-/// What a [`Term::Case`] arm matches.
+/// What a [`Tail::Case`] arm matches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Tag {
     Int(i64),

@@ -1,6 +1,6 @@
 //! How a function body becomes Wasm code. See "Lowering" in `docs/ir.md`.
 //!
-//! Every variable is a local, and every term ends in a `return`, `br`,
+//! Every variable is a local, and every block ends in a `return`, `br`,
 //! `return_call` or `unreachable`, so blocks never carry values and no
 //! code falls through. Join points become blocks:
 //!
@@ -18,7 +18,9 @@
 
 use std::borrow::Cow;
 
-use conduit_ir::{Atom, CtorId, Func, JoinDef, Label, Lit, Op, Prim, Sign, Tag, Term, Ty, Var};
+use conduit_ir::{
+    Atom, Block, CtorId, Func, JoinDef, Label, Lit, Op, Prim, Sign, Tag, Tail, Ty, Var,
+};
 use wasm_encoder::{BlockType, HeapType, Ieee32, Ieee64, Instruction as I, RefType, ValType};
 
 use crate::Cx;
@@ -83,7 +85,7 @@ pub(crate) fn lower_func<'m>(cx: &mut Cx<'m>, f: &'m Func) -> Result<Body, Strin
         depth: 0,
         code: Vec::new(),
     };
-    fcx.term(&f.body)?;
+    fcx.block(&f.body)?;
     fcx.code.push(I::End);
     Ok(Body {
         locals: fcx.extra,
@@ -171,34 +173,23 @@ impl<'m> FuncCx<'_, 'm> {
         }
     }
 
-    fn term(&mut self, mut t: &'m Term) -> Result<(), String> {
-        // Iterate over chains of `let`s, so that a long function doesn't
-        // recurse once per statement.
-        loop {
-            match t {
-                Term::Let {
-                    binds,
-                    op,
-                    args,
-                    body,
-                    ..
-                } => {
-                    if self.let_(binds, op, args, body)? {
-                        return Ok(());
-                    }
-                    t = body;
-                }
-                Term::Join { rec, defs, body } => return self.join(*rec, defs, body),
-                Term::Jump { target, args, .. } => return self.jump(*target, args),
-                Term::Case {
-                    scrut,
-                    arms,
-                    default,
-                } => return self.case(scrut, arms, default.as_deref()),
-                Term::Unreachable => {
-                    self.emit(I::Unreachable);
-                    return Ok(());
-                }
+    fn block(&mut self, b: &'m Block) -> Result<(), String> {
+        for (i, l) in b.lets.iter().enumerate() {
+            if self.let_(&l.binds, &l.op, &l.args, b, i + 1)? {
+                return Ok(());
+            }
+        }
+        match &b.tail {
+            Tail::Join { rec, defs, body } => self.join(*rec, defs, body),
+            Tail::Jump { target, args, .. } => self.jump(*target, args),
+            Tail::Case {
+                scrut,
+                arms,
+                default,
+            } => self.case(scrut, arms, default.as_deref()),
+            Tail::Unreachable => {
+                self.emit(I::Unreachable);
+                Ok(())
             }
         }
     }
@@ -231,7 +222,7 @@ impl<'m> FuncCx<'_, 'm> {
         });
     }
 
-    fn join(&mut self, rec: bool, defs: &'m [JoinDef], body: &'m Term) -> Result<(), String> {
+    fn join(&mut self, rec: bool, defs: &'m [JoinDef], body: &'m Block) -> Result<(), String> {
         let base = self.depth;
         if !rec {
             // The innermost block is `defs[0]`'s, so that its body comes
@@ -242,10 +233,10 @@ impl<'m> FuncCx<'_, 'm> {
             for _ in defs {
                 self.open(I::Block(BlockType::Empty));
             }
-            self.term(body)?;
+            self.block(body)?;
             for def in defs {
                 self.close();
-                self.term(&def.body)?;
+                self.block(&def.body)?;
             }
             return Ok(());
         }
@@ -264,11 +255,11 @@ impl<'m> FuncCx<'_, 'm> {
             }
         };
         self.open(I::Block(BlockType::Empty));
-        self.term(body)?;
+        self.block(body)?;
         self.close();
         self.open(I::Loop(BlockType::Empty));
         match which {
-            None => self.term(&defs[0].body)?,
+            None => self.block(&defs[0].body)?,
             Some(which) => {
                 for _ in defs {
                     self.open(I::Block(BlockType::Empty));
@@ -278,7 +269,7 @@ impl<'m> FuncCx<'_, 'm> {
                 self.emit(I::BrTable(Cow::Owned(targets), defs.len() as u32 - 1));
                 for def in defs {
                     self.close();
-                    self.term(&def.body)?;
+                    self.block(&def.body)?;
                 }
             }
         }
@@ -297,7 +288,7 @@ impl<'m> FuncCx<'_, 'm> {
         &mut self,
         scrut: &Atom,
         arms: &'m [conduit_ir::Arm],
-        default: Option<&'m Term>,
+        default: Option<&'m Block>,
     ) -> Result<(), String> {
         let ty = self.atom_ty(scrut);
         let data = match ty {
@@ -312,7 +303,7 @@ impl<'m> FuncCx<'_, 'm> {
         };
         if let Some(only) = only {
             return match only {
-                Some(t) => self.term(t),
+                Some(t) => self.block(t),
                 None => {
                     self.emit(I::Unreachable);
                     Ok(())
@@ -351,11 +342,11 @@ impl<'m> FuncCx<'_, 'm> {
         }
         for arm in arms {
             self.close();
-            self.term(&arm.body)?;
+            self.block(&arm.body)?;
         }
         if let Some(default) = default {
             self.close();
-            self.term(default)?;
+            self.block(default)?;
         }
         Ok(())
     }
@@ -412,16 +403,17 @@ impl<'m> FuncCx<'_, 'm> {
         Ok(())
     }
 
-    /// Lowers a `let`. Returns whether it was a tail call, which also
-    /// covers the `jump ret` in its body.
+    /// Lowers a `let`, which `next` follows in `block`. Returns whether it
+    /// was a tail call, which also covers the `jump ret` after it.
     fn let_(
         &mut self,
         binds: &[Var],
         op: &'m Op,
         args: &[Atom],
-        body: &Term,
+        block: &Block,
+        next: usize,
     ) -> Result<bool, String> {
-        let tail = self.is_tail(binds, body)?;
+        let tail = self.is_tail(binds, block, next)?;
         match op {
             Op::Prim(p) => self.prim(p, args)?,
             Op::Call(f) => {
@@ -589,12 +581,16 @@ impl<'m> FuncCx<'_, 'm> {
         tail
     }
 
-    /// Whether a call bound by `binds` and followed by `body` can be a tail
-    /// call: `body` returns exactly what the call gives.
-    fn is_tail(&mut self, binds: &[Var], body: &Term) -> Result<bool, String> {
-        let Term::Jump { target, args, .. } = body else {
+    /// Whether a call bound by `binds`, followed by what's at `next` in
+    /// `block`, can be a tail call: what follows returns exactly what the
+    /// call gives.
+    fn is_tail(&mut self, binds: &[Var], block: &Block, next: usize) -> Result<bool, String> {
+        let Tail::Jump { target, args, .. } = &block.tail else {
             return Ok(false);
         };
+        if next != block.lets.len() {
+            return Ok(false);
+        }
         if *target != Label::RET
             || args.len() != binds.len()
             || !args.iter().zip(binds).all(|(a, b)| *a == Atom::Var(*b))

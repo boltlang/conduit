@@ -5,9 +5,9 @@
 //! [`ErrorKind::Unverified`] error, or a wrong result, but never a panic.
 //!
 //! - **No recursion for control flow.** The machine runs a loop over an
-//!   explicit stack of frames. Every term is in tail position, so a `let`,
-//!   a jump or a `case` replaces the current term, and loops don't grow the
-//!   stack. Calls push a frame. Tail calls (`let r = call f(..); jump ret(r)`)
+//!   explicit stack of frames. A frame holds a place in a block: a `let`
+//!   moves it forward, and a jump or a `case` moves it to another block, so
+//!   loops don't grow the stack. Calls push a frame. Tail calls (`let r = call f(..); jump ret(r)`)
 //!   and tail resumes replace the caller's frame.
 //! - **Handlers move frames.** `handle` pushes a handler frame. `perform`
 //!   moves every frame from the nearest handler of its effect up into a

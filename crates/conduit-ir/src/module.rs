@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use crate::id::{DataId, EffectId, ExternId, FuncId, HandlerId, Label, Var};
-use crate::term::Term;
+use crate::term::{Block, Tail};
 use crate::ty::{CtorDecl, Sig, Ty};
 
 /// A whole program, before linking.
@@ -26,7 +26,7 @@ pub struct Func {
     pub labels: u32,
     pub params: Vec<Var>,
     pub results: Vec<Ty>,
-    pub body: Term,
+    pub body: Block,
 }
 
 impl Func {
@@ -39,7 +39,7 @@ impl Func {
             labels: 1,
             params: (0..params_len).map(Var).collect(),
             results,
-            body: Term::Unreachable,
+            body: Tail::Unreachable.into(),
         }
     }
 

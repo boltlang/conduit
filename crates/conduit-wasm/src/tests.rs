@@ -17,45 +17,44 @@ fn int(n: i32) -> Atom {
     Atom::Lit(Lit::I32(n))
 }
 
-fn let_(binds: &[Var], op: Op, args: Vec<Atom>, body: Term) -> Term {
-    Term::Let {
+fn let_(binds: &[Var], op: Op, args: Vec<Atom>, body: Block) -> Block {
+    (body).with_let(Let {
         binds: binds.to_vec(),
         op,
         args,
-        body: Box::new(body),
         source: None,
-    }
+    })
 }
 
-fn prim(bind: Var, p: Prim, args: Vec<Atom>, body: Term) -> Term {
+fn prim(bind: Var, p: Prim, args: Vec<Atom>, body: Block) -> Block {
     let_(&[bind], Op::Prim(p), args, body)
 }
 
-fn jump(target: Label, args: Vec<Atom>) -> Term {
-    Term::Jump {
+fn jump(target: Label, args: Vec<Atom>) -> Block {
+    Block::from(Tail::Jump {
         target,
         args,
         source: None,
-    }
+    })
 }
 
-fn ret(args: Vec<Atom>) -> Term {
+fn ret(args: Vec<Atom>) -> Block {
     jump(Label::RET, args)
 }
 
-fn case(scrut: Atom, arms: Vec<(Tag, Term)>, default: Option<Term>) -> Term {
-    Term::Case {
+fn case(scrut: Atom, arms: Vec<(Tag, Block)>, default: Option<Block>) -> Block {
+    Block::from(Tail::Case {
         scrut,
         arms: arms
             .into_iter()
             .map(|(tag, body)| Arm { tag, body })
             .collect(),
         default: default.map(Box::new),
-    }
+    })
 }
 
-fn join(rec: bool, defs: Vec<(Label, Vec<Var>, Term)>, body: Term) -> Term {
-    Term::Join {
+fn join(rec: bool, defs: Vec<(Label, Vec<Var>, Block)>, body: Block) -> Block {
+    Block::from(Tail::Join {
         rec,
         defs: defs
             .into_iter()
@@ -66,7 +65,7 @@ fn join(rec: bool, defs: Vec<(Label, Vec<Var>, Term)>, body: Term) -> Term {
             })
             .collect(),
         body: Box::new(body),
-    }
+    })
 }
 
 fn module(funcs: Vec<(FuncId, Func)>) -> Module {

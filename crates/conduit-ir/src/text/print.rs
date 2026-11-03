@@ -68,15 +68,16 @@ pub(super) fn func(id: FuncId, f: &Func) -> String {
 
     let mut bound = BTreeSet::new();
     let mut max_label = 0;
-    walk(&f.body, &mut |t| match t {
-        Term::Let { binds, .. } => bound.extend(binds.iter().copied()),
-        Term::Join { defs, .. } => {
+    walk(&f.body, &mut |b| {
+        for l in &b.lets {
+            bound.extend(l.binds.iter().copied());
+        }
+        if let Tail::Join { defs, .. } = &b.tail {
             for def in defs {
                 bound.extend(def.params.iter().copied());
                 max_label = max_label.max(def.label.0);
             }
         }
-        _ => {}
     });
     bound.extend(f.params.iter().copied());
     if f.labels != max_label + 1 {
@@ -91,27 +92,26 @@ pub(super) fn func(id: FuncId, f: &Func) -> String {
         let _ = write!(p.out, " vars({})", unbound.join(", "));
     }
     p.out.push_str(" {\n");
-    p.term(&f.body, 1);
+    p.block(&f.body, 1);
     p.out.push('}');
     p.out
 }
 
-/// Calls `visit` on every term, without recursion.
-fn walk<'a>(t: &'a Term, visit: &mut impl FnMut(&'a Term)) {
-    let mut todo = vec![t];
-    while let Some(t) = todo.pop() {
-        visit(t);
-        match t {
-            Term::Let { body, .. } => todo.push(body),
-            Term::Join { defs, body, .. } => {
+/// Calls `visit` on every block, without recursion.
+fn walk<'a>(b: &'a Block, visit: &mut impl FnMut(&'a Block)) {
+    let mut todo = vec![b];
+    while let Some(b) = todo.pop() {
+        visit(b);
+        match &b.tail {
+            Tail::Join { defs, body, .. } => {
                 todo.extend(defs.iter().map(|d| &d.body));
                 todo.push(body);
             }
-            Term::Case { arms, default, .. } => {
+            Tail::Case { arms, default, .. } => {
                 todo.extend(arms.iter().map(|a| &a.body));
                 todo.extend(default.as_deref());
             }
-            Term::Jump { .. } | Term::Unreachable => {}
+            Tail::Jump { .. } | Tail::Unreachable => {}
         }
     }
 }
@@ -139,42 +139,22 @@ impl Printer<'_> {
         self.out.push('\n');
     }
 
-    /// Prints `head`, followed by `t` on the same line if it's a single
+    /// Prints `head`, followed by `b` on the same line if it's a single
     /// line, or indented below it otherwise.
-    fn nested(&mut self, depth: usize, head: &str, t: &Term) {
-        match t {
-            Term::Jump { .. } | Term::Unreachable => {
-                let text = format!("{head} {}", self.simple(t));
-                self.line(depth, &text);
-            }
-            _ => {
+    fn nested(&mut self, depth: usize, head: &str, b: &Block) {
+        match simple(b) {
+            Some(text) => self.line(depth, &format!("{head} {text}")),
+            None => {
                 self.line(depth, head);
-                self.term(t, depth + 1);
+                self.block(b, depth + 1);
             }
         }
     }
 
-    fn simple(&self, t: &Term) -> String {
-        match t {
-            Term::Jump {
-                target,
-                args,
-                source,
-            } => format!("jump {target}({}){}", atoms(args), at(*source)),
-            _ => "unreachable".to_string(),
-        }
-    }
-
-    fn term(&mut self, mut t: &Term, depth: usize) {
-        while let Term::Let {
-            binds,
-            op,
-            args,
-            body,
-            source,
-        } = t
-        {
-            let binds = binds
+    fn block(&mut self, b: &Block, depth: usize) {
+        for l in &b.lets {
+            let binds = l
+                .binds
                 .iter()
                 .map(|&v| self.binder(v))
                 .collect::<Vec<_>>()
@@ -182,15 +162,14 @@ impl Printer<'_> {
             let space = if binds.is_empty() { "" } else { " " };
             let text = format!(
                 "let {binds}{space}= {}({}){}",
-                op_name(op),
-                atoms(args),
-                at(*source)
+                op_name(&l.op),
+                atoms(&l.args),
+                at(l.source)
             );
             self.line(depth, &text);
-            t = body;
         }
-        match t {
-            Term::Join { rec, defs, body } => {
+        match &b.tail {
+            Tail::Join { rec, defs, body } => {
                 for (i, def) in defs.iter().enumerate() {
                     let keyword = match (i, rec) {
                         (0, true) => "join rec",
@@ -209,15 +188,15 @@ impl Printer<'_> {
                         &def.body,
                     );
                 }
-                match **body {
-                    Term::Jump { .. } | Term::Unreachable => self.nested(depth, "in", body),
-                    _ => {
+                match simple(body) {
+                    Some(text) => self.line(depth, &format!("in {text}")),
+                    None => {
                         self.line(depth, "in");
-                        self.term(body, depth);
+                        self.block(body, depth);
                     }
                 }
             }
-            Term::Case {
+            Tail::Case {
                 scrut,
                 arms,
                 default,
@@ -235,12 +214,33 @@ impl Printer<'_> {
                 }
                 self.line(depth, "}");
             }
-            Term::Jump { .. } | Term::Unreachable => {
-                let text = self.simple(t);
+            tail @ (Tail::Jump { .. } | Tail::Unreachable) => {
+                let text = tail_text(tail);
                 self.line(depth, &text);
             }
-            Term::Let { .. } => unreachable!("the loop above takes every let"),
         }
+    }
+}
+
+/// The text of a block that fits on one line: one without `let`s that
+/// ends in a jump or `unreachable`.
+fn simple(b: &Block) -> Option<String> {
+    match &b.tail {
+        tail @ (Tail::Jump { .. } | Tail::Unreachable) if b.lets.is_empty() => {
+            Some(tail_text(tail))
+        }
+        _ => None,
+    }
+}
+
+fn tail_text(tail: &Tail) -> String {
+    match tail {
+        Tail::Jump {
+            target,
+            args,
+            source,
+        } => format!("jump {target}({}){}", atoms(args), at(*source)),
+        _ => "unreachable".to_string(),
     }
 }
 
