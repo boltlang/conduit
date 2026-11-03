@@ -9,7 +9,7 @@ Every part of Conduit runs the checks that apply to it:
 | `conduit-ir` | Parses it, checks that printing and parsing gives the same module, and verifies it |
 | `conduit-eval` | Runs its `run` checks |
 | `conduit-wasm` | Lowers it, validates the Wasm, compares `wat` snapshots and runs its `run` checks with Wasmtime |
-| `conduit-opt` | Optimizes it, verifies the result, compares `opt` snapshots and runs its `run` checks on the result with the evaluator |
+| `conduit-opt` | Optimizes it, verifies the result, compares `opt` snapshots and runs its `run` checks on the result with the evaluator. With `opt: passes`, it does this both after all passes and after only those |
 
 So a `run` check is checked by the evaluator, by Wasm and after
 optimization, and they all have to agree.
@@ -30,6 +30,7 @@ checks apply to that crate.
 | `//# wasm-skip: reason` | The Wasm backend doesn't look at the program, for example because it uses effect handlers. |
 | `//# wat` | The program's Wasm, as text, matches `<name>.wat` next to it. |
 | `//# opt` | The program after optimization matches `<name>.opt.conduit` next to it. |
+| `//# opt: dce, copies` | The same, but after only those passes, in that order, each run until nothing changes. A program has at most one `opt` check. |
 
 Arguments and results are literals as the text format writes them: `5i32`,
 `-1i64`, `1.5f32`, `1e300f64`, `f32_bits(2143289344)`. Floats are compared

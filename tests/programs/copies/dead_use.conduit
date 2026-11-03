@@ -25,4 +25,4 @@ fn fn1(%0: mut data0) -> (i32) {
 
 //# run fn0(1i32) == 1i32
 //# wasm-error: copy isn't supported yet
-//# opt
+//# opt: dce, copies

@@ -61,11 +61,21 @@ pub fn run_passes(passes: &[&dyn Pass], p: &dyn Program, id: FuncId, f: &mut Fun
 /// so each function sees the ones before it already optimized. Returns
 /// whether anything changed.
 pub fn optimize_module(m: &mut Module) -> bool {
+    run_passes_on_module(PASSES, m)
+}
+
+/// The pass in [`PASSES`] with this [`Pass::name`].
+pub fn pass(name: &str) -> Option<&'static dyn Pass> {
+    PASSES.iter().copied().find(|p| p.name() == name)
+}
+
+/// Like [`optimize_module`], with `passes` instead of [`PASSES`].
+pub fn run_passes_on_module(passes: &[&dyn Pass], m: &mut Module) -> bool {
     let mut changed = false;
     let ids: Vec<FuncId> = m.funcs.keys().copied().collect();
     for id in ids {
         let mut f = m.funcs[&id].clone();
-        if optimize_func(m, id, &mut f) {
+        if run_passes(passes, m, id, &mut f) {
             m.funcs.insert(id, f);
             changed = true;
         }

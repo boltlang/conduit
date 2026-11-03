@@ -45,4 +45,4 @@ fn fn1(%0: i32) -> (i32) {
 //# run fn0(4i32) == 6i32
 //# run fn1(4i32) == 6i32
 //# wasm-error: copy isn't supported yet
-//# opt
+//# opt: copies

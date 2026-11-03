@@ -12,4 +12,4 @@ fn fn0(%0: i32, %1: i32) -> (i32) {
 
 //# run fn0(6i32, 3i32) == 12i32
 //# run fn0(6i32, 0i32) traps
-//# opt
+//# opt: dce

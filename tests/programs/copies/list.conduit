@@ -39,4 +39,4 @@ fn fn1(%0: imm data0) -> (i32) {
 
 //# run fn0(1i32) == 12i32
 //# wasm-error: copy isn't supported yet
-//# opt
+//# opt: copies

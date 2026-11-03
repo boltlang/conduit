@@ -23,4 +23,4 @@ fn fn0(%0: i32) -> (i32) {
 //# run fn0(0i32) == 1i32
 //# run fn0(7i32) == 0i32
 //# run fn0(10i32) == 1i32
-//# opt
+//# opt: dce

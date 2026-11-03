@@ -29,8 +29,9 @@ pub enum CheckKind {
     /// `//# wat`: the Wasm text of the program matches `<name>.wat`.
     Wat,
     /// `//# opt`: the program after optimization matches
-    /// `<name>.opt.conduit`.
-    Opt,
+    /// `<name>.opt.conduit`. `//# opt: dce, copies` runs only the passes
+    /// with those names, in that order, instead of all of them.
+    Opt(Option<Vec<String>>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -78,12 +79,25 @@ fn check(s: &str) -> Result<CheckKind, String> {
         "wasm-error" => Ok(CheckKind::WasmError(message(rest)?)),
         "wasm-skip" => Ok(CheckKind::WasmSkip(message(rest)?)),
         "wat" => none(CheckKind::Wat),
-        "opt" => none(CheckKind::Opt),
+        "opt" => opt(rest),
         _ => Err(format!(
             "unknown check `{word}`: expected `run`, `verify-error`, `wasm-error`, \
              `wasm-skip`, `wat` or `opt`"
         )),
     }
+}
+
+/// Nothing, or `: name, ..`.
+fn opt(s: &str) -> Result<CheckKind, String> {
+    let s = s.trim();
+    if s.is_empty() {
+        return Ok(CheckKind::Opt(None));
+    }
+    let names: Vec<String> = s.split(',').map(|n| n.trim().to_string()).collect();
+    if names.iter().any(|n| n.is_empty()) {
+        return Err("expected pass names separated by `,`, like `opt: dce, copies`".into());
+    }
+    Ok(CheckKind::Opt(Some(names)))
 }
 
 /// `fn1(5i32, 1i64) == 120i32`, `== (1i32, 2i32)`, `== ()` or `traps`.
@@ -215,7 +229,9 @@ mod tests {
                     //# run fn4(0i32) traps\n\
                     //# verify-error: isn't in scope\n\
                     //# wasm-skip: effect handlers\n\
-                    //# wat\n";
+                    //# wat\n\
+                    //# opt\n\
+                    //# opt: dce, copies\n";
         let kinds: Vec<CheckKind> = parse(text).unwrap().into_iter().map(|c| c.kind).collect();
         assert_eq!(
             kinds,
@@ -243,6 +259,8 @@ mod tests {
                 CheckKind::VerifyError("isn't in scope".into()),
                 CheckKind::WasmSkip("effect handlers".into()),
                 CheckKind::Wat,
+                CheckKind::Opt(None),
+                CheckKind::Opt(Some(vec!["dce".into(), "copies".into()])),
             ]
         );
     }
@@ -259,5 +277,6 @@ mod tests {
         assert!(parse("//# run fn1() = 1i32").is_err());
         assert!(parse("//# wasm-error").is_err());
         assert!(parse("//# wat please").is_err());
+        assert!(parse("//# opt: dce,").is_err());
     }
 }

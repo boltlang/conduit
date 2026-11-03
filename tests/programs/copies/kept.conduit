@@ -49,4 +49,4 @@ fn fn3(%0: i32) -> (i32) {
 //# run fn1(1i32) == 1i32
 //# run fn3(1i32) == 1i32
 //# wasm-error: copy isn't supported yet
-//# opt
+//# opt: copies

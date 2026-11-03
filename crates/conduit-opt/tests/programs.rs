@@ -1,9 +1,15 @@
-//! Optimizes every test program, then checks that it still verifies, that
-//! its `run` checks still pass in the evaluator, and that it matches its
-//! `<name>.opt.conduit` snapshot if it has an `opt` check.
+//! Optimizes every test program, then checks that it still verifies and
+//! that its `run` checks still pass in the evaluator.
+//!
+//! A program with an `opt` check must also match its `<name>.opt.conduit`
+//! snapshot. `//# opt` snapshots the program after all passes, and
+//! `//# opt: dce, copies` after only those passes, which are verified and
+//! run on their own too.
 
+use conduit_ir::Module;
 use conduit_ir::text;
 use conduit_ir::verify::verify_module;
+use conduit_opt::Pass;
 use conduit_test::{CheckKind, Program};
 
 fn main() {
@@ -12,22 +18,61 @@ fn main() {
 
 fn applies(p: &Program) -> bool {
     !p.has(|k| matches!(k, CheckKind::VerifyError(_)))
-        && (p.runs().next().is_some() || p.has(|k| *k == CheckKind::Opt))
+        && (p.runs().next().is_some() || p.has(|k| matches!(k, CheckKind::Opt(_))))
 }
 
 fn test(p: &Program) -> Result<(), String> {
+    let opts: Vec<&Option<Vec<String>>> = p
+        .checks
+        .iter()
+        .filter_map(|c| match &c.kind {
+            CheckKind::Opt(passes) => Some(passes),
+            _ => None,
+        })
+        .collect();
+    if opts.len() > 1 {
+        return Err("a program can only have one `opt` check".into());
+    }
+
+    let all = optimized(p, conduit_opt::PASSES)?;
+    match opts.first() {
+        None => {}
+        Some(None) => p.snapshot("opt.conduit", &text::print(&all))?,
+        Some(Some(names)) => {
+            let passes = names
+                .iter()
+                .map(|n| conduit_opt::pass(n).ok_or_else(|| unknown_pass(n)))
+                .collect::<Result<Vec<_>, _>>()?;
+            let some = optimized(p, &passes)?;
+            p.snapshot("opt.conduit", &text::print(&some))?;
+        }
+    }
+    Ok(())
+}
+
+/// The program after `passes`, once it's checked that it verifies and
+/// passes the `run` checks.
+fn optimized(p: &Program, passes: &[&dyn Pass]) -> Result<Module, String> {
     let mut m = p.module()?;
-    conduit_opt::optimize_module(&mut m);
-    let printed = text::print(&m);
+    conduit_opt::run_passes_on_module(passes, &mut m);
+    let names: Vec<&str> = passes.iter().map(|p| p.name()).collect();
+    let after = format!("after {}", names.join(", "));
     if let Err(errors) = verify_module(&m) {
         let errors: Vec<String> = errors.iter().map(|e| e.to_string()).collect();
         return Err(format!(
-            "the optimized program doesn't verify:\n{}\n\n{printed}",
-            errors.join("\n")
+            "the program {after} doesn't verify:\n{}\n\n{}",
+            errors.join("\n"),
+            text::print(&m)
         ));
     }
-    if p.has(|k| *k == CheckKind::Opt) {
-        p.snapshot("opt.conduit", &printed)?;
-    }
-    conduit_test::eval::check_runs(p, &m)
+    conduit_test::eval::check_runs(p, &m).map_err(|e| format!("{after}: {e}"))?;
+    Ok(m)
+}
+
+fn unknown_pass(name: &str) -> String {
+    let known: Vec<&str> = conduit_opt::PASSES.iter().map(|p| p.name()).collect();
+    format!(
+        "`opt` names an unknown pass `{name}`: the passes are {}",
+        known.join(", ")
+    )
 }
