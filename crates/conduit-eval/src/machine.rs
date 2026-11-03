@@ -633,8 +633,9 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
     }
 
     /// `Copy`: copies each data object and array that the value's type
-    /// doesn't already give mutability `m`, following fields that inherit
-    /// their object's mutability and array elements, and shares the rest.
+    /// doesn't already give mutability `m`, following the fields and array
+    /// elements that inherit their object's mutability, and shares the
+    /// rest.
     /// The type decides, not the object, as in compiled code, which doesn't
     /// know an object's mutability: so a `ro` value is copied even if it's
     /// already `m`. Each object is copied once, so sharing and cycles stay
@@ -655,8 +656,10 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                     });
                     fields.iter().copied().zip(follow).collect()
                 }
-                (Object::Array { elems, .. }, Ty::Array(elem, _)) => {
-                    elems.iter().map(|&v| (v, Some((**elem).clone()))).collect()
+                (Object::Array { elems, .. }, Ty::Array(elem, own)) => {
+                    let follow = (elem.mutability() == Some(Mutability::Inherit))
+                        .then(|| inherit(elem, *own));
+                    elems.iter().map(|&v| (v, follow.clone())).collect()
                 }
                 _ => return Err(unverified("a copy of an object of another type")),
             };

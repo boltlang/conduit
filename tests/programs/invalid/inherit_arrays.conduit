@@ -1,0 +1,46 @@
+// What `inherit` in an array's elements rules out.
+
+data data0 {
+  (i32)
+}
+
+// An `ro` view of an array of cells it owns can't change the cells.
+fn fn0(%0: ro [inherit data0]) -> () {
+  let %1: ro data0 = array_get(%0, 0i32)
+  let = set data0.0.0(%1, 1i32)
+  jump ret()
+}
+
+// Cells with their own `mut` are shared by a copy, so it can't be `imm`.
+fn fn1(%0: mut [mut data0]) -> () {
+  let %1: imm [mut data0] = copy[imm](%0)
+  jump ret()
+}
+
+// `inherit` needs an array or a struct to inherit from.
+fn fn2(%0: inherit data0) -> () {
+  jump ret()
+}
+
+// The cells of a `mut` array of cells it owns are `mut`.
+fn fn3(%0: mut [inherit data0], %1: imm data0) -> () {
+  let = array_set(%0, 0i32, %1)
+  jump ret()
+}
+
+fn fn4(%0: mut data0) -> () {
+  let %1: imm [inherit data0] = array_new(%0)
+  jump ret()
+}
+
+// A function's parameters aren't in the array, so they can't inherit.
+fn fn5(%0: mut [imm fn(inherit data0) -> ()]) -> () {
+  jump ret()
+}
+
+//# verify-error: fn0: can't set a field of a ro data0
+//# verify-error: fn1: can't copy mut [mut data0] to imm: its elements can't be imm
+//# verify-error: fn2: type of %0: `inherit` in inherit data0 is only allowed in field types and array elements
+//# verify-error: fn3: array of mut data0 gets an element of type imm data0
+//# verify-error: fn4: array of imm data0 gets an element of type mut data0
+//# verify-error: fn5: type of %0: `inherit` in inherit data0 is only allowed in field types and array elements

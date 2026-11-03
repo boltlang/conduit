@@ -70,8 +70,9 @@ pub enum Mutability {
     Mut,
     /// A view that accepts both `Imm` and `Mut`, and can't be written.
     ReadOnly,
-    /// Only in a [`CtorDecl`]'s field types: the mutability of the object
-    /// holding the field.
+    /// Only in a [`CtorDecl`]'s field types and in an array's element
+    /// type: the mutability of the data object or array holding the field
+    /// or element.
     Inherit,
 }
 
@@ -131,6 +132,7 @@ fn list(tys: &[Ty]) -> String {
 /// A constructor of an ADT.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CtorDecl {
-    /// A field's type may use [`Mutability::Inherit`].
+    /// A field's type may use [`Mutability::Inherit`], for the object's
+    /// mutability.
     pub fields: Vec<Ty>,
 }

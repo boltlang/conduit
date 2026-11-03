@@ -2,7 +2,7 @@
 //! [`crate::build`]), so that they agree.
 
 use super::{
-    Checked, copy_ty, deep_imm, fits, inherit, object_mutability, prim_results, sub, ty_ok,
+    Checked, copy_ty, deep_imm, elem_ty, fits, inherit, object_mutability, prim_results, sub, ty_ok,
 };
 use crate::*;
 
@@ -137,13 +137,17 @@ pub(crate) fn op_results<P: Program + ?Sized>(
             Ok(out.to_vec())
         }
         Op::ArrayGet => match tys {
-            [Ty::Array(elem, _), Ty::I32] => Ok(vec![(**elem).clone()]),
+            [array @ Ty::Array(..), Ty::I32] => Ok(vec![elem_ty(array).unwrap()]),
             _ => Err("array get needs an array and an i32 index".into()),
         },
         Op::ArraySet => match tys {
-            [Ty::Array(elem, Mutability::Mut), Ty::I32, ty] if sub(ty, elem) => Ok(vec![]),
-            [Ty::Array(elem, Mutability::Mut), Ty::I32, ty] => {
-                Err(format!("array of {elem} gets an element of type {ty}"))
+            [array @ Ty::Array(_, Mutability::Mut), Ty::I32, ty] => {
+                let elem = elem_ty(array).unwrap();
+                if sub(ty, &elem) {
+                    Ok(vec![])
+                } else {
+                    Err(format!("array of {elem} gets an element of type {ty}"))
+                }
             }
             [array @ Ty::Array(..), Ty::I32, _] => {
                 Err(format!("can't set an element of a {array}"))
@@ -296,8 +300,9 @@ fn new_array<P: Program + ?Sized>(p: &P, out: &[Ty]) -> Checked<Ty> {
         return Err("an array op must bind one array".into());
     };
     object_mutability(*m)?;
-    if *m == Mutability::Imm && !deep_imm(p, elem) {
+    let elem = inherit(elem, *m);
+    if *m == Mutability::Imm && !deep_imm(p, &elem) {
         return Err(format!("an imm array can't hold elements of type {elem}"));
     }
-    Ok((**elem).clone())
+    Ok(elem)
 }

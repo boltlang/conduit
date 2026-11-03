@@ -1,0 +1,103 @@
+// An array's elements can inherit its mutability, as a struct's fields
+// can: `mut [inherit data0]` holds `mut` cells, which belong to the array.
+// Seen as `ro`, the cells are `ro` too, and `copy` copies them with the
+// array. Elements with a mutability of their own are shared instead.
+
+data data0 {
+  (i32)
+}
+
+// A struct that owns an array of cells it owns.
+data data1 {
+  (inherit [inherit data0])
+}
+
+// A struct that owns an array of cells it shares.
+data data2 {
+  (inherit [imm data0])
+}
+
+// Through an `ro` view, the cells are `ro` as well.
+fn fn0(%0: i32) -> (i32) {
+  let %1: mut data0 = new data0.0(%0)
+  let %2: mut [inherit data0] = array_new(%1)
+  let = set data0.0.0(%1, 4i32)
+  let %3: i32 = call fn1(%2)
+  jump ret(%3)
+}
+
+fn fn1(%0: ro [inherit data0]) -> (i32) {
+  let %1: ro data0 = array_get(%0, 0i32)
+  let %2: i32 = get data0.0.0(%1)
+  jump ret(%2)
+}
+
+// Arrays of arrays of cells, all owned: `copy[imm]` copies all of them, so
+// a later write to the original's cell doesn't show in the copy.
+fn fn2() -> (i32) {
+  let %0: mut data0 = new data0.0(1i32)
+  let %1: mut [inherit data0] = array_new(%0)
+  let %2: mut [inherit [inherit data0]] = array_new(%1, %1)
+  let %3: imm [inherit [inherit data0]] = copy[imm](%2)
+  let = set data0.0.0(%0, 5i32)
+  let %4: imm [inherit data0] = array_get(%3, 1i32)
+  let %5: imm data0 = array_get(%4, 0i32)
+  let %6: i32 = get data0.0.0(%5)
+  let %7: mut [inherit data0] = array_get(%2, 1i32)
+  let %8: mut data0 = array_get(%7, 0i32)
+  let %9: i32 = get data0.0.0(%8)
+  let %10: i32 = mul(%9, 10i32)
+  let %11: i32 = add(%10, %6)
+  jump ret(%11)
+}
+
+// A struct, its array and its cells are all copied.
+fn fn3() -> (i32) {
+  let %0: mut data0 = new data0.0(1i32)
+  let %1: mut [inherit data0] = array_new(%0)
+  let %2: mut data1 = new data1.0(%1)
+  let %3: imm data1 = copy[imm](%2)
+  let = set data0.0.0(%0, 5i32)
+  let %4: imm [inherit data0] = get data1.0.0(%3)
+  let %5: imm data0 = array_get(%4, 0i32)
+  let %6: i32 = get data0.0.0(%5)
+  jump ret(%6)
+}
+
+// The struct and its array are copied, but the cells are shared: the
+// copy's array can take another cell without changing the original.
+fn fn4() -> (i32) {
+  let %0: imm data0 = new data0.0(1i32)
+  let %1: imm [imm data0] = array_new(%0)
+  let %2: imm data2 = new data2.0(%1)
+  let %3: mut data2 = copy[mut](%2)
+  let %4: mut [imm data0] = get data2.0.0(%3)
+  let %5: imm data0 = new data0.0(3i32)
+  let = array_set(%4, 0i32, %5)
+  let %6: imm [imm data0] = get data2.0.0(%2)
+  let %7: imm data0 = array_get(%6, 0i32)
+  let %8: i32 = get data0.0.0(%7)
+  let %9: imm data0 = array_get(%4, 0i32)
+  let %10: i32 = get data0.0.0(%9)
+  let %11: i32 = mul(%10, 10i32)
+  let %12: i32 = add(%11, %8)
+  jump ret(%12)
+}
+
+// An `imm` array of cells it owns is made of `imm` cells.
+fn fn5() -> (i32) {
+  let %0: imm data0 = new data0.0(2i32)
+  let %1: imm [inherit data0] = array_new(%0, %0)
+  let %2: i32 = array_len(%1)
+  let %3: imm data0 = array_get(%1, 1i32)
+  let %4: i32 = get data0.0.0(%3)
+  let %5: i32 = add(%2, %4)
+  jump ret(%5)
+}
+
+//# run fn0(1i32) == 4i32
+//# run fn2() == 51i32
+//# run fn3() == 1i32
+//# run fn4() == 31i32
+//# run fn5() == 4i32
+//# wasm-error: copy isn't supported yet

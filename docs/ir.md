@@ -141,7 +141,8 @@ pub struct CtorDecl { fields: Vec<Ty> }
 ```
 
 Mutability is part of the types that are objects: see "Mutability".
-`Inherit` is only valid in the field types of a `CtorDecl`.
+`Inherit` is only valid in the field types of a `CtorDecl` and in the
+element type of an `Array`.
 
 A tuple or struct is a `DataDecl` with one constructor. `Bool` and
 field-less enums are `I32`. Unit is zero values and `!` is zero results, so
@@ -300,10 +301,23 @@ The other two mutabilities:
 - **`ReadOnly`** is a view that accepts both: an `Imm` or a `Mut` value can
   be passed where a `ReadOnly` one is expected. It can't be written, but
   unlike `Imm` it doesn't promise that nothing else changes it.
-- **`Inherit`**, only in a `CtorDecl`'s field types, means "the mutability
-  of the object holding this field". A `Get` on a `Data(D, m)` gives a field
-  of type `Data(E, Inherit)` the type `Data(E, m)`. Fields with an explicit
-  mutability keep it.
+- **`Inherit`** means "the mutability of the object holding this": in a
+  `CtorDecl`'s field types, of the data object, and in the element type
+  of an array, anywhere, of the array. A `Get` on a `Data(D, m)` gives a
+  field of type `Data(E, Inherit)` the type `Data(E, m)`, and an
+  `ArrayGet` on an `Array(Data(E, Inherit), m)` gives `Data(E, m)`.
+  Fields and elements with an explicit mutability keep it. An `Inherit`
+  always refers to the nearest data object or array around it, so in a
+  field of type `Array(Data(E, Inherit), Inherit)` the first is the
+  array's and the second the object's.
+
+  `Inherit` says that what it's on belongs to the object holding it,
+  while an explicit mutability says it's shared:
+
+  - Seen as `ReadOnly`, an `Array(Data(E, Inherit), Mut)` holds
+    `ReadOnly` elements, so the view is deep. An `Array(Data(E, Mut), Mut)`
+    seen as `ReadOnly` still holds `Mut` ones.
+  - `Copy` copies what inherits and shares the rest (see below).
 
 Rules the verifier checks:
 
@@ -327,10 +341,11 @@ object's mutability:
 - A `Data` or `Array` value whose type is already `m` is kept as it is,
   with everything it holds.
 - Any other `Data` or `Array` value, of the other mutability or `ReadOnly`,
-  is copied into a new object of mutability `m`. What the copy holds is
-  decided by the same rule, by type: the fields that inherit their
-  object's mutability, and every element of an array. Fields with a
-  mutability of their own are shared.
+  is copied into a new object of mutability `m`. What the copy holds
+  through fields and elements that inherit its mutability is decided by
+  the same rule, by type. Fields and elements with a mutability of their
+  own are shared, so a `Copy(Imm)` of a value whose shared parts aren't
+  `Imm` is rejected.
 - Scalars, closures, refs, `Any` and continuations are kept as they are.
   So the verifier rejects a `Copy(Imm)` whose value can reach a
   `Fn(_, Mut)`, a `Ref`, a `Cont` or an `Any(Mut)`, which can't become
@@ -339,8 +354,10 @@ object's mutability:
   so sharing and cycles stay intact.
 - The result type is the argument's type with the mutability of each
   `Data` and `Array` that's copied changed. For example, `Copy(Mut)` of
-  `mut [imm data0]` is the array itself, of the same type, while `Copy(Mut)`
-  of `ro [imm data0]` is a new `mut [mut data0]`.
+  `mut [imm data0]` is the array itself, of the same type. `Copy(Mut)` of
+  `ro [imm data0]` is a new `mut [imm data0]` that shares the elements,
+  and of `ro [inherit data0]` a new `mut [inherit data0]` with new
+  elements too. `Copy(Imm)` of `mut [mut data0]` is rejected.
 - So a `ReadOnly` value is always copied, even when it's really of the
   target mutability.
 

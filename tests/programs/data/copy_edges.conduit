@@ -20,11 +20,12 @@ data data3 {
   (inherit data2)
 }
 
-// A copy of an array of cells doesn't see later writes to the cells.
+// A copy of an array of cells it owns doesn't see later writes to the
+// cells.
 fn fn0() -> (i32) {
   let %0: mut data0 = new data0.0(1i32)
-  let %1: mut [mut data0] = array_new(%0, %0)
-  let %2: imm [imm data0] = copy[imm](%1)
+  let %1: mut [inherit data0] = array_new(%0, %0)
+  let %2: imm [inherit data0] = copy[imm](%1)
   let = set data0.0.0(%0, 5i32)
   let %3: imm data0 = array_get(%2, 1i32)
   let %4: i32 = get data0.0.0(%3)
