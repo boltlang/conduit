@@ -73,13 +73,14 @@ pub enum Op {
     Apply,                 // args[0] = closure, rest = arguments
     New(CtorId),           // allocate an ADT value; args = its fields
     Get(CtorId, u32),      // read field i
-    Set(CtorId, u32),      // write field i (mutable fields only); binds nothing
-    ArrayNew, ArrayGet, ArraySet, ArrayLen,
+    Set(CtorId, u32),      // write field i of a Mut object; binds nothing
+    ArrayNew, ArrayGet, ArraySet, ArrayLen,   // ArraySet: Mut arrays only
     RefNew,                // args = initial value; result has type Ref(ty)
     RefGet,                // args = the ref
     RefSet,                // args = the ref, then the new value; binds nothing
-    Box(Ty),               // args = a value of that type; result has type Any
-    Unbox(Ty),             // args = an Any; result has that type
+    Box(Ty),               // args = a value of that type; result has type Any(_)
+    Unbox(Ty),             // args = an Any(_); result has that type
+    Copy(Mutability),      // args = a value; a copy at that mutability: see "Mutability"
     Handle(HandlerId),     // args = handler env, then a closure: the body
     Perform(EffectId, u32),// run operation i of the nearest handler of the effect
     Resume,                // args[0] = continuation, rest = values to resume with
@@ -99,17 +100,27 @@ control-flow pass needs to change.
 ```rust
 pub enum Ty {
     I32, I64, F32, F64,
-    Data(DataId),          // GC'd ADT value
-    Array(Box<Ty>),        // GC'd array
-    Fn(SigId),             // closure
-    Cont(SigId),           // one-shot continuation captured by a handler
-    Ref(Box<Ty>),          // mutable cell holding one value
-    Any,                   // a boxed value of any type: see "Polymorphism"
+    Data(DataId, Mutability),     // GC'd ADT value
+    Array(Box<Ty>, Mutability),   // GC'd array
+    Fn(SigId, Mutability),        // closure
+    Cont(SigId),                  // one-shot continuation captured by a handler
+    Ref(Box<Ty>),                 // mutable cell holding one value: always Mut
+    Any(Mutability),              // a boxed value of any type: see "Polymorphism"
+}
+
+pub enum Mutability { Imm, Mut, ReadOnly, Inherit }
+
+impl Ty {
+    fn mutability(&self) -> Option<Mutability>;   // None for scalars and Cont
+    fn with_mutability(&self, m: Mutability) -> Ty;
 }
 
 pub struct DataDecl { ctors: Vec<CtorDecl> }
-pub struct CtorDecl { fields: Vec<(Ty, Mutable)> }
+pub struct CtorDecl { fields: Vec<Ty> }
 ```
+
+Mutability is part of the types that are objects: see "Mutability".
+`Inherit` is only valid in the field types of a `CtorDecl`.
 
 A tuple or struct is a `DataDecl` with one constructor. `Bool` and
 field-less enums are `I32`. Unit is zero values and `!` is zero results, so
@@ -199,7 +210,8 @@ GHC use for polymorphic code:
 
 - `Any` is a boxed value of any type.
 - `Box(ty)` turns a value of type `ty` into an `Any`, and `Unbox(ty)` turns
-  it back. For `Data`, `Array`, `Fn`, `Cont` and `Ref` values, which are
+  it back. The `Any` is `Any(Imm)` when `ty` is `Imm` all the way down
+  (scalars included), and `Any(Mut)` otherwise. For `Data`, `Array`, `Fn`, `Cont` and `Ref` values, which are
   already references, both are free or a cast. Scalars are allocated.
 
 The frontend uses them like this:
@@ -208,7 +220,9 @@ The frontend uses them like this:
    code.
 2. **Erase the rest.** A function that recurses polymorphically, together
    with the functions it's mutually recursive with, is compiled once, with
-   every type variable replaced by `Any`. The type checker already knows
+   every type variable replaced by `Any`: `Any(Imm)` if the variable is
+   only ever instantiated with types that are `Imm` all the way down, and
+   `Any(Mut)` otherwise. The type checker already knows
    these functions: in Hindley-Milner, polymorphic recursion only
    type-checks with an explicit signature, and the recursive call
    instantiates that signature at a different type.
@@ -229,6 +243,80 @@ Generic code (type parameters in the IR) is left out on purpose: every
 pass would have to handle types it doesn't know, inlining would substitute
 types, layouts wouldn't be known at compile time, and the Wasm backend
 would erase the types anyway.
+
+### Mutability
+
+Every object (an ADT value, an array, a closure) is either `Imm` or `Mut`.
+`Imm` is **deep**: nothing reachable from an `Imm` value ever changes.
+"Reachable" means everything found by starting at the value and following
+references: fields, array elements, what a closure captured, what a ref
+holds, and so on. Scalars and `Cont` have no mutability.
+
+| Type | `Imm` | `Mut` |
+|---|---|---|
+| `Data`, `Array` | can't be written, and holds only `Imm` values | `Set`/`ArraySet` are allowed, and it can hold anything |
+| `Fn` | captured only values that are `Imm` all the way down | captured anything, including `Mut` objects and refs |
+| `Any` | holds a value that is `Imm` all the way down | holds anything |
+
+A closure never changes after it's created, so on `Fn` the flag only
+limits what the closure can reach. A closure that captures a ref is
+always `Mut`. A closure can be `Mut` even if it never writes:
+
+```
+let p = new Point(0, 0)                // p: Data(Point, Mut)
+let pair = new Pair(p, 5)              // holds p
+let r = closure read_x(pair)           // read_x only reads pair.0.x
+```
+
+`r` reaches `p` through `pair`, and `p` can change, so calling `r` twice
+with the same arguments can give different answers. `r` must be
+`Fn(_, Mut)`.
+
+The other two mutabilities:
+
+- **`ReadOnly`** is a view that accepts both: an `Imm` or a `Mut` value can
+  be passed where a `ReadOnly` one is expected. It can't be written, but
+  unlike `Imm` it doesn't promise that nothing else changes it.
+- **`Inherit`**, only in a `CtorDecl`'s field types, means "the mutability
+  of the object holding this field". A `Get` on a `Data(D, m)` gives a field
+  of type `Data(E, Inherit)` the type `Data(E, m)`. Fields with an explicit
+  mutability keep it.
+
+Rules the verifier checks:
+
+1. **Deep `Imm`.** An `Imm` object or closure holds or captures only values
+   that are `Imm` all the way down: scalars, and `Data`, `Array`, `Fn` and
+   `Any` with `Imm`. It never holds a `Ref`, a `Cont`, or anything `Mut` or
+   `ReadOnly`. This is checked at `New`, `ArrayNew`, `Closure` and `Box`.
+2. **Only `Mut` can be written.** `Set` and `ArraySet` need a `Mut` object.
+   `RefSet` always works, since refs are always `Mut`.
+3. **Subtyping.** `Imm ≤ ReadOnly` and `Mut ≤ ReadOnly`. An argument to
+   `Call`, `Apply`, `Jump` or `New` may have a subtype of the expected
+   type. Nothing else converts between mutabilities: that's `Copy`.
+
+### Copying between mutabilities
+
+A `Mut` value can't become `Imm` in place, since a `Mut` reference to it
+may still exist. `Copy` makes a new value instead:
+
+- **`Copy(Imm)`** copies every `Mut` `Data` and `Array` object the value
+  reaches into a new `Imm` one, and shares what's already `Imm`. Each
+  object is copied once, even if it's reachable along several paths, so
+  sharing and cycles stay intact. It doesn't follow closures: the verifier
+  rejects a `Copy(Imm)` whose value can reach a `Fn(_, Mut)`, a `Ref`, a
+  `Cont` or an `Any(Mut)`.
+- **`Copy(Mut)`** goes the other way: it copies the `Imm` `Data` and `Array`
+  objects it reaches into new `Mut` ones and keeps what's already `Mut`.
+  Closures are kept as they are.
+- The result type is the argument's type with the mutability of each
+  `Data` and `Array` it reaches changed.
+- On a `ReadOnly` value, Conduit can't tell which objects are already
+  `Imm`, so `Copy` copies all of them.
+
+`Copy` is a single op rather than a call to a generated function because
+removing copies is the main optimization (see "Optimizations"), and an
+analysis can only remove what it can recognize. Its effect is `Reads`: it
+allocates, but it writes nothing that existed before.
 
 ## Rules
 
@@ -457,7 +545,7 @@ Because the IR is so small, the classic simplifications are local rewrites:
 
 - **Case of known constructor or literal.** If `case x` has a scrutinee
   bound by `New(C)` or a literal, replace the case with the matching arm.
-  `Get(C, i)` of an immutable field of a known `New` becomes its argument.
+  `Get(C, i)` of a known `New` of an `Imm` object becomes its argument.
 - **Case-of-case.** In A-normal form with join points, this becomes "a jump
   to a known join point with a known argument". Inline (copy) the join
   body at that jump, substituting the arguments, and the case inside it
@@ -482,6 +570,21 @@ Because the IR is so small, the classic simplifications are local rewrites:
   extra parameter for its current value, every `Jump` passes the current
   value, `RefGet` becomes that value, and `RefSet` makes a new value
   current. A ref that does escape stays a heap cell.
+- **Remove copies.** In order of how easy they are:
+  - If the type shows the value reaches nothing `Copy` would change (for
+    `Copy(Imm)`: nothing `Mut`), the copy is the value itself.
+  - `Copy(Imm)` of a value just built by `New` or `ArrayNew`, with no other
+    uses, becomes building it as `Imm` directly.
+  - **Freeze in place.** If nothing else can reach the original objects
+    and the original isn't used afterwards, the copy can reuse them. This
+    needs a region or uniqueness analysis that shows no other reference,
+    closure, ref or `Any` can still reach them. The analysis follows what
+    each closure captures through `Closure`'s arguments, not through the
+    closure's type.
+- **`Imm` closures don't write.** An `Apply` on an `Fn(_, Imm)` whose
+  arguments are all `Imm` all the way down allocates and may perform
+  effects, but writes nothing that existed before. So an analysis can treat
+  it as `Reads`, unless it performs, instead of `Unknown`.
 
 A pass is usually a single recursive function with 5 arms, and most passes
 only do real work in one or two of them.
@@ -561,7 +664,7 @@ Status:
 | `Unbox` to a scalar | `*.load` | `i31.get_s`, or `ref.cast` + `struct.get` | ✅ |
 | `Unbox` to a reference | nothing | `ref.cast` | ✅ |
 | String literal (`Lit`) | data segment | `array.new_data` | ✅ |
-| `Copy(Mutability)` (proposed) | generated copy function | same | ✅ |
+| `Copy` | generated copy function per type | same | ✅ |
 | `Handle` | `cont.new` + `resume` with `(on $op ..)` | same | ⚠️ stack switching |
 | `Perform` | `suspend` | same | ⚠️ stack switching |
 | `Resume` | `resume` | same | ⚠️ stack switching |
@@ -575,6 +678,14 @@ Notes:
   error instead, Conduit emits a check before `div`.
 - Linear memory has no collector yet: memory is never freed for
   now. With Wasm GC, the host collects.
+- Mutability doesn't exist at run time: `Imm` and `Mut` objects and
+  closures have the same layout. With Wasm GC, every struct and array field
+  is declared mutable, even for `Imm` objects, so that freezing in place
+  doesn't change an object's Wasm type. Engines barely optimize immutable
+  fields, so little is lost.
+- A copy function walks the value's type, recursing for recursive types,
+  and keeps a table of objects it has already copied, to preserve sharing
+  and cycles.
 
 ## Left out on purpose
 
@@ -599,6 +710,12 @@ Notes:
    the evidence-passing lowering, not with Wasm stack switching.
 4. Shallow handlers: needed for anything frontends want to express, or can
    deep handlers plus state cover it?
+5. Should objects carry a mutability bit at run time? `Copy` on a
+   `ReadOnly` value could then skip objects that are already `Imm`, instead
+   of copying everything. It costs a header bit per object.
+6. Should `Copy(Imm)` follow `Mut` closures instead of rejecting them? That
+   needs a copy function per closure, stored next to its wrapper, and it
+   would turn a closure's captured refs into snapshots.
 
 Decided:
 
@@ -619,11 +736,9 @@ yet:
   Conduit, erasing to `Any` and passing dictionaries for polymorphic
   recursion (see "Polymorphism"). Any interpreter that runs on Conduit then
   runs that code too.
-- **Mutability copies.** A language with immutable and mutable views of the
-  same data needs operations that copy between them, and analyses that
-  remove copies that aren't needed. In Conduit they would be one op,
-  `Copy(Mutability)`, rather than calls to generated functions, so those
-  analyses can still see them.
+- **Mutability.** A language with `imm` and `mut` views of the same data
+  maps them to the mutability in Conduit's types, and its copies between
+  them to `Copy`. See "Mutability".
 - **Sources.** Frontends need to map code back to source, for errors and
   for limits on how long an interpreter runs. Conduit needs a `source` on
   `Let` and `Jump`. It's opaque to Conduit and carried through inlining.
