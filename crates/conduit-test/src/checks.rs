@@ -278,5 +278,26 @@ mod tests {
         assert!(parse("//# wasm-error").is_err());
         assert!(parse("//# wat please").is_err());
         assert!(parse("//# opt: dce,").is_err());
+        for (check, message) in [
+            (
+                "run frob() == ()",
+                "expected a function like `fn1`, found `frob`",
+            ),
+            ("run fn1() == 1i32 2i32", "unexpected `2i32` at the end"),
+            ("run fn1 == ()", "expected `(`"),
+            ("run fn1(1i32 2i32) == ()", "expected `,` or `)`"),
+            ("run fn1(f32_bits 5) == ()", "expected `f32_bits(bits)`"),
+            ("run fn1(f64_bits(x)) == ()", "`x` isn't a number of bits"),
+            (
+                "run fn1() == 5x",
+                "`5x` isn't a literal like `5i32` or `1.5f64`",
+            ),
+        ] {
+            assert_eq!(
+                parse(&format!("//# {check}")).unwrap_err().1,
+                message,
+                "for {check:?}"
+            );
+        }
     }
 }

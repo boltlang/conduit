@@ -902,3 +902,40 @@ fn errors_say_where_they_happened() {
     let error = run_main(f, vec![]).unwrap_err();
     assert_eq!(error.to_string(), "fn1 (src42): division by zero");
 }
+
+/// What each kind of error says.
+#[test]
+fn error_messages() {
+    let kinds = [
+        (ErrorKind::DivideByZero, "division by zero"),
+        (ErrorKind::IntegerOverflow, "integer overflow in division"),
+        (
+            ErrorKind::InvalidConversion,
+            "a float converted to an integer is NaN or out of range",
+        ),
+        (
+            ErrorKind::OutOfBounds { index: 3, len: 2 },
+            "index 3 is out of bounds for length 2",
+        ),
+        (ErrorKind::Unreachable, "reached unreachable code"),
+        (
+            ErrorKind::ContinuationResumedTwice,
+            "a continuation was resumed more than once",
+        ),
+        (ErrorKind::Unhandled(EffectId(7)), "no handler for effect7"),
+        (ErrorKind::StackOverflow, "stack overflow"),
+        (ErrorKind::OutOfFuel, "out of fuel"),
+        (ErrorKind::WriteToImm, "write to an imm object"),
+        (ErrorKind::Undefined("x".into()), "undefined behavior: x"),
+        (ErrorKind::Host("x".into()), "host function failed: x"),
+        (ErrorKind::Unverified("x".into()), "invalid IR: x"),
+    ];
+    for (kind, message) in kinds {
+        let error = Error {
+            kind,
+            func: None,
+            source: None,
+        };
+        assert_eq!(error.to_string(), message);
+    }
+}
