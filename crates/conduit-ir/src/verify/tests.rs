@@ -474,20 +474,20 @@ fn array_clone() {
     assert_err(f, "array clone needs one array");
 }
 
-/// `Freeze` has the types of an `ArrayClone` to `Imm`.
+/// `ArrayFreeze` has the types of an `ArrayClone` to `Imm`.
 #[test]
-fn freeze() {
+fn array_freeze() {
     let mut f = Func::new(vec![array(Ty::I32, Mut)], vec![array(Ty::I32, Imm)]);
     let xs = f.params[0];
     let ys = f.new_var(array(Ty::I32, Imm));
-    f.body = let_(vec![ys], Op::Freeze, vec![v(xs)], ret(vec![v(ys)]));
+    f.body = let_(vec![ys], Op::ArrayFreeze, vec![v(xs)], ret(vec![v(ys)]));
     assert_ok(f);
 
     let mut f = Func::new(vec![array(Ty::I32, Mut)], vec![]);
     let xs = f.params[0];
     let ys = f.new_var(array(Ty::I32, Mut));
-    f.body = let_(vec![ys], Op::Freeze, vec![v(xs)], ret(vec![]));
-    assert_err(f, "freeze must bind one imm array");
+    f.body = let_(vec![ys], Op::ArrayFreeze, vec![v(xs)], ret(vec![]));
+    assert_err(f, "array freeze must bind one imm array");
 }
 
 #[test]

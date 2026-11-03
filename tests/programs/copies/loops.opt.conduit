@@ -23,7 +23,7 @@ fn fn1(%0: i32) -> (i32) {
       _ =>
         let %4: mut [i32] = array_fill(1i32, 0i32)
         let = array_set(%4, 0i32, %1)
-        let %5: imm [i32] = freeze(%4)
+        let %5: imm [i32] = array_freeze(%4)
         let %6: i32 = array_get(%5, 0i32)
         let %7: i32 = add(%2, %6)
         let %8: i32 = add(%1, 1i32)

@@ -91,7 +91,7 @@ pub enum Op {
     ArrayFill,             // args = a length, then the value to repeat
     ArrayGet, ArraySet, ArrayLen,   // ArraySet: Mut arrays only
     ArrayClone,            // args = an array; a new one with the same elements: see "Mutability"
-    Freeze,                // args = an array; `ArrayClone` to `Imm` done in place
+    ArrayFreeze,           // args = an array; `ArrayClone` to `Imm` done in place
     RefNew,                // args = initial value; result has type Ref(ty)
     RefGet,                // args = the ref
     RefSet,                // args = the ref, then the new value; binds nothing
@@ -364,12 +364,12 @@ a growing array, needs a `Mut` one cloned. A deeper copy, of a value and
 what it holds, is the frontend's to write, type by type, which also lets
 it handle the sharing and cycles its own data structures have.
 
-**`Freeze`** gives what an `ArrayClone` to `Imm` gives, with the same
+**`ArrayFreeze`** gives what an `ArrayClone` to `Imm` gives, with the same
 types, but makes the array itself `Imm` instead of making a new one. It is
 only allowed when nothing but its result can reach the array afterwards:
 no other variable, object, closure, ref or `Any` that's still used. The
 verifier can't check this, so breaking it is **undefined behavior**, like
-`Unbox` at the wrong type. Optimizations make `Freeze` from an
+`Unbox` at the wrong type. Optimizations make `ArrayFreeze` from an
 `ArrayClone` they show is the only way left to the array (see "Remove
 copies"), and a frontend can emit it where it already knows an array is
 unique. Its effect is `Reads`, like `ArrayClone`'s: it changes an array
@@ -654,7 +654,7 @@ Because the IR is so small, the classic simplifications are local rewrites:
   - An `ArrayClone` of an `Imm` array to `Imm` is the array itself, since
     nothing can tell the two apart.
   - **Freeze in place.** If nothing else can reach the original array and
-    it isn't used afterwards, an `ArrayClone` to `Imm` becomes a `Freeze`.
+    it isn't used afterwards, an `ArrayClone` to `Imm` becomes an `ArrayFreeze`.
     The pass shows this with a region analysis: variables that may reach
     the same `Mut` object are in the same region, because an op stores one
     in the other, reads one out of the other, captures or boxes it, or
@@ -755,7 +755,7 @@ Status:
 | `Unbox` to a scalar | `*.load` | `i31.get_s`, or `ref.cast` + `struct.get` | ✅ |
 | `Unbox` to a reference | nothing | `ref.cast` | ✅ |
 | String literal (`Lit`) | data segment | `array.new_data` | ✅ |
-| `Freeze` | nothing | nothing | ✅ |
+| `ArrayFreeze` | nothing | nothing | ✅ |
 | `Handle` | `cont.new` + `resume` with `(on $op ..)` | same | ⚠️ stack switching |
 | `Perform` | `suspend` | same | ⚠️ stack switching |
 | `Resume` | `resume` | same | ⚠️ stack switching |
@@ -829,7 +829,7 @@ fn fn1(%0: i32) -> (i32) {
   `call fn2(..)`, `call_extern extern1(..)`, `closure fn2(..)`, `apply(..)`,
   `new data10.0(..)`, `get data10.0.1(..)`, `set data10.0.1(..)`,
   `array_new`, `array_fill`, `array_get`, `array_set`, `array_len`,
-  `array_clone`, `freeze`,
+  `array_clone`, `array_freeze`,
   `ref_new`, `ref_get`, `ref_set`, `box[i32](..)`, `unbox[i32](..)`,
   `handle handler30(..)`, `perform effect20.0(..)` and
   `resume(..)`.
@@ -864,7 +864,7 @@ doesn't need a deep stack.
 - **Objects know their mutability.** Every object that can be `Imm` or
   `Mut` carries an "is mut" flag. A write to an `Imm` object is an error,
   which can only happen if an optimization broke the mutability rules.
-  `Freeze` clears it, so a write through an alias that a wrong `Freeze`
+  `ArrayFreeze` clears it, so a write through an alias that a wrong `ArrayFreeze`
   left behind is an error too.
 - **Numbers follow Wasm.** Integers wrap, shift amounts are taken modulo
   the width, and `min` and `max` give NaN if either operand is NaN and

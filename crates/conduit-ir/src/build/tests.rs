@@ -489,7 +489,7 @@ fn other_ops() {
     let _ = f.get(cell, 0, obj);
     let buffer = f.array_fill(I32, Mutability::Mut, 2i32, x);
     let cloned = f.array_clone(Mutability::Imm, buffer);
-    let frozen = f.freeze(buffer);
+    let frozen = f.array_freeze(buffer);
     let _ = f.array_len(cloned);
     let _ = f.array_len(frozen);
     let got = f.perform(EffectId(20), 0, [x]);
@@ -525,7 +525,7 @@ fn other_ops() {
   let %16: i32 = get data0.0.0(%15)
   let %17: mut [i32] = array_fill(2i32, %0)
   let %18: imm [i32] = array_clone(%17)
-  let %19: imm [i32] = freeze(%17)
+  let %19: imm [i32] = array_freeze(%17)
   let %20: i32 = array_len(%18)
   let %21: i32 = array_len(%19)
   let %22: i64 = perform effect20.0(%0)

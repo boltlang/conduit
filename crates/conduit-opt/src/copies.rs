@@ -5,7 +5,7 @@
 //!   be told apart from the array itself, so the clone is the array, and
 //!   its uses use the array instead.
 //! - **Freeze in place.** An `ArrayClone` to `Imm` becomes an
-//!   [`Op::Freeze`] when nothing but the clone can reach the original array
+//!   [`Op::ArrayFreeze`] when nothing but the clone can reach the original array
 //!   any more.
 //!
 //! Freezing needs a region analysis. Two variables are in the same region
@@ -84,7 +84,7 @@ fn remove_noop_copies(f: &mut Func) -> bool {
 }
 
 /// Turns each `ArrayClone` to `Imm` that is the only way left to its array
-/// into a [`Op::Freeze`].
+/// into a [`Op::ArrayFreeze`].
 fn freeze_in_place(p: &dyn Program, f: &mut Func) -> bool {
     let tracked: Vec<bool> = f.vars.iter().map(|ty| !deep_imm(p, ty)).collect();
     let regions = Regions::new(f, &tracked);
@@ -125,7 +125,7 @@ fn freeze_in_place(p: &dyn Program, f: &mut Func) -> bool {
                 && candidates.contains_key(&y)
                 && !blocked.contains(&y)
             {
-                l.op = Op::Freeze;
+                l.op = Op::ArrayFreeze;
                 changed = true;
             }
         }

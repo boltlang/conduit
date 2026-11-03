@@ -175,7 +175,7 @@ fn fn31() -> () {
 }
 
 fn fn32() -> () {
-  let %0: imm [i32] = freeze(1i32, 2i32)
+  let %0: imm [i32] = array_freeze(1i32, 2i32)
   jump ret()
 }
 
@@ -225,7 +225,7 @@ fn fn41(%0: imm fn() -> ()) -> () {
 }
 
 fn fn42(%0: mut [i32]) -> () {
-  let %1: mut [i32] = freeze(%0)
+  let %1: mut [i32] = array_freeze(%0)
   jump ret()
 }
 
@@ -270,7 +270,7 @@ fn fn90(%0: i32) -> (i32) {
 //# verify-error: fn29: box of i32 gets a i64
 //# verify-error: fn30: unbox needs one any
 //# verify-error: fn31: array clone needs one array
-//# verify-error: fn32: freeze needs one array
+//# verify-error: fn32: array freeze needs one array
 //# verify-error: fn33: a new object is imm or mut, not ro
 //# verify-error: fn34: unknown handler handler99
 //# verify-error: fn35: effect20 has no operation 5
@@ -280,5 +280,5 @@ fn fn90(%0: i32) -> (i32) {
 //# verify-error: fn39: an imm array can't hold elements of type mut data0
 //# verify-error: fn40: an array op must bind one array
 //# verify-error: fn41: apply: expected 0 values, but got 1
-//# verify-error: fn42: freeze must bind one imm array
+//# verify-error: fn42: array freeze must bind one imm array
 //# verify-error: fn43: array clone of a mut [mut data0] can't give a mut [imm data0]: its elements are mut data0

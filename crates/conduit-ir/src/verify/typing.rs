@@ -195,7 +195,7 @@ pub(crate) fn op_results<P: Program + ?Sized>(
             }
         }
         Op::ArrayClone => array_clone(p, tys, out, false),
-        Op::Freeze => array_clone(p, tys, out, true),
+        Op::ArrayFreeze => array_clone(p, tys, out, true),
         Op::Handle(h) => {
             let decl = p
                 .handler(*h)
@@ -266,9 +266,9 @@ fn field<P: Program + ?Sized>(
     Ok(resolve(field, m, args))
 }
 
-/// The types an `ArrayClone` gives, or with `freeze`, a `Freeze`: an array
+/// The types an `ArrayClone` gives, or with `freeze`, an `ArrayFreeze`: an array
 /// of the type it binds, `out`, whose elements are those of the array in
-/// `tys`. A `Freeze` gives an `Imm` array, which a builder that doesn't
+/// `tys`. A `ArrayFreeze` gives an `Imm` array, which a builder that doesn't
 /// say gets with the same elements.
 fn array_clone<P: Program + ?Sized>(
     p: &P,
@@ -276,7 +276,11 @@ fn array_clone<P: Program + ?Sized>(
     out: &[Ty],
     freeze: bool,
 ) -> Checked<Vec<Ty>> {
-    let what = if freeze { "freeze" } else { "array clone" };
+    let what = if freeze {
+        "array freeze"
+    } else {
+        "array clone"
+    };
     let [from @ Ty::Array(..)] = tys else {
         return Err(format!("{what} needs one array"));
     };
@@ -290,7 +294,7 @@ fn array_clone<P: Program + ?Sized>(
         out => out,
     };
     if freeze && !matches!(out, [Ty::Array(_, Mutability::Imm)]) {
-        return Err("freeze must bind one imm array".into());
+        return Err("array freeze must bind one imm array".into());
     }
     let elem = new_array(p, out)?;
     if !sub(&have, &elem) {

@@ -46,7 +46,7 @@ pub enum Op {
     /// Undefined behavior if anything other than the result can still reach
     /// the array afterwards. Optimizations make it from an `ArrayClone` that
     /// they show is the only way left to the array.
-    Freeze,
+    ArrayFreeze,
     /// Allocates a ref. Args: the initial value.
     RefNew,
     /// Args: the ref.
@@ -88,7 +88,7 @@ impl Op {
             Op::New(_) | Op::ArrayNew | Op::RefNew => Effects::Pure,
             Op::Get(..) | Op::ArrayLen | Op::ArrayClone | Op::RefGet => Effects::Reads,
             // It changes objects that nothing else can reach any more.
-            Op::Freeze => Effects::Reads,
+            Op::ArrayFreeze => Effects::Reads,
             Op::Set(..) | Op::RefSet => Effects::Writes,
             // Bounds checks and failed casts trap.
             Op::ArrayFill | Op::ArrayGet | Op::ArraySet | Op::Unbox(_) => Effects::Unknown,

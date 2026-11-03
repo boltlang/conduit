@@ -644,7 +644,7 @@ impl Parser {
             "ref_set" => Op::RefSet,
             "box" => Op::Box(in_brackets(self)?),
             "unbox" => Op::Unbox(in_brackets(self)?),
-            "freeze" => Op::Freeze,
+            "array_freeze" => Op::ArrayFreeze,
             "handle" => Op::Handle(HandlerId(self.id("handler")?)),
             "perform" => {
                 let e = EffectId(self.id("effect")?);

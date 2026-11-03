@@ -479,7 +479,7 @@ fn write_to_imm_object_is_an_error() {
     assert_eq!(result.unwrap_err().kind, ErrorKind::WriteToImm);
 }
 
-/// `Freeze` makes the array itself `Imm`, so a wrong freeze shows up as a
+/// `ArrayFreeze` makes the array itself `Imm`, so a wrong freeze shows up as a
 /// write to it through an old alias.
 #[test]
 fn write_after_freeze_is_an_error() {
@@ -492,7 +492,7 @@ fn write_after_freeze_is_an_error() {
         vec![int(2), int(0)],
         let_(
             vec![frozen],
-            Op::Freeze,
+            Op::ArrayFreeze,
             vec![v(xs)],
             let_(
                 vec![],

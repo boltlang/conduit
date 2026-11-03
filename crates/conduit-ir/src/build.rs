@@ -676,9 +676,9 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
         self.emit1(Op::Unbox(ty), vec![value.into()], None)
     }
 
-    /// The array `value` as `Imm`, made in place: see [`Op::Freeze`].
-    pub fn freeze(&mut self, value: impl Into<Atom>) -> Var {
-        self.emit1(Op::Freeze, vec![value.into()], None)
+    /// The array `value` as `Imm`, made in place: see [`Op::ArrayFreeze`].
+    pub fn array_freeze(&mut self, value: impl Into<Atom>) -> Var {
+        self.emit1(Op::ArrayFreeze, vec![value.into()], None)
     }
 
     /// Runs a closure under handler `h`. `args` is the handler's

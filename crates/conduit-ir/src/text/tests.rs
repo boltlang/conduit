@@ -100,7 +100,7 @@ fn fn8(%0: mut data10) -> (imm data10) {
   let %11: i32 = apply(%10, %7)
   let %12: mut data10 = new data10.0(%11, %3)
   let %13: imm [i64] = array_clone(%5)
-  let %14: imm [f64] = freeze(%4)
+  let %14: imm [f64] = array_freeze(%4)
   jump ret(%1)
 }
 

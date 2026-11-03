@@ -490,11 +490,11 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                 let is_mut = self.binds_mut(binds)?;
                 vec![self.alloc(Object::Array { elems, is_mut })]
             }
-            Op::Freeze => {
+            Op::ArrayFreeze => {
                 let array = arg(&args, 0)?;
                 match self.object_mut(obj(array)?)? {
                     Object::Array { is_mut, .. } => *is_mut = false,
-                    _ => return Err(unverified("freeze of something that isn't an array")),
+                    _ => return Err(unverified("array freeze of something that isn't an array")),
                 }
                 vec![array]
             }

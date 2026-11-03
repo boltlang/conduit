@@ -583,7 +583,7 @@ impl<'m> FuncCx<'_, 'm> {
                 }
             }
             // Mutability doesn't exist at run time.
-            Op::Freeze => self.atoms(args),
+            Op::ArrayFreeze => self.atoms(args),
             Op::Handle(_) | Op::Perform(..) | Op::Resume => {
                 return Err(
                     "effect handlers aren't supported yet: lower them with evidence passing first"
