@@ -1,3 +1,5 @@
+use std::fmt;
+
 use crate::id::DataId;
 
 /// A type.
@@ -74,6 +76,44 @@ impl Mutability {
 pub struct Sig {
     pub params: Vec<Ty>,
     pub results: Vec<Ty>,
+}
+
+impl fmt::Display for Ty {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Ty::I32 => write!(f, "i32"),
+            Ty::I64 => write!(f, "i64"),
+            Ty::F32 => write!(f, "f32"),
+            Ty::F64 => write!(f, "f64"),
+            Ty::Data(d, m) => write!(f, "{m} {d}"),
+            Ty::Array(elem, m) => write!(f, "{m} [{elem}]"),
+            Ty::Fn(sig, m) => write!(f, "{m} fn{sig}"),
+            Ty::Cont(sig) => write!(f, "cont{sig}"),
+            Ty::Ref(ty) => write!(f, "ref {ty}"),
+            Ty::Any(m) => write!(f, "{m} any"),
+        }
+    }
+}
+
+impl fmt::Display for Mutability {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Mutability::Imm => "imm",
+            Mutability::Mut => "mut",
+            Mutability::ReadOnly => "ro",
+            Mutability::Inherit => "inherit",
+        })
+    }
+}
+
+impl fmt::Display for Sig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "({}) -> ({})", list(&self.params), list(&self.results))
+    }
+}
+
+fn list(tys: &[Ty]) -> String {
+    tys.iter().map(Ty::to_string).collect::<Vec<_>>().join(", ")
 }
 
 /// A constructor of an ADT.

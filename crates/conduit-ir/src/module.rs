@@ -56,6 +56,18 @@ impl Func {
     pub fn var_ty(&self, var: Var) -> &Ty {
         &self.vars[var.0 as usize]
     }
+
+    /// The parameter and result types.
+    pub fn sig(&self) -> Sig {
+        Sig {
+            params: self
+                .params
+                .iter()
+                .map(|&p| self.var_ty(p).clone())
+                .collect(),
+            results: self.results.clone(),
+        }
+    }
 }
 
 /// An ADT. A tuple or a struct has one constructor.

@@ -1,5 +1,6 @@
 use crate::id::{CtorId, Label, SourceId, Var};
 use crate::op::Op;
+use crate::ty::Ty;
 
 /// An operand: a variable or a constant, never a nested expression.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -25,6 +26,27 @@ impl Lit {
 
     pub fn f64(x: f64) -> Lit {
         Lit::F64(x.to_bits())
+    }
+
+    pub fn ty(&self) -> Ty {
+        match self {
+            Lit::I32(_) => Ty::I32,
+            Lit::I64(_) => Ty::I64,
+            Lit::F32(_) => Ty::F32,
+            Lit::F64(_) => Ty::F64,
+        }
+    }
+}
+
+impl std::fmt::Display for Atom {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Atom::Var(v) => write!(f, "{v}"),
+            Atom::Lit(Lit::I32(n)) => write!(f, "{n}i32"),
+            Atom::Lit(Lit::I64(n)) => write!(f, "{n}i64"),
+            Atom::Lit(Lit::F32(bits)) => write!(f, "{}f32", f32::from_bits(*bits)),
+            Atom::Lit(Lit::F64(bits)) => write!(f, "{}f64", f64::from_bits(*bits)),
+        }
     }
 }
 

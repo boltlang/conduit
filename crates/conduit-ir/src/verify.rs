@@ -1,0 +1,1117 @@
+//! Checks that IR follows the rules of `docs/ir.md`: scoping, types,
+//! mutability, exhaustive cases, and continuations used at most once.
+//!
+//! [`verify_func`] checks one function, asking a [`Program`] only for the
+//! signatures and declarations it uses, so a frontend can verify each
+//! function separately. [`verify_module`] checks a whole [`Module`],
+//! declarations included.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
+
+use crate::*;
+
+/// The item an [`Error`] is in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Item {
+    Func(FuncId),
+    Data(DataId),
+    Extern(ExternId),
+    Effect(EffectId),
+    Handler(HandlerId),
+}
+
+impl fmt::Display for Item {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Item::Func(id) => write!(f, "{id}"),
+            Item::Data(id) => write!(f, "{id}"),
+            Item::Extern(id) => write!(f, "{id}"),
+            Item::Effect(id) => write!(f, "{id}"),
+            Item::Handler(id) => write!(f, "{id}"),
+        }
+    }
+}
+
+/// A broken rule.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Error {
+    pub item: Item,
+    /// The source of the nearest `let` or `jump` before the error, if it
+    /// has one.
+    pub source: Option<SourceId>,
+    pub message: String,
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.item)?;
+        if let Some(source) = self.source {
+            write!(f, " ({source})")?;
+        }
+        write!(f, ": {}", self.message)
+    }
+}
+
+impl std::error::Error for Error {}
+
+/// Checks every declaration and function of a module.
+pub fn verify_module(m: &Module) -> Result<(), Vec<Error>> {
+    let mut errors = Vec::new();
+    for (&id, decl) in &m.data {
+        check_data(m, id, decl, &mut errors);
+    }
+    for (&id, ext) in &m.externs {
+        if let Err(message) = sig_ok(m, &ext.sig) {
+            errors.push(decl_error(Item::Extern(id), message));
+        }
+    }
+    for (&id, effect) in &m.effects {
+        for (i, sig) in effect.ops.iter().enumerate() {
+            if let Err(message) = sig_ok(m, sig) {
+                errors.push(decl_error(
+                    Item::Effect(id),
+                    format!("operation {i}: {message}"),
+                ));
+            }
+        }
+    }
+    for (&id, handler) in &m.handlers {
+        check_handler(m, id, handler, &mut errors);
+    }
+    for (&id, f) in &m.funcs {
+        if let Err(e) = verify_func(m, id, f) {
+            errors.extend(e);
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
+/// Checks one function. Declarations it refers to are assumed to be well
+/// formed: [`verify_module`] checks those.
+pub fn verify_func<P: Program + ?Sized>(p: &P, id: FuncId, f: &Func) -> Result<(), Vec<Error>> {
+    let mut cx = Cx {
+        p,
+        f,
+        item: Item::Func(id),
+        errors: Vec::new(),
+        source: None,
+        bound: vec![false; f.vars.len()],
+        in_scope: vec![false; f.vars.len()],
+        label_bound: vec![false; f.labels.max(1) as usize],
+        label_params: vec![None; f.labels.max(1) as usize],
+        known: Vec::new(),
+    };
+    cx.func();
+    if cx.errors.is_empty() {
+        Ok(())
+    } else {
+        Err(cx.errors)
+    }
+}
+
+fn decl_error(item: Item, message: String) -> Error {
+    Error {
+        item,
+        source: None,
+        message,
+    }
+}
+
+fn check_data<P: Program + ?Sized>(p: &P, id: DataId, decl: &DataDecl, errors: &mut Vec<Error>) {
+    for (c, ctor) in decl.ctors.iter().enumerate() {
+        for (i, field) in ctor.fields.iter().enumerate() {
+            if let Err(message) = ty_ok(p, field, true) {
+                errors.push(decl_error(
+                    Item::Data(id),
+                    format!("field {i} of constructor {c}: {message}"),
+                ));
+            }
+        }
+    }
+}
+
+fn check_handler<P: Program + ?Sized>(
+    p: &P,
+    id: HandlerId,
+    h: &HandlerDecl,
+    errors: &mut Vec<Error>,
+) {
+    let mut err = |message: String| errors.push(decl_error(Item::Handler(id), message));
+    for ty in &h.env {
+        if let Err(message) = ty_ok(p, ty, false) {
+            err(format!("environment: {message}"));
+        }
+    }
+    let Some(effect) = p.effect(h.effect) else {
+        return err(format!("unknown effect {}", h.effect));
+    };
+    let Some(ret) = p.func_sig(h.ret) else {
+        return err(format!("unknown return clause {}", h.ret));
+    };
+    if !ret.params.starts_with(&h.env) {
+        err(format!(
+            "return clause {} has type {ret}, which doesn't start with the environment",
+            h.ret
+        ));
+    }
+    if h.ops.len() != effect.ops.len() {
+        return err(format!(
+            "has {} clauses, but {} has {} operations",
+            h.ops.len(),
+            h.effect,
+            effect.ops.len()
+        ));
+    }
+    for (i, (&clause, op)) in h.ops.iter().zip(&effect.ops).enumerate() {
+        let Some(sig) = p.func_sig(clause) else {
+            err(format!("unknown clause {clause} for operation {i}"));
+            continue;
+        };
+        let k = Ty::Cont(Box::new(Sig {
+            params: op.results.clone(),
+            results: ret.results.clone(),
+        }));
+        let mut params = h.env.clone();
+        params.extend(op.params.iter().cloned());
+        params.push(k);
+        let expected = Sig {
+            params,
+            results: ret.results.clone(),
+        };
+        if sig != expected {
+            err(format!(
+                "clause {clause} for operation {i} has type {sig}, but should have {expected}"
+            ));
+        }
+    }
+}
+
+/// Whether a value of type `a` can be used where `b` is expected. Only
+/// mutabilities differ: `Imm` and `Mut` both fit `ReadOnly`.
+fn sub(a: &Ty, b: &Ty) -> bool {
+    match (a, b) {
+        (Ty::Data(d1, m1), Ty::Data(d2, m2)) => d1 == d2 && m1.is_sub(*m2),
+        (Ty::Array(e1, m1), Ty::Array(e2, m2)) => e1 == e2 && m1.is_sub(*m2),
+        (Ty::Fn(s1, m1), Ty::Fn(s2, m2)) => s1 == s2 && m1.is_sub(*m2),
+        (Ty::Any(m1), Ty::Any(m2)) => m1.is_sub(*m2),
+        _ => a == b,
+    }
+}
+
+/// Checks that a type only refers to known data types, and only uses
+/// `Inherit` where it's allowed: in field types, outside signatures.
+fn ty_ok<P: Program + ?Sized>(p: &P, ty: &Ty, inherit_ok: bool) -> Result<(), String> {
+    let mut_ok = |m: &Mutability| {
+        if *m == Mutability::Inherit && !inherit_ok {
+            Err(format!("`inherit` in {ty} is only allowed in field types"))
+        } else {
+            Ok(())
+        }
+    };
+    match ty {
+        Ty::I32 | Ty::I64 | Ty::F32 | Ty::F64 => Ok(()),
+        Ty::Data(d, m) => {
+            mut_ok(m)?;
+            match p.data(*d) {
+                Some(_) => Ok(()),
+                None => Err(format!("unknown data type {d}")),
+            }
+        }
+        Ty::Array(elem, m) => {
+            mut_ok(m)?;
+            ty_ok(p, elem, inherit_ok)
+        }
+        Ty::Fn(sig, m) => {
+            mut_ok(m)?;
+            sig_ok(p, sig)
+        }
+        Ty::Cont(sig) => sig_ok(p, sig),
+        Ty::Ref(ty) => ty_ok(p, ty, inherit_ok),
+        Ty::Any(m) => mut_ok(m),
+    }
+}
+
+fn sig_ok<P: Program + ?Sized>(p: &P, sig: &Sig) -> Result<(), String> {
+    sig.params
+        .iter()
+        .chain(&sig.results)
+        .try_for_each(|ty| ty_ok(p, ty, false))
+}
+
+/// A field type in an object of mutability `m`: `Inherit` becomes `m`.
+fn inherit(ty: &Ty, m: Mutability) -> Ty {
+    let pick = |own: Mutability| if own == Mutability::Inherit { m } else { own };
+    match ty {
+        Ty::Data(d, own) => Ty::Data(*d, pick(*own)),
+        Ty::Array(elem, own) => Ty::Array(Box::new(inherit(elem, m)), pick(*own)),
+        Ty::Fn(sig, own) => Ty::Fn(sig.clone(), pick(*own)),
+        Ty::Ref(inner) => Ty::Ref(Box::new(inherit(inner, m))),
+        Ty::Any(own) => Ty::Any(pick(*own)),
+        other => other.clone(),
+    }
+}
+
+/// Whether a type is `Imm` all the way down.
+fn deep_imm<P: Program + ?Sized>(p: &P, ty: &Ty) -> bool {
+    deep_imm_in(p, ty, &mut BTreeSet::new())
+}
+
+fn deep_imm_in<P: Program + ?Sized>(p: &P, ty: &Ty, seen: &mut BTreeSet<DataId>) -> bool {
+    match ty {
+        Ty::I32 | Ty::I64 | Ty::F32 | Ty::F64 => true,
+        Ty::Data(d, Mutability::Imm) => {
+            // A data type already being checked is assumed fine, so that
+            // recursive types terminate.
+            if !seen.insert(*d) {
+                return true;
+            }
+            let Some(decl) = p.data(*d) else { return false };
+            decl.ctors
+                .iter()
+                .flat_map(|c| &c.fields)
+                .all(|field| deep_imm_in(p, &inherit(field, Mutability::Imm), seen))
+        }
+        Ty::Array(elem, Mutability::Imm) => deep_imm_in(p, elem, seen),
+        Ty::Fn(_, Mutability::Imm) | Ty::Any(Mutability::Imm) => true,
+        _ => false,
+    }
+}
+
+/// The type of `Copy(m)` of a value of type `ty`.
+fn copy_ty<P: Program + ?Sized>(p: &P, ty: &Ty, m: Mutability) -> Result<Ty, String> {
+    let imm = m == Mutability::Imm;
+    match ty {
+        Ty::I32 | Ty::I64 | Ty::F32 | Ty::F64 => Ok(ty.clone()),
+        Ty::Data(d, _) => {
+            let copied = Ty::Data(*d, m);
+            if imm && !deep_imm(p, &copied) {
+                return Err(format!(
+                    "can't copy {ty} to imm: it has a field that can't be imm"
+                ));
+            }
+            Ok(copied)
+        }
+        Ty::Array(elem, _) => Ok(Ty::Array(Box::new(copy_ty(p, elem, m)?), m)),
+        Ty::Fn(_, Mutability::Imm) | Ty::Any(Mutability::Imm) => Ok(ty.clone()),
+        Ty::Fn(..) | Ty::Any(_) | Ty::Ref(_) | Ty::Cont(_) if imm => {
+            Err(format!("can't copy to imm a value that reaches a {ty}"))
+        }
+        Ty::Fn(..) | Ty::Any(_) | Ty::Ref(_) | Ty::Cont(_) => Ok(ty.clone()),
+    }
+}
+
+/// Checks one function.
+struct Cx<'a, P: ?Sized> {
+    p: &'a P,
+    f: &'a Func,
+    item: Item,
+    errors: Vec<Error>,
+    source: Option<SourceId>,
+    /// Whether each variable has been bound, to check it's bound once.
+    bound: Vec<bool>,
+    in_scope: Vec<bool>,
+    label_bound: Vec<bool>,
+    /// The parameter types of each label in scope.
+    label_params: Vec<Option<Vec<Ty>>>,
+    /// What the enclosing `case` arms say about variables.
+    known: Vec<(Var, CtorId)>,
+}
+
+type Checked<T> = Result<T, String>;
+
+impl<P: Program + ?Sized> Cx<'_, P> {
+    fn err(&mut self, message: impl Into<String>) {
+        self.errors.push(Error {
+            item: self.item,
+            source: self.source,
+            message: message.into(),
+        });
+    }
+
+    fn func(&mut self) {
+        let f = self.f;
+        for (i, ty) in f.vars.iter().enumerate() {
+            if let Err(message) = ty_ok(self.p, ty, false) {
+                self.err(format!("type of %{i}: {message}"));
+            }
+        }
+        for ty in &f.results {
+            if let Err(message) = ty_ok(self.p, ty, false) {
+                self.err(format!("result type: {message}"));
+            }
+        }
+        if f.labels == 0 {
+            self.err("a function has at least one label, `ret`");
+        }
+        self.label_bound[0] = true;
+        self.label_params[0] = Some(f.results.clone());
+        for &param in &f.params {
+            self.bind(param);
+        }
+        self.term(&f.body);
+
+        let counts = Linear {
+            f,
+            labels: BTreeMap::new(),
+        }
+        .uses(&f.body);
+        for (var, n) in counts {
+            if n > 1 {
+                self.source = None;
+                self.err(format!("continuation {var} may be used more than once"));
+            }
+        }
+    }
+
+    fn var_ty(&self, v: Var) -> Option<&Ty> {
+        self.f.vars.get(v.0 as usize)
+    }
+
+    fn bind(&mut self, v: Var) {
+        let i = v.0 as usize;
+        if i >= self.f.vars.len() {
+            return self.err(format!(
+                "{v} has no type: there are {} variables",
+                self.f.vars.len()
+            ));
+        }
+        if self.bound[i] {
+            self.err(format!("{v} is bound more than once"));
+        }
+        self.bound[i] = true;
+        self.in_scope[i] = true;
+    }
+
+    fn unbind(&mut self, v: Var) {
+        if let Some(s) = self.in_scope.get_mut(v.0 as usize) {
+            *s = false;
+        }
+    }
+
+    fn atom(&mut self, a: &Atom) -> Option<Ty> {
+        match a {
+            Atom::Lit(lit) => Some(lit.ty()),
+            Atom::Var(v) => {
+                let Some(ty) = self.var_ty(*v).cloned() else {
+                    self.err(format!(
+                        "{v} has no type: there are {} variables",
+                        self.f.vars.len()
+                    ));
+                    return None;
+                };
+                if !self.in_scope[v.0 as usize] {
+                    self.err(format!("{v} is used where it isn't in scope"));
+                    return None;
+                }
+                Some(ty)
+            }
+        }
+    }
+
+    /// The types of atoms, or `None` if any of them is broken (which has
+    /// been reported).
+    fn atoms(&mut self, atoms: &[Atom]) -> Option<Vec<Ty>> {
+        let tys: Vec<_> = atoms.iter().map(|a| self.atom(a)).collect();
+        tys.into_iter().collect()
+    }
+
+    fn term(&mut self, t: &Term) {
+        match t {
+            Term::Let {
+                binds,
+                op,
+                args,
+                body,
+                source,
+            } => {
+                self.source = *source;
+                if let Some(tys) = self.atoms(args) {
+                    self.op(op, args, &tys, binds);
+                }
+                for &b in binds {
+                    self.bind(b);
+                }
+                self.term(body);
+                for &b in binds {
+                    self.unbind(b);
+                }
+            }
+            Term::Join { rec, defs, body } => self.join(*rec, defs, body),
+            Term::Jump {
+                target,
+                args,
+                source,
+            } => {
+                self.source = *source;
+                self.jump(*target, args);
+            }
+            Term::Case {
+                scrut,
+                arms,
+                default,
+            } => self.case(scrut, arms, default.as_deref()),
+            Term::Unreachable => {}
+        }
+    }
+
+    fn join(&mut self, rec: bool, defs: &[JoinDef], body: &Term) {
+        let mut labels = Vec::new();
+        for def in defs {
+            let l = def.label;
+            if l == Label::RET || l.0 >= self.f.labels {
+                self.err(format!(
+                    "{l} can't be bound: labels are j1 to j{}",
+                    self.f.labels.saturating_sub(1)
+                ));
+                continue;
+            }
+            if self.label_bound[l.0 as usize] {
+                self.err(format!("{l} is bound more than once"));
+                continue;
+            }
+            self.label_bound[l.0 as usize] = true;
+            let params = def
+                .params
+                .iter()
+                .filter_map(|&p| self.var_ty(p).cloned())
+                .collect();
+            labels.push((l, params));
+        }
+
+        if rec {
+            self.scope_labels(&labels);
+        }
+        for def in defs {
+            for &p in &def.params {
+                self.bind(p);
+            }
+            self.term(&def.body);
+            for &p in &def.params {
+                self.unbind(p);
+            }
+        }
+        if !rec {
+            self.scope_labels(&labels);
+        }
+        self.term(body);
+        for (l, _) in labels {
+            self.label_params[l.0 as usize] = None;
+        }
+    }
+
+    fn scope_labels(&mut self, labels: &[(Label, Vec<Ty>)]) {
+        for (l, params) in labels {
+            self.label_params[l.0 as usize] = Some(params.clone());
+        }
+    }
+
+    fn jump(&mut self, target: Label, args: &[Atom]) {
+        let params = self.label_params.get(target.0 as usize).cloned().flatten();
+        let Some(params) = params else {
+            return self.err(format!("jump to {target}, which isn't in scope"));
+        };
+        let Some(tys) = self.atoms(args) else { return };
+        if let Err(message) = fits(&tys, &params) {
+            self.err(format!("jump to {target}: {message}"));
+        }
+    }
+
+    fn case(&mut self, scrut: &Atom, arms: &[Arm], default: Option<&Term>) {
+        if let Some(ty) = self.atom(scrut) {
+            self.case_tags(&ty, arms, default.is_some());
+        }
+        for arm in arms {
+            let fact = match (scrut, arm.tag) {
+                (Atom::Var(v), Tag::Ctor(c)) => Some((*v, c)),
+                _ => None,
+            };
+            if let Some(fact) = fact {
+                self.known.push(fact);
+            }
+            self.term(&arm.body);
+            if fact.is_some() {
+                self.known.pop();
+            }
+        }
+        if let Some(default) = default {
+            self.term(default);
+        }
+    }
+
+    fn case_tags(&mut self, ty: &Ty, arms: &[Arm], has_default: bool) {
+        match ty {
+            Ty::I32 | Ty::I64 => {
+                let mut seen = BTreeSet::new();
+                for arm in arms {
+                    match arm.tag {
+                        Tag::Int(n) if *ty == Ty::I32 && i32::try_from(n).is_err() => {
+                            self.err(format!("case on an i32 has a tag {n}, which isn't an i32"));
+                        }
+                        Tag::Int(n) if !seen.insert(n) => {
+                            self.err(format!("case has the tag {n} more than once"));
+                        }
+                        Tag::Int(_) => {}
+                        Tag::Ctor(c) => self.err(format!("case on {ty} has a constructor tag {c}")),
+                    }
+                }
+                if !has_default {
+                    self.err(format!("case on {ty} has no default"));
+                }
+            }
+            Ty::Data(d, _) => {
+                let Some(decl) = self.p.data(*d) else { return };
+                let ctors = decl.ctors.len();
+                let mut seen = BTreeSet::new();
+                for arm in arms {
+                    match arm.tag {
+                        Tag::Ctor(c) if c.data != *d || c.index as usize >= ctors => {
+                            self.err(format!(
+                                "case on {ty} has the tag {c}, which isn't one of its constructors"
+                            ));
+                        }
+                        Tag::Ctor(c) if !seen.insert(c.index) => {
+                            self.err(format!("case has the tag {c} more than once"));
+                        }
+                        Tag::Ctor(_) => {}
+                        Tag::Int(n) => self.err(format!("case on {ty} has an integer tag {n}")),
+                    }
+                }
+                if !has_default && seen.len() < ctors {
+                    self.err(format!(
+                        "case on {ty} has no default and doesn't cover every constructor"
+                    ));
+                }
+            }
+            _ => self.err(format!("can't branch on a value of type {ty}")),
+        }
+    }
+
+    fn op(&mut self, op: &Op, args: &[Atom], tys: &[Ty], binds: &[Var]) {
+        let out: Option<Vec<Ty>> = binds.iter().map(|&b| self.var_ty(b).cloned()).collect();
+        let Some(out) = out else {
+            return self.err("binds a variable that has no type");
+        };
+        let results = self.op_results(op, args, tys, &out);
+        match results {
+            Ok(results) if results.len() != out.len() => self.err(format!(
+                "binds {} values, but the op gives {}",
+                out.len(),
+                results.len()
+            )),
+            Ok(results) => {
+                for ((r, o), b) in results.iter().zip(&out).zip(binds) {
+                    if !sub(r, o) {
+                        self.err(format!("the op gives a {r}, but {b} has type {o}"));
+                    }
+                }
+            }
+            Err(message) => self.err(message),
+        }
+    }
+
+    /// The types an op gives. For ops whose result type the IR doesn't
+    /// spell out, like `New`'s mutability, that's the types of the
+    /// variables it binds, `out`.
+    fn op_results(&self, op: &Op, args: &[Atom], tys: &[Ty], out: &[Ty]) -> Checked<Vec<Ty>> {
+        let p = self.p;
+        match op {
+            Op::Prim(prim) => prim_results(prim, tys),
+            Op::Call(f) => {
+                let sig = p
+                    .func_sig(*f)
+                    .ok_or_else(|| format!("unknown function {f}"))?;
+                fits(tys, &sig.params).map_err(|m| format!("call of {f}: {m}"))?;
+                Ok(sig.results)
+            }
+            Op::CallExtern(e) => {
+                let ext = p
+                    .extern_fn(*e)
+                    .ok_or_else(|| format!("unknown extern {e}"))?;
+                fits(tys, &ext.sig.params).map_err(|m| format!("call of {e}: {m}"))?;
+                Ok(ext.sig.results.clone())
+            }
+            Op::Closure(f) => {
+                let sig = p
+                    .func_sig(*f)
+                    .ok_or_else(|| format!("unknown function {f}"))?;
+                let [Ty::Fn(fn_sig, m)] = out else {
+                    return Err(format!("closure of {f} must bind one closure"));
+                };
+                object_mutability(*m)?;
+                let captures = sig.params.len().checked_sub(fn_sig.params.len());
+                let ok = captures.is_some_and(|n| {
+                    sig.params[n..] == fn_sig.params[..] && sig.results == fn_sig.results
+                });
+                let Some(n) = captures.filter(|_| ok) else {
+                    return Err(format!(
+                        "{f} has type {sig}, which doesn't end with {fn_sig}"
+                    ));
+                };
+                fits(tys, &sig.params[..n]).map_err(|m| format!("captures of {f}: {m}"))?;
+                if *m == Mutability::Imm
+                    && let Some(ty) = tys.iter().find(|ty| !deep_imm(p, ty))
+                {
+                    return Err(format!("an imm closure can't capture a {ty}"));
+                }
+                Ok(out.to_vec())
+            }
+            Op::Apply => {
+                let Some((Ty::Fn(sig, _), rest)) = tys.split_first() else {
+                    return Err("apply needs a closure as its first argument".into());
+                };
+                fits(rest, &sig.params).map_err(|m| format!("apply: {m}"))?;
+                Ok(sig.results.clone())
+            }
+            Op::New(c) => {
+                let [Ty::Data(d, m)] = out else {
+                    return Err(format!("new {c} must bind one value of its data type"));
+                };
+                if *d != c.data {
+                    return Err(format!("new {c} binds a {}", out[0]));
+                }
+                object_mutability(*m)?;
+                let fields = self.fields(*c)?;
+                if fields.len() != tys.len() {
+                    return Err(format!(
+                        "{c} has {} fields, but new gives {}",
+                        fields.len(),
+                        tys.len()
+                    ));
+                }
+                for (i, (ty, field)) in tys.iter().zip(fields).enumerate() {
+                    let field = inherit(field, *m);
+                    if *m == Mutability::Imm && !deep_imm(p, &field) {
+                        return Err(format!("an imm {c} can't hold field {i} of type {field}"));
+                    }
+                    if !sub(ty, &field) {
+                        return Err(format!(
+                            "field {i} of {c} has type {field}, but gets a {ty}"
+                        ));
+                    }
+                }
+                Ok(out.to_vec())
+            }
+            Op::Get(c, i) => {
+                let [Ty::Data(d, m)] = tys else {
+                    return Err(format!("get of {c} needs one object"));
+                };
+                self.field_access(c, *d, &args[0])?;
+                Ok(vec![self.field(*c, *i, *m)?])
+            }
+            Op::Set(c, i) => {
+                let [Ty::Data(d, m), value] = tys else {
+                    return Err(format!("set of {c} needs an object and a value"));
+                };
+                if *m != Mutability::Mut {
+                    return Err(format!("can't set a field of a {}", tys[0]));
+                }
+                self.field_access(c, *d, &args[0])?;
+                let field = self.field(*c, *i, Mutability::Mut)?;
+                if !sub(value, &field) {
+                    return Err(format!(
+                        "field {i} of {c} has type {field}, but gets a {value}"
+                    ));
+                }
+                Ok(vec![])
+            }
+            Op::ArrayNew => {
+                let elem = self.new_array(out)?;
+                for ty in tys {
+                    if !sub(ty, &elem) {
+                        return Err(format!("array of {elem} gets an element of type {ty}"));
+                    }
+                }
+                Ok(out.to_vec())
+            }
+            Op::ArrayFill => {
+                let elem = self.new_array(out)?;
+                let [Ty::I32, ty] = tys else {
+                    return Err("array fill needs an i32 length and a value".into());
+                };
+                if !sub(ty, &elem) {
+                    return Err(format!("array of {elem} gets an element of type {ty}"));
+                }
+                Ok(out.to_vec())
+            }
+            Op::ArrayGet => match tys {
+                [Ty::Array(elem, _), Ty::I32] => Ok(vec![(**elem).clone()]),
+                _ => Err("array get needs an array and an i32 index".into()),
+            },
+            Op::ArraySet => match tys {
+                [Ty::Array(elem, Mutability::Mut), Ty::I32, ty] if sub(ty, elem) => Ok(vec![]),
+                [Ty::Array(elem, Mutability::Mut), Ty::I32, ty] => {
+                    Err(format!("array of {elem} gets an element of type {ty}"))
+                }
+                [array @ Ty::Array(..), Ty::I32, _] => {
+                    Err(format!("can't set an element of a {array}"))
+                }
+                _ => Err("array set needs an array, an i32 index and a value".into()),
+            },
+            Op::ArrayLen => match tys {
+                [Ty::Array(..)] => Ok(vec![Ty::I32]),
+                _ => Err("array len needs an array".into()),
+            },
+            Op::RefNew => match (tys, out) {
+                ([ty], [Ty::Ref(inner)]) if sub(ty, inner) => Ok(out.to_vec()),
+                ([ty], [Ty::Ref(inner)]) => Err(format!("ref of {inner} gets a {ty}")),
+                _ => Err("ref new needs one value and binds one ref".into()),
+            },
+            Op::RefGet => match tys {
+                [Ty::Ref(inner)] => Ok(vec![(**inner).clone()]),
+                _ => Err("ref get needs a ref".into()),
+            },
+            Op::RefSet => match tys {
+                [Ty::Ref(inner), ty] if sub(ty, inner) => Ok(vec![]),
+                [Ty::Ref(inner), ty] => Err(format!("ref of {inner} gets a {ty}")),
+                _ => Err("ref set needs a ref and a value".into()),
+            },
+            Op::Box(ty) => {
+                ty_ok(p, ty, false)?;
+                match tys {
+                    [arg] if sub(arg, ty) => {}
+                    [arg] => return Err(format!("box of {ty} gets a {arg}")),
+                    _ => return Err("box needs one value".into()),
+                }
+                let m = if deep_imm(p, ty) {
+                    Mutability::Imm
+                } else {
+                    Mutability::Mut
+                };
+                Ok(vec![Ty::Any(m)])
+            }
+            Op::Unbox(ty) => {
+                ty_ok(p, ty, false)?;
+                match tys {
+                    [Ty::Any(_)] => Ok(vec![ty.clone()]),
+                    _ => Err("unbox needs one any".into()),
+                }
+            }
+            Op::Copy(m) => {
+                object_mutability(*m)?;
+                match tys {
+                    [ty] => Ok(vec![copy_ty(p, ty, *m)?]),
+                    _ => Err("copy needs one value".into()),
+                }
+            }
+            Op::Handle(h) => {
+                let decl = p
+                    .handler(*h)
+                    .ok_or_else(|| format!("unknown handler {h}"))?;
+                let ret = p
+                    .func_sig(decl.ret)
+                    .ok_or_else(|| format!("unknown function {}", decl.ret))?;
+                let n = decl.env.len();
+                let Some((Ty::Fn(body, _), env)) = tys.split_last() else {
+                    return Err(format!("handle {h} needs its environment, then a closure"));
+                };
+                fits(env, &decl.env).map_err(|m| format!("environment of {h}: {m}"))?;
+                let returns = ret.params.get(n..).unwrap_or_default();
+                if !body.params.is_empty() || body.results != returns {
+                    return Err(format!(
+                        "the body of handle {h} has type fn{body}, but should have fn() -> ({})",
+                        returns
+                            .iter()
+                            .map(Ty::to_string)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                }
+                Ok(ret.results)
+            }
+            Op::Perform(e, i) => {
+                let effect = p.effect(*e).ok_or_else(|| format!("unknown effect {e}"))?;
+                let sig = effect
+                    .ops
+                    .get(*i as usize)
+                    .ok_or_else(|| format!("{e} has no operation {i}"))?;
+                fits(tys, &sig.params).map_err(|m| format!("perform {e}.{i}: {m}"))?;
+                Ok(sig.results.clone())
+            }
+            Op::Resume => {
+                let Some((Ty::Cont(sig), rest)) = tys.split_first() else {
+                    return Err("resume needs a continuation as its first argument".into());
+                };
+                fits(rest, &sig.params).map_err(|m| format!("resume: {m}"))?;
+                Ok(sig.results.clone())
+            }
+        }
+    }
+
+    fn fields(&self, c: CtorId) -> Checked<&[Ty]> {
+        let decl = self
+            .p
+            .data(c.data)
+            .ok_or_else(|| format!("unknown data type {}", c.data))?;
+        let ctor = decl
+            .ctors
+            .get(c.index as usize)
+            .ok_or_else(|| format!("unknown constructor {c}"))?;
+        Ok(&ctor.fields)
+    }
+
+    /// The type of field `i` of an object of constructor `c` and
+    /// mutability `m`.
+    fn field(&self, c: CtorId, i: u32, m: Mutability) -> Checked<Ty> {
+        let field = self
+            .fields(c)?
+            .get(i as usize)
+            .ok_or_else(|| format!("{c} has no field {i}"))?;
+        Ok(inherit(field, m))
+    }
+
+    /// Checks that `obj`, of data type `d`, is known to be built by `c`:
+    /// `d` has one constructor, or an enclosing `case` arm says so.
+    fn field_access(&self, c: &CtorId, d: DataId, obj: &Atom) -> Checked<()> {
+        if c.data != d {
+            return Err(format!("{c} isn't a constructor of {d}"));
+        }
+        let ctors = self.p.data(d).map_or(0, |decl| decl.ctors.len());
+        let known = match obj {
+            Atom::Var(v) => self.known.contains(&(*v, *c)),
+            Atom::Lit(_) => false,
+        };
+        if ctors == 1 || known {
+            Ok(())
+        } else {
+            Err(format!(
+                "{obj} isn't known to be built by {c} here, so its fields can't be accessed"
+            ))
+        }
+    }
+
+    /// The element type of an array that an op creates and binds.
+    fn new_array(&self, out: &[Ty]) -> Checked<Ty> {
+        let [Ty::Array(elem, m)] = out else {
+            return Err("an array op must bind one array".into());
+        };
+        object_mutability(*m)?;
+        if *m == Mutability::Imm && !deep_imm(self.p, elem) {
+            return Err(format!("an imm array can't hold elements of type {elem}"));
+        }
+        Ok((**elem).clone())
+    }
+}
+
+/// Objects are created, and copied, as `Imm` or `Mut`, not as a view.
+fn object_mutability(m: Mutability) -> Checked<()> {
+    match m {
+        Mutability::Imm | Mutability::Mut => Ok(()),
+        _ => Err(format!("a new object is imm or mut, not {m}")),
+    }
+}
+
+/// Checks that values of types `tys` can be passed where `expected` are.
+fn fits(tys: &[Ty], expected: &[Ty]) -> Checked<()> {
+    if tys.len() != expected.len() {
+        return Err(format!(
+            "expected {} values, but got {}",
+            expected.len(),
+            tys.len()
+        ));
+    }
+    for (i, (ty, e)) in tys.iter().zip(expected).enumerate() {
+        if !sub(ty, e) {
+            return Err(format!("value {i} has type {ty}, but should have {e}"));
+        }
+    }
+    Ok(())
+}
+
+fn prim_results(prim: &Prim, tys: &[Ty]) -> Checked<Vec<Ty>> {
+    let int = |t: &Ty| matches!(t, Ty::I32 | Ty::I64);
+    let float = |t: &Ty| matches!(t, Ty::F32 | Ty::F64);
+    let num = |t: &Ty| int(t) || float(t);
+    let binary = |ok: &dyn Fn(&Ty) -> bool, what: &str| match tys {
+        [a, b] if a == b && ok(a) => Ok(a.clone()),
+        _ => Err(format!(
+            "{prim:?} needs two {what} of the same type, but got ({})",
+            list(tys)
+        )),
+    };
+    let unary = |ok: &dyn Fn(&Ty) -> bool, what: &str| match tys {
+        [a] if ok(a) => Ok(a.clone()),
+        _ => Err(format!(
+            "{prim:?} needs one {what}, but got ({})",
+            list(tys)
+        )),
+    };
+    let ty = match prim {
+        Prim::Add | Prim::Sub | Prim::Mul | Prim::Div(_) => binary(&num, "numbers")?,
+        Prim::Rem(_) | Prim::And | Prim::Or | Prim::Xor | Prim::Shl | Prim::Shr(_) => {
+            binary(&int, "integers")?
+        }
+        Prim::Min | Prim::Max => binary(&float, "floats")?,
+        Prim::Eq | Prim::Ne | Prim::Lt(_) | Prim::Le(_) | Prim::Gt(_) | Prim::Ge(_) => {
+            binary(&num, "numbers")?;
+            Ty::I32
+        }
+        Prim::Neg => unary(&num, "number")?,
+        Prim::Abs | Prim::Sqrt => unary(&float, "float")?,
+        Prim::Convert(to, _) => {
+            unary(&num, "number")?;
+            if !num(to) {
+                return Err(format!("can't convert to {to}"));
+            }
+            to.clone()
+        }
+        Prim::Reinterpret(to) => {
+            let from = unary(&num, "number")?;
+            let size = |t: &Ty| matches!(t, Ty::I64 | Ty::F64);
+            if !num(to) || int(&from) == int(to) || size(&from) != size(to) {
+                return Err(format!("can't reinterpret a {from} as a {to}"));
+            }
+            to.clone()
+        }
+    };
+    Ok(vec![ty])
+}
+
+fn list(tys: &[Ty]) -> String {
+    tys.iter().map(Ty::to_string).collect::<Vec<_>>().join(", ")
+}
+
+/// How many times each continuation may be used along one path, capped at 2.
+type Counts = BTreeMap<Var, u8>;
+
+fn add(a: &mut Counts, b: &Counts) {
+    for (&v, &n) in b {
+        let c = a.entry(v).or_default();
+        *c = c.saturating_add(n).min(2);
+    }
+}
+
+fn max_into(a: &mut Counts, b: &Counts) {
+    for (&v, &n) in b {
+        let c = a.entry(v).or_default();
+        *c = (*c).max(n);
+    }
+}
+
+/// Counts uses of continuations along paths. A jump to a join point counts
+/// what the join point's body uses, so a continuation used before a jump
+/// and in the join point counts twice. Recursive join points are counted
+/// until their counts stop changing.
+struct Linear<'a> {
+    f: &'a Func,
+    /// What each join point's body uses, of variables bound outside it.
+    labels: BTreeMap<Label, Counts>,
+}
+
+impl Linear<'_> {
+    fn atoms<'b>(&self, atoms: impl IntoIterator<Item = &'b Atom>) -> Counts {
+        let mut counts = Counts::new();
+        for a in atoms {
+            if let Atom::Var(v) = a
+                && matches!(self.f.vars.get(v.0 as usize), Some(Ty::Cont(_)))
+            {
+                add(&mut counts, &Counts::from([(*v, 1)]));
+            }
+        }
+        counts
+    }
+
+    fn uses(&mut self, t: &Term) -> Counts {
+        match t {
+            Term::Let { args, body, .. } => {
+                let mut c = self.atoms(args);
+                add(&mut c, &self.uses(body));
+                c
+            }
+            Term::Jump { target, args, .. } => {
+                let mut c = self.atoms(args);
+                if let Some(l) = self.labels.get(target) {
+                    add(&mut c, l);
+                }
+                c
+            }
+            Term::Case {
+                scrut,
+                arms,
+                default,
+            } => {
+                let mut paths = Counts::new();
+                for arm in arms {
+                    max_into(&mut paths, &self.uses(&arm.body));
+                }
+                if let Some(default) = default {
+                    max_into(&mut paths, &self.uses(default));
+                }
+                let mut c = self.atoms([scrut]);
+                add(&mut c, &paths);
+                c
+            }
+            Term::Join { rec, defs, body } => {
+                if *rec {
+                    for def in defs {
+                        self.labels.insert(def.label, Counts::new());
+                    }
+                    // Counts only grow and are capped, so this ends.
+                    loop {
+                        let mut changed = false;
+                        for def in defs {
+                            let c = self.def_uses(def);
+                            if self.labels.get(&def.label) != Some(&c) {
+                                self.labels.insert(def.label, c);
+                                changed = true;
+                            }
+                        }
+                        if !changed {
+                            break;
+                        }
+                    }
+                } else {
+                    for def in defs {
+                        let c = self.def_uses(def);
+                        self.labels.insert(def.label, c);
+                    }
+                }
+                self.uses(body)
+            }
+            Term::Unreachable => Counts::new(),
+        }
+    }
+
+    /// What a join point's body uses, of variables bound outside it: those
+    /// bound inside are new each time the join point is entered.
+    fn def_uses(&mut self, def: &JoinDef) -> Counts {
+        let mut c = self.uses(&def.body);
+        let mut inner = BTreeSet::from_iter(def.params.iter().copied());
+        binds(&def.body, &mut inner);
+        c.retain(|v, _| !inner.contains(v));
+        c
+    }
+}
+
+/// Every variable a term binds.
+fn binds(t: &Term, out: &mut BTreeSet<Var>) {
+    match t {
+        Term::Let { binds: b, body, .. } => {
+            out.extend(b.iter().copied());
+            binds(body, out);
+        }
+        Term::Join { defs, body, .. } => {
+            for def in defs {
+                out.extend(def.params.iter().copied());
+                binds(&def.body, out);
+            }
+            binds(body, out);
+        }
+        Term::Case { arms, default, .. } => {
+            for arm in arms {
+                binds(&arm.body, out);
+            }
+            if let Some(default) = default {
+                binds(default, out);
+            }
+        }
+        Term::Jump { .. } | Term::Unreachable => {}
+    }
+}
+
+#[cfg(test)]
+mod tests;

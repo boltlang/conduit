@@ -51,3 +51,39 @@ impl Label {
     /// function's results. Returning is `jump ret(..)`.
     pub const RET: Label = Label(0);
 }
+
+macro_rules! display {
+    ($($name:ident => $fmt:literal),* $(,)?) => {$(
+        impl std::fmt::Display for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, $fmt, self.0)
+            }
+        }
+    )*};
+}
+
+display! {
+    FuncId => "fn{}",
+    DataId => "data{}",
+    ExternId => "extern{}",
+    EffectId => "effect{}",
+    HandlerId => "handler{}",
+    SourceId => "src{}",
+    Var => "%{}",
+}
+
+impl std::fmt::Display for Label {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if *self == Label::RET {
+            write!(f, "ret")
+        } else {
+            write!(f, "j{}", self.0)
+        }
+    }
+}
+
+impl std::fmt::Display for CtorId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}", self.data, self.index)
+    }
+}

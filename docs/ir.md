@@ -767,14 +767,20 @@ yet:
 
     ```rust
     pub trait Program {
-        fn func(&self, id: FuncId) -> Arc<Func>;
-        fn data(&self, id: DataId) -> Arc<DataDecl>;
+        fn func(&self, id: FuncId) -> Option<&Func>;
+        fn func_sig(&self, id: FuncId) -> Option<Sig>;   // has a default
+        fn data(&self, id: DataId) -> Option<&DataDecl>;
+        fn extern_fn(&self, id: ExternId) -> Option<&Extern>;
+        fn effect(&self, id: EffectId) -> Option<&EffectDecl>;
+        fn handler(&self, id: HandlerId) -> Option<&HandlerDecl>;
     }
     ```
 
     A Salsa frontend implements it with tracked queries. When inlining
     asks for a callee, Salsa records the dependency, so a change to the
-    callee recompiles the caller.
+    callee recompiles the caller. A pass that only needs a callee's type,
+    like the verifier, asks for `func_sig`, so that it doesn't depend on
+    the callee's body.
   - IDs are opaque `u64`s the frontend chooses, and stay the same for the
     same item. A Salsa frontend can use the bits of an interned ID
     (`salsa::Id::as_bits`). Positions only exist after `link`.

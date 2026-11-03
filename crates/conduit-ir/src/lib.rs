@@ -15,8 +15,7 @@ mod module;
 mod op;
 mod term;
 mod ty;
-
-use std::sync::Arc;
+pub mod verify;
 
 pub use id::{CtorId, DataId, EffectId, ExternId, FuncId, HandlerId, Label, SourceId, Var};
 pub use module::{DataDecl, EffectDecl, Extern, Func, HandlerDecl, Module};
@@ -24,14 +23,56 @@ pub use op::{Effects, Op, Prim, Sign};
 pub use term::{Arm, Atom, JoinDef, Lit, Tag, Term};
 pub use ty::{CtorDecl, Mutability, Sig, Ty};
 
-/// How passes reach items other than the function they work on.
+/// How passes reach items other than the function they work on. Each
+/// lookup gives `None` for an unknown ID.
 ///
 /// The frontend implements this. A frontend using Salsa implements it with
 /// tracked queries, so that a pass asking for a callee while inlining
-/// records a dependency on it.
+/// records a dependency on it. [`Module`] implements it too.
 pub trait Program {
-    fn func(&self, id: FuncId) -> Arc<Func>;
-    fn data(&self, id: DataId) -> Arc<DataDecl>;
+    fn func(&self, id: FuncId) -> Option<&Func>;
+
+    /// A function's signature. Passes that only need the signature, like
+    /// the verifier checking a call, ask for this instead of
+    /// [`Program::func`], so that a frontend can answer without making them
+    /// depend on the function's body.
+    fn func_sig(&self, id: FuncId) -> Option<Sig> {
+        // Not `Func::sig`, which panics on a parameter without a type: the
+        // verifier asks for signatures of functions it hasn't checked yet.
+        let f = self.func(id)?;
+        let params = f.params.iter().map(|p| f.vars.get(p.0 as usize).cloned());
+        Some(Sig {
+            params: params.collect::<Option<_>>()?,
+            results: f.results.clone(),
+        })
+    }
+
+    fn data(&self, id: DataId) -> Option<&DataDecl>;
+    fn extern_fn(&self, id: ExternId) -> Option<&Extern>;
+    fn effect(&self, id: EffectId) -> Option<&EffectDecl>;
+    fn handler(&self, id: HandlerId) -> Option<&HandlerDecl>;
+}
+
+impl Program for Module {
+    fn func(&self, id: FuncId) -> Option<&Func> {
+        self.funcs.get(&id)
+    }
+
+    fn data(&self, id: DataId) -> Option<&DataDecl> {
+        self.data.get(&id)
+    }
+
+    fn extern_fn(&self, id: ExternId) -> Option<&Extern> {
+        self.externs.get(&id)
+    }
+
+    fn effect(&self, id: EffectId) -> Option<&EffectDecl> {
+        self.effects.get(&id)
+    }
+
+    fn handler(&self, id: HandlerId) -> Option<&HandlerDecl> {
+        self.handlers.get(&id)
+    }
 }
 
 #[cfg(test)]
