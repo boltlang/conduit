@@ -18,5 +18,5 @@ Some of its properties:
 
  ## Projects Using Conduit
 
- - [The Bolt Programming Language](https://boltlang.net)a
+ - [The Bolt Programming Language](https://boltlang.net)
  - Your own language here? Open a pull request!
