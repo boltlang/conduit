@@ -1,0 +1,8 @@
+[package]
+name = "conduit-ir"
+description = "The IR of the Conduit compiler: a typed A-normal-form tree with join points"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]

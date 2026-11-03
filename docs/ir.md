@@ -34,16 +34,17 @@ pub enum Atom {
 
 pub enum Term {
     /// `let x1, .., xn = op(a1, .., am); body`
-    Let { binds: Vec<Var>, op: Op, args: Vec<Atom>, body: Box<Term> },
+    Let { binds: Vec<Var>, op: Op, args: Vec<Atom>, body: Box<Term>, source: Option<SourceId> },
 
     /// `join [rec] j1(params) = t1, .., jn(params) = tn in body`
     Join { rec: bool, defs: Vec<JoinDef>, body: Box<Term> },
 
     /// `jump j(a1, .., an)`, which also covers return: see "Returning" below.
-    Jump { target: Label, args: Vec<Atom> },
+    Jump { target: Label, args: Vec<Atom>, source: Option<SourceId> },
 
     /// Branch on an integer or on the constructor of an ADT value.
-    Case { scrut: Atom, arms: Vec<(Tag, Term)>, default: Option<Box<Term>> },
+    /// `default` runs when no arm's tag matches.
+    Case { scrut: Atom, arms: Vec<Arm>, default: Option<Box<Term>> },
 
     /// This point is never reached (a failed match, a call to a `!` function).
     Unreachable,
@@ -51,12 +52,17 @@ pub enum Term {
 
 pub struct JoinDef { label: Label, params: Vec<Var>, body: Term }
 
+pub struct Arm { tag: Tag, body: Term }
+
 pub enum Tag { Int(i64), Ctor(CtorId) }
+
+pub struct CtorId { data: DataId, index: u32 }
 ```
 
-`Var` and `Label` are indices into tables owned by the function. Each table
-entry stores the type: a variable has one type, a label has a list of
-parameter types.
+`Var` and `Label` are indices into the function: a function stores the
+type of each variable, and how many labels it uses. A label's parameter
+types are those of its join definition's parameters. `source` is an
+opaque ID the frontend uses to map code back to its source.
 
 ### Operations
 
@@ -74,7 +80,9 @@ pub enum Op {
     New(CtorId),           // allocate an ADT value; args = its fields
     Get(CtorId, u32),      // read field i
     Set(CtorId, u32),      // write field i of a Mut object; binds nothing
-    ArrayNew, ArrayGet, ArraySet, ArrayLen,   // ArraySet: Mut arrays only
+    ArrayNew,              // args = the elements
+    ArrayFill,             // args = a length, then the value to repeat
+    ArrayGet, ArraySet, ArrayLen,   // ArraySet: Mut arrays only
     RefNew,                // args = initial value; result has type Ref(ty)
     RefGet,                // args = the ref
     RefSet,                // args = the ref, then the new value; binds nothing
@@ -95,6 +103,11 @@ impl Op {
 Adding an operation means adding an `Op` variant and its `effects()`. No
 control-flow pass needs to change.
 
+An op that can trap has effect `Unknown`, so that dead-code elimination
+never removes a trap: integer division and remainder (on zero), float to
+integer conversions (out of range), array accesses (out of bounds), and
+`Unbox` (a failed cast).
+
 ### Types
 
 ```rust
@@ -102,8 +115,8 @@ pub enum Ty {
     I32, I64, F32, F64,
     Data(DataId, Mutability),     // GC'd ADT value
     Array(Box<Ty>, Mutability),   // GC'd array
-    Fn(SigId, Mutability),        // closure
-    Cont(SigId),                  // one-shot continuation captured by a handler
+    Fn(Box<Sig>, Mutability),     // closure
+    Cont(Box<Sig>),               // one-shot continuation captured by a handler
     Ref(Box<Ty>),                 // mutable cell holding one value: always Mut
     Any(Mutability),              // a boxed value of any type: see "Polymorphism"
 }
@@ -435,7 +448,7 @@ Wasm stack switching provides.
 
 ```rust
 pub struct EffectDecl {
-    ops: Vec<SigId>,       // operation i: its parameters and results
+    ops: Vec<Sig>,         // operation i: its parameters and results
 }
 
 pub struct HandlerDecl {
@@ -740,10 +753,37 @@ yet:
   maps them to the mutability in Conduit's types, and its copies between
   them to `Copy`. See "Mutability".
 - **Sources.** Frontends need to map code back to source, for errors and
-  for limits on how long an interpreter runs. Conduit needs a `source` on
-  `Let` and `Jump`. It's opaque to Conduit and carried through inlining.
+  for limits on how long an interpreter runs. `Let` and `Jump` carry a
+  `source`, which is opaque to Conduit and carried through inlining.
 - **Strings and chars.** `Lit` needs string literals (lowered to data
   segments or GC arrays). Chars are `i32`.
 - **Incremental compilation.** A query-based frontend (Salsa, for example)
-  wants to cache Conduit bodies. Conduit should stay free of any such
-  framework: the frontend wraps Conduit bodies in its own interned IDs.
+  caches Conduit IR and wants unchanged functions not to be recompiled.
+  Conduit doesn't depend on any such framework. Instead:
+  - Passes are pure functions that work on one function at a time
+    (`optimize`, `emit_wasm`), and only `link` sees the whole program.
+  - A pass reaches other functions and data types through a trait the
+    frontend implements:
+
+    ```rust
+    pub trait Program {
+        fn func(&self, id: FuncId) -> Arc<Func>;
+        fn data(&self, id: DataId) -> Arc<DataDecl>;
+    }
+    ```
+
+    A Salsa frontend implements it with tracked queries. When inlining
+    asks for a callee, Salsa records the dependency, so a change to the
+    callee recompiles the caller.
+  - IDs are opaque `u64`s the frontend chooses, and stay the same for the
+    same item. A Salsa frontend can use the bits of an interned ID
+    (`salsa::Id::as_bits`). Positions only exist after `link`.
+  - Passes are deterministic: the same input gives exactly the same
+    output, so a frontend's equality check can tell that nothing changed.
+    Iteration order never depends on a `HashMap`.
+  - A pass asks for what it actually uses, such as the callees inlining
+    considers, so a function doesn't depend on the whole program.
+
+  If several Salsa frontends need the same glue, it can live in a separate
+  crate (for example `conduit-salsa`), so Conduit's core stays
+  framework-free.
