@@ -192,16 +192,8 @@ fn check_handler<P: Program + ?Sized>(
     }
 }
 
-/// Whether a value of type `a` can be used where `b` is expected. Only
-/// mutabilities differ: `Imm` and `Mut` both fit `ReadOnly`.
 fn sub(a: &Ty, b: &Ty) -> bool {
-    match (a, b) {
-        (Ty::Data(d1, m1), Ty::Data(d2, m2)) => d1 == d2 && m1.is_sub(*m2),
-        (Ty::Array(e1, m1), Ty::Array(e2, m2)) => e1 == e2 && m1.is_sub(*m2),
-        (Ty::Fn(s1, m1), Ty::Fn(s2, m2)) => s1 == s2 && m1.is_sub(*m2),
-        (Ty::Any(m1), Ty::Any(m2)) => m1.is_sub(*m2),
-        _ => a == b,
-    }
+    a.is_subtype(b)
 }
 
 /// Checks that a type only refers to known data types, and only uses

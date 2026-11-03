@@ -246,9 +246,11 @@ The frontend uses them like this:
    can't pick an instance by type, so it passes instances as values: a
    `DataDecl` whose fields are closures, one per method.
 
-`Unbox(ty)` on a value that wasn't boxed at type `ty` is undefined: it
-traps with Wasm GC and goes unchecked with linear memory. Conduit can't
-verify it. The frontend's type checker has already proven it correct.
+`Unbox(ty)` on a value that wasn't boxed at a subtype of `ty` is
+**undefined behavior**. The verifier can't check it: the frontend's type
+checker has already proven it can't happen. Backends may do anything:
+Wasm GC traps, and linear memory doesn't check. The evaluator reports it
+as an error.
 `Any` also covers existential types and dynamically typed values, which
 a monomorphic IR can't express otherwise.
 
@@ -718,6 +720,34 @@ Notes:
   and keeps a table of objects it has already copied, to preserve sharing
   and cycles.
 
+## Evaluator
+
+`conduit-eval` runs Conduit IR directly, for testing frontends and passes.
+
+- **It only accepts verified IR.** It doesn't check types while running.
+  IR the verifier would reject gives an "invalid IR" error or a wrong
+  result, but never a crash.
+- **Control flow doesn't use Rust's stack.** The evaluator runs a loop over
+  an explicit stack of frames. Jumps, loops and `case` replace the current
+  term, calls push a frame, and tail calls and tail resumes reuse the
+  caller's frame. A deeply recursive program hits a frame limit, which is
+  an error.
+- **Handlers move frames.** `handle` pushes a handler frame. `perform`
+  moves the frames from the nearest handler of its effect up into the
+  continuation, and `resume` moves them back. A second `resume` finds the
+  frames gone, which is an error (rule 7).
+- **Objects know their mutability.** Every object that can be `Imm` or
+  `Mut` carries an "is mut" flag. A write to an `Imm` object is an error,
+  which can only happen if an optimization broke the mutability rules.
+  `Copy` uses the flag to share what's already at the target mutability.
+- **Numbers follow Rust for now.** Integers wrap, shift amounts are taken
+  modulo the width, and floats use Rust's operations and `as` conversions
+  (which saturate). Division and remainder by zero, and division of the
+  smallest integer by -1, are errors. The IR doesn't pin these cases down
+  yet, so the Wasm backend may differ on them.
+- **Undefined behavior is an error,** like `Unbox` at the wrong type.
+- **Objects are never freed** yet.
+
 ## Left out on purpose
 
 - **Generic code.** Frontends monomorphize, and erase to `Any` where that
@@ -741,9 +771,10 @@ Notes:
    the evidence-passing lowering, not with Wasm stack switching.
 4. Shallow handlers: needed for anything frontends want to express, or can
    deep handlers plus state cover it?
-5. Should objects carry a mutability bit at run time? `Copy` on a
-   `ReadOnly` value could then skip objects that are already `Imm`, instead
-   of copying everything. It costs a header bit per object.
+5. Should compiled objects carry a mutability bit at run time, as the
+   evaluator's do? `Copy` on a `ReadOnly` value could then skip objects
+   that are already `Imm`, instead of copying everything. It costs a
+   header bit per object.
 6. Should `Copy(Imm)` follow `Mut` closures instead of rejecting them? That
    needs a copy function per closure, stored next to its wrapper, and it
    would turn a closure's captured refs into snapshots.

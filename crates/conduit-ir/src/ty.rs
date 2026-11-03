@@ -37,6 +37,18 @@ impl Ty {
         }
     }
 
+    /// Whether a value of this type can be used where `other` is expected.
+    /// Only mutabilities can differ: `Imm` and `Mut` both fit `ReadOnly`.
+    pub fn is_subtype(&self, other: &Ty) -> bool {
+        match (self, other) {
+            (Ty::Data(d1, m1), Ty::Data(d2, m2)) => d1 == d2 && m1.is_sub(*m2),
+            (Ty::Array(e1, m1), Ty::Array(e2, m2)) => e1 == e2 && m1.is_sub(*m2),
+            (Ty::Fn(s1, m1), Ty::Fn(s2, m2)) => s1 == s2 && m1.is_sub(*m2),
+            (Ty::Any(m1), Ty::Any(m2)) => m1.is_sub(*m2),
+            _ => self == other,
+        }
+    }
+
     /// This type with mutability `m`, or the same type if it has no
     /// mutability of its own (scalars, `Cont`, `Ref`).
     pub fn with_mutability(&self, m: Mutability) -> Ty {

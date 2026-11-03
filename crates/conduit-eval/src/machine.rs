@@ -1,0 +1,748 @@
+use std::collections::HashMap;
+use std::rc::Rc;
+
+use conduit_ir::{
+    Atom, EffectId, Extern, ExternId, Func, FuncId, HandlerId, JoinDef, Label, Mutability, Op,
+    Program, SourceId, Tag, Term, Var,
+};
+
+use crate::error::{Error, ErrorKind, unverified};
+use crate::prim;
+use crate::value::{Continuation, ObjId, Object, Value};
+
+/// Provides the functions of [`Op::CallExtern`].
+pub trait Host {
+    fn call(&mut self, id: ExternId, decl: &Extern, args: &[Value]) -> Result<Vec<Value>, String>;
+}
+
+/// A host without functions: every extern call fails.
+pub struct NoHost;
+
+impl Host for NoHost {
+    fn call(&mut self, _: ExternId, decl: &Extern, _: &[Value]) -> Result<Vec<Value>, String> {
+        Err(format!("no host function {}.{}", decl.module, decl.name))
+    }
+}
+
+/// The join definitions of a function, by label.
+type Labels<'p> = Rc<[Option<&'p JoinDef>]>;
+
+#[derive(Debug)]
+pub(crate) enum Frame<'p> {
+    Code(Code<'p>),
+    /// Pushed by `handle`, below the frames of its body.
+    Handler {
+        handler: HandlerId,
+        env: Vec<Value>,
+    },
+}
+
+/// A running function.
+#[derive(Debug)]
+pub(crate) struct Code<'p> {
+    func: FuncId,
+    labels: Labels<'p>,
+    vars: Vec<Option<Value>>,
+    /// What runs next.
+    term: &'p Term,
+    /// The variables and body of a `let` that waits for a call, `perform`,
+    /// `resume` or `handle` to give its results.
+    waiting: Option<(&'p [Var], &'p Term)>,
+}
+
+type Step<T> = Result<T, ErrorKind>;
+
+/// Runs Conduit IR from a [`Program`].
+pub struct Machine<'p, P: ?Sized, H> {
+    p: &'p P,
+    pub host: H,
+    heap: Vec<Object<'p>>,
+    stack: Vec<Frame<'p>>,
+    labels: HashMap<FuncId, Labels<'p>>,
+    /// The most frames the stack can have, handler frames included.
+    pub max_frames: usize,
+    /// How many more steps the program can run, or `None` for no limit.
+    pub fuel: Option<u64>,
+    source: Option<SourceId>,
+}
+
+impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
+    pub fn new(p: &'p P, host: H) -> Self {
+        Machine {
+            p,
+            host,
+            heap: Vec::new(),
+            stack: Vec::new(),
+            labels: HashMap::new(),
+            max_frames: 100_000,
+            fuel: None,
+            source: None,
+        }
+    }
+
+    /// Calls a function and runs it to completion.
+    pub fn call(&mut self, func: FuncId, args: Vec<Value>) -> Result<Vec<Value>, Error> {
+        if !self.stack.is_empty() {
+            return Err(self.error(unverified("the machine is already running")));
+        }
+        self.source = None;
+        let result = self.enter(func, args).and_then(|()| self.run());
+        result.map_err(|kind| {
+            let error = self.error(kind);
+            self.stack.clear();
+            error
+        })
+    }
+
+    pub fn object(&self, id: ObjId) -> Option<&Object<'p>> {
+        self.heap.get(id.0 as usize)
+    }
+
+    /// Adds an object to the heap, for example to pass one to a function.
+    pub fn alloc(&mut self, object: Object<'p>) -> Value {
+        Value::Obj(self.alloc_id(object))
+    }
+
+    fn alloc_id(&mut self, object: Object<'p>) -> ObjId {
+        self.heap.push(object);
+        ObjId(self.heap.len() as u32 - 1)
+    }
+
+    fn error(&self, kind: ErrorKind) -> Error {
+        let func = self.stack.iter().rev().find_map(|frame| match frame {
+            Frame::Code(code) => Some(code.func),
+            Frame::Handler { .. } => None,
+        });
+        Error {
+            kind,
+            func,
+            source: self.source,
+        }
+    }
+
+    fn run(&mut self) -> Step<Vec<Value>> {
+        loop {
+            if let Some(fuel) = &mut self.fuel {
+                if *fuel == 0 {
+                    return Err(ErrorKind::OutOfFuel);
+                }
+                *fuel -= 1;
+            }
+            if let Some(results) = self.step()? {
+                return Ok(results);
+            }
+        }
+    }
+
+    /// Runs one term. Gives the results once the first function returns.
+    fn step(&mut self) -> Step<Option<Vec<Value>>> {
+        let term = self.code()?.term;
+        match term {
+            Term::Let {
+                binds,
+                op,
+                args,
+                body,
+                source,
+            } => {
+                self.source = *source;
+                let args = self.atoms(args)?;
+                self.op(op, args, binds, body)?;
+            }
+            // Join definitions are found through the function's labels.
+            Term::Join { body, .. } => self.code()?.term = body,
+            Term::Jump {
+                target,
+                args,
+                source,
+            } => {
+                self.source = *source;
+                let args = self.atoms(args)?;
+                if *target == Label::RET {
+                    return self.ret(args);
+                }
+                let code = self.code()?;
+                let def = code.labels.get(target.0 as usize).copied().flatten();
+                let def = def.ok_or_else(|| unverified(format!("{target} isn't defined")))?;
+                bind(code, &def.params, args)?;
+                code.term = &def.body;
+            }
+            Term::Case {
+                scrut,
+                arms,
+                default,
+            } => {
+                let tag = match self.atom(scrut)? {
+                    Value::I32(n) => Tag::Int(n.into()),
+                    Value::I64(n) => Tag::Int(n),
+                    Value::Obj(id) => match self.object_ref(id)? {
+                        Object::Data { ctor, .. } => Tag::Ctor(*ctor),
+                        _ => return Err(unverified("case on an object that isn't data")),
+                    },
+                    _ => return Err(unverified("case on a float")),
+                };
+                let arm = arms.iter().find(|arm| arm.tag == tag).map(|arm| &arm.body);
+                let next = arm.or(default.as_deref());
+                self.code()?.term = next.ok_or_else(|| unverified("no arm of a case matches"))?;
+            }
+            Term::Unreachable => return Err(ErrorKind::Unreachable),
+        }
+        Ok(None)
+    }
+
+    fn code(&mut self) -> Step<&mut Code<'p>> {
+        match self.stack.last_mut() {
+            Some(Frame::Code(code)) => Ok(code),
+            _ => Err(unverified("no code is running")),
+        }
+    }
+
+    fn code_ref(&self) -> Step<&Code<'p>> {
+        match self.stack.last() {
+            Some(Frame::Code(code)) => Ok(code),
+            _ => Err(unverified("no code is running")),
+        }
+    }
+
+    fn atom(&self, a: &Atom) -> Step<Value> {
+        match a {
+            Atom::Lit(lit) => Ok((*lit).into()),
+            Atom::Var(v) => {
+                let value = self.code_ref()?.vars.get(v.0 as usize).copied().flatten();
+                value.ok_or_else(|| unverified(format!("{v} has no value")))
+            }
+        }
+    }
+
+    fn atoms(&self, atoms: &[Atom]) -> Step<Vec<Value>> {
+        atoms.iter().map(|a| self.atom(a)).collect()
+    }
+
+    fn object_ref(&self, id: ObjId) -> Step<&Object<'p>> {
+        self.heap
+            .get(id.0 as usize)
+            .ok_or_else(|| unverified("dangling object"))
+    }
+
+    fn object_mut(&mut self, id: ObjId) -> Step<&mut Object<'p>> {
+        self.heap
+            .get_mut(id.0 as usize)
+            .ok_or_else(|| unverified("dangling object"))
+    }
+
+    /// Pushes a frame for a call.
+    fn enter(&mut self, func: FuncId, args: Vec<Value>) -> Step<()> {
+        let f = self
+            .p
+            .func(func)
+            .ok_or_else(|| unverified(format!("unknown function {func}")))?;
+        if self.stack.len() >= self.max_frames {
+            return Err(ErrorKind::StackOverflow);
+        }
+        let labels = self
+            .labels
+            .entry(func)
+            .or_insert_with(|| join_defs(f))
+            .clone();
+        let mut code = Code {
+            func,
+            labels,
+            vars: vec![None; f.vars.len()],
+            term: &f.body,
+            waiting: None,
+        };
+        bind(&mut code, &f.params, args)?;
+        self.stack.push(Frame::Code(code));
+        Ok(())
+    }
+
+    /// Returns from the running function.
+    fn ret(&mut self, results: Vec<Value>) -> Step<Option<Vec<Value>>> {
+        self.stack.pop();
+        match self.stack.pop() {
+            None => return Ok(Some(results)),
+            // The body of a `handle` returned: run the return clause, which
+            // returns to the `handle`.
+            Some(Frame::Handler { handler, mut env }) => {
+                let decl = self
+                    .p
+                    .handler(handler)
+                    .ok_or_else(|| unverified(format!("unknown handler {handler}")))?;
+                env.extend(results);
+                self.enter(decl.ret, env)?;
+            }
+            Some(frame @ Frame::Code(_)) => {
+                self.stack.push(frame);
+                self.deliver(results)?;
+            }
+        }
+        Ok(None)
+    }
+
+    /// Gives results to the `let` the running function waits on.
+    fn deliver(&mut self, results: Vec<Value>) -> Step<()> {
+        let code = self.code()?;
+        let (binds, next) = code
+            .waiting
+            .take()
+            .ok_or_else(|| unverified("results for code that doesn't wait"))?;
+        bind(code, binds, results)?;
+        code.term = next;
+        Ok(())
+    }
+
+    /// Calls a function from a `let`, replacing the running function if
+    /// the `let` only returns the results.
+    fn call_from(
+        &mut self,
+        func: FuncId,
+        args: Vec<Value>,
+        binds: &'p [Var],
+        body: &'p Term,
+    ) -> Step<()> {
+        self.wait_or_leave(binds, body)?;
+        self.enter(func, args)
+    }
+
+    /// Before control leaves the running function from a `let`: makes it
+    /// wait for the `let`'s results, or, if the `let` only returns them,
+    /// removes the function so the results go straight to its caller.
+    fn wait_or_leave(&mut self, binds: &'p [Var], body: &'p Term) -> Step<()> {
+        if is_tail(binds, body) {
+            self.stack.pop();
+        } else {
+            self.code()?.waiting = Some((binds, body));
+        }
+        Ok(())
+    }
+
+    /// Whether the variable an op binds is `Mut`, for ops that create an
+    /// object of the variable's mutability.
+    fn binds_mut(&self, binds: &[Var]) -> Step<bool> {
+        let code = self.code_ref()?;
+        let f = self
+            .p
+            .func(code.func)
+            .ok_or_else(|| unverified("unknown function"))?;
+        let ty = binds.first().and_then(|b| f.vars.get(b.0 as usize));
+        let ty = ty.ok_or_else(|| unverified("an op that creates an object binds nothing"))?;
+        Ok(ty.mutability() == Some(Mutability::Mut))
+    }
+
+    fn op(&mut self, op: &'p Op, args: Vec<Value>, binds: &'p [Var], body: &'p Term) -> Step<()> {
+        let results = match op {
+            Op::Prim(prim) => vec![prim::eval(prim, &args)?],
+            Op::Call(f) => return self.call_from(*f, args, binds, body),
+            Op::CallExtern(e) => {
+                let decl = self
+                    .p
+                    .extern_fn(*e)
+                    .ok_or_else(|| unverified(format!("unknown extern {e}")))?;
+                self.host.call(*e, decl, &args).map_err(ErrorKind::Host)?
+            }
+            Op::Closure(f) => {
+                let is_mut = self.binds_mut(binds)?;
+                vec![self.alloc(Object::Closure {
+                    func: *f,
+                    captures: args,
+                    is_mut,
+                })]
+            }
+            Op::Apply => {
+                let (closure, rest) = args
+                    .split_first()
+                    .ok_or_else(|| unverified("apply without a closure"))?;
+                let (func, mut all) = match self.object_ref(obj(*closure)?)? {
+                    Object::Closure { func, captures, .. } => (*func, captures.clone()),
+                    _ => return Err(unverified("apply of something that isn't a closure")),
+                };
+                all.extend_from_slice(rest);
+                return self.call_from(func, all, binds, body);
+            }
+            Op::New(c) => {
+                let is_mut = self.binds_mut(binds)?;
+                vec![self.alloc(Object::Data {
+                    ctor: *c,
+                    fields: args,
+                    is_mut,
+                })]
+            }
+            Op::Get(c, i) => match self.object_ref(obj(arg(&args, 0)?)?)? {
+                Object::Data { ctor, fields, .. } if ctor == c => {
+                    vec![
+                        *fields
+                            .get(*i as usize)
+                            .ok_or_else(|| unverified(format!("{c} has no field {i}")))?,
+                    ]
+                }
+                _ => {
+                    return Err(unverified(format!(
+                        "get of {c} on an object it didn't build"
+                    )));
+                }
+            },
+            Op::Set(c, i) => {
+                let value = arg(&args, 1)?;
+                match self.object_mut(obj(arg(&args, 0)?)?)? {
+                    Object::Data {
+                        ctor,
+                        fields,
+                        is_mut,
+                    } if ctor == c => {
+                        if !*is_mut {
+                            return Err(ErrorKind::WriteToImm);
+                        }
+                        let field = fields
+                            .get_mut(*i as usize)
+                            .ok_or_else(|| unverified(format!("{c} has no field {i}")))?;
+                        *field = value;
+                    }
+                    _ => {
+                        return Err(unverified(format!(
+                            "set of {c} on an object it didn't build"
+                        )));
+                    }
+                }
+                vec![]
+            }
+            Op::ArrayNew => {
+                let is_mut = self.binds_mut(binds)?;
+                vec![self.alloc(Object::Array {
+                    elems: args,
+                    is_mut,
+                })]
+            }
+            Op::ArrayFill => {
+                let (Value::I32(len), value) = (arg(&args, 0)?, arg(&args, 1)?) else {
+                    return Err(unverified("array fill needs a length"));
+                };
+                let is_mut = self.binds_mut(binds)?;
+                let len = len as u32 as usize;
+                vec![self.alloc(Object::Array {
+                    elems: vec![value; len],
+                    is_mut,
+                })]
+            }
+            Op::ArrayGet => {
+                let index = index(arg(&args, 1)?)?;
+                match self.object_ref(obj(arg(&args, 0)?)?)? {
+                    Object::Array { elems, .. } => vec![
+                        *elems
+                            .get(index)
+                            .ok_or_else(|| out_of_bounds(index, elems.len()))?,
+                    ],
+                    _ => return Err(unverified("array get on something that isn't an array")),
+                }
+            }
+            Op::ArraySet => {
+                let (index, value) = (index(arg(&args, 1)?)?, arg(&args, 2)?);
+                match self.object_mut(obj(arg(&args, 0)?)?)? {
+                    Object::Array { elems, is_mut } => {
+                        if !*is_mut {
+                            return Err(ErrorKind::WriteToImm);
+                        }
+                        let len = elems.len();
+                        *elems
+                            .get_mut(index)
+                            .ok_or_else(|| out_of_bounds(index, len))? = value;
+                    }
+                    _ => return Err(unverified("array set on something that isn't an array")),
+                }
+                vec![]
+            }
+            Op::ArrayLen => match self.object_ref(obj(arg(&args, 0)?)?)? {
+                Object::Array { elems, .. } => vec![Value::I32(elems.len() as i32)],
+                _ => return Err(unverified("array len on something that isn't an array")),
+            },
+            Op::RefNew => vec![self.alloc(Object::Ref(arg(&args, 0)?))],
+            Op::RefGet => match self.object_ref(obj(arg(&args, 0)?)?)? {
+                Object::Ref(value) => vec![*value],
+                _ => return Err(unverified("ref get on something that isn't a ref")),
+            },
+            Op::RefSet => {
+                let value = arg(&args, 1)?;
+                match self.object_mut(obj(arg(&args, 0)?)?)? {
+                    Object::Ref(slot) => *slot = value,
+                    _ => return Err(unverified("ref set on something that isn't a ref")),
+                }
+                vec![]
+            }
+            Op::Box(ty) => vec![self.alloc(Object::Any {
+                ty: ty.clone(),
+                value: arg(&args, 0)?,
+            })],
+            Op::Unbox(ty) => match self.object_ref(obj(arg(&args, 0)?)?)? {
+                Object::Any { ty: boxed, value } if boxed.is_subtype(ty) => vec![*value],
+                Object::Any { ty: boxed, .. } => {
+                    return Err(ErrorKind::Undefined(format!(
+                        "unbox of a {boxed} as a {ty}"
+                    )));
+                }
+                _ => return Err(unverified("unbox of something that isn't boxed")),
+            },
+            Op::Copy(m) => vec![self.copy(arg(&args, 0)?, *m == Mutability::Mut)?],
+            Op::Handle(h) => return self.handle(*h, args, binds, body),
+            Op::Perform(e, i) => return self.perform(*e, *i, args, binds, body),
+            Op::Resume => return self.resume(args, binds, body),
+        };
+        let code = self.code()?;
+        bind(code, binds, results)?;
+        code.term = body;
+        Ok(())
+    }
+
+    fn handle(
+        &mut self,
+        handler: HandlerId,
+        mut args: Vec<Value>,
+        binds: &'p [Var],
+        body: &'p Term,
+    ) -> Step<()> {
+        let closure = args
+            .pop()
+            .ok_or_else(|| unverified("handle without a body"))?;
+        let (func, captures) = match self.object_ref(obj(closure)?)? {
+            Object::Closure { func, captures, .. } => (*func, captures.clone()),
+            _ => return Err(unverified("the body of a handle isn't a closure")),
+        };
+        self.code()?.waiting = Some((binds, body));
+        self.stack.push(Frame::Handler { handler, env: args });
+        self.enter(func, captures)
+    }
+
+    fn perform(
+        &mut self,
+        effect: EffectId,
+        op: u32,
+        args: Vec<Value>,
+        binds: &'p [Var],
+        body: &'p Term,
+    ) -> Step<()> {
+        let p = self.p;
+        let handles = |frame: &Frame| match frame {
+            Frame::Handler { handler, .. } => {
+                p.handler(*handler).is_some_and(|d| d.effect == effect)
+            }
+            Frame::Code(_) => false,
+        };
+        let at = self
+            .stack
+            .iter()
+            .rposition(handles)
+            .ok_or(ErrorKind::Unhandled(effect))?;
+        self.code()?.waiting = Some((binds, body));
+        // The continuation is the handler's frame and everything above it,
+        // so that the resumed computation is handled again.
+        let frames = self.stack.split_off(at);
+        let Some(Frame::Handler { handler, env }) = frames.first() else {
+            return Err(unverified("no handler frame"));
+        };
+        let decl = p
+            .handler(*handler)
+            .ok_or_else(|| unverified(format!("unknown handler {handler}")))?;
+        let clause = *decl
+            .ops
+            .get(op as usize)
+            .ok_or_else(|| unverified(format!("{handler} has no clause {op}")))?;
+        let mut clause_args = env.clone();
+        clause_args.extend(args);
+        clause_args.push(self.alloc(Object::Cont(Continuation {
+            frames: Some(frames),
+        })));
+        // The clause returns to the `handle`.
+        self.enter(clause, clause_args)
+    }
+
+    fn resume(&mut self, args: Vec<Value>, binds: &'p [Var], body: &'p Term) -> Step<()> {
+        let (k, values) = args
+            .split_first()
+            .ok_or_else(|| unverified("resume without a continuation"))?;
+        let frames = match self.object_mut(obj(*k)?)? {
+            Object::Cont(cont) => cont
+                .frames
+                .take()
+                .ok_or(ErrorKind::ContinuationResumedTwice)?,
+            _ => return Err(unverified("resume of something that isn't a continuation")),
+        };
+        // The resumed computation returns, through the handler's return
+        // clause, to this `let`.
+        self.wait_or_leave(binds, body)?;
+        if self.stack.len() + frames.len() > self.max_frames {
+            return Err(ErrorKind::StackOverflow);
+        }
+        self.stack.extend(frames);
+        self.deliver(values.to_vec())
+    }
+
+    /// `Copy`: copies every object of the other mutability that the value
+    /// reaches through fields that inherit their object's mutability and
+    /// through array elements, and shares the rest. Each object is copied
+    /// once, so sharing and cycles stay the same.
+    fn copy(&mut self, value: Value, to_mut: bool) -> Step<Value> {
+        let mut copies = HashMap::new();
+        let mut todo = Vec::new();
+        let root = self.copy_one(value, to_mut, &mut copies, &mut todo)?;
+        // Copied objects still point at the originals' children until their
+        // turn here.
+        while let Some(id) = todo.pop() {
+            let (values, follow): (Vec<Value>, Vec<bool>) = match self.object_ref(id)? {
+                Object::Data { ctor, fields, .. } => {
+                    let decl = self
+                        .p
+                        .data(ctor.data)
+                        .ok_or_else(|| unverified(format!("unknown data type {}", ctor.data)))?;
+                    let tys = &decl
+                        .ctors
+                        .get(ctor.index as usize)
+                        .ok_or_else(|| unverified("unknown constructor"))?
+                        .fields;
+                    if tys.len() != fields.len() {
+                        return Err(unverified(format!("{ctor} has the wrong number of fields")));
+                    }
+                    let follow = tys
+                        .iter()
+                        .map(|ty| ty.mutability() == Some(Mutability::Inherit))
+                        .collect();
+                    (fields.clone(), follow)
+                }
+                Object::Array { elems, .. } => (elems.clone(), vec![true; elems.len()]),
+                _ => continue,
+            };
+            let mut copied = Vec::with_capacity(values.len());
+            for (value, follow) in values.into_iter().zip(follow) {
+                copied.push(if follow {
+                    self.copy_one(value, to_mut, &mut copies, &mut todo)?
+                } else {
+                    value
+                });
+            }
+            match self.object_mut(id)? {
+                Object::Data { fields, .. } => *fields = copied,
+                Object::Array { elems, .. } => *elems = copied,
+                _ => {}
+            }
+        }
+        Ok(root)
+    }
+
+    /// The copy of one value: a new object if it has the other mutability,
+    /// otherwise the value itself.
+    fn copy_one(
+        &mut self,
+        value: Value,
+        to_mut: bool,
+        copies: &mut HashMap<ObjId, ObjId>,
+        todo: &mut Vec<ObjId>,
+    ) -> Step<Value> {
+        let Value::Obj(id) = value else {
+            return Ok(value);
+        };
+        if let Some(&copy) = copies.get(&id) {
+            return Ok(Value::Obj(copy));
+        }
+        let copy = match self.object_ref(id)? {
+            Object::Data {
+                ctor,
+                fields,
+                is_mut,
+            } if *is_mut != to_mut => Object::Data {
+                ctor: *ctor,
+                fields: fields.clone(),
+                is_mut: to_mut,
+            },
+            Object::Array { elems, is_mut } if *is_mut != to_mut => Object::Array {
+                elems: elems.clone(),
+                is_mut: to_mut,
+            },
+            _ => return Ok(value),
+        };
+        let copy = self.alloc_id(copy);
+        copies.insert(id, copy);
+        todo.push(copy);
+        Ok(Value::Obj(copy))
+    }
+}
+
+fn bind(code: &mut Code, vars: &[Var], values: Vec<Value>) -> Step<()> {
+    if vars.len() != values.len() {
+        return Err(unverified(format!(
+            "{} values for {} variables",
+            values.len(),
+            vars.len()
+        )));
+    }
+    for (var, value) in vars.iter().zip(values) {
+        let slot = code
+            .vars
+            .get_mut(var.0 as usize)
+            .ok_or_else(|| unverified(format!("{var} has no type")))?;
+        *slot = Some(value);
+    }
+    Ok(())
+}
+
+/// Whether a `let`'s body only returns what the `let` binds.
+fn is_tail(binds: &[Var], body: &Term) -> bool {
+    match body {
+        Term::Jump {
+            target: Label::RET,
+            args,
+            ..
+        } => args.len() == binds.len() && args.iter().zip(binds).all(|(a, b)| *a == Atom::Var(*b)),
+        _ => false,
+    }
+}
+
+fn arg(args: &[Value], i: usize) -> Step<Value> {
+    args.get(i)
+        .copied()
+        .ok_or_else(|| unverified(format!("missing argument {i}")))
+}
+
+fn obj(value: Value) -> Step<ObjId> {
+    match value {
+        Value::Obj(id) => Ok(id),
+        _ => Err(unverified("a scalar where an object is expected")),
+    }
+}
+
+fn index(value: Value) -> Step<usize> {
+    match value {
+        // Indices are unsigned, as in Wasm.
+        Value::I32(i) => Ok(i as u32 as usize),
+        _ => Err(unverified("an index that isn't an i32")),
+    }
+}
+
+fn out_of_bounds(index: usize, len: usize) -> ErrorKind {
+    ErrorKind::OutOfBounds {
+        index: index as u64,
+        len: len as u64,
+    }
+}
+
+/// Finds every join definition of a function, without recursion.
+fn join_defs(f: &Func) -> Labels<'_> {
+    let mut table = vec![None; f.labels as usize];
+    let mut todo = vec![&f.body];
+    while let Some(term) = todo.pop() {
+        match term {
+            Term::Let { body, .. } => todo.push(body),
+            Term::Join { defs, body, .. } => {
+                for def in defs {
+                    if let Some(slot) = table.get_mut(def.label.0 as usize) {
+                        *slot = Some(def);
+                    }
+                    todo.push(&def.body);
+                }
+                todo.push(body);
+            }
+            Term::Case { arms, default, .. } => {
+                todo.extend(arms.iter().map(|arm| &arm.body));
+                todo.extend(default.as_deref());
+            }
+            Term::Jump { .. } | Term::Unreachable => {}
+        }
+    }
+    table.into()
+}
