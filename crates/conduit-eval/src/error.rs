@@ -18,6 +18,8 @@ pub enum ErrorKind {
     DivideByZero,
     /// Division of the smallest integer by -1.
     IntegerOverflow,
+    /// A float converted to an integer that is NaN or out of its range.
+    InvalidConversion,
     /// An array index, or a length for `ArrayFill`, that's out of range.
     OutOfBounds { index: u64, len: u64 },
     /// `unreachable` was reached.
@@ -53,6 +55,9 @@ impl fmt::Display for Error {
         match &self.kind {
             ErrorKind::DivideByZero => write!(f, "division by zero"),
             ErrorKind::IntegerOverflow => write!(f, "integer overflow in division"),
+            ErrorKind::InvalidConversion => {
+                write!(f, "a float converted to an integer is NaN or out of range")
+            }
             ErrorKind::OutOfBounds { index, len } => {
                 write!(f, "index {index} is out of bounds for length {len}")
             }

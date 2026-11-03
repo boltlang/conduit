@@ -837,11 +837,12 @@ doesn't need a deep stack.
   `Copy` uses the flag to share what's already at the target mutability,
   and `Freeze` clears it, so a write through an alias that a wrong
   `Freeze` left behind is an error too.
-- **Numbers follow Rust for now.** Integers wrap, shift amounts are taken
-  modulo the width, and floats use Rust's operations and `as` conversions
-  (which saturate). Division and remainder by zero, and division of the
-  smallest integer by -1, are errors. The IR doesn't pin these cases down
-  yet, so the Wasm backend may differ on them.
+- **Numbers follow Wasm.** Integers wrap, shift amounts are taken modulo
+  the width, and `min` and `max` give NaN if either operand is NaN and
+  treat `-0.0` as less than `0.0`. Division and remainder by zero,
+  division of the smallest integer by -1, and converting a float that is
+  NaN or out of range to an integer are errors, where Wasm traps. The test
+  programs in `tests/programs/prims` check that the two agree.
 - **Undefined behavior is an error,** like `Unbox` at the wrong type.
 - **Objects are never freed** yet.
 

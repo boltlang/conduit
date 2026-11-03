@@ -97,8 +97,8 @@ macro_rules! float_binary {
                 Prim::Sub => x - y,
                 Prim::Mul => x * y,
                 Prim::Div(_) => x / y,
-                Prim::Min => x.min(y),
-                Prim::Max => x.max(y),
+                Prim::Min => wasm_min(x, y),
+                Prim::Max => -wasm_min(-x, -y),
                 Prim::Eq => return bool(x == y),
                 Prim::Ne => return bool(x != y),
                 Prim::Lt(_) => return bool(x < y),
@@ -111,6 +111,44 @@ macro_rules! float_binary {
         }
     };
 }
+
+/// The smaller of two floats as Wasm's `min` gives it, unlike Rust's: NaN
+/// if either is NaN, and `-0.0` is smaller than `0.0`.
+fn wasm_min<F: Float>(x: F, y: F) -> F {
+    if x.is_nan() || y.is_nan() {
+        F::NAN
+    } else if x == y {
+        // Equal but different only for zeros: the negative one is smaller.
+        if x.is_sign_negative() { x } else { y }
+    } else if x < y {
+        x
+    } else {
+        y
+    }
+}
+
+trait Float: Copy + PartialOrd + std::ops::Neg<Output = Self> {
+    const NAN: Self;
+    fn is_nan(self) -> bool;
+    fn is_sign_negative(self) -> bool;
+}
+
+macro_rules! float {
+    ($f:ty) => {
+        impl Float for $f {
+            const NAN: Self = <$f>::NAN;
+            fn is_nan(self) -> bool {
+                <$f>::is_nan(self)
+            }
+            fn is_sign_negative(self) -> bool {
+                <$f>::is_sign_negative(self)
+            }
+        }
+    };
+}
+
+float!(f32);
+float!(f64);
 
 float_binary!(float32, f32, F32);
 float_binary!(float64, f64, F64);
@@ -132,7 +170,7 @@ fn unary(prim: &Prim, a: Value) -> Result<Value, ErrorKind> {
                 _ => Err(mismatch(prim)),
             }
         }
-        Prim::Convert(to, sign) => convert(a, to, *sign).ok_or_else(|| mismatch(prim)),
+        Prim::Convert(to, sign) => convert(a, to, *sign)?.ok_or_else(|| mismatch(prim)),
         Prim::Reinterpret(to) => match (a, to) {
             (Value::I32(x), Ty::F32) => Ok(Value::F32(f32::from_bits(x as u32))),
             (Value::F32(x), Ty::I32) => Ok(Value::I32(x.to_bits() as i32)),
@@ -145,10 +183,31 @@ fn unary(prim: &Prim, a: Value) -> Result<Value, ErrorKind> {
 }
 
 /// Converts by value. `sign` says how to read an integer argument, or how
-/// to make an integer result from a float.
-fn convert(a: Value, to: &Ty, sign: Sign) -> Option<Value> {
+/// to make an integer result from a float. A float that is NaN or out of
+/// the integer's range after truncating is an error, as in Wasm. `None`
+/// for types it doesn't convert between.
+fn convert(a: Value, to: &Ty, sign: Sign) -> Result<Option<Value>, ErrorKind> {
     let signed = sign == Sign::Signed;
-    Some(match (a, to) {
+    let float = match a {
+        Value::F32(x) => Some(x as f64),
+        Value::F64(x) => Some(x),
+        _ => None,
+    };
+    if let (Some(x), Ty::I32 | Ty::I64) = (float, to) {
+        let bits = if *to == Ty::I32 { 32 } else { 64 };
+        // The range of the integer, as `low <= t < high`: powers of two,
+        // so exact as floats.
+        let (low, high) = if signed {
+            (-(2f64.powi(bits - 1)), 2f64.powi(bits - 1))
+        } else {
+            (0.0, 2f64.powi(bits))
+        };
+        let t = x.trunc();
+        if !(low <= t && t < high) {
+            return Err(ErrorKind::InvalidConversion);
+        }
+    }
+    Ok(Some(match (a, to) {
         (Value::I32(x), Ty::I32) => Value::I32(x),
         (Value::I32(x), Ty::I64) => Value::I64(if signed { x as i64 } else { x as u32 as i64 }),
         (Value::I32(x), Ty::F32) => Value::F32(if signed { x as f32 } else { x as u32 as f32 }),
@@ -165,6 +224,6 @@ fn convert(a: Value, to: &Ty, sign: Sign) -> Option<Value> {
         (Value::F64(x), Ty::I64) => Value::I64(if signed { x as i64 } else { x as u64 as i64 }),
         (Value::F64(x), Ty::F32) => Value::F32(x as f32),
         (Value::F64(x), Ty::F64) => Value::F64(x),
-        _ => return None,
-    })
+        _ => return Ok(None),
+    }))
 }

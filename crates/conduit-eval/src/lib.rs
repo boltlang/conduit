@@ -18,9 +18,11 @@
 //!   is an error ([`ErrorKind::WriteToImm`]) rather than going unnoticed.
 //! - **Numbers** follow Rust for now: integers wrap, shifts take the amount
 //!   modulo the width, and floats use Rust's operations and `as`
-//!   conversions. Integer division and remainder by zero, and division of
-//!   the smallest integer by -1, are errors. The IR doesn't define these
-//!   cases precisely yet.
+//!   conversions, except that `min` and `max` follow Wasm (NaN if either
+//!   is NaN, and `-0.0` is less than `0.0`). Integer division and
+//!   remainder by zero, division of the smallest integer by -1, and
+//!   converting a float that's NaN or out of range to an integer are
+//!   errors, as they trap in Wasm.
 //! - **Undefined behavior** of the IR, like `Unbox` at a type the value
 //!   wasn't boxed at, is an [`ErrorKind::Undefined`] error.
 
