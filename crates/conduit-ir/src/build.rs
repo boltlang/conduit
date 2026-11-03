@@ -436,11 +436,13 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
 
     /// Like `emit`, for an op that gives one value.
     fn emit1(&mut self, op: Op, args: Vec<Atom>, out: Option<Ty>) -> Var {
+        let before = self.errors.len();
         let binds = self.emit(op, args, out.map(|ty| vec![ty]));
         match binds[..] {
             [one] => one,
             _ => {
-                if self.errors.is_empty() {
+                // Unless the op itself was already reported.
+                if self.errors.len() == before {
                     self.error(format!("the op gives {} values, not one", binds.len()));
                 }
                 self.func.new_var(Ty::I32)

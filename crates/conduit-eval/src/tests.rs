@@ -678,6 +678,16 @@ fn host_functions() {
         Machine::new(&m, Doubler).call(MAIN, vec![]),
         Ok(vec![Value::I32(42)])
     );
+    // `NoHost` has no functions, so the call fails and says which.
+    let error = Machine::new(&m, NoHost).call(MAIN, vec![]).unwrap_err();
+    assert_eq!(
+        error.kind,
+        ErrorKind::Host("no host function env.double".into())
+    );
+    assert_eq!(
+        error.to_string(),
+        "fn1: host function failed: no host function env.double"
+    );
 }
 
 const YIELD: EffectId = EffectId(20);

@@ -116,6 +116,9 @@ pub(super) fn lex(src: &str) -> Result<Vec<(Tok, Pos)>, Error> {
                             Some('\\') => '\\',
                             Some('n') => '\n',
                             Some('t') => '\t',
+                            None | Some('\n') => {
+                                return Err(err(pos, "unterminated string".into()));
+                            }
                             _ => return Err(err(pos, "unknown escape in a string".into())),
                         };
                         s.push(escaped);

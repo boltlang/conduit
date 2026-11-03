@@ -439,3 +439,151 @@ fn finish_verified_runs_the_verifier() {
     let errors = f.finish_verified(F).unwrap_err();
     assert_eq!(errors[0].message, "jump to j1, which isn't in scope");
 }
+
+const DECLS: &str = "
+data data0 {
+  (i32)
+}
+
+extern extern1 \"env\" \"two\" (i32) -> (i32, i32)
+extern extern2 \"env\" \"one\" (i32) -> (i32)
+
+effect effect20 {
+  (i32) -> (i64)
+}
+
+fn fn1(%0: i32) -> (i32, i32) {
+  jump ret(%0, %0)
+}
+";
+
+/// The ops `objects` doesn't build, and each kind of atom.
+#[test]
+fn other_ops() {
+    let cell = CtorId {
+        data: DataId(0),
+        index: 0,
+    };
+    let k_ty = Ty::Cont(Box::new(Sig {
+        params: vec![Ty::I64],
+        results: vec![I32],
+    }));
+    let params = vec![I32, k_ty.clone()];
+    let m = module(DECLS, params.clone(), vec![I32]);
+    let mut f = FuncBuilder::new(&m, params, vec![I32]);
+    let (x, k) = (f.param(0), f.param(1));
+    assert_eq!(f.var_ty(k), Some(&k_ty));
+    let wide = f.convert(Ty::I64, Sign::Unsigned, x);
+    let bits = f.reinterpret(Ty::F64, wide);
+    let half = f.mul(bits, 0.5f64);
+    let small = f.convert(Ty::F32, Sign::Signed, half);
+    let _ = f.add(small, 1.5f32);
+    let two = f.call(FuncId(1), vec![x]);
+    let from_host = f.call_extern(ExternId(1), &[two[0]][..]);
+    let one = f.call_extern1(ExternId(2), [from_host[1]]);
+    let lits = f.array_new(I32, Mutability::Imm, [Lit::I32(1), Lit::I32(2)]);
+    let first = f.array_get(lits, 0i32);
+    let r = f.ref_new(first);
+    f.ref_set(r, one);
+    let obj = f.new_object(cell, Mutability::Mut, [x]);
+    let copied = f.copy(Mutability::Imm, obj);
+    let frozen = f.freeze(obj);
+    let _ = f.get(cell, 0, copied);
+    let _ = f.get(cell, 0, frozen);
+    let got = f.perform(EffectId(20), 0, [x]);
+    let resumed = f.resume(k, [got[0]]);
+    let start = f.current();
+    let j = f.join(&[I32]);
+    assert_eq!(j.params(), [j.param(0)]);
+    assert_eq!(j.label(), Label(1));
+    assert!(f.is_ended(start));
+    let case = f.case(resumed[0]);
+    f.arms(case, [7]);
+    f.jump(&j, [resumed[0]]);
+    f.default(case);
+    f.unreachable();
+    f.switch_to(j.block());
+    f.ret([j.param(0)]);
+    assert_eq!(
+        text(f),
+        "fn fn0(%0: i32, %1: cont(i64) -> (i32)) -> (i32) {
+  let %2: i64 = convert.u[i64](%0)
+  let %3: f64 = reinterpret[f64](%2)
+  let %4: f64 = mul(%3, 0.5f64)
+  let %5: f32 = convert.s[f32](%4)
+  let %6: f32 = add(%5, 1.5f32)
+  let %7: i32, %8: i32 = call fn1(%0)
+  let %9: i32, %10: i32 = call_extern extern1(%7)
+  let %11: i32 = call_extern extern2(%10)
+  let %12: imm [i32] = array_new(1i32, 2i32)
+  let %13: i32 = array_get(%12, 0i32)
+  let %14: ref i32 = ref_new(%13)
+  let = ref_set(%14, %11)
+  let %15: mut data0 = new data0.0(%0)
+  let %16: imm data0 = copy[imm](%15)
+  let %17: imm data0 = freeze(%15)
+  let %18: i32 = get data0.0.0(%16)
+  let %19: i32 = get data0.0.0(%17)
+  let %20: i64 = perform effect20.0(%0)
+  let %21: i32 = resume(%1, %20)
+  join j1(%22: i32) = jump ret(%22)
+  in
+  case %21 {
+    7 => jump j1(%21)
+    _ => unreachable
+  }
+}"
+    );
+}
+
+#[test]
+fn reports_misuse() {
+    let m = module(DECLS, vec![I32], vec![I32]);
+    let mut f = FuncBuilder::new(&m, vec![I32], vec![I32]);
+    let [x] = f.params();
+    let nowhere = Var(99);
+    f.add(nowhere, 1i32);
+    f.op_as(Op::Prim(Prim::Add), [x, x], vec![Ty::I64]);
+    f.call1(FuncId(1), [x]);
+    f.closure(FuncId(99), Mutability::Imm, ());
+    let on_float = f.case(1.5f64);
+    f.default(on_float);
+    let on_nothing = f.case(nowhere);
+    f.default(on_nothing);
+    f.ret([x]);
+    f.default(on_nothing);
+    f.ret([x]);
+    let cell = Ty::Data(DataId(0), Mutability::Imm);
+    let mut g = FuncBuilder::new(&m, vec![cell], vec![I32]);
+    let [c] = g.params();
+    let on_cell = g.case(c);
+    g.arm(on_cell, CONS);
+    g.ret([1i32]);
+    assert_eq!(
+        messages(f),
+        [
+            "an argument is a variable this builder didn't make",
+            "the op gives (i32), which doesn't fit (i64)",
+            "the op gives 2 values, not one",
+            "unknown function fn99",
+            "can't branch on a value of type f64",
+            "the case is on a variable this builder didn't make",
+            "the case on %99 already has a default arm",
+        ]
+    );
+    assert_eq!(
+        messages(g),
+        [
+            "data0.1 isn't a constructor of data0",
+            "the case on %0 has no default arm and doesn't cover every value",
+        ]
+    );
+}
+
+#[test]
+#[should_panic(expected = "the function has 1 parameters, not 2")]
+fn params_panics_on_the_wrong_count() {
+    let m = module("", vec![I32], vec![]);
+    let f = FuncBuilder::new(&m, vec![I32], vec![]);
+    let [_, _] = f.params();
+}

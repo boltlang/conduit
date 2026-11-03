@@ -243,3 +243,177 @@ fn long_functions_dont_need_a_deep_stack() {
     assert_eq!(m.clone(), m);
     drop(m);
 }
+
+/// Every kind of mistake the parser reports, with where it is.
+#[test]
+fn parse_errors() {
+    let cases: &[(&str, &str)] = &[
+        (
+            "frob",
+            "1:1: expected `data`, `extern`, `effect`, `handler` or `fn`, found `frob`",
+        ),
+        (
+            "fn",
+            "1:3: expected an ID like `fn1`, found the end of the text",
+        ),
+        ("fn fn1", "1:7: expected `(`, found the end of the text"),
+        (
+            "fn fnx() -> () { jump ret() }",
+            "1:4: expected an ID like `fn1`, found `fnx`",
+        ),
+        (
+            "fn fn1() -> () { jump ret() }\ndata data1 { }\ndata data1 { }",
+            "3:1: data1 is defined more than once",
+        ),
+        (
+            "extern extern1 \"a\" \"b\" () -> ()\nextern extern1 \"a\" \"b\" () -> ()",
+            "2:1: extern1 is defined more than once",
+        ),
+        (
+            "effect effect1 { }\neffect effect1 { }",
+            "2:1: effect1 is defined more than once",
+        ),
+        (
+            "handler handler1 for effect1 env() ops() ret fn1\nhandler handler1 for effect1 env() ops() ret fn1",
+            "2:1: handler1 is defined more than once",
+        ),
+        (
+            "extern extern1 a \"b\" () -> ()",
+            "1:16: expected a string, found `a`",
+        ),
+        (
+            "extern extern1 \"a\" \"b\" (wat) -> ()",
+            "1:25: expected a type, found `wat`",
+        ),
+        (
+            "data data1 { (imm) }",
+            "1:18: expected an ID like `data1`, found `)`",
+        ),
+        (
+            "data data1 { (frob data2) }",
+            "1:15: expected a type, found `frob`",
+        ),
+        (
+            "fn fn1(0: i32) -> () { jump ret() }",
+            "1:8: expected a variable, found `0`",
+        ),
+        (
+            "fn fn1() -> () { join ret() = jump ret() in jump ret() }",
+            "1:23: `ret` can't be defined",
+        ),
+        (
+            "fn fn1(%0: i32) -> () { case %0 { 99999999999999999999 => jump ret() _ => jump ret() } }",
+            "1:35: `99999999999999999999` isn't a tag",
+        ),
+        (
+            "fn fn1(%0: i32) -> () { case %0 { _ => jump ret() _ => jump ret() } }",
+            "1:51: a case has one `_` arm at most",
+        ),
+        (
+            "fn fn1() -> () { frob }",
+            "1:18: expected `let`, `join`, `jump`, `case` or `unreachable`, found `frob`",
+        ),
+        (
+            "fn fn1() -> () { jump ret(=) }",
+            "1:27: expected a variable or a literal, found `=`",
+        ),
+        (
+            "fn fn1() -> () { jump ret(f32_bits(99999999999)) }",
+            "1:27: bad bits for `f32_bits`",
+        ),
+        (
+            "fn fn1() -> () { jump ret(f32_bits(x)) }",
+            "1:27: bad bits for `f32_bits`",
+        ),
+        (
+            "fn fn1() -> () { jump ret(frob) }",
+            "1:27: expected a variable or a literal, found `frob`",
+        ),
+        (
+            "fn fn1() -> () { let %0: i32 = add.x(1i32, 1i32) jump ret() }",
+            "1:36: expected `s` or `u`, found `x`",
+        ),
+        (
+            "fn fn1() -> () { let %0: i32 = add.s(1i32, 1i32) jump ret() }",
+            "1:32: `add` has no signed or unsigned form",
+        ),
+        (
+            "fn fn1() -> () { let %0: f32 = reinterpret.s[f32](1i32) jump ret() }",
+            "1:32: `reinterpret` has no signed or unsigned form",
+        ),
+        (
+            "fn fn1() -> () { let %0: f32 = convert[f32](1i32) jump ret() }",
+            "1:32: `convert` needs `.s` or `.u`, like `convert.s`",
+        ),
+        (
+            "fn fn1() -> () { let %0: i32 = get data1.x.0(1i32) jump ret() }",
+            "1:42: expected a number, found `x`",
+        ),
+        (
+            "fn fn1() -> () { let %0: i32 = add(1i32, 1i32) @foo jump ret() }",
+            "1:49: expected an ID like `src1`, found `foo`",
+        ),
+        (
+            "fn fn1() -> () { jump ret(1i32 }",
+            "1:32: expected `,` or `)`, found `}`",
+        ),
+        (
+            "fn fn1() -> () labels x { jump ret() }",
+            "1:23: expected a number, found `x`",
+        ),
+        (
+            "extern extern1 \"a\\q\" \"b\" () -> ()",
+            "1:16: unknown escape in a string",
+        ),
+        ("extern extern1 \"a", "1:16: unterminated string"),
+        ("extern extern1 \"a\\", "1:16: unterminated string"),
+        (
+            "fn fn1(%x: i32) -> () { jump ret() }",
+            "1:8: expected a variable number after `%`",
+        ),
+        (
+            "fn fn1() -> () { jump ret() } $",
+            "1:31: unexpected character `$`",
+        ),
+        (
+            "fn fn1() -> (i32) { jump ret(1x32) }",
+            "1:30: `1` isn't a literal: it needs a type, like `1i32`",
+        ),
+        (
+            "fn fn1() -> () { let %0: i32 = copy[frob](1i32) jump ret() }",
+            "1:37: expected `imm`, `mut`, `ro` or `inherit`, found `frob`",
+        ),
+    ];
+    for (src, expected) in cases {
+        assert_eq!(error(src), *expected, "for {src:?}");
+    }
+}
+
+/// Escapes in strings print back as they were written.
+#[test]
+fn string_escapes_round_trip() {
+    let src = "extern extern1 \"a\\\\b\\n\\t\\\"\" \"x\" () -> ()\n";
+    let m = parse(src).unwrap();
+    assert_eq!(&*m.externs[&ExternId(1)].module, "a\\b\n\t\"");
+    assert_eq!(print(&m), src);
+    assert_eq!(m.to_string(), src);
+}
+
+/// A variable without a type, which only broken IR has, prints as
+/// `%n: ?`, so that it doesn't read back as something valid.
+#[test]
+fn broken_ir_prints_without_reading_back() {
+    let mut f = Func::new(vec![], vec![]);
+    f.body = Block {
+        lets: vec![Let {
+            binds: vec![Var(3)],
+            op: Op::Prim(Prim::Add),
+            args: vec![],
+            source: None,
+        }],
+        tail: Tail::Unreachable,
+    };
+    let text = print_func(FuncId(1), &f);
+    assert!(text.contains("%3: ?"), "{text}");
+    assert!(parse(&text).is_err());
+}

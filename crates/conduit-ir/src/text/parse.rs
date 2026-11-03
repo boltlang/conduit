@@ -167,7 +167,9 @@ impl Parser {
             if self.eat_punct(")") {
                 return Ok(items);
             }
-            self.punct(",")?;
+            if !self.eat_punct(",") {
+                return self.unexpected("`,` or `)`");
+            }
         }
     }
 
