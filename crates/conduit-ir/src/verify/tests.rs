@@ -696,3 +696,123 @@ fn call_of_a_broken_function_is_an_error() {
         "{errors:?}"
     );
 }
+
+/// A closure of G, which resumes the continuation it captured.
+fn closure_resuming(m: &mut Module, k_ty: Ty) {
+    let mut g = Func::new(vec![k_ty], vec![]);
+    let k = g.params[0];
+    g.body = resume(k, ret(vec![]));
+    m.funcs.insert(G, g);
+}
+
+#[test]
+fn continuation_used_through_a_closure_is_left_to_run_time() {
+    // The clause captures k in a closure and applies it twice. The
+    // verifier only sees the capture, so it accepts this: resuming k the
+    // second time traps at run time instead.
+    let k_ty = Ty::Cont(Box::new(unit_sig()));
+    let closure_ty = Ty::Fn(Box::new(unit_sig()), Mut);
+    let mut m = handler_module(|f, k| {
+        let c = f.new_var(closure_ty);
+        let_(
+            vec![c],
+            Op::Closure(G),
+            vec![v(k)],
+            let_(
+                vec![],
+                Op::Apply,
+                vec![v(c)],
+                let_(vec![], Op::Apply, vec![v(c)], ret(vec![])),
+            ),
+        )
+    });
+    closure_resuming(&mut m, k_ty);
+    assert_eq!(verify(&m), Vec::<String>::new());
+}
+
+#[test]
+fn continuation_captured_and_resumed_counts_twice() {
+    let k_ty = Ty::Cont(Box::new(unit_sig()));
+    let closure_ty = Ty::Fn(Box::new(unit_sig()), Mut);
+    let mut m = handler_module(|f, k| {
+        let c = f.new_var(closure_ty);
+        let_(vec![c], Op::Closure(G), vec![v(k)], resume(k, ret(vec![])))
+    });
+    closure_resuming(&mut m, k_ty);
+    let errors = verify(&m);
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("may be used more than once")),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn branches_on_the_same_condition_are_rejected() {
+    // join rest() = case 0 { 0 => resume(k); ret(), _ => ret() }
+    // in case 0 { 1 => resume(k); jump rest(), _ => jump rest() }
+    //
+    // Every run resumes k once, but the verifier doesn't know that both
+    // cases test the same value, so it sees a path with two uses.
+    let m = handler_module(|f, k| {
+        let rest = f.new_label();
+        let second = Term::Case {
+            scrut: int(0),
+            arms: vec![Arm {
+                tag: Tag::Int(0),
+                body: resume(k, ret(vec![])),
+            }],
+            default: Some(Box::new(ret(vec![]))),
+        };
+        let first = Term::Case {
+            scrut: int(0),
+            arms: vec![Arm {
+                tag: Tag::Int(1),
+                body: resume(k, jump(rest, vec![])),
+            }],
+            default: Some(Box::new(jump(rest, vec![]))),
+        };
+        Term::Join {
+            rec: false,
+            defs: vec![JoinDef {
+                label: rest,
+                params: vec![],
+                body: second,
+            }],
+            body: Box::new(first),
+        }
+    });
+    let errors = verify(&m);
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("may be used more than once")),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn branches_through_a_join_point_are_counted_per_path() {
+    // join j() = resume(k); ret() in case 0 { 0 => resume(k); ret(), _ => jump j() }
+    let m = handler_module(|f, k| {
+        let j = f.new_label();
+        Term::Join {
+            rec: false,
+            defs: vec![JoinDef {
+                label: j,
+                params: vec![],
+                body: resume(k, ret(vec![])),
+            }],
+            body: Box::new(Term::Case {
+                scrut: int(0),
+                arms: vec![Arm {
+                    tag: Tag::Int(0),
+                    body: resume(k, ret(vec![])),
+                }],
+                default: Some(Box::new(jump(j, vec![]))),
+            }),
+        }
+    });
+    assert_eq!(verify(&m), Vec::<String>::new());
+}

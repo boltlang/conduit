@@ -482,9 +482,25 @@ Join points stay jumps, even inside handled code.
 
 ### Rules
 
-7. **`Cont` values are linear.** Each continuation is used at most once on
-   every path: one `resume`, or dropped. A verifier checks this the same way
-   it checks scoping.
+7. **A continuation is used at most once.** Resuming one that was already
+   resumed traps at run time: Wasm stack switching does this itself, and
+   the evidence-passing lowering keeps a "used" flag in each continuation.
+   Continuations can be stored like any other value (captured by a
+   closure, put in a field, an array, a ref or an `Any`), so a scheduler
+   can keep paused computations in a queue.
+
+   The verifier also rejects a function that can use a continuation twice
+   in a way it can see: two uses along one path, following jumps into join
+   points and around loops. Passing it to a call or a jump, or capturing
+   it, counts as a use. That catches most mistakes early, but it isn't
+   what makes continuations safe:
+
+   - It misses uses through stored continuations, like applying a closure
+     that captured one twice. The run-time check catches those.
+   - It can reject code that only uses a continuation once, when two
+     branches test the same condition and can never both run. A frontend
+     can restructure such code, for example by moving the second branch
+     into each arm of the first.
 8. **`Handle`, `Perform` and `Resume` have effect `Unknown`,** like `Call`.
    Every pass already treats calls as able to do anything, so none of them
    needs a special case.
@@ -547,7 +563,9 @@ are confined to three ops.
   Conduit-to-Conduit pass that removes the three ops. It
   passes a handler vector to functions that may perform, calls
   tail-resumptive clauses directly, and turns code after a non-tail
-  `perform` into a closure (selective CPS). The output is ordinary Conduit
+  `perform` into a closure (selective CPS). Each continuation it makes
+  carries a "used" flag that `resume` checks and sets, so a second resume
+  traps, as with stack switching. The output is ordinary Conduit
   IR, so every backend works with it, including native ones without stack
   switching. Known-handler optimizations come from inlining after this
   pass.
