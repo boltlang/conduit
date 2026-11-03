@@ -12,6 +12,7 @@
 //! never by position. A frontend can therefore cache IR in an incremental
 //! framework like Salsa without Conduit depending on it.
 
+pub mod build;
 pub mod id;
 mod module;
 mod op;
