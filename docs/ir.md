@@ -695,16 +695,18 @@ let %3: imm fn(i32) -> (i32) does Effect20 = closure fn2()
   handler's row.
 
 Polymorphism over effects is what effect parameters are for. A handler
-that runs a body which can also perform other effects passes those on:
+that runs a body which can also perform other effects passes those on.
+Here the items have names, for reading; in the text format they're
+numbered, like `Effect20`, `handler30` and `fn1`:
 
 ```
-effect Effect20 {                               // Yield
+effect Yield {
   (i32) -> ()
 }
 
-handler handler30[E1] for Effect20 does E1 env(ref i32) ops(fn1) ret fn2
+handler adder[E1] for Yield does E1 env(ref i32) ops(add_yield) ret done
 
-fn fn1[E1](%0: ref i32, %1: i32, %2: cont() -> () does E1) -> () does E1 {
+fn add_yield[E1](%0: ref i32, %1: i32, %2: cont() -> () does E1) -> () does E1 {
   let %3: i32 = ref_get(%0)
   let %4: i32 = add(%3, %1)
   let = ref_set(%0, %4)
@@ -712,12 +714,12 @@ fn fn1[E1](%0: ref i32, %1: i32, %2: cont() -> () does E1) -> () does E1 {
   jump ret()
 }
 
-fn fn2[E1](%0: ref i32) -> () does E1 { jump ret() }
+fn done[E1](%0: ref i32) -> () does E1 { jump ret() }
 
 // Sums what `%0` yields, and performs what else it does.
-fn fn3[E1](%0: ro fn() -> () does Effect20 + E1) -> (i32) does E1 {
+fn sum[E1](%0: ro fn() -> () does Yield + E1) -> (i32) does E1 {
   let %1: ref i32 = ref_new(0i32)
-  let = handle handler30[E1](%1, %0)
+  let = handle adder[E1](%1, %0)
   let %2: i32 = ref_get(%1)
   jump ret(%2)
 }
