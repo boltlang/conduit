@@ -1,6 +1,6 @@
-fn fn0(%0: i32) -> (i32) labels 3 {
-  join j1(%1: i32) = jump ret(%1)
+fn main(%x: i32) -> (i32) labels 3 {
+  join used(%y: i32) = jump ret(%y)
   in
-  let %2: i32 = add(%0, 1i32)
-  jump j1(%2)
+  let %x1: i32 = add(%x, 1i32)
+  jump used(%x1)
 }

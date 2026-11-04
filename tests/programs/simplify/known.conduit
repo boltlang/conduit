@@ -3,74 +3,74 @@
 // object's constructor is known too, but not its fields, which `set` may
 // change.
 
-data data0 {
+data Pair {
   ()
   (i32, i32)
 }
 
-fn fn0(%0: i32) -> (i32) {
-  let %1: imm data0 = new data0.1(%0, 5i32)
-  case %1 {
-    data0.0 => jump ret(0i32)
-    data0.1 =>
-      let %2: i32 = get data0.1.0(%1)
-      let %3: i32 = get data0.1.1(%1)
-      let %4: i32 = add(%2, %3)
-      jump ret(%4)
+fn imm_fields(%x: i32) -> (i32) {
+  let %pair: imm Pair = new Pair.1(%x, 5i32)
+  case %pair {
+    Pair.0 => jump ret(0i32)
+    Pair.1 =>
+      let %a: i32 = get Pair.1.0(%pair)
+      let %b: i32 = get Pair.1.1(%pair)
+      let %sum: i32 = add(%a, %b)
+      jump ret(%sum)
   }
 }
 
-fn fn1(%0: i32) -> (i32) {
-  let %1: mut data0 = new data0.1(%0, 5i32)
-  let = set data0.1.0(%1, 9i32)
-  case %1 {
-    data0.0 => jump ret(0i32)
-    data0.1 =>
-      let %2: i32 = get data0.1.0(%1)
-      jump ret(%2)
+fn mut_fields(%x: i32) -> (i32) {
+  let %pair: mut Pair = new Pair.1(%x, 5i32)
+  let = set Pair.1.0(%pair, 9i32)
+  case %pair {
+    Pair.0 => jump ret(0i32)
+    Pair.1 =>
+      let %a: i32 = get Pair.1.0(%pair)
+      jump ret(%a)
   }
 }
 
 // A literal takes its arm or the default, and the arm it takes can end in
 // another `case` that's known too.
-fn fn2(%0: i32) -> (i32) {
-  let %1: i32 = add(1i32, 2i32)
-  case %1 {
+fn literals(%x: i32) -> (i32) {
+  let %three: i32 = add(1i32, 2i32)
+  case %three {
     0 => jump ret(0i32)
     3 =>
-      let %2: i32 = mul(%1, 2i32)
-      case %2 {
+      let %six: i32 = mul(%three, 2i32)
+      case %six {
         1 => jump ret(1i32)
-        _ => jump ret(%0)
+        _ => jump ret(%x)
       }
     _ => jump ret(2i32)
   }
 }
 
 // A constructor no arm names takes the default.
-fn fn3() -> (i32) {
-  let %0: imm data0 = new data0.0()
-  case %0 {
-    data0.1 => jump ret(1i32)
+fn default() -> (i32) {
+  let %empty: imm Pair = new Pair.0()
+  case %empty {
+    Pair.1 => jump ret(1i32)
     _ => jump ret(2i32)
   }
 }
 
 // What comes into a join point isn't known.
-fn fn4(%0: i32) -> (i32) {
-  join j1(%1: imm data0) =
-    case %1 {
-      data0.0 => jump ret(0i32)
+fn through_join(%x: i32) -> (i32) {
+  join check(%p: imm Pair) =
+    case %p {
+      Pair.0 => jump ret(0i32)
       _ => jump ret(1i32)
     }
   in
-  let %2: imm data0 = new data0.0()
-  jump j1(%2)
+  let %empty: imm Pair = new Pair.0()
+  jump check(%empty)
 }
 
-//# run fn0(4i32) == 9i32
-//# run fn1(4i32) == 9i32
-//# run fn2(7i32) == 7i32
-//# run fn3() == 2i32
-//# run fn4(0i32) == 0i32
+//# run imm_fields(4i32) == 9i32
+//# run mut_fields(4i32) == 9i32
+//# run literals(7i32) == 7i32
+//# run default() == 2i32
+//# run through_join(0i32) == 0i32
 //# opt: simplify

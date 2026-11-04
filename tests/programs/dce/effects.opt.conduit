@@ -1,21 +1,21 @@
-data data0 {
+data Pair {
   (i32, i32)
 }
 
-fn fn0(%0: i32) -> (i32) vars(%2: imm data0, %3: imm fn() -> (i32), %4: ref i32, %6: i32, %7: i32, %9: i32, %10: imm [i32], %12: i32, %13: i32) {
-  let %1: mut data0 = new data0.0(%0, %0)
-  let = set data0.0.0(%1, 1i32)
-  let %5: i32 = call fn1(%0)
-  let %8: mut [i32] = array_fill(2i32, %0)
-  let %11: i32 = array_get(%8, 1i32)
-  let %14: i32 = div.s(%0, %0)
-  jump ret(%0)
+fn main(%x: i32) -> (i32) vars(%unused_new#2: imm Pair, %closure#3: imm fn() -> (i32), %cell#4: ref i32, %read_field#6: i32, %read_cell#7: i32, %length#9: i32, %cloned#10: imm [i32], %by_zero#12: i32, %rem#13: i32) {
+  let %written: mut Pair = new Pair.0(%x, %x)
+  let = set Pair.0.0(%written, 1i32)
+  let %called: i32 = call id(%x)
+  let %array: mut [i32] = array_fill(2i32, %x)
+  let %element: i32 = array_get(%array, 1i32)
+  let %div: i32 = div.s(%x, %x)
+  jump ret(%x)
 }
 
-fn fn1(%0: i32) -> (i32) {
-  jump ret(%0)
+fn id(%x: i32) -> (i32) {
+  jump ret(%x)
 }
 
-fn fn2(%0: i32) -> (i32) {
-  jump ret(%0)
+fn id2(%x: i32) -> (i32) {
+  jump ret(%x)
 }

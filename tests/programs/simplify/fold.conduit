@@ -2,56 +2,56 @@
 // comparisons, conversions, and divisions, by zero too. A division that
 // overflows, a float conversion out of range and a NaN stay.
 
-fn fn0() -> (i32) {
-  let %0: i32 = add(2147483647i32, 1i32)
-  let %1: i8 = mul(100i8, 3i8)
-  let %2: i32 = convert.s[i32](%1)
-  let %3: i32 = lt.u(-1i32, 0i32)
-  let %4: i32 = div.s(-7i32, 2i32)
-  let %5: i32 = add(%0, %2)
-  let %6: i32 = add(%5, %3)
-  let %7: i32 = add(%6, %4)
-  jump ret(%7)
+fn constants() -> (i32) {
+  let %wrapped: i32 = add(2147483647i32, 1i32)
+  let %wrapped_i8: i8 = mul(100i8, 3i8)
+  let %widened: i32 = convert.s[i32](%wrapped_i8)
+  let %lt_u: i32 = lt.u(-1i32, 0i32)
+  let %q: i32 = div.s(-7i32, 2i32)
+  let %a: i32 = add(%wrapped, %widened)
+  let %b: i32 = add(%a, %lt_u)
+  let %c: i32 = add(%b, %q)
+  jump ret(%c)
 }
 
-fn fn1() -> (i32) {
-  let %0: i32 = div.s(-2147483648i32, -1i32)
-  jump ret(%0)
+fn overflow() -> (i32) {
+  let %q: i32 = div.s(-2147483648i32, -1i32)
+  jump ret(%q)
 }
 
-fn fn5() -> (i32) {
-  let %0: i32 = div.u(7i32, 0i32)
-  let %1: i32 = rem.s(-7i32, 0i32)
-  let %2: i32 = add(%0, %1)
-  jump ret(%2)
+fn by_zero() -> (i32) {
+  let %q: i32 = div.u(7i32, 0i32)
+  let %r: i32 = rem.s(-7i32, 0i32)
+  let %sum: i32 = add(%q, %r)
+  jump ret(%sum)
 }
 
-fn fn2() -> (i32) {
-  let %0: i32 = convert.s[i32](1e10f64)
-  jump ret(%0)
+fn out_of_range() -> (i32) {
+  let %x: i32 = convert.s[i32](1e10f64)
+  jump ret(%x)
 }
 
 // 0.0 / 0.0 is a NaN, whose bits Wasm doesn't fix: it stays, and so does
 // the comparison on it.
-fn fn3() -> (i32) {
-  let %0: f64 = div.s(0.0f64, 0.0f64)
-  let %1: i32 = eq(%0, %0)
-  jump ret(%1)
+fn nan() -> (i32) {
+  let %nan: f64 = div.s(0.0f64, 0.0f64)
+  let %same: i32 = eq(%nan, %nan)
+  jump ret(%same)
 }
 
 // Float ops that don't give a NaN fold, but `sqrt(-3.0)` is one, so it
 // stays.
-fn fn4() -> (f64) {
-  let %0: f64 = mul(1.5f64, -2.0f64)
-  let %1: f64 = sqrt(%0)
-  let %2: f64 = abs(%0)
-  jump ret(%2)
+fn floats() -> (f64) {
+  let %p: f64 = mul(1.5f64, -2.0f64)
+  let %root: f64 = sqrt(%p)
+  let %size: f64 = abs(%p)
+  jump ret(%size)
 }
 
-//# run fn0() == -2147483607i32
-//# run fn1() traps
-//# run fn2() traps
-//# run fn3() == 0i32
-//# run fn4() == 3.0f64
-//# run fn5() == -7i32
+//# run constants() == -2147483607i32
+//# run overflow() traps
+//# run out_of_range() traps
+//# run nan() == 0i32
+//# run floats() == 3.0f64
+//# run by_zero() == -7i32
 //# opt: simplify

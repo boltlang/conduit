@@ -1,3 +1,3 @@
-fn fn0(%0: i32) -> (i32) vars(%1: i32, %2: i32) {
-  jump ret(%0)
+fn main(%x: i32) -> (i32) vars(%x1: i32, %x2: i32) {
+  jump ret(%x)
 }

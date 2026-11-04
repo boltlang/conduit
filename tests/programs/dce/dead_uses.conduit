@@ -1,10 +1,10 @@
 // A use in a dead join point doesn't keep a `let` alive.
 
-fn fn0(%0: i32) -> (i32) {
-  let %1: i32 = add(%0, 1i32)
-  join j1() = jump ret(%1)
-  in jump ret(%0)
+fn main(%x: i32) -> (i32) {
+  let %x1: i32 = add(%x, 1i32)
+  join unused() = jump ret(%x1)
+  in jump ret(%x)
 }
 
-//# run fn0(5i32) == 5i32
+//# run main(5i32) == 5i32
 //# opt: dce
