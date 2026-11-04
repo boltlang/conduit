@@ -668,14 +668,14 @@ Effect types say which effects a function can perform, in the syntax
 the effects come after the results, after `does`, joined with `+`.
 
 ```
-fn fn1(%0: i32) -> (i32) does effect20 + effect21 { .. }
-let %3: imm fn(i32) -> (i32) does effect20 = closure fn2()
+fn fn1(%0: i32) -> (i32) does Effect20 + Effect21 { .. }
+let %3: imm fn(i32) -> (i32) does Effect20 = closure fn2()
 ```
 
 - **A row** is the effects after `does`: a set of effects, at most one
-  **effect parameter** `E1`, `E2`, .., or `any`. The order doesn't matter,
+  **effect parameter** `E1`, `E2`, .., or `Any`. The order doesn't matter,
   and each effect is in a row at most once. A function or type with no
-  `does` has no effects. `any` is for frontends without effect types: it
+  `does` has no effects. `Any` is for frontends without effect types: it
   can perform anything, which is what every function can do today.
 - **Rows are on signatures:** a function's, a closure type's
   (`fn(..) -> (..) does ..`) and a continuation type's. An extern's and an
@@ -686,10 +686,10 @@ let %3: imm fn(i32) -> (i32) does effect20 = closure fn2()
   declarations and handlers can have them, after their mutability
   parameters: `fn fn3['m1, E1]`, `data data10[E1]`. Each call, closure,
   data type and `handle` gives one row per parameter:
-  `call fn3[mut, effect20 + E2]`, `imm data10[none]`, where `none` is the
-  empty row. The callee's rows are seen with the arguments in place, and
-  rows that end up naming an effect twice merge, so `effect20 + E1` with
-  `E1` as `effect20` is `effect20`.
+  `call fn3[mut, Effect20 + E2]`, `imm data10[Nothing]`, where `Nothing`
+  is the empty row. The callee's rows are seen with the arguments in
+  place, and rows that end up naming an effect twice merge, so
+  `Effect20 + E1` with `E1` as `Effect20` is `Effect20`.
 - **A handler declares a row,** the effects its clauses can perform, and
   `handle` takes its effect out of the body's row: the body can perform
   `E` and what the handler's row allows, and the `handle` performs only the
@@ -699,11 +699,11 @@ Polymorphism over effects is what effect parameters are for. A handler
 that runs a body which can also perform other effects passes those on:
 
 ```
-effect effect20 {                               // Yield
+effect Effect20 {                               // Yield
   (i32) -> ()
 }
 
-handler handler30[E1] for effect20 does E1 env(ref i32) ops(fn1) ret fn2
+handler handler30[E1] for Effect20 does E1 env(ref i32) ops(fn1) ret fn2
 
 fn fn1[E1](%0: ref i32, %1: i32, %2: cont() -> () does E1) -> () does E1 {
   let %3: i32 = ref_get(%0)
@@ -716,7 +716,7 @@ fn fn1[E1](%0: ref i32, %1: i32, %2: cont() -> () does E1) -> () does E1 {
 fn fn2[E1](%0: ref i32) -> () does E1 { jump ret() }
 
 // Sums what `%0` yields, and performs what else it does.
-fn fn3[E1](%0: ro fn() -> () does effect20 + E1) -> (i32) does E1 {
+fn fn3[E1](%0: ro fn() -> () does Effect20 + E1) -> (i32) does E1 {
   let %1: ref i32 = ref_new(0i32)
   let = handle handler30[E1](%1, %0)
   let %2: i32 = ref_get(%1)
@@ -748,7 +748,7 @@ What effect types give Conduit:
   like Bolt's `Async`, never needs its stack captured.
 - **No unhandled effects.** A function with no effects can't reach a
   `perform` without a handler, so the run-time error is left only for
-  `any` and for entry points that have effects.
+  `Any` and for entry points that have effects.
 - **Better analysis.** An `apply` of an `Fn(_, Imm)` with no effects writes
   nothing that existed before (see "`Imm` closures don't write").
 
@@ -762,15 +762,18 @@ The text format adds:
 
 - `does row` after a signature's results, and before a function's `where`.
   Results are always in parentheses, so in
-  `fn() -> (imm fn() -> () does effect20)` the `does` is the inner
-  closure's, and `fn() -> (imm fn() -> ()) does effect20` gives it to the
+  `fn() -> (imm fn() -> () does Effect20)` the `does` is the inner
+  closure's, and `fn() -> (imm fn() -> ()) does Effect20` gives it to the
   outer one. Bolt's syntax can't tell these apart yet.
-- Rows written `effect20 + E1`, `none` and `any`.
+- Rows written `Effect20 + E1`, `Nothing` and `Any`.
+- Effects named with a capital, `Effect20`, as Bolt names them, in place
+  of `effect20`.
 - Effect parameters, without a quote and starting with an uppercase
-  letter, as Bolt writes `E`: any such name parses, and they print as
-  `E1`, `E2`, .. by position. Mutability parameters keep the quote, so
-  `['m1, E1]` has one of each. Nothing else in the text format starts with
-  an uppercase letter, so the names can't clash with IDs or keywords.
+  letter, as Bolt writes `E`: any such name parses but `Nothing`, `Any`
+  and `Effect` followed by digits, and they print as `E1`, `E2`, .. by
+  position. Mutability parameters keep the quote, so `['m1, E1]` has one
+  of each. Nothing else in the text format starts with an uppercase
+  letter, so the names can't clash with IDs or keywords.
 
 Still to decide:
 

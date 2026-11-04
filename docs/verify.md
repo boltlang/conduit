@@ -214,12 +214,12 @@ run.
 Every function, closure type and continuation type has a row of effects
 after `does`. The verifier checks that each `perform` is in a function
 whose row allows it. So a function with no effects can't reach a `perform`
-without a handler: only `any` and entry points with effects still can.
+without a handler: only `Any` and entry points with effects still can.
 
 **Inclusion.** A row `R1` is in a row `R2` when every effect of `R1` is in
 `R2`, and `R1`'s parameter, if it has one, is `R2`'s. A parameter is an
-unknown row: it's only in itself. Every row is in `any`, and `any` is only
-in `any`.
+unknown row: it's only in itself. Every row is in `Any`, and `Any` is only
+in `Any`.
 
 **Rows.** A row has each effect at most once and at most one effect
 parameter. Its effects must exist, and its parameter must be in scope:
@@ -235,7 +235,7 @@ parameters.
 | `apply(c, ..)` | the row of `c`'s type |
 | `resume(k, ..)` | the row of `k`'s type |
 | `handle H[args](..)` | the row of `H`, with the arguments in place |
-| `call_extern` and every other op | none |
+| `call_extern` and every other op | `Nothing` |
 
 **Functions.** The row of each op in a function's body is in the
 function's row. Join points are part of the function, so they need no rule
@@ -246,9 +246,9 @@ written in types. `closure f[args]` binds a `fn` whose row has `f`'s row in
 it, with the arguments in place.
 
 **Subtyping.** A closure or continuation type fits where one with a bigger
-row is expected: `fn() -> () does effect20` fits where
-`fn() -> () does effect20 + effect21` is expected, and everything fits a
-row of `any`. Mutability is unchanged. Rows in a data type's arguments
+row is expected: `fn() -> () does Effect20` fits where
+`fn() -> () does Effect20 + Effect21` is expected, and everything fits a
+row of `Any`. Mutability is unchanged. Rows in a data type's arguments
 must be equal, like its mutability arguments.
 
 **Handlers.** A handler `H` for `E` declares a row `R`, the effects its
