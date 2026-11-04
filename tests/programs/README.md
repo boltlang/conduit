@@ -2,6 +2,9 @@
 
 Each `.conduit` file here is a module in the text format (see "Text
 format" in `docs/ir.md`), with checks in comments that start with `//#`.
+Programs name their functions, types, effects, handlers, variables and
+labels, except those in `invalid`, whose checks match the verifier's
+messages, which use numbers.
 Every part of Conduit runs the checks that apply to it:
 
 | Crate | What it does with each program |
@@ -23,7 +26,7 @@ checks apply to that crate.
 
 | Check | Meaning |
 |---|---|
-| `//# run fn1(5i32, 2i64) == 120i32` | Calling `fn1` gives `120i32`. Several results are `== (1i32, 2i32)`, none are `== ()`. |
+| `//# run fac(5i32) == 120i32` | Calling `fac` gives `120i32`. Several results are `== (1i32, 2i32)`, none are `== ()`. The function is written as the text format writes it: a name like `fac`, a number like `fn1`, or both, `fac#1`. |
 | `//# run fn1(0i32) traps` | Calling `fn1` stops with a trap: a signed division that overflows, an index out of bounds, `unreachable`, or a continuation resumed twice. |
 | `//# verify-error: message` | The verifier rejects the program with an error containing `message`. Only `conduit-ir` looks at such programs. |
 | `//# wasm-error: message` | The Wasm backend can't lower the program, with an error containing `message`. |

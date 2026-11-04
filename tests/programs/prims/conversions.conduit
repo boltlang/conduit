@@ -2,186 +2,186 @@
 // at the edges of each type: rounding, wrapping, unsigned readings and
 // truncation toward zero. Generated, with results following Wasm.
 
-fn fn0(%0: i32) -> (i32) {
-  let %1: i32 = convert.s[i32](%0)
-  jump ret(%1)
+fn i32_to_i32_s(%x: i32) -> (i32) {
+  let %r: i32 = convert.s[i32](%x)
+  jump ret(%r)
 }
 
-fn fn1(%0: i32) -> (i64) {
-  let %1: i64 = convert.s[i64](%0)
-  jump ret(%1)
+fn i32_to_i64_s(%x: i32) -> (i64) {
+  let %r: i64 = convert.s[i64](%x)
+  jump ret(%r)
 }
 
-fn fn2(%0: i32) -> (i64) {
-  let %1: i64 = convert.u[i64](%0)
-  jump ret(%1)
+fn i32_to_i64_u(%x: i32) -> (i64) {
+  let %r: i64 = convert.u[i64](%x)
+  jump ret(%r)
 }
 
-fn fn3(%0: i64) -> (i32) {
-  let %1: i32 = convert.s[i32](%0)
-  jump ret(%1)
+fn i64_to_i32_s(%x: i64) -> (i32) {
+  let %r: i32 = convert.s[i32](%x)
+  jump ret(%r)
 }
 
-fn fn4(%0: i32) -> (f32) {
-  let %1: f32 = convert.s[f32](%0)
-  jump ret(%1)
+fn i32_to_f32_s(%x: i32) -> (f32) {
+  let %r: f32 = convert.s[f32](%x)
+  jump ret(%r)
 }
 
-fn fn5(%0: i32) -> (f32) {
-  let %1: f32 = convert.u[f32](%0)
-  jump ret(%1)
+fn i32_to_f32_u(%x: i32) -> (f32) {
+  let %r: f32 = convert.u[f32](%x)
+  jump ret(%r)
 }
 
-fn fn6(%0: i32) -> (f64) {
-  let %1: f64 = convert.s[f64](%0)
-  jump ret(%1)
+fn i32_to_f64_s(%x: i32) -> (f64) {
+  let %r: f64 = convert.s[f64](%x)
+  jump ret(%r)
 }
 
-fn fn7(%0: i32) -> (f64) {
-  let %1: f64 = convert.u[f64](%0)
-  jump ret(%1)
+fn i32_to_f64_u(%x: i32) -> (f64) {
+  let %r: f64 = convert.u[f64](%x)
+  jump ret(%r)
 }
 
-fn fn8(%0: i64) -> (f32) {
-  let %1: f32 = convert.s[f32](%0)
-  jump ret(%1)
+fn i64_to_f32_s(%x: i64) -> (f32) {
+  let %r: f32 = convert.s[f32](%x)
+  jump ret(%r)
 }
 
-fn fn9(%0: i64) -> (f32) {
-  let %1: f32 = convert.u[f32](%0)
-  jump ret(%1)
+fn i64_to_f32_u(%x: i64) -> (f32) {
+  let %r: f32 = convert.u[f32](%x)
+  jump ret(%r)
 }
 
-fn fn10(%0: i64) -> (f64) {
-  let %1: f64 = convert.s[f64](%0)
-  jump ret(%1)
+fn i64_to_f64_s(%x: i64) -> (f64) {
+  let %r: f64 = convert.s[f64](%x)
+  jump ret(%r)
 }
 
-fn fn11(%0: i64) -> (f64) {
-  let %1: f64 = convert.u[f64](%0)
-  jump ret(%1)
+fn i64_to_f64_u(%x: i64) -> (f64) {
+  let %r: f64 = convert.u[f64](%x)
+  jump ret(%r)
 }
 
-fn fn12(%0: f32) -> (i32) {
-  let %1: i32 = convert.s[i32](%0)
-  jump ret(%1)
+fn f32_to_i32_s(%x: f32) -> (i32) {
+  let %r: i32 = convert.s[i32](%x)
+  jump ret(%r)
 }
 
-fn fn13(%0: f32) -> (i32) {
-  let %1: i32 = convert.u[i32](%0)
-  jump ret(%1)
+fn f32_to_i32_u(%x: f32) -> (i32) {
+  let %r: i32 = convert.u[i32](%x)
+  jump ret(%r)
 }
 
-fn fn14(%0: f32) -> (i64) {
-  let %1: i64 = convert.s[i64](%0)
-  jump ret(%1)
+fn f32_to_i64_s(%x: f32) -> (i64) {
+  let %r: i64 = convert.s[i64](%x)
+  jump ret(%r)
 }
 
-fn fn15(%0: f32) -> (i64) {
-  let %1: i64 = convert.u[i64](%0)
-  jump ret(%1)
+fn f32_to_i64_u(%x: f32) -> (i64) {
+  let %r: i64 = convert.u[i64](%x)
+  jump ret(%r)
 }
 
-fn fn16(%0: f64) -> (i32) {
-  let %1: i32 = convert.s[i32](%0)
-  jump ret(%1)
+fn f64_to_i32_s(%x: f64) -> (i32) {
+  let %r: i32 = convert.s[i32](%x)
+  jump ret(%r)
 }
 
-fn fn17(%0: f64) -> (i32) {
-  let %1: i32 = convert.u[i32](%0)
-  jump ret(%1)
+fn f64_to_i32_u(%x: f64) -> (i32) {
+  let %r: i32 = convert.u[i32](%x)
+  jump ret(%r)
 }
 
-fn fn18(%0: f64) -> (i64) {
-  let %1: i64 = convert.s[i64](%0)
-  jump ret(%1)
+fn f64_to_i64_s(%x: f64) -> (i64) {
+  let %r: i64 = convert.s[i64](%x)
+  jump ret(%r)
 }
 
-fn fn19(%0: f64) -> (i64) {
-  let %1: i64 = convert.u[i64](%0)
-  jump ret(%1)
+fn f64_to_i64_u(%x: f64) -> (i64) {
+  let %r: i64 = convert.u[i64](%x)
+  jump ret(%r)
 }
 
-fn fn20(%0: f32) -> (f64) {
-  let %1: f64 = convert.s[f64](%0)
-  jump ret(%1)
+fn f32_to_f64_s(%x: f32) -> (f64) {
+  let %r: f64 = convert.s[f64](%x)
+  jump ret(%r)
 }
 
-fn fn21(%0: f64) -> (f32) {
-  let %1: f32 = convert.s[f32](%0)
-  jump ret(%1)
+fn f64_to_f32_s(%x: f64) -> (f32) {
+  let %r: f32 = convert.s[f32](%x)
+  jump ret(%r)
 }
 
-fn fn22(%0: f64) -> (f64) {
-  let %1: f64 = convert.s[f64](%0)
-  jump ret(%1)
+fn f64_to_f64_s(%x: f64) -> (f64) {
+  let %r: f64 = convert.s[f64](%x)
+  jump ret(%r)
 }
 
-fn fn23(%0: i32) -> (f32) {
-  let %1: f32 = reinterpret[f32](%0)
-  jump ret(%1)
+fn i32_as_f32(%x: i32) -> (f32) {
+  let %r: f32 = reinterpret[f32](%x)
+  jump ret(%r)
 }
 
-fn fn24(%0: f32) -> (i32) {
-  let %1: i32 = reinterpret[i32](%0)
-  jump ret(%1)
+fn f32_as_i32(%x: f32) -> (i32) {
+  let %r: i32 = reinterpret[i32](%x)
+  jump ret(%r)
 }
 
-fn fn25(%0: i64) -> (f64) {
-  let %1: f64 = reinterpret[f64](%0)
-  jump ret(%1)
+fn i64_as_f64(%x: i64) -> (f64) {
+  let %r: f64 = reinterpret[f64](%x)
+  jump ret(%r)
 }
 
-fn fn26(%0: f64) -> (i64) {
-  let %1: i64 = reinterpret[i64](%0)
-  jump ret(%1)
+fn f64_as_i64(%x: f64) -> (i64) {
+  let %r: i64 = reinterpret[i64](%x)
+  jump ret(%r)
 }
 
-//# run fn0(-1i32) == -1i32
-//# run fn1(-1i32) == -1i64
-//# run fn1(2147483647i32) == 2147483647i64
-//# run fn2(-1i32) == 4294967295i64
-//# run fn2(5i32) == 5i64
-//# run fn3(4294967301i64) == 5i32
-//# run fn3(-1i64) == -1i32
-//# run fn3(2147483648i64) == -2147483648i32
-//# run fn4(16777217i32) == 16777216.0f32
-//# run fn4(-3i32) == -3.0f32
-//# run fn5(-1i32) == f32_bits(1333788672)
-//# run fn5(3i32) == 3.0f32
-//# run fn6(-1i32) == -1.0f64
-//# run fn6(-2147483648i32) == -2147483648.0f64
-//# run fn7(-1i32) == 4294967295.0f64
-//# run fn8(-1i64) == -1.0f32
-//# run fn8(4611686018427387905i64) == f32_bits(1585446912)
-//# run fn9(-1i64) == f32_bits(1602224128)
-//# run fn10(9007199254740993i64) == 9007199254740992.0f64
-//# run fn10(-9223372036854775808i64) == f64_bits(14114281232179134464)
-//# run fn11(-1i64) == f64_bits(4895412794951729152)
-//# run fn11(9007199254740993i64) == 9007199254740992.0f64
-//# run fn12(-2.75f32) == -2i32
-//# run fn12(2.75f32) == 2i32
-//# run fn12(-0.0f32) == 0i32
-//# run fn13(3.75f32) == 3i32
-//# run fn13(f32_bits(1333788671)) == -256i32
-//# run fn14(f32_bits(3713928043)) == -999999984306749440i64
-//# run fn15(f32_bits(1601817817)) == -446743668993294336i64
-//# run fn16(-2147483648.9f64) == -2147483648i32
-//# run fn16(2147483647.9f64) == 2147483647i32
-//# run fn17(4294967295.9f64) == -1i32
-//# run fn17(0.5f64) == 0i32
-//# run fn18(f64_bits(14099575734042281984)) == -1000000000000000000i64
-//# run fn19(f64_bits(4895194658196988160)) == -446744073709551616i64
-//# run fn20(0.1f32) == 0.10000000149011612f64
-//# run fn20(f32_bits(2139095040)) == f64_bits(9218868437227405312)
-//# run fn21(0.1f64) == 0.1f32
-//# run fn21(f64_bits(9094988921128908188)) == f32_bits(2139095040)
-//# run fn21(f64_bits(9341994084744098649)) == -0.0f32
-//# run fn22(-0.0f64) == -0.0f64
-//# run fn23(1069547520i32) == 1.5f32
-//# run fn23(-2147483648i32) == -0.0f32
-//# run fn24(1.5f32) == 1069547520i32
-//# run fn24(-0.0f32) == -2147483648i32
-//# run fn25(4609434218613702656i64) == 1.5f64
-//# run fn26(-0.0f64) == -9223372036854775808i64
-//# run fn26(f64_bits(9218868437227405312)) == 9218868437227405312i64
+//# run i32_to_i32_s(-1i32) == -1i32
+//# run i32_to_i64_s(-1i32) == -1i64
+//# run i32_to_i64_s(2147483647i32) == 2147483647i64
+//# run i32_to_i64_u(-1i32) == 4294967295i64
+//# run i32_to_i64_u(5i32) == 5i64
+//# run i64_to_i32_s(4294967301i64) == 5i32
+//# run i64_to_i32_s(-1i64) == -1i32
+//# run i64_to_i32_s(2147483648i64) == -2147483648i32
+//# run i32_to_f32_s(16777217i32) == 16777216.0f32
+//# run i32_to_f32_s(-3i32) == -3.0f32
+//# run i32_to_f32_u(-1i32) == f32_bits(1333788672)
+//# run i32_to_f32_u(3i32) == 3.0f32
+//# run i32_to_f64_s(-1i32) == -1.0f64
+//# run i32_to_f64_s(-2147483648i32) == -2147483648.0f64
+//# run i32_to_f64_u(-1i32) == 4294967295.0f64
+//# run i64_to_f32_s(-1i64) == -1.0f32
+//# run i64_to_f32_s(4611686018427387905i64) == f32_bits(1585446912)
+//# run i64_to_f32_u(-1i64) == f32_bits(1602224128)
+//# run i64_to_f64_s(9007199254740993i64) == 9007199254740992.0f64
+//# run i64_to_f64_s(-9223372036854775808i64) == f64_bits(14114281232179134464)
+//# run i64_to_f64_u(-1i64) == f64_bits(4895412794951729152)
+//# run i64_to_f64_u(9007199254740993i64) == 9007199254740992.0f64
+//# run f32_to_i32_s(-2.75f32) == -2i32
+//# run f32_to_i32_s(2.75f32) == 2i32
+//# run f32_to_i32_s(-0.0f32) == 0i32
+//# run f32_to_i32_u(3.75f32) == 3i32
+//# run f32_to_i32_u(f32_bits(1333788671)) == -256i32
+//# run f32_to_i64_s(f32_bits(3713928043)) == -999999984306749440i64
+//# run f32_to_i64_u(f32_bits(1601817817)) == -446743668993294336i64
+//# run f64_to_i32_s(-2147483648.9f64) == -2147483648i32
+//# run f64_to_i32_s(2147483647.9f64) == 2147483647i32
+//# run f64_to_i32_u(4294967295.9f64) == -1i32
+//# run f64_to_i32_u(0.5f64) == 0i32
+//# run f64_to_i64_s(f64_bits(14099575734042281984)) == -1000000000000000000i64
+//# run f64_to_i64_u(f64_bits(4895194658196988160)) == -446744073709551616i64
+//# run f32_to_f64_s(0.1f32) == 0.10000000149011612f64
+//# run f32_to_f64_s(f32_bits(2139095040)) == f64_bits(9218868437227405312)
+//# run f64_to_f32_s(0.1f64) == 0.1f32
+//# run f64_to_f32_s(f64_bits(9094988921128908188)) == f32_bits(2139095040)
+//# run f64_to_f32_s(f64_bits(9341994084744098649)) == -0.0f32
+//# run f64_to_f64_s(-0.0f64) == -0.0f64
+//# run i32_as_f32(1069547520i32) == 1.5f32
+//# run i32_as_f32(-2147483648i32) == -0.0f32
+//# run f32_as_i32(1.5f32) == 1069547520i32
+//# run f32_as_i32(-0.0f32) == -2147483648i32
+//# run i64_as_f64(4609434218613702656i64) == 1.5f64
+//# run f64_as_i64(-0.0f64) == -9223372036854775808i64
+//# run f64_as_i64(f64_bits(9218868437227405312)) == 9218868437227405312i64
