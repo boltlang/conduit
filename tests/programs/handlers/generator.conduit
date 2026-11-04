@@ -37,4 +37,4 @@ fn fn3() -> () {
 }
 
 //# run fn0() == 6i32
-//# wasm-skip: effect handlers aren't supported yet
+//# wat

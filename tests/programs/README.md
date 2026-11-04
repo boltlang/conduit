@@ -27,7 +27,7 @@ checks apply to that crate.
 | `//# run fn1(0i32) traps` | Calling `fn1` stops with a trap: a division by zero, an index out of bounds, `unreachable`, or a continuation resumed twice. |
 | `//# verify-error: message` | The verifier rejects the program with an error containing `message`. Only `conduit-ir` looks at such programs. |
 | `//# wasm-error: message` | The Wasm backend can't lower the program, with an error containing `message`. |
-| `//# wasm-skip: reason` | The Wasm backend doesn't look at the program, for example because it uses effect handlers. |
+| `//# wasm-skip: reason` | The Wasm backend doesn't look at the program, for example because it uses a feature the backend doesn't have yet. |
 | `//# wat` | The program's Wasm, as text, matches `<name>.wat` next to it. |
 | `//# opt` | The program after optimization matches `<name>.opt.conduit` next to it. |
 | `//# opt: dce, copies` | The same, but after only those passes, in that order, each run until nothing changes. |

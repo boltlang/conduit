@@ -26,12 +26,13 @@
 use std::borrow::Cow;
 
 use conduit_ir::{
-    Atom, Block, CtorId, Func, JoinDef, Label, Lit, Op, Prim, Sign, Tag, Tail, Ty, Var,
+    Atom, Block, CtorId, EffectId, Func, HandlerId, JoinDef, Label, Lit, Op, Prim, Sign, Tag, Tail,
+    Ty, Var,
 };
 use wasm_encoder::{BlockType, HeapType, Ieee32, Ieee64, Instruction as I, RefType, ValType};
 
-use crate::Cx;
 use crate::types::nullable;
+use crate::{Cx, HANDLERS};
 
 /// A lowered function: the locals after its parameters, and its code.
 pub(crate) struct Body {
@@ -128,6 +129,44 @@ pub(crate) fn lower_entry(
     code.push(I::End);
     Ok(Body {
         locals: vec![nullable(captures)],
+        code,
+    })
+}
+
+/// The wrapper of clause `i` of `h`, which `perform` calls with the frame
+/// and the operation's parameters: it reads the environment out of the
+/// frame and tail-calls the clause, as a plain function.
+pub(crate) fn lower_wrapper(cx: &mut Cx<'_>, h: HandlerId, i: u32) -> Result<Body, String> {
+    let decl = &cx.m.handlers[&h];
+    let (frame, first) = cx.types.handler_frame(h)?;
+    let Some(op) =
+        cx.m.effects
+            .get(&decl.effect)
+            .and_then(|e| e.ops.get(i as usize))
+    else {
+        return Err(format!("{} has no operation {i}", decl.effect));
+    };
+    let params = op.params.len() as u32;
+    let local = params + 1;
+    let mut code = vec![
+        I::LocalGet(0),
+        I::RefCastNullable(HeapType::Concrete(frame)),
+        I::LocalSet(local),
+    ];
+    for j in 0..decl.env.len() as u32 {
+        code.push(I::LocalGet(local));
+        code.push(I::StructGet {
+            struct_type_index: frame,
+            field_index: first + j,
+        });
+    }
+    for p in 0..params {
+        code.push(I::LocalGet(1 + p));
+    }
+    code.push(I::ReturnCall(cx.func_index(decl.ops[i as usize])?));
+    code.push(I::End);
+    Ok(Body {
+        locals: vec![nullable(frame)],
         code,
     })
 }
@@ -453,26 +492,10 @@ impl<'m> FuncCx<'_, 'm> {
                 self.emit(I::StructNew(captures));
             }
             Op::Apply => {
-                let Some(c) = args.first() else {
+                let Some((c, rest)) = args.split_first() else {
                     return Err("apply needs a closure".into());
                 };
-                let Ty::Fn(sig, _) = self.atom_ty(c) else {
-                    return Err("apply of a value that isn't a closure".into());
-                };
-                let sig = self.cx.types.sig(&sig)?;
-                let base = self.cx.types.closure(&sig)?;
-                let entry = self.cx.types.entry(&sig)?;
-                self.atoms(args);
-                self.atom(c);
-                self.emit(I::StructGet {
-                    struct_type_index: base,
-                    field_index: 0,
-                });
-                self.emit(if tail {
-                    I::ReturnCallRef(entry)
-                } else {
-                    I::CallRef(entry)
-                });
+                self.apply(c, rest, tail)?;
                 return Ok(self.bind(binds, tail));
             }
             Op::New(c) => {
@@ -598,14 +621,147 @@ impl<'m> FuncCx<'_, 'm> {
             }
             // Mutability doesn't exist at run time.
             Op::ArrayFreeze => self.atoms(args),
-            Op::Handle(_) | Op::Perform(..) | Op::Resume => {
-                return Err(
-                    "effect handlers aren't supported yet: lower them with evidence passing first"
-                        .into(),
-                );
+            Op::Handle(h) => {
+                self.handle(*h, args, tail)?;
+                return Ok(self.bind(binds, tail));
             }
+            Op::Perform(e, i) => self.perform(*e, *i, args)?,
+            // A tail-resumptive clause's `resume` is gone by now, and no
+            // other code can have a continuation.
+            Op::Resume => return Err("continuations aren't supported yet".into()),
         }
         Ok(self.bind(binds, false))
+    }
+
+    /// Calls closure `c` with `args`.
+    fn apply(&mut self, c: &Atom, args: &[Atom], tail: bool) -> Result<(), String> {
+        let Ty::Fn(sig, _) = self.atom_ty(c) else {
+            return Err("apply of a value that isn't a closure".into());
+        };
+        let sig = self.cx.types.sig(&sig)?;
+        let base = self.cx.types.closure(&sig)?;
+        let entry = self.cx.types.entry(&sig)?;
+        self.atom(c);
+        self.atoms(args);
+        self.atom(c);
+        self.emit(I::StructGet {
+            struct_type_index: base,
+            field_index: 0,
+        });
+        self.emit(if tail {
+            I::ReturnCallRef(entry)
+        } else {
+            I::CallRef(entry)
+        });
+        Ok(())
+    }
+
+    /// `handle h(env.., body)`: pushes a frame of `h` on the handler stack,
+    /// runs the body, pops the frame and calls the return clause with the
+    /// body's results.
+    fn handle(&mut self, h: HandlerId, args: &[Atom], tail: bool) -> Result<(), String> {
+        let first_wrapper = self.cx.wrapper(h, 0)?;
+        let decl = &self.cx.m.handlers[&h];
+        let (env, body) = args.split_at(args.len() - 1);
+        let (frame, _) = self.cx.types.handler_frame(h)?;
+        let base = nullable(self.cx.types.frame()?);
+        let number = self.cx.effect_number(decl.effect)?;
+        let ret = self.cx.func_index(decl.ret)?;
+        let Ty::Fn(sig, _) = self.atom_ty(&body[0]) else {
+            return Err(format!("the body of handle {h} isn't a closure"));
+        };
+        let results: Vec<u32> = self
+            .cx
+            .types
+            .vals(&sig.results)?
+            .into_iter()
+            .map(|ty| self.new_local(ty))
+            .collect();
+
+        let saved = self.new_local(base);
+        self.emit(I::GlobalGet(HANDLERS));
+        self.emit(I::LocalSet(saved));
+        self.emit(I::I32Const(number));
+        self.emit(I::LocalGet(saved));
+        for i in 0..decl.ops.len() as u32 {
+            self.emit(I::RefFunc(first_wrapper + i));
+        }
+        self.atoms(env);
+        self.emit(I::StructNew(frame));
+        self.emit(I::GlobalSet(HANDLERS));
+        self.apply(&body[0], &[], false)?;
+        for &r in results.iter().rev() {
+            self.emit(I::LocalSet(r));
+        }
+        self.emit(I::LocalGet(saved));
+        self.emit(I::GlobalSet(HANDLERS));
+        self.atoms(env);
+        for &r in &results {
+            self.emit(I::LocalGet(r));
+        }
+        self.emit(if tail {
+            I::ReturnCall(ret)
+        } else {
+            I::Call(ret)
+        });
+        Ok(())
+    }
+
+    /// `perform e.i(args)`: finds the nearest frame of `e`, trapping if
+    /// there's none, and calls its clause with the handler stack below the
+    /// frame, so that a `perform` in the clause goes to an outer handler.
+    fn perform(&mut self, e: EffectId, i: u32, args: &[Atom]) -> Result<(), String> {
+        let base = self.cx.types.frame()?;
+        let frame = self.cx.types.effect_frame(e)?;
+        let clause = self.cx.types.clause(e, i)?;
+        let number = self.cx.effect_number(e)?;
+        let saved = self.new_local(nullable(base));
+        let found = self.new_local(nullable(base));
+        let this = self.new_local(nullable(frame));
+
+        self.emit(I::GlobalGet(HANDLERS));
+        self.emit(I::LocalTee(saved));
+        self.emit(I::LocalSet(found));
+        self.open(I::Block(BlockType::Empty));
+        self.open(I::Loop(BlockType::Empty));
+        // Reading the effect of a null frame traps.
+        self.emit(I::LocalGet(found));
+        self.emit(I::StructGet {
+            struct_type_index: base,
+            field_index: 0,
+        });
+        self.emit(I::I32Const(number));
+        self.emit(I::I32Eq);
+        self.emit(I::BrIf(1));
+        self.emit(I::LocalGet(found));
+        self.emit(I::StructGet {
+            struct_type_index: base,
+            field_index: 1,
+        });
+        self.emit(I::LocalSet(found));
+        self.emit(I::Br(0));
+        self.close();
+        self.close();
+
+        self.emit(I::LocalGet(found));
+        self.emit(I::StructGet {
+            struct_type_index: base,
+            field_index: 1,
+        });
+        self.emit(I::GlobalSet(HANDLERS));
+        self.emit(I::LocalGet(found));
+        self.emit(I::RefCastNullable(HeapType::Concrete(frame)));
+        self.emit(I::LocalTee(this));
+        self.atoms(args);
+        self.emit(I::LocalGet(this));
+        self.emit(I::StructGet {
+            struct_type_index: frame,
+            field_index: 2 + i,
+        });
+        self.emit(I::CallRef(clause));
+        self.emit(I::LocalGet(saved));
+        self.emit(I::GlobalSet(HANDLERS));
+        Ok(())
     }
 
     /// Stores an op's results, unless it was a tail call. Returns `tail`.

@@ -649,7 +649,9 @@ These are checked by looking at a clause's body:
 - **Tail-resumptive:** the clause ends in `let r = resume(k, ..); jump ret(r)`
   and uses `k` nowhere else. This is the common case (state, readers,
   logging, the `yield` above). `perform` can then be a plain call to the
-  clause, with no stack captured.
+  clause, with no stack captured. Every way out of the clause must resume
+  like this, and `conduit_ir::clause::plain_call` turns such a clause into
+  that plain function: without `k`, giving what it resumed with.
 - **Aborting:** the clause never uses `k` (exceptions, early exit).
   `perform` unwinds to the handler and nothing is captured.
 
@@ -781,8 +783,22 @@ Still to decide:
 
 ### Lowering
 
-There are two ways to lower handlers. Both are possible because handlers
-are confined to three ops.
+The Wasm backend already lowers handlers whose clauses are all
+tail-resumptive, with no continuation:
+
+- A global holds a stack of handler frames. A frame holds its effect's
+  number, the next frame, a reference to each clause, and the handler's
+  environment.
+- `handle` pushes a frame, applies the body, pops the frame, and calls the
+  return clause with the body's results.
+- `perform` walks the stack to the nearest frame of its effect, trapping
+  if there's none. It then calls that frame's clause directly, with the
+  stack set to the frames below while the clause runs, so that a
+  `perform` in the clause goes to an outer handler, as it would with a
+  captured continuation.
+
+Any other clause is an error. The general case has two ways to be lowered,
+both possible because handlers are confined to three ops.
 
 - **Wasm stack switching** (the typed-continuations proposal): `handle` is
   `cont.new` + `resume` with an `(on $op ..)` clause per operation,
@@ -963,6 +979,7 @@ Status:
 | `Unbox` to a reference | nothing | `ref.cast` | ✅ |
 | String literal (`Lit`) | data segment | `array.new_data` | ✅ |
 | `ArrayFreeze` | nothing | nothing | ✅ |
+| `Handle`, `Perform` with tail-resumptive clauses | — | a handler stack in a global, and a direct call of the clause | ✅ |
 | `Handle` | `cont.new` + `resume` with `(on $op ..)` | same | ⚠️ stack switching |
 | `Perform` | `suspend` | same | ⚠️ stack switching |
 | `Resume` | `resume` | same | ⚠️ stack switching |

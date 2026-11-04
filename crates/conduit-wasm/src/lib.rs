@@ -3,9 +3,16 @@
 //! "Operations per target" in `docs/ir.md`.
 //!
 //! The output needs the GC, function references and tail call proposals,
-//! all part of Wasm 3.0. Not supported yet: effect handlers (`Handle`,
-//! `Perform`, `Resume` and continuation types). Handlers can be
-//! lowered by evidence passing before this.
+//! all part of Wasm 3.0.
+//!
+//! Effect handlers are supported when every clause of the handlers used is
+//! tail-resumptive (see [`conduit_ir::clause::plain_call`]): then no
+//! continuation is ever captured. A global holds a stack of handler frames.
+//! `handle` pushes one, runs the body and pops it, and `perform` finds the
+//! nearest frame of its effect and calls the clause, with the stack below
+//! that frame while the clause runs. A `perform` with no handler traps.
+//! Other clauses, and continuation types, need stack switching or evidence
+//! passing, which aren't supported yet.
 //!
 //! [`emit_module`] lowers a whole module at once. Each extern becomes an
 //! import of its `module` and `name`, and functions are exported under the
@@ -18,13 +25,13 @@ use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 
 use conduit_ir::verify::Item;
-use conduit_ir::{ExternId, FuncId, Module};
+use conduit_ir::{EffectId, ExternId, Func, FuncId, HandlerId, Module};
 use wasm_encoder::{
-    CodeSection, ElementSection, Elements, EntityType, ExportKind, ExportSection, Function,
-    FunctionSection, ImportSection, TypeSection,
+    CodeSection, ConstExpr, ElementSection, Elements, EntityType, ExportKind, ExportSection,
+    Function, FunctionSection, GlobalSection, GlobalType, HeapType, ImportSection, TypeSection,
 };
 
-use crate::types::{FnSig, Types};
+use crate::types::{FnSig, Types, nullable};
 
 /// Why a module couldn't be lowered.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -51,7 +58,15 @@ pub(crate) struct Cx<'m> {
     /// parameters are captured. They come after the module's functions.
     entries: Vec<(FuncId, usize)>,
     entry_keys: HashMap<(FuncId, usize), u32>,
+    /// The handlers whose clauses are all tail-resumptive, and the index
+    /// of the wrapper of their first clause: a function of the clause type
+    /// that reads the environment out of the frame and calls the clause.
+    /// They come after the module's functions.
+    wrappers: BTreeMap<HandlerId, u32>,
 }
+
+/// The global holding the top of the handler stack.
+pub(crate) const HANDLERS: u32 = 0;
 
 impl Cx<'_> {
     fn func_index(&self, f: FuncId) -> Result<u32, String> {
@@ -68,6 +83,34 @@ impl Cx<'_> {
             .ok_or_else(|| format!("unknown extern {e}"))
     }
 
+    /// The number of an effect, which its frames hold.
+    fn effect_number(&self, e: EffectId) -> Result<i32, String> {
+        self.m
+            .effects
+            .keys()
+            .position(|&k| k == e)
+            .map(|i| i as i32)
+            .ok_or_else(|| format!("unknown effect {e}"))
+    }
+
+    /// The wrapper of clause `i` of `h`.
+    fn wrapper(&self, h: HandlerId, i: u32) -> Result<u32, String> {
+        match self.wrappers.get(&h) {
+            Some(first) => Ok(first + i),
+            None => Err(format!(
+                "{h} has a clause that isn't tail-resumptive, which needs stack switching \
+                 or evidence passing"
+            )),
+        }
+    }
+
+    fn wrapper_count(&self) -> u32 {
+        self.wrappers
+            .keys()
+            .map(|h| self.m.handlers[h].ops.len() as u32)
+            .sum()
+    }
+
     /// The wrapper of `f`'s closures with `n` captured values, and the type
     /// of those closures.
     fn entry(&mut self, f: FuncId, n: usize) -> Result<(u32, u32), String> {
@@ -81,7 +124,7 @@ impl Cx<'_> {
                 k
             }
         };
-        let first = (self.externs.len() + self.funcs.len()) as u32;
+        let first = (self.externs.len() + self.funcs.len()) as u32 + self.wrapper_count();
         Ok((first + k, captures))
     }
 }
@@ -89,6 +132,27 @@ impl Cx<'_> {
 /// Lowers a module that has passed [`conduit_ir::verify::verify_module`]
 /// to a Wasm binary, exporting each function in `exports` under its name.
 pub fn emit_module(m: &Module, exports: &[(FuncId, &str)]) -> Result<Vec<u8>, Error> {
+    // Tail-resumptive clauses are lowered as plain functions. Any other
+    // clause keeps its continuation parameter, which has no Wasm type.
+    let mut plain_clauses: BTreeMap<FuncId, Func> = BTreeMap::new();
+    let mut not_plain = BTreeMap::new();
+    for (&h, decl) in &m.handlers {
+        for &clause in &decl.ops {
+            match m
+                .funcs
+                .get(&clause)
+                .and_then(conduit_ir::clause::plain_call)
+            {
+                Some(f) => {
+                    plain_clauses.insert(clause, f);
+                }
+                None => {
+                    not_plain.insert(clause, h);
+                }
+            }
+        }
+    }
+
     let mut cx = Cx {
         m,
         types: Types::new(m),
@@ -96,9 +160,18 @@ pub fn emit_module(m: &Module, exports: &[(FuncId, &str)]) -> Result<Vec<u8>, Er
         funcs: BTreeMap::new(),
         entries: Vec::new(),
         entry_keys: HashMap::new(),
+        wrappers: BTreeMap::new(),
     };
     let first = m.externs.len() as u32;
     cx.funcs = m.funcs.keys().zip(first..).map(|(&f, i)| (f, i)).collect();
+
+    let mut next_wrapper = first + m.funcs.len() as u32;
+    for (&h, decl) in &m.handlers {
+        if decl.ops.iter().all(|c| plain_clauses.contains_key(c)) {
+            cx.wrappers.insert(h, next_wrapper);
+            next_wrapper += decl.ops.len() as u32;
+        }
+    }
 
     // Function types of imports and functions are outside the group, so
     // that the host sees ordinary types like `(func (param i32))`.
@@ -126,9 +199,30 @@ pub fn emit_module(m: &Module, exports: &[(FuncId, &str)]) -> Result<Vec<u8>, Er
             item: Item::Func(id),
             message,
         };
+        if let Some(h) = not_plain.get(&id) {
+            return Err(err(format!(
+                "a clause of {h} that isn't tail-resumptive, which needs stack switching \
+                 or evidence passing"
+            )));
+        }
+        let f = plain_clauses.get(&id).unwrap_or(f);
         let sig = cx.types.sig(&f.sig()).map_err(err)?;
         let body = func::lower_func(&mut cx, f).map_err(err)?;
         funcs.push((plain(sig), body));
+    }
+
+    let mut wrappers = Vec::new();
+    for h in cx.wrappers.keys().copied().collect::<Vec<_>>() {
+        let decl = &m.handlers[&h];
+        for i in 0..decl.ops.len() as u32 {
+            let err = |message| Error {
+                item: Item::Handler(h),
+                message,
+            };
+            let ty = cx.types.clause(decl.effect, i).map_err(err)?;
+            let body = func::lower_wrapper(&mut cx, h, i).map_err(err)?;
+            wrappers.push((ty, body));
+        }
     }
 
     let mut entries = Vec::new();
@@ -154,6 +248,14 @@ pub fn emit_module(m: &Module, exports: &[(FuncId, &str)]) -> Result<Vec<u8>, Er
     }
 
     let entry_count = cx.entries.len();
+    let handlers = if m.effects.is_empty() {
+        None
+    } else {
+        Some(cx.types.frame().map_err(|message| Error {
+            item: Item::Effect(*m.effects.keys().next().unwrap()),
+            message,
+        })?)
+    };
     let group = cx.types.finish();
     let group_len = group.len() as u32;
 
@@ -181,6 +283,7 @@ pub fn emit_module(m: &Module, exports: &[(FuncId, &str)]) -> Result<Vec<u8>, Er
     let bodies = funcs
         .iter()
         .map(|(sig, body)| (group_len + sig, body))
+        .chain(wrappers.iter().map(|(ty, body)| (*ty, body)))
         .chain(entries.iter().map(|(ty, body)| (*ty, body)));
     for (ty, body) in bodies {
         function_section.function(ty);
@@ -195,11 +298,24 @@ pub fn emit_module(m: &Module, exports: &[(FuncId, &str)]) -> Result<Vec<u8>, Er
     module.section(&type_section);
     module.section(&import_section);
     module.section(&function_section);
+    if let Some(frame) = handlers {
+        let mut globals = GlobalSection::new();
+        globals.global(
+            GlobalType {
+                val_type: nullable(frame),
+                mutable: true,
+                shared: false,
+            },
+            &ConstExpr::ref_null(HeapType::Concrete(frame)),
+        );
+        module.section(&globals);
+    }
     module.section(&export_section);
-    if entry_count > 0 {
+    let referenced = wrappers.len() + entry_count;
+    if referenced > 0 {
         // `ref.func` may only name functions declared in an element segment.
         let first = first + m.funcs.len() as u32;
-        let refs: Vec<u32> = (first..first + entry_count as u32).collect();
+        let refs: Vec<u32> = (first..first + referenced as u32).collect();
         let mut elements = ElementSection::new();
         elements.declared(Elements::Functions(refs.into()));
         module.section(&elements);

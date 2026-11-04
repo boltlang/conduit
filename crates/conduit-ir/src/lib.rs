@@ -13,6 +13,7 @@
 //! framework like Salsa without Conduit depending on it.
 
 pub mod build;
+pub mod clause;
 pub mod id;
 mod module;
 mod op;

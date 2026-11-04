@@ -40,6 +40,7 @@ fn is_trap(kind: &ErrorKind) -> bool {
             | ErrorKind::OutOfBounds { .. }
             | ErrorKind::Unreachable
             | ErrorKind::ContinuationResumedTwice
+            | ErrorKind::Unhandled(_)
     )
 }
 

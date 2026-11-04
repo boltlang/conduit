@@ -1,0 +1,11 @@
+// A `perform` with no handler of its effect traps.
+effect effect20 {
+  () -> ()
+}
+
+fn fn0() -> () {
+  let = perform effect20.0()
+  jump ret()
+}
+
+//# run fn0() traps

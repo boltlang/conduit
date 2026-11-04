@@ -20,6 +20,11 @@
 //! - A ref is a struct with one mutable field, and a boxed scalar is a
 //!   struct with one immutable field.
 //! - `Any` is `anyref`.
+//! - A handler frame, which `handle` pushes on the handler stack, is a
+//!   subtype of a base holding its effect's number and the next frame. A
+//!   frame for an effect adds a reference to each of its clauses, and a
+//!   handler's frame adds its environment. A clause is called with the
+//!   frame, then the operation's parameters.
 //!
 //! Mutability doesn't exist at run time, and every reference is nullable,
 //! so locals of any type have a default value and join point parameters
@@ -27,7 +32,7 @@
 
 use std::collections::HashMap;
 
-use conduit_ir::{CtorId, DataId, FuncId, Module, Sig, Ty};
+use conduit_ir::{CtorId, DataId, EffectId, FuncId, HandlerId, Module, Sig, Ty};
 use wasm_encoder::{
     ArrayType, CompositeInnerType, CompositeType, FieldType, FuncType, HeapType, RefType,
     StorageType, StructType, SubType, ValType,
@@ -55,6 +60,14 @@ enum Key {
     Entry(FnSig),
     /// A closure of a function with this many captured values.
     Captures(FuncId, usize),
+    /// The base type of handler frames.
+    Frame,
+    /// The frames of handlers of an effect.
+    EffectFrame(EffectId),
+    /// The type of the clauses for operation `i` of an effect.
+    Clause(EffectId, u32),
+    /// The frames of a handler.
+    HandlerFrame(HandlerId),
 }
 
 pub(crate) struct Types<'m> {
@@ -294,5 +307,80 @@ impl<'m> Types<'m> {
             Ok(subtype(true, Some(base), struct_(fields)))
         })?;
         Ok((idx, rest))
+    }
+
+    /// The base type of handler frames: an effect's number and the next
+    /// frame.
+    pub fn frame(&mut self) -> Result<u32, String> {
+        self.get_or(Key::Frame, |t| {
+            let next = nullable(t.keys[&Key::Frame]);
+            Ok(subtype(
+                false,
+                None,
+                struct_(vec![field(ValType::I32, false), field(next, false)]),
+            ))
+        })
+    }
+
+    /// The fields of a frame for `e`: the base's, then a clause per
+    /// operation.
+    fn effect_fields(&mut self, e: EffectId) -> Result<Vec<FieldType>, String> {
+        let next = nullable(self.frame()?);
+        let ops = self.ops(e)?;
+        let mut fields = vec![field(ValType::I32, false), field(next, false)];
+        for i in 0..ops {
+            fields.push(field(nullable(self.clause(e, i)?), false));
+        }
+        Ok(fields)
+    }
+
+    fn ops(&self, e: EffectId) -> Result<u32, String> {
+        match self.m.effects.get(&e) {
+            Some(decl) => Ok(decl.ops.len() as u32),
+            None => Err(format!("unknown effect {e}")),
+        }
+    }
+
+    /// The frames of handlers of `e`.
+    pub fn effect_frame(&mut self, e: EffectId) -> Result<u32, String> {
+        let base = self.frame()?;
+        self.get_or(Key::EffectFrame(e), |t| {
+            Ok(subtype(false, Some(base), struct_(t.effect_fields(e)?)))
+        })
+    }
+
+    /// The type of the clauses for operation `i` of `e`:
+    /// `func (frame, op params..) -> op results`.
+    pub fn clause(&mut self, e: EffectId, i: u32) -> Result<u32, String> {
+        let m: &'m Module = self.m;
+        let Some(op) = m.effects.get(&e).and_then(|d| d.ops.get(i as usize)) else {
+            return Err(format!("{e} has no operation {i}"));
+        };
+        self.get_or(Key::Clause(e, i), |t| {
+            let frame = nullable(t.effect_frame(e)?);
+            let sig = t.sig(op)?;
+            let params = std::iter::once(frame).chain(sig.params);
+            let ty = FuncType::new(params, sig.results);
+            Ok(subtype(true, None, CompositeInnerType::Func(ty)))
+        })
+    }
+
+    /// The frames of `h`: those of its effect, then its environment. Also
+    /// gives the index of the first field of the environment.
+    pub fn handler_frame(&mut self, h: HandlerId) -> Result<(u32, u32), String> {
+        let m: &'m Module = self.m;
+        let Some(decl) = m.handlers.get(&h) else {
+            return Err(format!("unknown handler {h}"));
+        };
+        let base = self.effect_frame(decl.effect)?;
+        let first = 2 + self.ops(decl.effect)?;
+        let idx = self.get_or(Key::HandlerFrame(h), |t| {
+            let mut fields = t.effect_fields(decl.effect)?;
+            for ty in t.vals(&decl.env)? {
+                fields.push(field(ty, false));
+            }
+            Ok(subtype(true, Some(base), struct_(fields)))
+        })?;
+        Ok((idx, first))
     }
 }
