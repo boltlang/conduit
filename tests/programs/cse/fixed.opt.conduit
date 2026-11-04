@@ -1,0 +1,45 @@
+data data0 {
+  (i32, i32)
+}
+
+fn fn0(%0: i32, %1: i32) -> (i32) vars(%3: i32, %5: i32) {
+  let %2: i32 = add(%0, %1)
+  let %4: i32 = div.s(%0, %1)
+  let %6: i32 = add(%4, %4)
+  jump ret(%6)
+}
+
+fn fn1(%0: i32) -> (i32) vars(%2: imm data0, %10: imm fn(i32) -> (i32)) {
+  let %1: imm data0 = new data0.0(%0, 1i32)
+  let %3: mut data0 = new data0.0(%0, 1i32)
+  let %4: mut data0 = new data0.0(%0, 1i32)
+  let = set data0.0.0(%3, 5i32)
+  let %5: i32 = get data0.0.0(%4)
+  let %6: ref i32 = ref_new(%0)
+  let %7: ref i32 = ref_new(%0)
+  let = ref_set(%6, 9i32)
+  let %8: i32 = ref_get(%7)
+  let %9: imm fn(i32) -> (i32) = closure fn3(%0)
+  let %11: i32 = get data0.0.1(%1)
+  let %12: i32 = add(%5, %8)
+  let %13: i32 = add(%12, %11)
+  jump ret(%13)
+}
+
+fn fn2(%0: i32, %1: i32) -> (i32) vars(%3: i32, %6: i32) {
+  let %2: i32 = mul(%0, %1)
+  case %0 {
+    0 =>
+      let %4: i32 = sub(%1, 1i32)
+      jump ret(%4)
+    _ =>
+      let %5: i32 = sub(%1, 1i32)
+      let %7: i32 = add(%5, %2)
+      jump ret(%7)
+  }
+}
+
+fn fn3(%0: i32, %1: i32) -> (i32) {
+  let %2: i32 = add(%0, %1)
+  jump ret(%2)
+}

@@ -905,6 +905,16 @@ Because the IR is so small, the classic simplifications are local rewrites:
   applies to it, and if `c` has no uses left, dead-code elimination removes
   the allocation. The `closures` pass does this, first among the passes,
   so that inlining sees the calls it makes in the same round.
+- **Common subexpressions.** A `Let` with the same op and arguments as
+  one on every path before it gives the same result, if the op only
+  computes, reads what can't change (an `Imm` object or array, an array's
+  length, a box), or reads what can change with nothing in between that
+  may write. An op that may trap can be shared too, since the second
+  can't trap if the first didn't. An op that makes an object is shared
+  only if nothing can tell the two apart: an `Imm` object or array, a
+  closure, a box. A join point can be jumped to after anything, so reads
+  of what can change aren't carried into one. The `cse` pass does this,
+  after `simplify`, since folding makes more ops look alike.
 - **Dead code.** Drop a `Let` whose results are unused and whose
   `op.effects()` doesn't write or trap, and drop a `Join` whose labels are
   unused.

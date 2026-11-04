@@ -1,0 +1,75 @@
+data data0 {
+  (i32, i32)
+}
+
+fn fn0(%0: mut data0, %1: imm data0) -> (i32) vars(%3: i32, %6: i32) {
+  let %2: i32 = get data0.0.0(%0)
+  let %4: i32 = get data0.0.0(%1)
+  let = set data0.0.0(%0, 7i32)
+  let %5: i32 = get data0.0.0(%0)
+  let %7: i32 = add(%2, %2)
+  let %8: i32 = add(%4, %5)
+  let %9: i32 = add(%7, %8)
+  let %10: i32 = add(%9, %4)
+  jump ret(%10)
+}
+
+fn fn1(%0: mut [i32]) -> (i32) vars(%4: i32, %6: imm [i32], %8: i32, %11: i32) {
+  let %1: i32 = array_get(%0, 0i32)
+  let %2: i32 = array_len(%0)
+  let = array_set(%0, 0i32, 5i32)
+  let %3: i32 = array_get(%0, 0i32)
+  let %5: imm [i32] = array_clone(%0)
+  let %7: i32 = array_get(%5, 0i32)
+  let %9: i32 = call fn3(%0)
+  let %10: i32 = array_get(%0, 0i32)
+  let %12: i32 = add(%1, %2)
+  let %13: i32 = add(%3, %2)
+  let %14: i32 = add(%7, %7)
+  let %15: i32 = add(%10, %7)
+  let %16: i32 = add(%12, %13)
+  let %17: i32 = add(%14, %15)
+  let %18: i32 = add(%16, %17)
+  jump ret(%18)
+}
+
+fn fn2(%0: ref i32, %1: imm data0) -> (i32) vars(%6: i32) {
+  let %2: i32 = ref_get(%0)
+  let %3: i32 = get data0.0.1(%1)
+  join rec j1(%4: i32) =
+    let %5: i32 = ref_get(%0)
+    let %7: i32 = add(%5, %3)
+    let = ref_set(%0, %7)
+    case %4 {
+      0 => jump ret(%7)
+      _ =>
+        let %8: i32 = sub(%4, 1i32)
+        jump j1(%8)
+    }
+  in jump j1(%3)
+}
+
+fn fn3(%0: mut [i32]) -> (i32) {
+  let = array_set(%0, 0i32, 100i32)
+  jump ret(0i32)
+}
+
+fn fn4(%0: i32) -> (i32) {
+  let %1: mut data0 = new data0.0(%0, 1i32)
+  let %2: imm data0 = new data0.0(10i32, 2i32)
+  let %3: i32 = call fn0(%1, %2)
+  jump ret(%3)
+}
+
+fn fn5() -> (i32) {
+  let %0: mut [i32] = array_fill(2i32, 1i32)
+  let %1: i32 = call fn1(%0)
+  jump ret(%1)
+}
+
+fn fn6() -> (i32) {
+  let %0: ref i32 = ref_new(1i32)
+  let %1: imm data0 = new data0.0(0i32, 3i32)
+  let %2: i32 = call fn2(%0, %1)
+  jump ret(%2)
+}
