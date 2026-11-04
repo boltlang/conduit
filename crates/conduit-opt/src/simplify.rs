@@ -24,8 +24,8 @@
 use std::collections::HashMap;
 
 use conduit_ir::{
-    Arm, Atom, Block, CtorId, Func, FuncId, JoinDef, Let, Lit, Mutability, Op, Prim, Program,
-    Tag, Tail, Ty, Var,
+    Arm, Atom, Block, CtorId, Func, FuncId, JoinDef, Let, Lit, Mutability, Op, Prim, Program, Tag,
+    Tail, Ty, Var,
 };
 
 use crate::Pass;
@@ -118,9 +118,7 @@ impl Cx<'_> {
                 let Some(Atom::Var(x)) = l.args.first() else {
                     return None;
                 };
-                let Some((made, args)) = self.news.get(x) else {
-                    return None;
-                };
+                let (made, args) = self.news.get(x)?;
                 let imm = matches!(self.vars[x.0 as usize], Ty::Data(_, Mutability::Imm, _));
                 (imm && made == c).then(|| args[*i as usize].clone())
             }
@@ -248,11 +246,9 @@ fn identity(p: &Prim, args: &[Atom]) -> Option<Atom> {
         (Prim::Add | Prim::Or | Prim::Xor, Some(0), _) => Some(y.clone()),
         (Prim::Mul, Some(1), _) | (Prim::And, Some(-1), _) => Some(y.clone()),
         (Prim::Mul | Prim::And, Some(0), _) => Some(x.clone()),
-        (
-            Prim::Add | Prim::Sub | Prim::Or | Prim::Xor | Prim::Shl | Prim::Shr(_),
-            _,
-            Some(0),
-        ) => Some(x.clone()),
+        (Prim::Add | Prim::Sub | Prim::Or | Prim::Xor | Prim::Shl | Prim::Shr(_), _, Some(0)) => {
+            Some(x.clone())
+        }
         (Prim::Mul, _, Some(1)) | (Prim::And, _, Some(-1)) => Some(x.clone()),
         (Prim::Mul | Prim::And, _, Some(0)) => Some(y.clone()),
         _ => None,
