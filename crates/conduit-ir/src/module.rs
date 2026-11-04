@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use crate::id::{DataId, EffectId, ExternId, FuncId, HandlerId, Label, Var};
 use crate::term::{Block, Tail};
-use crate::ty::{CtorDecl, Sig, Ty};
+use crate::ty::{CtorDecl, Mutability, Sig, Ty};
 
 /// A whole program, before linking.
 ///
@@ -20,6 +20,8 @@ pub struct Module {
 /// with their captured values as the first parameters.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Func {
+    /// The mutability parameters its types can use.
+    pub mut_params: MutParams,
     /// The type of every variable, indexed by [`Var`].
     pub vars: Vec<Ty>,
     /// How many labels the body uses, [`Label::RET`] included.
@@ -35,6 +37,7 @@ impl Func {
     pub fn new(params: Vec<Ty>, results: Vec<Ty>) -> Func {
         let params_len = params.len() as u32;
         Func {
+            mut_params: MutParams::default(),
             vars: params,
             labels: 1,
             params: (0..params_len).map(Var).collect(),
@@ -68,6 +71,22 @@ impl Func {
             results: self.results.clone(),
         }
     }
+}
+
+/// A function's mutability parameters, which its types use as
+/// [`Mutability::Param`] 1 to `count`, and what it assumes about them.
+/// Each call and closure of the function gives one argument per parameter:
+/// `Imm`, `Mut` or a parameter of the caller. So a parameter is always
+/// `Imm` or `Mut`, never `ReadOnly`, and a function can make objects of a
+/// parameter's mutability.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub struct MutParams {
+    pub count: u32,
+    /// `(a, b)` assumes that `a` is at most `b` (see
+    /// [`Mutability::at_most`]): an object of mutability `b` can hold
+    /// one of `a`. Each is `Imm`, `Mut`, `ReadOnly` or a parameter. A call
+    /// must meet them with its arguments.
+    pub assumes: Vec<(Mutability, Mutability)>,
 }
 
 /// An ADT. A tuple or a struct has one constructor.

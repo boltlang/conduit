@@ -248,7 +248,7 @@ impl RegionCx<'_> {
         let all = vars(&l.args).chain(l.binds.iter().copied());
         match &l.op {
             // Code we don't see gets the arguments and gives the results.
-            Op::Call(_)
+            Op::Call(..)
             | Op::CallExtern(_)
             | Op::Apply
             | Op::Handle(_)

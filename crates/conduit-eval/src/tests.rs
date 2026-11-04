@@ -171,7 +171,12 @@ fn count(tail: bool) -> Func {
                 r1,
                 Prim::Add,
                 vec![v(acc), int(1)],
-                let_(vec![r], Op::Call(MAIN), vec![v(n1), v(r1)], ret(vec![v(r)])),
+                let_(
+                    vec![r],
+                    Op::Call(MAIN, vec![]),
+                    vec![v(n1), v(r1)],
+                    ret(vec![v(r)]),
+                ),
             ),
         )
     } else {
@@ -181,7 +186,7 @@ fn count(tail: bool) -> Func {
             vec![v(n), int(1)],
             let_(
                 vec![r],
-                Op::Call(MAIN),
+                Op::Call(MAIN, vec![]),
                 vec![v(n1)],
                 prim(r1, Prim::Add, vec![v(r), int(1)], ret(vec![v(r1)])),
             ),
@@ -280,7 +285,7 @@ fn sum_list() -> Func {
             vec![v(xs)],
             let_(
                 vec![rest_sum],
-                Op::Call(G),
+                Op::Call(G, vec![]),
                 vec![v(tail)],
                 prim(
                     total,
@@ -339,7 +344,7 @@ fn data_and_case() {
                     l1,
                     1,
                     l2,
-                    let_(vec![r], Op::Call(G), vec![v(l1)], ret(vec![v(r)])),
+                    let_(vec![r], Op::Call(G, vec![]), vec![v(l1)], ret(vec![v(r)])),
                 ),
             ),
         ),
@@ -388,7 +393,7 @@ fn closures_and_refs() {
         vec![int(0)],
         let_(
             vec![add],
-            Op::Closure(G),
+            Op::Closure(G, vec![]),
             vec![v(counter)],
             let_(
                 vec![],
@@ -692,7 +697,7 @@ fn generator(n: i32, clause: impl FnOnce(&mut Func, Var, Var, Var) -> Block) -> 
         vec![int(0)],
         let_(
             vec![body],
-            Op::Closure(G),
+            Op::Closure(G, vec![]),
             vec![],
             let_(
                 vec![],
@@ -775,7 +780,7 @@ fn resuming_twice_is_an_error() {
         let c = f.new_var(Ty::Fn(Box::new(unit_sig()), Mut));
         let_(
             vec![c],
-            Op::Closure(H),
+            Op::Closure(H, vec![]),
             vec![v(k)],
             let_(
                 vec![],
@@ -798,7 +803,7 @@ fn perform_without_a_handler_is_an_error() {
     let mut m = generator(4, add_and_resume);
     // Call G directly, without the handler.
     let mut main = Func::new(vec![], vec![Ty::I32]);
-    main.body = let_(vec![], Op::Call(G), vec![], ret(vec![int(0)]));
+    main.body = let_(vec![], Op::Call(G, vec![]), vec![], ret(vec![int(0)]));
     m.funcs.insert(MAIN, main);
     assert_eq!(
         run(&m, vec![]).unwrap_err().kind,
@@ -855,4 +860,50 @@ fn error_messages() {
         };
         assert_eq!(error.to_string(), message);
     }
+}
+
+/// A function with a mutability parameter makes what its caller asks for:
+/// a write to the `mut` array works, and one to the `imm` array is an
+/// error.
+#[test]
+fn mutability_arguments_reach_the_callee() {
+    let m = conduit_ir::text::parse(
+        "fn fn0['m1]() -> ('m1 [i32]) {
+  let %0: 'm1 [i32] = array_new(1i32)
+  let = call fn1(%0)
+  jump ret(%0)
+}
+
+fn fn1(%0: ro [i32]) -> () {
+  jump ret()
+}",
+    )
+    .unwrap();
+    verify_module(&m).unwrap();
+    let mut machine = Machine::new(&m, NoHost);
+    let [Value::Obj(mut_array)] = machine.call_at(FuncId(0), vec![Mut], vec![]).unwrap()[..] else {
+        panic!("expected an array");
+    };
+    let [Value::Obj(imm_array)] = machine.call_at(FuncId(0), vec![Imm], vec![]).unwrap()[..] else {
+        panic!("expected an array");
+    };
+    let is_mut = |machine: &Machine<'_, Module, NoHost>, id| match machine.object(id) {
+        Some(Object::Array { is_mut, .. }) => *is_mut,
+        other => panic!("expected an array, got {other:?}"),
+    };
+    assert!(is_mut(&machine, mut_array));
+    assert!(!is_mut(&machine, imm_array));
+
+    let error = machine.call(FuncId(0), vec![]).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "invalid IR: fn0 takes 1 mutability arguments, but gets 0"
+    );
+    let error = machine
+        .call_at(FuncId(0), vec![Mutability::ReadOnly], vec![])
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "invalid IR: a mutability argument is imm or mut, not ro"
+    );
 }

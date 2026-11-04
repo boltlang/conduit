@@ -2,16 +2,18 @@
 //! [`crate::build`]), so that they agree.
 
 use super::{
-    Allowed, Checked, deep_imm, elem_ty, fits, inherit, object_mutability, prim_results, resolve,
-    sub, ty_ok,
+    Allowed, Checked, at_most, elem_ty, fits, inherit, instantiate, object_mutability,
+    prim_results, resolve, sub, ty_ok,
 };
 use crate::*;
 
 /// The types an op gives. For ops whose result type the IR doesn't
 /// spell out, like `New`'s mutability, that's the types of the
-/// variables it binds, `out`.
+/// variables it binds, `out`. `mp` is the parameters of the function the
+/// op is in.
 pub(crate) fn op_results<P: Program + ?Sized>(
     p: &P,
+    mp: &MutParams,
     op: &Op,
     args: &[Atom],
     tys: &[Ty],
@@ -20,10 +22,8 @@ pub(crate) fn op_results<P: Program + ?Sized>(
 ) -> Checked<Vec<Ty>> {
     match op {
         Op::Prim(prim) => prim_results(prim, tys),
-        Op::Call(f) => {
-            let sig = p
-                .func_sig(*f)
-                .ok_or_else(|| format!("unknown function {f}"))?;
+        Op::Call(f, margs) => {
+            let sig = instantiate(p, mp, "call", *f, margs)?;
             fits(tys, &sig.params).map_err(|m| format!("call of {f}: {m}"))?;
             Ok(sig.results)
         }
@@ -34,10 +34,8 @@ pub(crate) fn op_results<P: Program + ?Sized>(
             fits(tys, &ext.sig.params).map_err(|m| format!("call of {e}: {m}"))?;
             Ok(ext.sig.results.clone())
         }
-        Op::Closure(f) => {
-            let sig = p
-                .func_sig(*f)
-                .ok_or_else(|| format!("unknown function {f}"))?;
+        Op::Closure(f, margs) => {
+            let sig = instantiate(p, mp, "closure", *f, margs)?;
             let [Ty::Fn(fn_sig, m)] = out else {
                 return Err(format!("closure of {f} must bind one closure"));
             };
@@ -52,10 +50,8 @@ pub(crate) fn op_results<P: Program + ?Sized>(
                 ));
             };
             fits(tys, &sig.params[..n]).map_err(|m| format!("captures of {f}: {m}"))?;
-            if *m == Mutability::Imm
-                && let Some(ty) = tys.iter().find(|ty| !deep_imm(p, ty))
-            {
-                return Err(format!("an imm closure can't capture a {ty}"));
+            if let Some(ty) = tys.iter().find(|ty| !at_most(p, ty, *m, &mp.assumes)) {
+                return Err(format!("{} {m} closure can't capture a {ty}", article(*m)));
             }
             Ok(out.to_vec())
         }
@@ -84,8 +80,11 @@ pub(crate) fn op_results<P: Program + ?Sized>(
             }
             for (i, (ty, field)) in tys.iter().zip(fields).enumerate() {
                 let field = resolve(field, *m, margs);
-                if *m == Mutability::Imm && !deep_imm(p, &field) {
-                    return Err(format!("an imm {c} can't hold field {i} of type {field}"));
+                if !at_most(p, &field, *m, &mp.assumes) {
+                    return Err(format!(
+                        "{} {m} {c} can't hold field {i} of type {field}",
+                        article(*m)
+                    ));
                 }
                 if !sub(ty, &field) {
                     return Err(format!(
@@ -119,7 +118,7 @@ pub(crate) fn op_results<P: Program + ?Sized>(
             Ok(vec![])
         }
         Op::ArrayNew => {
-            let elem = new_array(p, out)?;
+            let elem = new_array(p, mp, out)?;
             for ty in tys {
                 if !sub(ty, &elem) {
                     return Err(format!("array of {elem} gets an element of type {ty}"));
@@ -128,7 +127,7 @@ pub(crate) fn op_results<P: Program + ?Sized>(
             Ok(out.to_vec())
         }
         Op::ArrayFill => {
-            let elem = new_array(p, out)?;
+            let elem = new_array(p, mp, out)?;
             let [Ty::I32, ty] = tys else {
                 return Err("array fill needs an i32 length and a value".into());
             };
@@ -174,13 +173,13 @@ pub(crate) fn op_results<P: Program + ?Sized>(
             _ => Err("ref set needs a ref and a value".into()),
         },
         Op::Box(ty) => {
-            ty_ok(p, ty, Allowed::PLAIN)?;
+            ty_ok(p, ty, Allowed::func(mp.count))?;
             match tys {
                 [arg] if sub(arg, ty) => {}
                 [arg] => return Err(format!("box of {ty} gets a {arg}")),
                 _ => return Err("box needs one value".into()),
             }
-            let m = if deep_imm(p, ty) {
+            let m = if at_most(p, ty, Mutability::Imm, &mp.assumes) {
                 Mutability::Imm
             } else {
                 Mutability::Mut
@@ -188,14 +187,14 @@ pub(crate) fn op_results<P: Program + ?Sized>(
             Ok(vec![Ty::Any(m)])
         }
         Op::Unbox(ty) => {
-            ty_ok(p, ty, Allowed::PLAIN)?;
+            ty_ok(p, ty, Allowed::func(mp.count))?;
             match tys {
                 [Ty::Any(_)] => Ok(vec![ty.clone()]),
                 _ => Err("unbox needs one any".into()),
             }
         }
-        Op::ArrayClone => array_clone(p, tys, out, false),
-        Op::ArrayFreeze => array_clone(p, tys, out, true),
+        Op::ArrayClone => array_clone(p, mp, tys, out, false),
+        Op::ArrayFreeze => array_clone(p, mp, tys, out, true),
         Op::Handle(h) => {
             let decl = p
                 .handler(*h)
@@ -272,6 +271,7 @@ fn field<P: Program + ?Sized>(
 /// say gets with the same elements.
 fn array_clone<P: Program + ?Sized>(
     p: &P,
+    mp: &MutParams,
     tys: &[Ty],
     out: &[Ty],
     freeze: bool,
@@ -296,7 +296,7 @@ fn array_clone<P: Program + ?Sized>(
     if freeze && !matches!(out, [Ty::Array(_, Mutability::Imm)]) {
         return Err("array freeze must bind one imm array".into());
     }
-    let elem = new_array(p, out)?;
+    let elem = new_array(p, mp, out)?;
     if !sub(&have, &elem) {
         return Err(format!(
             "{what} of a {from} can't give a {}: its elements are {have}",
@@ -333,14 +333,25 @@ fn field_access<P: Program + ?Sized>(
 }
 
 /// The element type of an array that an op creates and binds.
-fn new_array<P: Program + ?Sized>(p: &P, out: &[Ty]) -> Checked<Ty> {
+fn new_array<P: Program + ?Sized>(p: &P, mp: &MutParams, out: &[Ty]) -> Checked<Ty> {
     let [Ty::Array(elem, m)] = out else {
         return Err("an array op must bind one array".into());
     };
     object_mutability(*m)?;
     let elem = inherit(elem, *m);
-    if *m == Mutability::Imm && !deep_imm(p, &elem) {
-        return Err(format!("an imm array can't hold elements of type {elem}"));
+    if !at_most(p, &elem, *m, &mp.assumes) {
+        return Err(format!(
+            "{} {m} array can't hold elements of type {elem}",
+            article(*m)
+        ));
     }
     Ok(elem)
+}
+
+/// "an imm array", "a mut array", "a 'm1 array".
+fn article(m: Mutability) -> &'static str {
+    match m {
+        Mutability::Imm | Mutability::Inherit => "an",
+        _ => "a",
+    }
 }

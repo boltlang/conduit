@@ -1,0 +1,92 @@
+// What mutability parameters on functions rule out.
+
+data data0['m1] {
+  ('m1 [i32])
+}
+
+effect effect0 {
+  () -> ()
+}
+
+handler handler0 for effect0 env() ops(fn9) ret fn10
+
+// A parameter may be `imm`, so what has it can't be written.
+fn fn0['m1](%0: 'm1 [i32]) -> () {
+  let = array_set(%0, 0i32, 1i32)
+  jump ret()
+}
+
+// A box can't hold an array of another parameter without assuming it's at
+// most the box's.
+fn fn1['m1, 'm2](%0: 'm2 [i32]) -> ('m1 data0['m2]) {
+  let %1: 'm1 data0['m2] = new data0.0(%0)
+  jump ret(%1)
+}
+
+// A `mut` array can't go in an object that may be `imm`.
+fn fn2['m1](%0: mut [i32]) -> () {
+  let %1: 'm1 [mut [i32]] = array_new(%0)
+  jump ret()
+}
+
+// A call gives one argument per parameter.
+fn fn3() -> () {
+  let %0: mut [i32] = array_new()
+  let %1: mut [i32] = call fn0(%0)
+  jump ret()
+}
+
+// An argument is `imm`, `mut` or a parameter, never a view.
+fn fn4(%0: ro [i32]) -> () {
+  let = call fn0[ro](%0)
+  jump ret()
+}
+
+// A call must meet what the callee assumes: an `imm` box can't hold a `mut`
+// array.
+fn fn5(%0: mut [i32]) -> () {
+  let %1: imm data0[mut] = call fn6[imm, mut](%0)
+  jump ret()
+}
+
+fn fn6['m1, 'm2](%0: 'm2 [i32]) -> ('m1 data0['m2]) where 'm2: 'm1 {
+  let %1: 'm1 data0['m2] = new data0.0(%0)
+  jump ret(%1)
+}
+
+// A parameter isn't `imm`: what has it doesn't fit where `imm` is expected.
+fn fn7['m1](%0: 'm1 [i32]) -> (imm [i32]) {
+  jump ret(%0)
+}
+
+// Inside a generic function, a call that passes a parameter on must meet
+// the callee's assumptions with what the caller assumes.
+fn fn8['m1, 'm2](%0: 'm1 [i32]) -> () {
+  let %1: 'm2 data0['m1] = call fn6['m2, 'm1](%0)
+  jump ret()
+}
+
+// A handler gives its clauses no mutability arguments.
+fn fn9['m1](%0: cont() -> ()) -> () {
+  jump ret()
+}
+
+fn fn10() -> () {
+  jump ret()
+}
+
+// An assumption is about mutabilities, not `inherit`.
+fn fn11['m1]() -> () where 'm1: inherit {
+  jump ret()
+}
+
+//# verify-error: fn0: can't set an element of a 'm1 [i32]
+//# verify-error: fn1: a 'm1 data0.0 can't hold field 0 of type 'm2 [i32]
+//# verify-error: fn2: a 'm1 array can't hold elements of type mut [i32]
+//# verify-error: fn3: call of fn0: takes 1 mutability arguments, but gets 0
+//# verify-error: fn4: call of fn0: the mutability argument ro isn't imm, mut or a parameter
+//# verify-error: fn5: call of fn6: fn6 assumes 'm2: 'm1, so it needs mut: imm, which doesn't hold
+//# verify-error: fn7: jump to ret: value 0 has type 'm1 [i32], but should have imm [i32]
+//# verify-error: fn8: call of fn6: fn6 assumes 'm2: 'm1, so it needs 'm1: 'm2, which doesn't hold
+//# verify-error: handler0: clause fn9 has mutability parameters, which a handler can't give
+//# verify-error: fn11: assumes 'm1: inherit, but inherit isn't a mutability or one of its parameters

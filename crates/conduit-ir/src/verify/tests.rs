@@ -383,7 +383,7 @@ fn mut_and_imm_fit_read_only() {
 
     let mut f = Func::new(vec![Ty::data(POINT, Mut)], vec![]);
     let p = f.params[0];
-    f.body = let_(vec![], Op::Call(G), vec![v(p)], ret(vec![]));
+    f.body = let_(vec![], Op::Call(G, vec![]), vec![v(p)], ret(vec![]));
     assert_eq!(check_in(m.clone(), f), Vec::<String>::new());
 
     let mut h = Func::new(vec![Ty::data(POINT, Mut)], vec![]);
@@ -391,7 +391,7 @@ fn mut_and_imm_fit_read_only() {
     m.funcs.insert(G, h);
     let mut f = Func::new(vec![Ty::data(POINT, ReadOnly)], vec![]);
     let p = f.params[0];
-    f.body = let_(vec![], Op::Call(G), vec![v(p)], ret(vec![]));
+    f.body = let_(vec![], Op::Call(G, vec![]), vec![v(p)], ret(vec![]));
     let errors = check_in(m, f);
     assert!(
         errors
@@ -421,7 +421,7 @@ fn closure_capturing_ref(m: Mutability) -> Vec<String> {
         vec![r],
         Op::RefNew,
         vec![int(0)],
-        let_(vec![c], Op::Closure(G), vec![v(r)], ret(vec![])),
+        let_(vec![c], Op::Closure(G, vec![]), vec![v(r)], ret(vec![])),
     );
     check_in(module, f)
 }
@@ -688,7 +688,7 @@ fn handle_and_perform() {
     let body = f.new_var(Ty::Fn(Box::new(unit_sig()), Imm));
     f.body = let_(
         vec![body],
-        Op::Closure(G),
+        Op::Closure(G, vec![]),
         vec![],
         let_(vec![], Op::Handle(SUM), vec![v(body)], ret(vec![])),
     );
@@ -719,7 +719,7 @@ fn call_of_a_broken_function_is_an_error() {
     let mut m = module();
     m.funcs.insert(G, g);
     let mut f = Func::new(vec![], vec![]);
-    f.body = let_(vec![], Op::Call(G), vec![], ret(vec![]));
+    f.body = let_(vec![], Op::Call(G, vec![]), vec![], ret(vec![]));
     let errors = check_in(m, f);
     assert!(
         errors.iter().any(|e| e.contains("unknown function fn2")),
@@ -750,7 +750,7 @@ fn continuation_used_through_a_closure_is_left_to_run_time() {
         let c = f.new_var(closure_ty);
         let_(
             vec![c],
-            Op::Closure(G),
+            Op::Closure(G, vec![]),
             vec![v(k)],
             let_(
                 vec![],
@@ -770,7 +770,12 @@ fn continuation_captured_and_resumed_counts_twice() {
     let closure_ty = Ty::Fn(Box::new(unit_sig()), Mut);
     let mut m = handler_module(|f, k| {
         let c = f.new_var(closure_ty);
-        let_(vec![c], Op::Closure(G), vec![v(k)], resume(k, ret(vec![])))
+        let_(
+            vec![c],
+            Op::Closure(G, vec![]),
+            vec![v(k)],
+            resume(k, ret(vec![])),
+        )
     });
     closure_resuming(&mut m, k_ty);
     let errors = verify(&m);

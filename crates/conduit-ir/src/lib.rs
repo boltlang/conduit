@@ -22,7 +22,7 @@ mod ty;
 pub mod verify;
 
 pub use id::{CtorId, DataId, EffectId, ExternId, FuncId, HandlerId, Label, SourceId, Var};
-pub use module::{DataDecl, EffectDecl, Extern, Func, HandlerDecl, Module};
+pub use module::{DataDecl, EffectDecl, Extern, Func, HandlerDecl, Module, MutParams};
 pub use op::{Effects, Op, Prim, Sign};
 pub use term::{Arm, Atom, Block, JoinDef, Let, Lit, Tag, Tail};
 pub use ty::{CtorDecl, Mutability, Sig, Ty};
@@ -49,6 +49,11 @@ pub trait Program {
             params: params.collect::<Option<_>>()?,
             results: f.results.clone(),
         })
+    }
+
+    /// A function's mutability parameters, which its signature can use.
+    fn func_mut_params(&self, id: FuncId) -> Option<MutParams> {
+        Some(self.func(id)?.mut_params.clone())
     }
 
     fn data(&self, id: DataId) -> Option<&DataDecl>;

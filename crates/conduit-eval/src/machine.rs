@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use conduit_ir::verify::subst_params;
 use conduit_ir::{
     Atom, Block, EffectId, Extern, ExternId, Func, FuncId, HandlerId, JoinDef, Label, Mutability,
     Op, Program, SourceId, Tag, Tail, Ty, Var,
@@ -41,6 +42,8 @@ pub(crate) enum Frame<'p> {
 #[derive(Debug)]
 pub(crate) struct Code<'p> {
     func: FuncId,
+    /// The function's mutability arguments, each `Imm` or `Mut`.
+    margs: Vec<Mutability>,
     labels: Labels<'p>,
     vars: Vec<Option<Value>>,
     /// What runs next.
@@ -103,11 +106,30 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
 
     /// Calls a function and runs it to completion.
     pub fn call(&mut self, func: FuncId, args: Vec<Value>) -> Result<Vec<Value>, Error> {
+        self.call_at(func, Vec::new(), args)
+    }
+
+    /// Calls a function with mutability parameters, each argument `Imm` or
+    /// `Mut`, and runs it to completion.
+    pub fn call_at(
+        &mut self,
+        func: FuncId,
+        margs: Vec<Mutability>,
+        args: Vec<Value>,
+    ) -> Result<Vec<Value>, Error> {
         if !self.stack.is_empty() {
             return Err(self.error(unverified("the machine is already running")));
         }
         self.source = None;
-        let result = self.enter(func, args).and_then(|()| self.run());
+        if let Some(m) = margs
+            .iter()
+            .find(|m| !matches!(m, Mutability::Imm | Mutability::Mut))
+        {
+            return Err(self.error(unverified(format!(
+                "a mutability argument is imm or mut, not {m}"
+            ))));
+        }
+        let result = self.enter(func, args, margs).and_then(|()| self.run());
         result.map_err(|kind| {
             let error = self.error(kind);
             self.stack.clear();
@@ -249,7 +271,7 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
     }
 
     /// Pushes a frame for a call.
-    fn enter(&mut self, func: FuncId, args: Vec<Value>) -> Step<()> {
+    fn enter(&mut self, func: FuncId, args: Vec<Value>, margs: Vec<Mutability>) -> Step<()> {
         let f = self
             .p
             .func(func)
@@ -262,8 +284,16 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
             .entry(func)
             .or_insert_with(|| join_defs(f))
             .clone();
+        if margs.len() != f.mut_params.count as usize {
+            return Err(unverified(format!(
+                "{func} takes {} mutability arguments, but gets {}",
+                f.mut_params.count,
+                margs.len()
+            )));
+        }
         let mut code = Code {
             func,
+            margs,
             labels,
             vars: vec![None; f.vars.len()],
             at: At::start(&f.body),
@@ -287,7 +317,7 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                     .handler(handler)
                     .ok_or_else(|| unverified(format!("unknown handler {handler}")))?;
                 env.extend(results);
-                self.enter(decl.ret, env)?;
+                self.enter(decl.ret, env, Vec::new())?;
             }
             Some(frame @ Frame::Code(_)) => {
                 self.stack.push(frame);
@@ -314,12 +344,13 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
     fn call_from(
         &mut self,
         func: FuncId,
+        margs: Vec<Mutability>,
         args: Vec<Value>,
         binds: &'p [Var],
         next: At<'p>,
     ) -> Step<()> {
         self.wait_or_leave(binds, next)?;
-        self.enter(func, args)
+        self.enter(func, args, margs)
     }
 
     /// Before control leaves the running function from a `let`: makes it
@@ -337,7 +368,35 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
     /// Whether the variable an op binds is `Mut`, for ops that create an
     /// object of the variable's mutability.
     fn binds_mut(&self, binds: &[Var]) -> Step<bool> {
-        Ok(self.bind_ty(binds)?.mutability() == Some(Mutability::Mut))
+        match self.bind_ty(binds)?.mutability() {
+            Some(m) => Ok(self.concrete(m)? == Mutability::Mut),
+            None => Ok(false),
+        }
+    }
+
+    /// What a mutability is in the running function: a parameter is its
+    /// argument.
+    fn concrete(&self, m: Mutability) -> Step<Mutability> {
+        match m {
+            Mutability::Param(i) => {
+                let code = self.code_ref()?;
+                let arg = (i as usize).checked_sub(1).and_then(|j| code.margs.get(j));
+                arg.copied()
+                    .ok_or_else(|| unverified(format!("{m} isn't a parameter here")))
+            }
+            m => Ok(m),
+        }
+    }
+
+    /// Mutability arguments of a call or closure, made concrete.
+    fn concrete_all(&self, margs: &[Mutability]) -> Step<Vec<Mutability>> {
+        margs.iter().map(|&m| self.concrete(m)).collect()
+    }
+
+    /// A type in the running function, with its parameters' arguments in
+    /// place of them.
+    fn concrete_ty(&self, ty: &Ty) -> Step<Ty> {
+        Ok(subst_params(ty, &self.code_ref()?.margs))
     }
 
     /// The type of the variable an op that gives one value binds.
@@ -355,7 +414,10 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
     fn op(&mut self, op: &'p Op, args: Vec<Value>, binds: &'p [Var], next: At<'p>) -> Step<()> {
         let results = match op {
             Op::Prim(prim) => vec![prim::eval(prim, &args)?],
-            Op::Call(f) => return self.call_from(*f, args, binds, next),
+            Op::Call(f, margs) => {
+                let margs = self.concrete_all(margs)?;
+                return self.call_from(*f, margs, args, binds, next);
+            }
             Op::CallExtern(e) => {
                 let decl = self
                     .p
@@ -363,10 +425,12 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                     .ok_or_else(|| unverified(format!("unknown extern {e}")))?;
                 self.host.call(*e, decl, &args).map_err(ErrorKind::Host)?
             }
-            Op::Closure(f) => {
+            Op::Closure(f, margs) => {
                 let is_mut = self.binds_mut(binds)?;
+                let margs = self.concrete_all(margs)?;
                 vec![self.alloc(Object::Closure {
                     func: *f,
+                    margs,
                     captures: args,
                     is_mut,
                 })]
@@ -375,12 +439,17 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                 let (closure, rest) = args
                     .split_first()
                     .ok_or_else(|| unverified("apply without a closure"))?;
-                let (func, mut all) = match self.object_ref(obj(*closure)?)? {
-                    Object::Closure { func, captures, .. } => (*func, captures.clone()),
+                let (func, margs, mut all) = match self.object_ref(obj(*closure)?)? {
+                    Object::Closure {
+                        func,
+                        margs,
+                        captures,
+                        ..
+                    } => (*func, margs.clone(), captures.clone()),
                     _ => return Err(unverified("apply of something that isn't a closure")),
                 };
                 all.extend_from_slice(rest);
-                return self.call_from(func, all, binds, next);
+                return self.call_from(func, margs, all, binds, next);
             }
             Op::New(c) => {
                 let is_mut = self.binds_mut(binds)?;
@@ -511,12 +580,17 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                 }
                 vec![]
             }
-            Op::Box(ty) => vec![self.alloc(Object::Any {
-                ty: ty.clone(),
-                value: arg(&args, 0)?,
-            })],
+            Op::Box(ty) => {
+                let ty = self.concrete_ty(ty)?;
+                vec![self.alloc(Object::Any {
+                    ty,
+                    value: arg(&args, 0)?,
+                })]
+            }
             Op::Unbox(ty) => match self.object_ref(obj(arg(&args, 0)?)?)? {
-                Object::Any { ty: boxed, value } if boxed.is_subtype(ty) => vec![*value],
+                Object::Any { ty: boxed, value } if boxed.is_subtype(&self.concrete_ty(ty)?) => {
+                    vec![*value]
+                }
                 Object::Any { ty: boxed, .. } => {
                     return Err(ErrorKind::Undefined(format!(
                         "unbox of a {boxed} as a {ty}"
@@ -524,7 +598,6 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                 }
                 _ => return Err(unverified("unbox of something that isn't boxed")),
             },
-            // The type of what it binds says what's copied.
             Op::Handle(h) => return self.handle(*h, args, binds, next),
             Op::Perform(e, i) => return self.perform(*e, *i, args, binds, next),
             Op::Resume => return self.resume(args, binds, next),
@@ -545,13 +618,18 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
         let closure = args
             .pop()
             .ok_or_else(|| unverified("handle without a body"))?;
-        let (func, captures) = match self.object_ref(obj(closure)?)? {
-            Object::Closure { func, captures, .. } => (*func, captures.clone()),
+        let (func, margs, captures) = match self.object_ref(obj(closure)?)? {
+            Object::Closure {
+                func,
+                margs,
+                captures,
+                ..
+            } => (*func, margs.clone(), captures.clone()),
             _ => return Err(unverified("the body of a handle isn't a closure")),
         };
         self.code()?.waiting = Some((binds, next));
         self.stack.push(Frame::Handler { handler, env: args });
-        self.enter(func, captures)
+        self.enter(func, captures, margs)
     }
 
     fn perform(
@@ -594,7 +672,7 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
             frames: Some(frames),
         })));
         // The clause returns to the `handle`.
-        self.enter(clause, clause_args)
+        self.enter(clause, clause_args, Vec::new())
     }
 
     fn resume(&mut self, args: Vec<Value>, binds: &'p [Var], next: At<'p>) -> Step<()> {

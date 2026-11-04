@@ -80,9 +80,9 @@ look inside it. They only ask it a few questions:
 ```rust
 pub enum Op {
     Prim(Prim),            // add, sub, mul, div, eq, lt, conversions, ...
-    Call(FuncId),          // direct call
+    Call(FuncId, Vec<Mutability>),     // direct call, with mutability arguments
     CallExtern(ExternId),  // host function (FFI, runtime builtins)
-    Closure(FuncId),       // args = captured values; result has type Fn(sig)
+    Closure(FuncId, Vec<Mutability>),  // args = captured values; result has type Fn(sig)
     Apply,                 // args[0] = closure, rest = arguments
     New(CtorId),           // allocate an ADT value; args = its fields
     Get(CtorId, u32),      // read field i
@@ -143,8 +143,10 @@ pub struct CtorDecl { fields: Vec<Ty> }
 Mutability is part of the types that are objects: see "Mutability".
 `Inherit` is only valid in the field types of a `CtorDecl` and in the
 element type of an `Array`, and `Param(i)` only in the field types of a
-`DataDecl` with at least `i` parameters. A `Data` type gives exactly one
-argument per parameter of its declaration: `Imm`, `Mut` or `ReadOnly`.
+`DataDecl` with at least `i` parameters and in the types of a `Func` with
+at least `i`. A `Data` type gives exactly one argument per parameter of
+its declaration: `Imm`, `Mut`, `ReadOnly` or a parameter of the function
+it's in.
 
 A tuple or struct is a `DataDecl` with one constructor. `Bool` and
 field-less enums are `I32`. Unit is zero values and `!` is zero results, so
@@ -163,9 +165,15 @@ pub struct Module {
 }
 
 pub struct Func {
+    mut_params: MutParams, // see "Mutability parameters on functions"
     params: Vec<Var>,
     results: Vec<Ty>,
     body: Block,           // `ret` is in scope: see below
+}
+
+pub struct MutParams {
+    count: u32,
+    assumes: Vec<(Mutability, Mutability)>,  // (a, b): a is at most b
 }
 ```
 
@@ -212,7 +220,8 @@ lose optimizations by this, since `Closure(f)` names the function: see
 ### Polymorphism
 
 Conduit is monomorphic: functions have no type parameters, and every type
-is known. Frontends monomorphize, which gives fast, unboxed code. That
+is known. (They can have mutability parameters, which don't change how
+anything is laid out: see "Mutability parameters on functions".) Frontends monomorphize, which gives fast, unboxed code. That
 fails for **polymorphic recursion**, where a function calls itself at a
 different type:
 
@@ -336,6 +345,10 @@ Rules the verifier checks:
    that are `Imm` all the way down: scalars, and `Data`, `Array`, `Fn` and
    `Any` with `Imm`. It never holds a `Ref`, a `Cont`, or anything `Mut` or
    `ReadOnly`. This is checked at `New`, `ArrayNew`, `Closure` and `Box`.
+   In general, an object of mutability `m` holds only what is **at most**
+   `m` all the way down, in the order `Imm ⊑ ReadOnly ⊑ Mut`: that's the
+   rule above for `Imm` and no rule for `Mut`, and it's what decides for a
+   mutability parameter (see below).
 2. **Only `Mut` can be written.** `Set` and `ArraySet` need a `Mut` object.
    `RefSet` always works, since refs are always `Mut`.
 3. **Subtyping.** `Imm ≤ ReadOnly` and `Mut ≤ ReadOnly`, for an object's own
@@ -345,6 +358,53 @@ Rules the verifier checks:
    `Apply`, `Jump` or `New` may have a subtype of the expected type.
    Nothing else converts between mutabilities: a value of another
    mutability is a new value (see below).
+
+### Mutability parameters on functions
+
+A function can have mutability parameters, so that one function serves
+callers of either mutability without losing what they know.
+`ReadOnly` covers a parameter that's only read, but not a result: a
+function that gives back what it gets would give a `Mut` caller a value it
+can't write, and an `Imm` caller one it can't put in an `Imm` object. And it
+can't make objects at all, since no object is made `ReadOnly`.
+
+```
+fn fn0['m1](%0: 'm1 [i32]) -> ('m1 [i32]) { jump ret(%0) }
+fn fn1['m1](%0: i32) -> ('m1 [i32]) { .. array_fill(%0, 0i32) .. }
+
+let %1: mut [i32] = call fn0[mut](%0)    // still mut
+let %2: imm [i32] = call fn1[imm](3i32)  // made imm
+```
+
+- **Each call gives an argument per parameter**, as does each `Closure`:
+  `Imm`, `Mut` or a parameter of the caller, never `ReadOnly`. So inside
+  the function, a parameter is `Imm` or `Mut`, not known which. The
+  callee's signature is seen with the arguments in place of its
+  parameters. A handler's clauses have no parameters, since nothing gives
+  them arguments.
+- **A parameter can't be written:** `Set` and `ArraySet` need `Mut`, and a
+  parameter may be `Imm`. It can be read, seen as `ReadOnly`, and made:
+  `New`, `ArrayNew`, `ArrayFill`, `ArrayClone` and `Closure` can bind a
+  type of a parameter's mutability.
+- **Holding** follows "at most": a `'m1` object can hold scalars, `Imm`
+  values and `'m1` ones, since all of them are at most `'m1` whichever it
+  is, but not a `Mut` one, nor one of another parameter `'m2`, unless the
+  function assumes it.
+- **Assumptions** say more: `where 'm2: 'm1` assumes `'m2 ⊑ 'm1`, so a
+  `'m1` object can hold a `'m2` one. `where 'm1: imm` makes `'m1` `Imm`.
+  Each call must meet them with its arguments, under the caller's own
+  assumptions: `fn2['m1, 'm2]` with `'m2: 'm1` can be called as
+  `fn2[mut, imm]` or `fn2[imm, imm]`, but not `fn2[imm, mut]`, which would
+  put a `Mut` array in an `Imm` box. Assumptions are about holding, not
+  subtyping: a `'m1` value never fits where `Imm` is expected, whatever is
+  assumed.
+
+These are Bolt's rules, where a generic function keeps its `'m`
+parameters and `where` clauses, and an instance is specialized on types
+but not on mutabilities. At run time nothing changes: mutability doesn't
+exist in a backend, so one function is compiled once for every mutability
+it's called with. Only the evaluator, whose objects know their mutability,
+carries the arguments of each call.
 
 ### Copying between mutabilities
 
@@ -816,7 +876,11 @@ fn fn1(%0: i32) -> (i32) {
   Mutabilities are `imm`, `mut`, `ro` and `inherit`. A data type gives its
   mutability arguments in brackets, `mut data10[imm, mut]`, and a
   declaration names its parameters the same way, as Bolt does:
-  `data data10['m1, 'm2] { ('m1 [i32]) }`. Any `'name` parses, and
+  `data data10['m1, 'm2] { ('m1 [i32]) }`. A function declares them the
+  same way, with its assumptions after its results:
+  `fn fn1['m1, 'm2](%0: 'm2 [i32]) -> ('m1 data10['m2]) where 'm2: 'm1 {`.
+  Calls and closures give their arguments the same way:
+  `call fn1[mut, imm](%0)`, `closure fn2['m1](..)`. Any `'name` parses, and
   parameters print as `'m1`, `'m2`, .. by position. Brackets after a data
   ID never clash with an array type, whose `[` always follows a
   mutability.
@@ -865,7 +929,11 @@ doesn't need a deep stack.
   `Mut` carries an "is mut" flag. A write to an `Imm` object is an error,
   which can only happen if an optimization broke the mutability rules.
   `ArrayFreeze` clears it, so a write through an alias that a wrong `ArrayFreeze`
-  left behind is an error too.
+  left behind is an error too. A frame and a closure carry their
+  function's mutability arguments, so that an object made at a parameter's
+  mutability gets the caller's, and `Box` and `Unbox` compare types with
+  the arguments in place. `Machine::call_at` calls a function with
+  mutability parameters.
 - **Numbers follow Wasm.** Integers wrap, shift amounts are taken modulo
   the width, and `min` and `max` give NaN if either operand is NaN and
   treat `-0.0` as less than `0.0`. Division and remainder by zero,
@@ -925,7 +993,9 @@ yet:
   runs that code too.
 - **Mutability.** A language with `imm` and `mut` views of the same data
   maps them to the mutability in Conduit's types, and builds its copies
-  between them with `New` and `ArrayClone`. See "Mutability".
+  between them with `New` and `ArrayClone`. Code that's generic over
+  mutability keeps its parameters, as functions with mutability
+  parameters. See "Mutability".
 - **Sources.** Frontends need to map code back to source, for errors and
   for limits on how long an interpreter runs. `Let` and `Jump` carry a
   `source`, which is opaque to Conduit and carried through inlining.

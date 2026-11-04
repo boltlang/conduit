@@ -416,7 +416,7 @@ impl<'m> FuncCx<'_, 'm> {
         let tail = self.is_tail(binds, block, next)?;
         match op {
             Op::Prim(p) => self.prim(p, args)?,
-            Op::Call(f) => {
+            Op::Call(f, _) => {
                 let idx = self.cx.func_index(*f)?;
                 self.atoms(args);
                 self.emit(if tail {
@@ -436,7 +436,7 @@ impl<'m> FuncCx<'_, 'm> {
                 });
                 return Ok(self.bind(binds, tail));
             }
-            Op::Closure(f) => {
+            Op::Closure(f, _) => {
                 let (entry, captures) = self.cx.entry(*f, args.len())?;
                 self.emit(I::RefFunc(entry));
                 self.atoms(args);

@@ -1,4 +1,4 @@
-use conduit_ir::{CtorId, FuncId, Lit, Ty};
+use conduit_ir::{CtorId, FuncId, Lit, Mutability, Ty};
 
 use crate::machine::Frame;
 
@@ -42,6 +42,8 @@ pub enum Object<'p> {
     Ref(Value),
     Closure {
         func: FuncId,
+        /// The function's mutability arguments, each `Imm` or `Mut`.
+        margs: Vec<Mutability>,
         captures: Vec<Value>,
         is_mut: bool,
     },

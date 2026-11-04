@@ -1,5 +1,5 @@
 use crate::id::{CtorId, EffectId, ExternId, FuncId, HandlerId};
-use crate::ty::Ty;
+use crate::ty::{Mutability, Ty};
 
 /// Everything that isn't control flow. Passes that move code around don't
 /// look inside an `Op`: they ask it for its [`Effects`].
@@ -9,13 +9,15 @@ use crate::ty::Ty;
 pub enum Op {
     /// Arithmetic, comparisons and conversions on scalars.
     Prim(Prim),
-    /// A direct call.
-    Call(FuncId),
+    /// A direct call, with an argument for each of the function's
+    /// mutability parameters.
+    Call(FuncId, Vec<Mutability>),
     /// A call of a host function.
     CallExtern(ExternId),
-    /// A closure of a lifted function. Args: the captured values, which
-    /// come first among the function's parameters.
-    Closure(FuncId),
+    /// A closure of a lifted function, with an argument for each of its
+    /// mutability parameters. Args: the captured values, which come first
+    /// among the function's parameters.
+    Closure(FuncId, Vec<Mutability>),
     /// Calls a closure. Args: the closure, then the arguments.
     Apply,
     /// Allocates an ADT value. Args: its fields.
@@ -84,7 +86,7 @@ impl Op {
     pub fn effects(&self) -> Effects {
         match self {
             Op::Prim(p) if p.may_trap() => Effects::Unknown,
-            Op::Prim(_) | Op::Closure(_) | Op::Box(_) => Effects::Pure,
+            Op::Prim(_) | Op::Closure(..) | Op::Box(_) => Effects::Pure,
             Op::New(_) | Op::ArrayNew | Op::RefNew => Effects::Pure,
             Op::Get(..) | Op::ArrayLen | Op::ArrayClone | Op::RefGet => Effects::Reads,
             // It changes objects that nothing else can reach any more.
@@ -92,7 +94,7 @@ impl Op {
             Op::Set(..) | Op::RefSet => Effects::Writes,
             // Bounds checks and failed casts trap.
             Op::ArrayFill | Op::ArrayGet | Op::ArraySet | Op::Unbox(_) => Effects::Unknown,
-            Op::Call(_) | Op::CallExtern(_) | Op::Apply => Effects::Unknown,
+            Op::Call(..) | Op::CallExtern(_) | Op::Apply => Effects::Unknown,
             Op::Handle(_) | Op::Perform(..) | Op::Resume => Effects::Unknown,
         }
     }

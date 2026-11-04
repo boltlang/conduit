@@ -71,7 +71,28 @@ pub(super) fn func(id: FuncId, f: &Func) -> String {
         .map(|&v| p.binder(v))
         .collect::<Vec<_>>()
         .join(", ");
-    let _ = write!(p.out, "fn {id}({params}) -> ({})", types(&f.results));
+    let mparams: Vec<String> = (1..=f.mut_params.count)
+        .map(|i| Mutability::Param(i).to_string())
+        .collect();
+    let mparams = if mparams.is_empty() {
+        String::new()
+    } else {
+        format!("[{}]", mparams.join(", "))
+    };
+    let _ = write!(
+        p.out,
+        "fn {id}{mparams}({params}) -> ({})",
+        types(&f.results)
+    );
+    if !f.mut_params.assumes.is_empty() {
+        let assumes: Vec<String> = f
+            .mut_params
+            .assumes
+            .iter()
+            .map(|(a, b)| format!("{a}: {b}"))
+            .collect();
+        let _ = write!(p.out, " where {}", assumes.join(", "));
+    }
 
     let mut bound = BTreeSet::new();
     let mut max_label = 0;
@@ -349,14 +370,23 @@ pub(super) fn prim_name(p: &Prim) -> String {
     }
 }
 
+/// Mutability arguments, like `[imm, 'm1]`, or nothing if there are none.
+fn margs_text(margs: &[Mutability]) -> String {
+    if margs.is_empty() {
+        return String::new();
+    }
+    let margs: Vec<String> = margs.iter().map(Mutability::to_string).collect();
+    format!("[{}]", margs.join(", "))
+}
+
 /// What comes before an op's arguments: its name, and the IDs or types
 /// it takes.
 fn op_name(op: &Op) -> String {
     match op {
         Op::Prim(p) => prim_name(p),
-        Op::Call(f) => format!("call {f}"),
+        Op::Call(f, margs) => format!("call {f}{}", margs_text(margs)),
         Op::CallExtern(e) => format!("call_extern {e}"),
-        Op::Closure(f) => format!("closure {f}"),
+        Op::Closure(f, margs) => format!("closure {f}{}", margs_text(margs)),
         Op::Apply => "apply".into(),
         Op::New(c) => format!("new {c}"),
         Op::Get(c, i) => format!("get {c}.{i}"),

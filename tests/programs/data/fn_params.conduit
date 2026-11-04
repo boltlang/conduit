@@ -1,0 +1,130 @@
+// Functions with mutability parameters: one function serves callers of
+// either mutability, and each call says which.
+
+// A box holding an array whose mutability the box's type chooses.
+data data0['m1] {
+  ('m1 [i32])
+}
+
+// Gives back what it gets, at the caller's mutability.
+fn fn0['m1](%0: 'm1 [i32]) -> ('m1 [i32]) {
+  jump ret(%0)
+}
+
+// Makes an array of the caller's mutability.
+fn fn1['m1](%0: i32, %1: i32) -> ('m1 [i32]) {
+  let %2: 'm1 [i32] = array_fill(%0, %1)
+  jump ret(%2)
+}
+
+// Puts an array in a box. The box can hold the array only if the array is
+// at most the box's mutability: an `imm` box can't hold a `mut` array.
+fn fn2['m1, 'm2](%0: 'm2 [i32]) -> ('m1 data0['m2]) where 'm2: 'm1 {
+  let %1: 'm1 data0['m2] = new data0.0(%0)
+  jump ret(%1)
+}
+
+// Passes its own parameter on, and reads what it gets.
+fn fn3['m1](%0: 'm1 [i32]) -> (i32) {
+  let %1: 'm1 [i32] = call fn0['m1](%0)
+  let %2: 'm1 data0['m1] = call fn2['m1, 'm1](%1)
+  let %3: 'm1 [i32] = get data0.0.0(%2)
+  let %4: i32 = array_get(%3, 0i32)
+  jump ret(%4)
+}
+
+// A `mut` array comes back `mut`, so it can be written.
+fn fn4() -> (i32) {
+  let %0: mut [i32] = array_fill(2i32, 1i32)
+  let %1: mut [i32] = call fn0[mut](%0)
+  let = array_set(%1, 0i32, 7i32)
+  let %2: i32 = array_get(%0, 0i32)
+  jump ret(%2)
+}
+
+// An `imm` array comes back `imm`, so an `imm` box can hold it.
+fn fn5() -> (i32) {
+  let %0: imm [i32] = array_new(4i32)
+  let %1: imm [i32] = call fn0[imm](%0)
+  let %2: imm data0[imm] = new data0.0(%1)
+  let %3: imm [i32] = get data0.0.0(%2)
+  let %4: i32 = array_get(%3, 0i32)
+  jump ret(%4)
+}
+
+// The caller chooses the mutability of what's made: the `mut` array can
+// be written.
+fn fn6() -> (i32) {
+  let %0: mut [i32] = call fn1[mut](3i32, 2i32)
+  let = array_set(%0, 2i32, 5i32)
+  let %1: imm [i32] = call fn1[imm](1i32, 10i32)
+  let %2: i32 = array_get(%0, 2i32)
+  let %3: i32 = array_get(%1, 0i32)
+  let %4: i32 = add(%2, %3)
+  jump ret(%4)
+}
+
+// A `mut` box of an `imm` array, a `mut` box of a `mut` one, and an `imm`
+// box of an `imm` one, all from one function.
+fn fn7() -> (i32) {
+  let %0: imm [i32] = array_new(1i32)
+  let %1: mut data0[imm] = call fn2[mut, imm](%0)
+  let %2: imm data0[imm] = call fn2[imm, imm](%0)
+  let %3: mut [i32] = array_new(20i32)
+  let %4: mut data0[mut] = call fn2[mut, mut](%3)
+  let %5: mut [i32] = get data0.0.0(%4)
+  let = array_set(%5, 0i32, 30i32)
+  let %6: imm [i32] = get data0.0.0(%1)
+  let %7: imm [i32] = get data0.0.0(%2)
+  let %8: i32 = array_get(%6, 0i32)
+  let %9: i32 = array_get(%7, 0i32)
+  let %10: i32 = array_get(%3, 0i32)
+  let %11: i32 = add(%8, %9)
+  let %12: i32 = add(%11, %10)
+  jump ret(%12)
+}
+
+// Generic code calling generic code, at both mutabilities.
+fn fn8() -> (i32) {
+  let %0: mut [i32] = array_new(100i32)
+  let %1: imm [i32] = array_new(200i32)
+  let %2: i32 = call fn3[mut](%0)
+  let %3: i32 = call fn3[imm](%1)
+  let %4: i32 = add(%2, %3)
+  jump ret(%4)
+}
+
+// A closure of a generic function keeps its arguments: applying it makes a
+// `mut` array.
+fn fn9() -> (i32) {
+  let %0: imm fn(i32) -> (mut [i32]) = closure fn1[mut](2i32)
+  let %1: mut [i32] = apply(%0, 6i32)
+  let = array_set(%1, 1i32, 8i32)
+  let %2: i32 = array_get(%1, 0i32)
+  let %3: i32 = array_get(%1, 1i32)
+  let %4: i32 = add(%2, %3)
+  jump ret(%4)
+}
+
+// A generic function can box and unbox at its parameter.
+fn fn10['m1](%0: 'm1 [i32]) -> ('m1 [i32]) {
+  let %1: mut any = box['m1 [i32]](%0)
+  let %2: 'm1 [i32] = unbox['m1 [i32]](%1)
+  jump ret(%2)
+}
+
+fn fn11() -> (i32) {
+  let %0: mut [i32] = array_new(3i32)
+  let %1: mut [i32] = call fn10[mut](%0)
+  let = array_set(%1, 0i32, 4i32)
+  let %2: i32 = array_get(%0, 0i32)
+  jump ret(%2)
+}
+
+//# run fn4() == 7i32
+//# run fn5() == 4i32
+//# run fn6() == 15i32
+//# run fn7() == 32i32
+//# run fn8() == 300i32
+//# run fn9() == 14i32
+//# run fn11() == 4i32

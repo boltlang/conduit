@@ -270,6 +270,13 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
         }
     }
 
+    /// Gives the function mutability parameters, which its types can use
+    /// as [`Mutability::Param`]. Set them before emitting code that uses
+    /// them.
+    pub fn set_mut_params(&mut self, mp: MutParams) {
+        self.func.mut_params = mp;
+    }
+
     /// The function's parameters. Panics if it doesn't have `N` of them.
     pub fn params<const N: usize>(&self) -> [Var; N] {
         self.func.params.as_slice().try_into().unwrap_or_else(|_| {
@@ -390,7 +397,15 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
             return fallback(self, out);
         };
         let given = out.clone().unwrap_or_default();
-        let results = match op_results(self.p, &op, &args, &tys, &given, &self.known()) {
+        let results = match op_results(
+            self.p,
+            &self.func.mut_params,
+            &op,
+            &args,
+            &tys,
+            &given,
+            &self.known(),
+        ) {
             Ok(results) => results,
             Err(message) if out.is_none() && needs_result_type(&op) => {
                 self.error(format!("{message}: this op needs its result type given"));
@@ -507,12 +522,23 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
     }
 
     pub fn call(&mut self, f: FuncId, args: impl Atoms) -> Vec<Var> {
-        self.emit(Op::Call(f), args.atoms(), None)
+        self.emit(Op::Call(f, Vec::new()), args.atoms(), None)
     }
 
     /// A call of a function with one result.
     pub fn call1(&mut self, f: FuncId, args: impl Atoms) -> Var {
-        self.emit1(Op::Call(f), args.atoms(), None)
+        self.emit1(Op::Call(f, Vec::new()), args.atoms(), None)
+    }
+
+    /// A call of a function with mutability parameters, giving `margs` for
+    /// them.
+    pub fn call_at(&mut self, f: FuncId, margs: Vec<Mutability>, args: impl Atoms) -> Vec<Var> {
+        self.emit(Op::Call(f, margs), args.atoms(), None)
+    }
+
+    /// [`call_at`](Self::call_at) of a function with one result.
+    pub fn call1_at(&mut self, f: FuncId, margs: Vec<Mutability>, args: impl Atoms) -> Var {
+        self.emit1(Op::Call(f, margs), args.atoms(), None)
     }
 
     pub fn call_extern(&mut self, e: ExternId, args: impl Atoms) -> Vec<Var> {
@@ -527,17 +553,34 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
     /// A closure of `f` with mutability `m`, capturing `captures` as its
     /// first parameters.
     pub fn closure(&mut self, f: FuncId, m: Mutability, captures: impl Atoms) -> Var {
+        self.closure_at(f, Vec::new(), m, captures)
+    }
+
+    /// A closure of a function with mutability parameters, giving `margs`
+    /// for them.
+    pub fn closure_at(
+        &mut self,
+        f: FuncId,
+        margs: Vec<Mutability>,
+        m: Mutability,
+        captures: impl Atoms,
+    ) -> Var {
         let captures = captures.atoms();
         let Some(sig) = self.p.func_sig(f) else {
             self.error(format!("unknown function {f}"));
             return self.func.new_var(Ty::I32);
         };
+        let sig = verify::subst_sig(&sig, &margs);
         let n = captures.len().min(sig.params.len());
         let rest = Sig {
             params: sig.params[n..].to_vec(),
             results: sig.results,
         };
-        self.emit1(Op::Closure(f), captures, Some(Ty::Fn(Box::new(rest), m)))
+        self.emit1(
+            Op::Closure(f, margs),
+            captures,
+            Some(Ty::Fn(Box::new(rest), m)),
+        )
     }
 
     pub fn apply(&mut self, closure: impl Into<Atom>, args: impl Atoms) -> Vec<Var> {
@@ -977,7 +1020,7 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
 fn needs_result_type(op: &Op) -> bool {
     matches!(
         op,
-        Op::New(_) | Op::ArrayNew | Op::ArrayFill | Op::Closure(_) | Op::RefNew
+        Op::New(_) | Op::ArrayNew | Op::ArrayFill | Op::Closure(..) | Op::RefNew
     )
 }
 

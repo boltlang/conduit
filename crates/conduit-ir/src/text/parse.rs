@@ -19,8 +19,8 @@ type Res<T> = Result<T, Error>;
 struct Parser {
     toks: Vec<(Tok, Pos)>,
     i: usize,
-    /// The mutability parameters of the data declaration being read, by
-    /// name: `Param(i + 1)` is `params[i]`.
+    /// The mutability parameters of the data declaration or function
+    /// being read, by name: `Param(i + 1)` is `params[i]`.
     params: Vec<String>,
 }
 
@@ -254,29 +254,8 @@ impl Parser {
     }
 
     fn data(&mut self) -> Res<DataDecl> {
-        let mut params = Vec::new();
-        if self.eat_punct("[") {
-            loop {
-                let pos = self.pos();
-                let name = self.ident("a mutability parameter like `'m1`")?;
-                if !name.starts_with('\'') {
-                    return self.error_at(
-                        pos,
-                        format!("expected a mutability parameter like `'m1`, found `{name}`"),
-                    );
-                }
-                if params.contains(&name) {
-                    return self.error_at(pos, format!("`{name}` is declared more than once"));
-                }
-                params.push(name);
-                if self.eat_punct("]") {
-                    break;
-                }
-                self.punct(",")?;
-            }
-        }
+        self.params = self.param_names()?;
         self.punct("{")?;
-        self.params = params;
         let mut ctors = Vec::new();
         let result = loop {
             if self.eat_punct("}") {
@@ -292,6 +271,48 @@ impl Parser {
         Ok(DataDecl { params, ctors })
     }
 
+    /// The mutability parameters a data declaration or function declares,
+    /// like `['m1, 'm2]`, if it has any.
+    fn param_names(&mut self) -> Res<Vec<String>> {
+        let mut params = Vec::new();
+        if !self.eat_punct("[") {
+            return Ok(params);
+        }
+        loop {
+            let pos = self.pos();
+            let name = self.ident("a mutability parameter like `'m1`")?;
+            if !name.starts_with('\'') {
+                return self.error_at(
+                    pos,
+                    format!("expected a mutability parameter like `'m1`, found `{name}`"),
+                );
+            }
+            if params.contains(&name) {
+                return self.error_at(pos, format!("`{name}` is declared more than once"));
+            }
+            params.push(name);
+            if self.eat_punct("]") {
+                return Ok(params);
+            }
+            self.punct(",")?;
+        }
+    }
+
+    /// Mutability arguments in brackets, like `[imm, 'm1]`, if there are any.
+    fn margs(&mut self) -> Res<Vec<Mutability>> {
+        let mut margs = Vec::new();
+        if self.eat_punct("[") {
+            loop {
+                margs.push(self.mutability()?);
+                if self.eat_punct("]") {
+                    break;
+                }
+                self.punct(",")?;
+            }
+        }
+        Ok(margs)
+    }
+
     fn mutability(&mut self) -> Res<Mutability> {
         let m = match self.peek() {
             Tok::Ident(s) if s == "imm" => Mutability::Imm,
@@ -303,8 +324,8 @@ impl Parser {
                 None => {
                     let s = s.clone();
                     return self.error(format!(
-                        "unknown mutability parameter `{s}`: only a data declaration's fields \
-                         can use its parameters"
+                        "unknown mutability parameter `{s}`: declare it in brackets after the \
+                         data type's or function's ID"
                     ));
                 }
             },
@@ -409,10 +430,30 @@ impl Parser {
     }
 
     fn func(&mut self) -> Res<Func> {
+        self.params = self.param_names()?;
+        let f = self.func_rest();
+        self.params.clear();
+        f
+    }
+
+    /// A function after its mutability parameters.
+    fn func_rest(&mut self) -> Res<Func> {
         let mut info = FuncInfo::default();
         let params = self.list(|p| p.binder(&mut info))?;
         self.punct("->")?;
         let results = self.list(Self::ty)?;
+        let mut assumes = Vec::new();
+        if self.eat_keyword("where") {
+            loop {
+                let a = self.mutability()?;
+                self.punct(":")?;
+                let b = self.mutability()?;
+                assumes.push((a, b));
+                if !self.eat_punct(",") {
+                    break;
+                }
+            }
+        }
         let labels = if self.eat_keyword("labels") {
             Some(self.index()?)
         } else {
@@ -434,6 +475,10 @@ impl Parser {
             }
         }
         Ok(Func {
+            mut_params: MutParams {
+                count: self.params.len() as u32,
+                assumes,
+            },
             vars,
             labels: labels.unwrap_or(info.max_label + 1),
             params,
@@ -618,9 +663,9 @@ impl Parser {
             Ok(ty)
         };
         let op = match name.as_str() {
-            "call" => Op::Call(FuncId(self.id("fn")?)),
+            "call" => Op::Call(FuncId(self.id("fn")?), self.margs()?),
             "call_extern" => Op::CallExtern(ExternId(self.id("extern")?)),
-            "closure" => Op::Closure(FuncId(self.id("fn")?)),
+            "closure" => Op::Closure(FuncId(self.id("fn")?), self.margs()?),
             "apply" => Op::Apply,
             "new" => Op::New(self.ctor()?),
             "get" | "set" => {

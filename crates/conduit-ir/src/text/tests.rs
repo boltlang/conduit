@@ -107,6 +107,20 @@ fn fn8(%0: mut data10) -> (imm data10) {
 fn fn9(%0: mut data13[imm, mut]) -> (ro data13[imm, mut]) {
   jump ret(%0)
 }
+
+fn fn10['m1, 'm2](%0: 'm2 [i32], %1: 'm1 data13['m1, 'm2]) -> ('m1 data13['m2, 'm1]) where 'm2: 'm1, 'm1: mut {
+  let %2: 'm1 [i32] = call fn11['m1](5i32)
+  let %3: 'm1 data10 = new data10.0(1i32, 2i32)
+  let %4: 'm1 data13['m2, 'm1] = new data13.0(%0, %3, %1)
+  let %5: 'm1 fn() -> ('m2 [i32]) = closure fn11['m2](3i32)
+  let %6: mut [i32] = call fn11[mut](1i32)
+  jump ret(%4)
+}
+
+fn fn11['m1](%0: i32) -> ('m1 [i32]) vars(%1: i32) {
+  let %2: 'm1 [i32] = array_fill(%0, 0i32)
+  jump ret(%2)
+}
 "#;
 
 #[test]
@@ -267,11 +281,23 @@ fn parse_errors() {
         ),
         (
             "fn fn1(%0: 'm1 [i32]) -> () { jump ret() }",
-            "1:12: unknown mutability parameter `'m1`: only a data declaration's fields can use its parameters",
+            "1:12: unknown mutability parameter `'m1`: declare it in brackets after the data type's or function's ID",
+        ),
+        (
+            "fn fn1['m1, 'm1]() -> () { jump ret() }",
+            "1:13: `'m1` is declared more than once",
+        ),
+        (
+            "fn fn1['m1]() -> () where 'm1 imm { jump ret() }",
+            "1:31: expected `:`, found `imm`",
+        ),
+        (
+            "fn fn1() -> () { let = call fn2[ro ro]() jump ret() }",
+            "1:36: expected `,`, found `ro`",
         ),
         (
             "data data1['m1] { ('m2 [i32]) }",
-            "1:20: unknown mutability parameter `'m2`: only a data declaration's fields can use its parameters",
+            "1:20: unknown mutability parameter `'m2`: declare it in brackets after the data type's or function's ID",
         ),
         (
             "frob",

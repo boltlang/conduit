@@ -629,3 +629,52 @@ data data0['m1] {
 }"
     );
 }
+
+const MAKE: &str = "
+fn fn1['m1](%0: i32) -> ('m1 [i32]) {
+  let %1: 'm1 [i32] = array_fill(%0, 0i32)
+  jump ret(%1)
+}
+";
+
+/// A function with a mutability parameter, calling and closing over
+/// another one with its own parameter and with `mut`.
+#[test]
+fn mutability_parameters() {
+    let m1 = Mutability::Param(1);
+    let arr = |m: Mutability| Ty::Array(Box::new(I32), m);
+    let m = module(MAKE, vec![], vec![arr(m1)]);
+    let mut f = FuncBuilder::new(&m, vec![], vec![arr(m1)]);
+    f.set_mut_params(MutParams {
+        count: 1,
+        assumes: vec![],
+    });
+    let a = f.call1_at(FuncId(1), vec![m1], [3i32]);
+    f.closure_at(FuncId(1), vec![Mutability::Mut], Mutability::Imm, [2i32]);
+    f.ret([a]);
+    assert_eq!(
+        text(f),
+        "fn fn0['m1]() -> ('m1 [i32]) {
+  let %0: 'm1 [i32] = call fn1['m1](3i32)
+  let %1: imm fn() -> (mut [i32]) = closure fn1[mut](2i32)
+  jump ret(%0)
+}"
+    );
+}
+
+/// A call checks its mutability arguments.
+#[test]
+fn mutability_arguments_are_checked() {
+    let m = module(MAKE, vec![], vec![]);
+    let mut f = FuncBuilder::new(&m, vec![], vec![]);
+    f.call_at(FuncId(1), vec![], [3i32]);
+    f.call_at(FuncId(1), vec![Mutability::Param(1)], [3i32]);
+    f.ret(());
+    assert_eq!(
+        messages(f),
+        [
+            "call of fn1: takes 1 mutability arguments, but gets 0",
+            "call of fn1: the mutability argument 'm1 isn't imm, mut or a parameter",
+        ]
+    );
+}

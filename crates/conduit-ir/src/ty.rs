@@ -80,9 +80,10 @@ pub enum Mutability {
     /// type: the mutability of the data object or array holding the field
     /// or element. It's parameter 0 of every data type and array.
     Inherit,
-    /// Only in a [`CtorDecl`]'s field types: the declaration's mutability
-    /// parameter `i`, counted from 1, which each data type of the
-    /// declaration gives as an argument.
+    /// A mutability parameter `i`, counted from 1: in a [`CtorDecl`]'s
+    /// field types, the declaration's, which each data type of it gives as
+    /// an argument; in a function's types, the function's, which each call
+    /// and closure of it gives (see [`MutParams`](crate::MutParams)).
     Param(u32),
 }
 
@@ -91,6 +92,30 @@ impl Mutability {
     /// expected: `Imm ≤ ReadOnly` and `Mut ≤ ReadOnly`.
     pub fn is_sub(self, other: Mutability) -> bool {
         self == other || other == Mutability::ReadOnly
+    }
+
+    /// Whether `self` is at most `other` in the order of what can hold
+    /// what, `Imm ⊑ ReadOnly ⊑ Mut`, given what a function assumes:
+    /// `(a, b)` in `assumes` says that `a ⊑ b`. A parameter is `Imm` or
+    /// `Mut`, so it's below `Mut` and above `Imm`, and below anything else
+    /// only by what's assumed.
+    pub fn at_most(self, other: Mutability, assumes: &[(Mutability, Mutability)]) -> bool {
+        let known = |a: Mutability| a == other || a == Mutability::Imm || other == Mutability::Mut;
+        // Follow the assumptions from `self`, each at most once.
+        let mut todo = vec![self];
+        let mut seen = vec![self];
+        while let Some(a) = todo.pop() {
+            if known(a) {
+                return true;
+            }
+            for &(x, y) in assumes {
+                if x == a && !seen.contains(&y) {
+                    seen.push(y);
+                    todo.push(y);
+                }
+            }
+        }
+        false
     }
 }
 

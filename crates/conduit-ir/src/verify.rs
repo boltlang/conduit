@@ -65,13 +65,13 @@ pub fn verify_module(m: &Module) -> Result<(), Vec<Error>> {
         check_data(m, id, decl, &mut errors);
     }
     for (&id, ext) in &m.externs {
-        if let Err(message) = sig_ok(m, &ext.sig) {
+        if let Err(message) = sig_ok(m, &ext.sig, 0) {
             errors.push(decl_error(Item::Extern(id), message));
         }
     }
     for (&id, effect) in &m.effects {
         for (i, sig) in effect.ops.iter().enumerate() {
-            if let Err(message) = sig_ok(m, sig) {
+            if let Err(message) = sig_ok(m, sig, 0) {
                 errors.push(decl_error(
                     Item::Effect(id),
                     format!("operation {i}: {message}"),
@@ -145,6 +145,13 @@ fn check_handler<P: Program + ?Sized>(
     errors: &mut Vec<Error>,
 ) {
     let mut err = |message: String| errors.push(decl_error(Item::Handler(id), message));
+    for clause in h.ops.iter().chain([&h.ret]) {
+        if p.func_mut_params(*clause).is_some_and(|mp| mp.count > 0) {
+            err(format!(
+                "clause {clause} has mutability parameters, which a handler can't give"
+            ));
+        }
+    }
     for ty in &h.env {
         if let Err(message) = ty_ok(p, ty, Allowed::PLAIN) {
             err(format!("environment: {message}"));
@@ -205,16 +212,26 @@ struct Allowed {
     /// `Inherit`: in field types, and in an array's element type.
     inherit: bool,
     /// `Param(1)` to `Param(params)`: in the field types of a declaration
-    /// with that many parameters.
+    /// with that many parameters, or the types of a function.
     params: u32,
 }
 
 impl Allowed {
-    /// A type outside declarations: a variable's, a signature's.
+    /// A type outside data declarations and functions: an extern's, an
+    /// effect's, a handler's.
     const PLAIN: Allowed = Allowed {
         inherit: false,
         params: 0,
     };
+
+    /// A type in a function with `params` mutability parameters: a
+    /// variable's, a result's, or one an op takes.
+    pub(crate) fn func(params: u32) -> Allowed {
+        Allowed {
+            inherit: false,
+            params,
+        }
+    }
 
     /// A field type of a declaration with `params` parameters.
     fn field(params: u32) -> Allowed {
@@ -235,7 +252,12 @@ fn ty_ok<P: Program + ?Sized>(p: &P, ty: &Ty, allowed: Allowed) -> Result<(), St
         )),
         Mutability::Param(0) => Err(format!("{ty} has a parameter 0, which is `inherit`")),
         Mutability::Param(i) if *i > allowed.params => Err(format!(
-            "{m} in {ty} is only allowed in the fields of a data type with that parameter"
+            "{m} in {ty} isn't a parameter here: there {}",
+            match allowed.params {
+                0 => "are none".to_string(),
+                1 => "is 'm1".to_string(),
+                n => format!("are 'm1 to 'm{n}"),
+            }
         )),
         _ => Ok(()),
     };
@@ -269,19 +291,21 @@ fn ty_ok<P: Program + ?Sized>(p: &P, ty: &Ty, allowed: Allowed) -> Result<(), St
         }
         Ty::Fn(sig, m) => {
             mut_ok(m)?;
-            sig_ok(p, sig)
+            sig_ok(p, sig, allowed.params)
         }
-        Ty::Cont(sig) => sig_ok(p, sig),
+        Ty::Cont(sig) => sig_ok(p, sig, allowed.params),
         Ty::Ref(ty) => ty_ok(p, ty, allowed),
         Ty::Any(m) => mut_ok(m),
     }
 }
 
-fn sig_ok<P: Program + ?Sized>(p: &P, sig: &Sig) -> Result<(), String> {
+/// Checks a signature's types, which can use mutability parameters 1 to
+/// `params` but not `Inherit`.
+fn sig_ok<P: Program + ?Sized>(p: &P, sig: &Sig, params: u32) -> Result<(), String> {
     sig.params
         .iter()
         .chain(&sig.results)
-        .try_for_each(|ty| ty_ok(p, ty, Allowed::PLAIN))
+        .try_for_each(|ty| ty_ok(p, ty, Allowed::func(params)))
 }
 
 /// A field or element type in an object of mutability `m`: `Inherit`
@@ -306,16 +330,33 @@ pub fn subst_params(ty: &Ty, args: &[Mutability]) -> Ty {
         return ty.clone();
     }
     let pick = |m: Mutability| match m {
-        Mutability::Param(i) => args.get(i as usize - 1).copied().unwrap_or(m),
+        Mutability::Param(i) => param_arg(args, i).unwrap_or(m),
         m => m,
     };
     match ty {
         Ty::Data(d, own, a) => Ty::Data(*d, pick(*own), a.iter().map(|&m| pick(m)).collect()),
         Ty::Array(elem, own) => Ty::Array(Box::new(subst_params(elem, args)), pick(*own)),
-        Ty::Fn(sig, own) => Ty::Fn(sig.clone(), pick(*own)),
+        Ty::Fn(sig, own) => Ty::Fn(Box::new(subst_sig(sig, args)), pick(*own)),
+        Ty::Cont(sig) => Ty::Cont(Box::new(subst_sig(sig, args))),
         Ty::Ref(inner) => Ty::Ref(Box::new(subst_params(inner, args))),
         Ty::Any(own) => Ty::Any(pick(*own)),
         other => other.clone(),
+    }
+}
+
+/// The argument for parameter `Param(i)`, if there is one.
+fn param_arg(args: &[Mutability], i: u32) -> Option<Mutability> {
+    args.get((i as usize).checked_sub(1)?).copied()
+}
+
+/// `sig` with each mutability parameter `Param(i)` replaced by
+/// `args[i - 1]`: a function's signature as a call with those arguments
+/// sees it.
+pub fn subst_sig(sig: &Sig, args: &[Mutability]) -> Sig {
+    let all = |tys: &[Ty]| tys.iter().map(|ty| subst_params(ty, args)).collect();
+    Sig {
+        params: all(&sig.params),
+        results: all(&sig.results),
     }
 }
 
@@ -337,31 +378,50 @@ pub fn elem_ty(ty: &Ty) -> Option<Ty> {
 
 /// Whether a type is `Imm` all the way down.
 pub fn deep_imm<P: Program + ?Sized>(p: &P, ty: &Ty) -> bool {
-    deep_imm_in(p, ty, &mut BTreeSet::new())
+    at_most(p, ty, Mutability::Imm, &[])
 }
 
-fn deep_imm_in<P: Program + ?Sized>(
+/// Whether everything a value of type `ty` reaches is at most `bound`
+/// (see [`Mutability::at_most`]), so that an object of mutability `bound`
+/// can hold it. A ref or a continuation can change, so it's at most `Mut`
+/// only. With `bound` `Imm`, this is [`deep_imm`].
+pub fn at_most<P: Program + ?Sized>(
     p: &P,
     ty: &Ty,
-    seen: &mut BTreeSet<(DataId, Vec<Mutability>)>,
+    bound: Mutability,
+    assumes: &[(Mutability, Mutability)],
 ) -> bool {
+    at_most_in(p, ty, bound, assumes, &mut BTreeSet::new())
+}
+
+fn at_most_in<P: Program + ?Sized>(
+    p: &P,
+    ty: &Ty,
+    bound: Mutability,
+    assumes: &[(Mutability, Mutability)],
+    seen: &mut BTreeSet<(DataId, Mutability, Vec<Mutability>)>,
+) -> bool {
+    let le = |m: Mutability| m.at_most(bound, assumes);
     match ty {
         Ty::I32 | Ty::I64 | Ty::F32 | Ty::F64 => true,
-        Ty::Data(d, Mutability::Imm, args) => {
+        Ty::Data(d, m, args) => {
+            if !le(*m) {
+                return false;
+            }
             // A data type already being checked is assumed fine, so that
             // recursive types terminate.
-            if !seen.insert((*d, args.clone())) {
+            if !seen.insert((*d, *m, args.clone())) {
                 return true;
             }
             let Some(decl) = p.data(*d) else { return false };
             decl.ctors
                 .iter()
                 .flat_map(|c| &c.fields)
-                .all(|field| deep_imm_in(p, &resolve(field, Mutability::Imm, args), seen))
+                .all(|field| at_most_in(p, &resolve(field, *m, args), bound, assumes, seen))
         }
-        Ty::Array(elem, Mutability::Imm) => deep_imm_in(p, &inherit(elem, Mutability::Imm), seen),
-        Ty::Fn(_, Mutability::Imm) | Ty::Any(Mutability::Imm) => true,
-        _ => false,
+        Ty::Array(elem, m) => le(*m) && at_most_in(p, &inherit(elem, *m), bound, assumes, seen),
+        Ty::Fn(_, m) | Ty::Any(m) => le(*m),
+        Ty::Ref(_) | Ty::Cont(_) => le(Mutability::Mut),
     }
 }
 
@@ -395,13 +455,28 @@ impl<P: Program + ?Sized> Cx<'_, P> {
 
     fn func(&mut self) {
         let f = self.f;
+        let allowed = Allowed::func(f.mut_params.count);
+        for &(a, b) in &f.mut_params.assumes {
+            for m in [a, b] {
+                let ok = match m {
+                    Mutability::Imm | Mutability::Mut | Mutability::ReadOnly => true,
+                    Mutability::Param(i) => i >= 1 && i <= f.mut_params.count,
+                    Mutability::Inherit => false,
+                };
+                if !ok {
+                    self.err(format!(
+                        "assumes {a}: {b}, but {m} isn't a mutability or one of its parameters"
+                    ));
+                }
+            }
+        }
         for (i, ty) in f.vars.iter().enumerate() {
-            if let Err(message) = ty_ok(self.p, ty, Allowed::PLAIN) {
+            if let Err(message) = ty_ok(self.p, ty, allowed) {
                 self.err(format!("type of %{i}: {message}"));
             }
         }
         for ty in &f.results {
-            if let Err(message) = ty_ok(self.p, ty, Allowed::PLAIN) {
+            if let Err(message) = ty_ok(self.p, ty, allowed) {
                 self.err(format!("result type: {message}"));
             }
         }
@@ -671,16 +746,67 @@ impl<P: Program + ?Sized> Cx<'_, P> {
 
     /// The types an op gives: see [`typing::op_results`].
     fn op_results(&self, op: &Op, args: &[Atom], tys: &[Ty], out: &[Ty]) -> Checked<Vec<Ty>> {
-        typing::op_results(self.p, op, args, tys, out, &self.known)
+        typing::op_results(self.p, &self.f.mut_params, op, args, tys, out, &self.known)
     }
 }
 
-/// Objects are created, and copied, as `Imm` or `Mut`, not as a view.
+/// Objects are created, and copied, as `Imm` or `Mut`, not as a view. A
+/// mutability parameter is one of the two.
 fn object_mutability(m: Mutability) -> Checked<()> {
     match m {
-        Mutability::Imm | Mutability::Mut => Ok(()),
+        Mutability::Imm | Mutability::Mut | Mutability::Param(_) => Ok(()),
         _ => Err(format!("a new object is imm or mut, not {m}")),
     }
+}
+
+/// Checks the mutability arguments a call or closure of `f` gives, in a
+/// function with parameters `caller`, and gives `f`'s signature with them.
+/// `what` is "call" or "closure", for messages.
+pub(crate) fn instantiate<P: Program + ?Sized>(
+    p: &P,
+    caller: &MutParams,
+    what: &str,
+    f: FuncId,
+    margs: &[Mutability],
+) -> Checked<Sig> {
+    let sig = p
+        .func_sig(f)
+        .ok_or_else(|| format!("unknown function {f}"))?;
+    let callee = p
+        .func_mut_params(f)
+        .ok_or_else(|| format!("unknown function {f}"))?;
+    if margs.len() != callee.count as usize {
+        return Err(format!(
+            "{what} of {f}: takes {} mutability arguments, but gets {}",
+            callee.count,
+            margs.len()
+        ));
+    }
+    for &m in margs {
+        let ok = match m {
+            Mutability::Imm | Mutability::Mut => true,
+            Mutability::Param(i) => i >= 1 && i <= caller.count,
+            Mutability::ReadOnly | Mutability::Inherit => false,
+        };
+        if !ok {
+            return Err(format!(
+                "{what} of {f}: the mutability argument {m} isn't imm, mut or a parameter"
+            ));
+        }
+    }
+    let pick = |m: Mutability| match m {
+        Mutability::Param(i) => param_arg(margs, i).unwrap_or(m),
+        m => m,
+    };
+    for &(a, b) in &callee.assumes {
+        let (a2, b2) = (pick(a), pick(b));
+        if !a2.at_most(b2, &caller.assumes) {
+            return Err(format!(
+                "{what} of {f}: {f} assumes {a}: {b}, so it needs {a2}: {b2}, which doesn't hold"
+            ));
+        }
+    }
+    Ok(subst_sig(&sig, margs))
 }
 
 /// Checks that values of types `tys` can be passed where `expected` are.
