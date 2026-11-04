@@ -11,6 +11,10 @@ pub enum Ty {
     I64,
     F32,
     F64,
+    /// An integer stored in fewer bits than an `i32`. It's only allowed as
+    /// an array's element type: reading an element gives an `i32`, and
+    /// writing one keeps only its low bits.
+    Packed(Packed),
     /// A GC'd ADT value: its own mutability, then one argument for each
     /// mutability parameter its declaration has.
     Data(DataId, Mutability, Vec<Mutability>),
@@ -36,7 +40,7 @@ impl Ty {
     /// The mutability of an object type; `None` for scalars and `Cont`.
     pub fn mutability(&self) -> Option<Mutability> {
         match self {
-            Ty::I32 | Ty::I64 | Ty::F32 | Ty::F64 | Ty::Cont(_) => None,
+            Ty::I32 | Ty::I64 | Ty::F32 | Ty::F64 | Ty::Packed(_) | Ty::Cont(_) => None,
             Ty::Data(_, m, _) | Ty::Array(_, m) | Ty::Fn(_, m) | Ty::Any(m) => Some(*m),
             Ty::Ref(_) => Some(Mutability::Mut),
         }
@@ -55,6 +59,15 @@ impl Ty {
         }
     }
 
+    /// The type of a value read from or written to an array of elements of
+    /// this type: `i32` for a packed type, and the type itself otherwise.
+    pub fn unpacked(&self) -> Ty {
+        match self {
+            Ty::Packed(_) => Ty::I32,
+            other => other.clone(),
+        }
+    }
+
     /// This type with mutability `m`, or the same type if it has no
     /// mutability of its own (scalars, `Cont`, `Ref`).
     pub fn with_mutability(&self, m: Mutability) -> Ty {
@@ -65,6 +78,53 @@ impl Ty {
             Ty::Any(_) => Ty::Any(m),
             other => other.clone(),
         }
+    }
+}
+
+/// An integer type that only arrays store, in 8 or 16 bits. Whether it's
+/// signed says how a read extends it to an `i32`: `i8` and `i16` copy the
+/// sign bit, `u8` and `u16` fill with zeros.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Packed {
+    I8,
+    U8,
+    I16,
+    U16,
+}
+
+impl Packed {
+    /// How many bits an element takes.
+    pub fn bits(self) -> u32 {
+        match self {
+            Packed::I8 | Packed::U8 => 8,
+            Packed::I16 | Packed::U16 => 16,
+        }
+    }
+
+    pub fn is_signed(self) -> bool {
+        matches!(self, Packed::I8 | Packed::I16)
+    }
+
+    /// What reading back `value` gives after it's stored: its low bits,
+    /// extended to an `i32`.
+    pub fn wrap(self, value: i32) -> i32 {
+        let shift = 32 - self.bits();
+        if self.is_signed() {
+            (value << shift) >> shift
+        } else {
+            ((value as u32) << shift >> shift) as i32
+        }
+    }
+}
+
+impl fmt::Display for Packed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Packed::I8 => "i8",
+            Packed::U8 => "u8",
+            Packed::I16 => "i16",
+            Packed::U16 => "u16",
+        })
     }
 }
 
@@ -133,6 +193,7 @@ impl fmt::Display for Ty {
             Ty::I64 => write!(f, "i64"),
             Ty::F32 => write!(f, "f32"),
             Ty::F64 => write!(f, "f64"),
+            Ty::Packed(p) => write!(f, "{p}"),
             Ty::Data(d, m, args) if args.is_empty() => write!(f, "{m} {d}"),
             Ty::Data(d, m, args) => {
                 let args: Vec<String> = args.iter().map(Mutability::to_string).collect();

@@ -1,4 +1,4 @@
-use conduit_ir::{CtorId, FuncId, Lit, Mutability, Ty};
+use conduit_ir::{CtorId, FuncId, Lit, Mutability, Packed, Ty};
 
 use crate::machine::Frame;
 
@@ -38,6 +38,8 @@ pub enum Object<'p> {
     Array {
         elems: Vec<Value>,
         is_mut: bool,
+        /// The element type, if it's packed: what each write wraps to.
+        packed: Option<Packed>,
     },
     Ref(Value),
     Closure {

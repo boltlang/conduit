@@ -1,0 +1,69 @@
+// Arrays of packed elements: a read extends the stored bits to an i32,
+// copying the sign bit for i8 and i16 and filling with zeros for u8 and
+// u16, and a write keeps only the low bits.
+
+data data1 {
+  (imm [u8])
+}
+
+// A u8 keeps the low 8 bits, read as unsigned.
+fn fn0(%0: i32) -> (i32) {
+  let %1: mut [u8] = array_fill(1i32, %0)
+  let %2: i32 = array_get(%1, 0i32)
+  jump ret(%2)
+}
+
+// An i8 keeps the low 8 bits, read as signed.
+fn fn1(%0: i32) -> (i32) {
+  let %1: imm [i8] = array_new(%0)
+  let %2: i32 = array_get(%1, 0i32)
+  jump ret(%2)
+}
+
+// A u16 set to a value keeps its low 16 bits.
+fn fn2(%0: i32) -> (i32) {
+  let %1: mut [u16] = array_fill(2i32, 0i32)
+  let = array_set(%1, 1i32, %0)
+  let %2: i32 = array_get(%1, 1i32)
+  jump ret(%2)
+}
+
+fn fn3(%0: i32) -> (i32) {
+  let %1: imm [i16] = array_new(0i32, %0)
+  let %2: i32 = array_get(%1, 1i32)
+  jump ret(%2)
+}
+
+// A clone has the same packed elements, and doesn't see later writes to
+// the original.
+fn fn4(%0: i32) -> (i32) {
+  let %1: mut [u8] = array_fill(3i32, %0)
+  let %2: imm [u8] = array_clone(%1)
+  let = array_set(%1, 0i32, 1i32)
+  let %3: i32 = array_get(%2, 0i32)
+  let %4: i32 = array_len(%2)
+  let %5: i32 = add(%3, %4)
+  jump ret(%5)
+}
+
+// Bytes in a data type, the way a string holds them.
+fn fn5(%0: i32) -> (i32) {
+  let %1: imm [u8] = array_new(104i32, %0)
+  let %2: imm data1 = new data1.0(%1)
+  let %3: imm [u8] = get data1.0.0(%2)
+  let %4: i32 = array_get(%3, 1i32)
+  jump ret(%4)
+}
+
+//# run fn0(300i32) == 44i32
+//# run fn0(-1i32) == 255i32
+//# run fn1(200i32) == -56i32
+//# run fn1(-1i32) == -1i32
+//# run fn1(127i32) == 127i32
+//# run fn2(-1i32) == 65535i32
+//# run fn2(65537i32) == 1i32
+//# run fn3(40000i32) == -25536i32
+//# run fn3(32767i32) == 32767i32
+//# run fn4(511i32) == 258i32
+//# run fn5(361i32) == 105i32
+//# wat

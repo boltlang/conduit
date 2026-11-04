@@ -121,6 +121,7 @@ integer conversions (out of range), array accesses (out of bounds),
 ```rust
 pub enum Ty {
     I32, I64, F32, F64,
+    Packed(Packed),               // i8, u8, i16 or u16: only as an array's element type
     Data(DataId, Mutability, Vec<Mutability>),  // GC'd ADT value, with its arguments
     Array(Box<Ty>, Mutability),   // GC'd array
     Fn(Box<Sig>, Mutability),     // closure
@@ -130,6 +131,7 @@ pub enum Ty {
 }
 
 pub enum Mutability { Imm, Mut, ReadOnly, Inherit, Param(u32) }
+pub enum Packed { I8, U8, I16, U16 }
 
 impl Ty {
     fn mutability(&self) -> Option<Mutability>;   // None for scalars and Cont
@@ -147,6 +149,16 @@ element type of an `Array`, and `Param(i)` only in the field types of a
 at least `i`. A `Data` type gives exactly one argument per parameter of
 its declaration: `Imm`, `Mut`, `ReadOnly` or a parameter of the function
 it's in.
+
+A `Packed` type is an integer stored in 8 or 16 bits, and is only valid as
+the element type of an `Array`: `mut [u8]` holds bytes, and a string is an
+`imm [u8]`. Elements are read and written as `i32`s. `ArrayGet` extends
+the stored bits to an `i32`, copying the sign bit for `i8` and `i16` and
+filling with zeros for `u8` and `u16`. `ArrayNew`, `ArrayFill` and
+`ArraySet` keep only the low bits of the value, so storing `300i32` in a
+`[u8]` and reading it back gives `44i32`. `ArrayClone` keeps the element
+type, so a `[u8]` clones only to a `[u8]`. On Wasm, `i8` and `u8` are both
+`(array (mut i8))`, and the sign picks `array.get_s` or `array.get_u`.
 
 A tuple or struct is a `DataDecl` with one constructor. `Bool` and
 field-less enums are `I32`. Unit is zero values and `!` is zero results, so
@@ -814,7 +826,7 @@ Status:
 | `Get` | `*.load` | `struct.get` | ✅ |
 | `Set` | `*.store` | `struct.set` | ✅ |
 | `ArrayNew` | allocate length + elements | `array.new` | ✅ |
-| `ArrayGet` | bounds check + `*.load` | `array.get` | ✅ |
+| `ArrayGet` | bounds check + `*.load` | `array.get`, or `array.get_s`/`array.get_u` for packed elements | ✅ |
 | `ArraySet` | bounds check + `*.store` | `array.set` | ✅ |
 | `ArrayLen` | `i32.load` of the length | `array.len` | ✅ |
 | `ArrayClone` | allocate + `memory.copy` | `array.new_default` + `array.copy` | ✅ |

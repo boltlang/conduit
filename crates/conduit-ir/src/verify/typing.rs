@@ -120,7 +120,7 @@ pub(crate) fn op_results<P: Program + ?Sized>(
         Op::ArrayNew => {
             let elem = new_array(p, mp, out)?;
             for ty in tys {
-                if !sub(ty, &elem) {
+                if !sub(ty, &elem.unpacked()) {
                     return Err(format!("array of {elem} gets an element of type {ty}"));
                 }
             }
@@ -131,19 +131,19 @@ pub(crate) fn op_results<P: Program + ?Sized>(
             let [Ty::I32, ty] = tys else {
                 return Err("array fill needs an i32 length and a value".into());
             };
-            if !sub(ty, &elem) {
+            if !sub(ty, &elem.unpacked()) {
                 return Err(format!("array of {elem} gets an element of type {ty}"));
             }
             Ok(out.to_vec())
         }
         Op::ArrayGet => match tys {
-            [array @ Ty::Array(..), Ty::I32] => Ok(vec![elem_ty(array).unwrap()]),
+            [array @ Ty::Array(..), Ty::I32] => Ok(vec![elem_ty(array).unwrap().unpacked()]),
             _ => Err("array get needs an array and an i32 index".into()),
         },
         Op::ArraySet => match tys {
             [array @ Ty::Array(_, Mutability::Mut), Ty::I32, ty] => {
                 let elem = elem_ty(array).unwrap();
-                if sub(ty, &elem) {
+                if sub(ty, &elem.unpacked()) {
                     Ok(vec![])
                 } else {
                     Err(format!("array of {elem} gets an element of type {ty}"))

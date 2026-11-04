@@ -27,7 +27,7 @@
 
 use std::collections::HashMap;
 
-use conduit_ir::{CtorId, DataId, FuncId, Module, Sig, Ty};
+use conduit_ir::{CtorId, DataId, FuncId, Module, Packed, Sig, Ty};
 use wasm_encoder::{
     ArrayType, CompositeInnerType, CompositeType, FieldType, FuncType, HeapType, RefType,
     StorageType, StructType, SubType, ValType,
@@ -46,7 +46,7 @@ enum Key {
     Data(DataId),
     /// A constructor of an ADT with several of them.
     Ctor(CtorId),
-    Array(ValType),
+    Array(StorageType),
     Cell(ValType),
     Boxed(ValType),
     /// The base type of closures with this signature.
@@ -76,6 +76,16 @@ fn field(ty: ValType, mutable: bool) -> FieldType {
         element_type: StorageType::Val(ty),
         mutable,
     }
+}
+
+/// How Wasm stores an array element or field of type `ty`. A packed type's
+/// sign isn't part of it: reads say how to extend it.
+fn storage(types: &mut Types<'_>, ty: &Ty) -> Result<StorageType, String> {
+    Ok(match ty {
+        Ty::Packed(Packed::I8 | Packed::U8) => StorageType::I8,
+        Ty::Packed(Packed::I16 | Packed::U16) => StorageType::I16,
+        ty => StorageType::Val(types.val(ty)?),
+    })
 }
 
 fn subtype(is_final: bool, supertype: Option<u32>, inner: CompositeInnerType) -> SubType {
@@ -143,6 +153,7 @@ impl<'m> Types<'m> {
             }
             Ty::Ref(inner) => nullable(self.cell(inner)?),
             Ty::Any(_) => ValType::Ref(RefType::ANYREF),
+            Ty::Packed(p) => return Err(format!("{p} is only allowed as an array's element type")),
             Ty::Cont(_) => return Err("continuations aren't supported yet".into()),
         })
     }
@@ -213,9 +224,12 @@ impl<'m> Types<'m> {
     }
 
     pub fn array(&mut self, elem: &Ty) -> Result<u32, String> {
-        let elem = self.val(elem)?;
+        let elem = storage(self, elem)?;
         self.get_or(Key::Array(elem), |_| {
-            let inner = CompositeInnerType::Array(ArrayType(field(elem, true)));
+            let inner = CompositeInnerType::Array(ArrayType(FieldType {
+                element_type: elem,
+                mutable: true,
+            }));
             Ok(subtype(true, None, inner))
         })
     }

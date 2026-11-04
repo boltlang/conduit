@@ -504,11 +504,19 @@ impl<'m> FuncCx<'_, 'm> {
                 self.emit(I::ArrayNew(array));
             }
             Op::ArrayGet | Op::ArraySet => {
-                let array = self.array_of(&self.atom_ty(&args[0]))?;
+                let ty = self.atom_ty(&args[0]);
+                let array = self.array_of(&ty)?;
                 self.atoms(args);
-                self.emit(match op {
-                    Op::ArrayGet => I::ArrayGet(array),
-                    _ => I::ArraySet(array),
+                // A packed element is extended to an `i32` as its type says.
+                // A set keeps only the low bits by itself.
+                self.emit(match (op, &ty) {
+                    (Op::ArraySet, _) => I::ArraySet(array),
+                    (_, Ty::Array(elem, _)) => match **elem {
+                        Ty::Packed(p) if p.is_signed() => I::ArrayGetS(array),
+                        Ty::Packed(_) => I::ArrayGetU(array),
+                        _ => I::ArrayGet(array),
+                    },
+                    _ => I::ArrayGet(array),
                 });
             }
             Op::ArrayLen => {

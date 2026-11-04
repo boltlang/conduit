@@ -211,6 +211,8 @@ fn sub(a: &Ty, b: &Ty) -> bool {
 struct Allowed {
     /// `Inherit`: in field types, and in an array's element type.
     inherit: bool,
+    /// A [`Ty::Packed`]: only as an array's element type itself.
+    packed: bool,
     /// `Param(1)` to `Param(params)`: in the field types of a declaration
     /// with that many parameters, or the types of a function.
     params: u32,
@@ -221,6 +223,7 @@ impl Allowed {
     /// effect's, a handler's.
     const PLAIN: Allowed = Allowed {
         inherit: false,
+        packed: false,
         params: 0,
     };
 
@@ -229,6 +232,7 @@ impl Allowed {
     pub(crate) fn func(params: u32) -> Allowed {
         Allowed {
             inherit: false,
+            packed: false,
             params,
         }
     }
@@ -237,14 +241,15 @@ impl Allowed {
     fn field(params: u32) -> Allowed {
         Allowed {
             inherit: true,
+            packed: false,
             params,
         }
     }
 }
 
 /// Checks that a type only refers to known data types, gives each the
-/// right number of arguments, and only uses `Inherit` and mutability
-/// parameters where they're allowed.
+/// right number of arguments, and only uses `Inherit`, mutability
+/// parameters and packed types where they're allowed.
 fn ty_ok<P: Program + ?Sized>(p: &P, ty: &Ty, allowed: Allowed) -> Result<(), String> {
     let mut_ok = |m: &Mutability| match m {
         Mutability::Inherit if !allowed.inherit => Err(format!(
@@ -263,6 +268,8 @@ fn ty_ok<P: Program + ?Sized>(p: &P, ty: &Ty, allowed: Allowed) -> Result<(), St
     };
     match ty {
         Ty::I32 | Ty::I64 | Ty::F32 | Ty::F64 => Ok(()),
+        Ty::Packed(_) if allowed.packed => Ok(()),
+        Ty::Packed(_) => Err(format!("{ty} is only allowed as an array's element type")),
         Ty::Data(d, m, args) => {
             mut_ok(m)?;
             let Some(decl) = p.data(*d) else {
@@ -277,7 +284,7 @@ fn ty_ok<P: Program + ?Sized>(p: &P, ty: &Ty, allowed: Allowed) -> Result<(), St
             }
             args.iter().try_for_each(mut_ok)
         }
-        // An element can have the array's mutability.
+        // An element can have the array's mutability, and be packed.
         Ty::Array(elem, m) => {
             mut_ok(m)?;
             ty_ok(
@@ -285,6 +292,7 @@ fn ty_ok<P: Program + ?Sized>(p: &P, ty: &Ty, allowed: Allowed) -> Result<(), St
                 elem,
                 Allowed {
                     inherit: true,
+                    packed: true,
                     ..allowed
                 },
             )
@@ -294,7 +302,14 @@ fn ty_ok<P: Program + ?Sized>(p: &P, ty: &Ty, allowed: Allowed) -> Result<(), St
             sig_ok(p, sig, allowed.params)
         }
         Ty::Cont(sig) => sig_ok(p, sig, allowed.params),
-        Ty::Ref(ty) => ty_ok(p, ty, allowed),
+        Ty::Ref(ty) => ty_ok(
+            p,
+            ty,
+            Allowed {
+                packed: false,
+                ..allowed
+            },
+        ),
         Ty::Any(m) => mut_ok(m),
     }
 }
@@ -368,7 +383,8 @@ pub fn resolve(field: &Ty, m: Mutability, args: &[Mutability]) -> Ty {
 }
 
 /// The type of the elements of an array of type `ty`, with `Inherit`
-/// made the array's mutability. `None` if `ty` isn't an array.
+/// made the array's mutability. `None` if `ty` isn't an array. A packed
+/// type stays packed: [`Ty::unpacked`] is the type of what reads give.
 pub fn elem_ty(ty: &Ty) -> Option<Ty> {
     match ty {
         Ty::Array(elem, m) => Some(inherit(elem, *m)),
@@ -403,7 +419,7 @@ fn at_most_in<P: Program + ?Sized>(
 ) -> bool {
     let le = |m: Mutability| m.at_most(bound, assumes);
     match ty {
-        Ty::I32 | Ty::I64 | Ty::F32 | Ty::F64 => true,
+        Ty::I32 | Ty::I64 | Ty::F32 | Ty::F64 | Ty::Packed(_) => true,
         Ty::Data(d, m, args) => {
             if !le(*m) {
                 return false;

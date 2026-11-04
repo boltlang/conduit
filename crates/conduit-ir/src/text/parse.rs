@@ -343,6 +343,10 @@ impl Parser {
             "i64" => Ty::I64,
             "f32" => Ty::F32,
             "f64" => Ty::F64,
+            "i8" => Ty::Packed(Packed::I8),
+            "u8" => Ty::Packed(Packed::U8),
+            "i16" => Ty::Packed(Packed::I16),
+            "u16" => Ty::Packed(Packed::U16),
             "cont" => Ty::Cont(Box::new(self.sig()?)),
             "ref" => Ty::Ref(Box::new(self.ty()?)),
             m if matches!(m, "imm" | "mut" | "ro" | "inherit") || m.starts_with('\'') => {
