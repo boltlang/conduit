@@ -4,7 +4,8 @@
 //! A program with an `opt` check must also match its `<name>.opt.conduit`
 //! snapshot. `//# opt` snapshots the program after all passes, and
 //! `//# opt: dce, copies` after only those passes, which are verified and
-//! run on their own too.
+//! run on their own too. With several `opt` checks, the snapshot has a
+//! section for each, in order, headed `// after <passes>`.
 
 use conduit_ir::Module;
 use conduit_ir::text;
@@ -22,29 +23,47 @@ fn applies(p: &Program) -> bool {
 }
 
 fn test(p: &Program) -> Result<(), String> {
-    let opts: Vec<&Option<Vec<String>>> = p
+    let opts: Vec<(u32, &Option<Vec<String>>)> = p
         .checks
         .iter()
         .filter_map(|c| match &c.kind {
-            CheckKind::Opt(passes) => Some(passes),
+            CheckKind::Opt(passes) => Some((c.line, passes)),
             _ => None,
         })
         .collect();
-    if opts.len() > 1 {
-        return Err("a program can only have one `opt` check".into());
+    for (i, (line, passes)) in opts.iter().enumerate() {
+        if let Some((first, _)) = opts[..i].iter().find(|(_, other)| other == passes) {
+            return Err(format!(
+                "line {line}: the same `opt` check as on line {first}"
+            ));
+        }
     }
 
     let all = optimized(p, conduit_opt::PASSES)?;
-    match opts.first() {
-        None => {}
-        Some(None) => p.snapshot("opt.conduit", &text::print(&all))?,
-        Some(Some(names)) => {
-            let passes = names
+    let mut sections = Vec::new();
+    for (_, passes) in &opts {
+        let (header, module) = match passes {
+            None => ("all passes".to_string(), text::print(&all)),
+            Some(names) => {
+                let passes = names
+                    .iter()
+                    .map(|n| conduit_opt::pass(n).ok_or_else(|| unknown_pass(n)))
+                    .collect::<Result<Vec<_>, _>>()?;
+                (names.join(", "), text::print(&optimized(p, &passes)?))
+            }
+        };
+        sections.push((header, module));
+    }
+    match sections.as_slice() {
+        [] => {}
+        // A single check needs no header.
+        [(_, module)] => p.snapshot("opt.conduit", module)?,
+        _ => {
+            let text: Vec<String> = sections
                 .iter()
-                .map(|n| conduit_opt::pass(n).ok_or_else(|| unknown_pass(n)))
-                .collect::<Result<Vec<_>, _>>()?;
-            let some = optimized(p, &passes)?;
-            p.snapshot("opt.conduit", &text::print(&some))?;
+                .map(|(header, module)| format!("// after {header}\n\n{module}"))
+                .collect();
+            p.snapshot("opt.conduit", &text.join("\n"))?;
         }
     }
     Ok(())

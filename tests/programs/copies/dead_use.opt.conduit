@@ -1,3 +1,25 @@
+// after copies
+
+data data1 {
+  (mut [i32], mut [i32])
+}
+
+fn fn0(%0: i32) -> (i32) {
+  let %1: mut [i32] = array_fill(1i32, %0)
+  let %2: imm [i32] = array_clone(%1)
+  let %3: mut [i32] = array_fill(1i32, 0i32)
+  let %4: i32 = call fn1(%3)
+  let %5: mut data1 = new data1.0(%1, %3)
+  let %6: i32 = array_get(%2, 0i32)
+  jump ret(%6)
+}
+
+fn fn1(%0: mut [i32]) -> (i32) {
+  jump ret(0i32)
+}
+
+// after dce, copies
+
 data data1 {
   (mut [i32], mut [i32])
 }

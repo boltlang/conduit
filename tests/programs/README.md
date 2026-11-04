@@ -30,7 +30,7 @@ checks apply to that crate.
 | `//# wasm-skip: reason` | The Wasm backend doesn't look at the program, for example because it uses effect handlers. |
 | `//# wat` | The program's Wasm, as text, matches `<name>.wat` next to it. |
 | `//# opt` | The program after optimization matches `<name>.opt.conduit` next to it. |
-| `//# opt: dce, copies` | The same, but after only those passes, in that order, each run until nothing changes. A program has at most one `opt` check. |
+| `//# opt: dce, copies` | The same, but after only those passes, in that order, each run until nothing changes. |
 
 Arguments and results are literals as the text format writes them: `5i32`,
 `-1i64`, `1.5f32`, `1e300f64`, `f32_bits(2143289344)`. Floats are compared
@@ -51,6 +51,12 @@ BLESS=1 cargo test --workspace --test programs
 ```
 
 and review the changes with `git diff` before committing them.
+
+A program can have several `opt` checks, for example `//# opt: dce` and
+`//# opt: dce, copies`, to show what a pass does on its own and together
+with others. Its `<name>.opt.conduit` then has a section for each check, in
+the order they appear, headed `// after dce` or `// after all passes`. With
+a single `opt` check there is no header.
 
 ## Host functions
 
