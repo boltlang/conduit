@@ -9,7 +9,7 @@ handler handler0 for effect0 env(ref i32) ops(fn1) ret fn2
 
 fn fn0() -> (i32) {
   let %0: ref i32 = ref_new(0i32)
-  let %1: imm fn() -> () = closure fn3()
+  let %1: imm fn() -> () does effect0 = closure fn3()
   let = handle handler0(%0, %1)
   let %2: i32 = ref_get(%0)
   jump ret(%2)
@@ -29,7 +29,7 @@ fn fn2(%0: ref i32) -> () {
 }
 
 // produce()
-fn fn3() -> () {
+fn fn3() -> () does effect0 {
   let = perform effect0.0(1i32)
   let = perform effect0.0(2i32)
   let = perform effect0.0(3i32)

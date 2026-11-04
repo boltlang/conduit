@@ -212,8 +212,8 @@ run.
 
 ## Effect types
 
-**Not implemented: this is a design.** See "Effect types" in
-[the IR](ir.md#effect-types).
+**Partly implemented:** everything here but effect parameters, which
+rows can't name yet. See "Effect types" in [the IR](ir.md#effect-types).
 
 Every function, closure type and continuation type has a row of effects
 after `does`. The verifier checks that each `perform` is in a function

@@ -65,13 +65,13 @@ fn fn7(%0: i32) -> (i32) {
 }
 
 // A `perform` in tail position.
-fn fn8() -> (i32) {
+fn fn8() -> (i32) does effect20 {
   let %0: i32 = perform effect20.0()
   jump ret(%0)
 }
 
 // A tail call of a function that performs.
-fn fn9() -> (i32) {
+fn fn9() -> (i32) does effect20 {
   let %0: i32 = call fn8()
   jump ret(%0)
 }
@@ -79,19 +79,19 @@ fn fn9() -> (i32) {
 // A `handle` in tail position: 2 * %0.
 fn fn10(%0: i32) -> (i32) {
   let %1: imm fn(i32) -> (i32) = closure fn7()
-  let %2: imm fn() -> (i32) = closure fn9()
+  let %2: imm fn() -> (i32) does effect20 = closure fn9()
   let %3: i32 = handle handler30(%0, %1, %2)
   jump ret(%3)
 }
 
 // 127i8 + 1 wraps to -128, and 40 + trunc(2.9) is 42: -86.
 fn fn11() -> (i64) {
-  let %0: imm fn() -> (i64) = closure fn12()
+  let %0: imm fn() -> (i64) does effect21 = closure fn12()
   let %1: i64 = handle handler31(%0)
   jump ret(%1)
 }
 
-fn fn12() -> (i64) {
+fn fn12() -> (i64) does effect21 {
   let %0: i8, %1: i64 = perform effect21.0(40i64, 2.9f64, 127i8)
   let %2: i64 = convert.s[i64](%0)
   let %3: i64 = add(%2, %1)
@@ -100,12 +100,12 @@ fn fn12() -> (i64) {
 
 // An aborting handler in tail position: -1 for 0, else %0 * 10.
 fn fn13(%0: i32) -> (i32) {
-  let %1: imm fn() -> (i32) = closure fn14(%0)
+  let %1: imm fn() -> (i32) does effect22 = closure fn14(%0)
   let %2: i32 = handle handler32(-1i32, %1)
   jump ret(%2)
 }
 
-fn fn14(%0: i32) -> (i32) {
+fn fn14(%0: i32) -> (i32) does effect22 {
   case %0 {
     0 =>
       let = perform effect22.0()

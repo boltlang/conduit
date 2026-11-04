@@ -412,6 +412,7 @@ fn closure_capturing_ref(m: Mutability) -> Vec<String> {
     let r = f.new_var(Ty::Ref(Box::new(Ty::I32)));
     let c = f.new_var(Ty::Fn(
         Box::new(Sig {
+            row: Row::NOTHING,
             params: vec![],
             results: vec![],
         }),
@@ -507,6 +508,7 @@ const RET_CLAUSE: FuncId = FuncId(4);
 
 fn unit_sig() -> Sig {
     Sig {
+        row: Row::NOTHING,
         params: vec![],
         results: vec![],
     }
@@ -520,6 +522,7 @@ fn handler_module(body: impl FnOnce(&mut Func, Var) -> Block) -> Module {
         YIELD,
         EffectDecl {
             ops: vec![Sig {
+                row: Row::NOTHING,
                 params: vec![Ty::I32],
                 results: vec![],
             }],
@@ -539,6 +542,7 @@ fn handler_module(body: impl FnOnce(&mut Func, Var) -> Block) -> Module {
             env: vec![],
             ops: vec![CLAUSE],
             ret: RET_CLAUSE,
+            row: Row::NOTHING,
         },
     );
     m
@@ -681,11 +685,16 @@ fn handle_and_perform() {
     // G: perform YIELD.0(1); ret()
     let mut m = handler_module(|_, k| resume(k, ret(vec![])));
     let mut g = Func::new(vec![], vec![]);
+    g.row = Row::one(YIELD);
     g.body = let_(vec![], Op::Perform(YIELD, 0), vec![int(1)], ret(vec![]));
     m.funcs.insert(G, g);
 
     let mut f = Func::new(vec![], vec![]);
-    let body = f.new_var(Ty::Fn(Box::new(unit_sig()), Imm));
+    let body_sig = Sig {
+        row: Row::one(YIELD),
+        ..unit_sig()
+    };
+    let body = f.new_var(Ty::Fn(Box::new(body_sig), Imm));
     f.body = let_(
         vec![body],
         Op::Closure(G, vec![]),

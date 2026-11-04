@@ -44,8 +44,9 @@ pub(super) fn module(m: &Module) -> String {
             .collect::<Vec<_>>()
             .join(", ");
         items.push(format!(
-            "handler {id} for {} env({}) ops({ops}) ret {}",
+            "handler {id} for {}{} env({}) ops({ops}) ret {}",
             h.effect,
+            does(&h.row),
             types(&h.env),
             h.ret
         ));
@@ -81,8 +82,9 @@ pub(super) fn func(id: FuncId, f: &Func) -> String {
     };
     let _ = write!(
         p.out,
-        "fn {id}{mparams}({params}) -> ({})",
-        types(&f.results)
+        "fn {id}{mparams}({params}) -> ({}){}",
+        types(&f.results),
+        does(&f.row)
     );
     if !f.mut_params.assumes.is_empty() {
         let assumes: Vec<String> = f
@@ -383,7 +385,7 @@ fn margs_text(margs: &[Mutability]) -> String {
 
 /// What comes before an op's arguments: its name, and the IDs or types
 /// it takes.
-fn op_name(op: &Op) -> String {
+pub(crate) fn op_name(op: &Op) -> String {
     match op {
         Op::Prim(p) => prim_name(p),
         Op::Call(f, margs) => format!("call {f}{}", margs_text(margs)),
@@ -409,5 +411,14 @@ fn op_name(op: &Op) -> String {
         Op::Perform(e, i) => format!("perform {e}.{i}"),
         Op::Resume => "resume".into(),
         Op::Discontinue(e, i) => format!("discontinue {e}.{i}"),
+    }
+}
+
+/// ` does row`, or nothing for no effects.
+fn does(row: &Row) -> String {
+    if row.is_nothing() {
+        String::new()
+    } else {
+        format!(" does {row}")
     }
 }

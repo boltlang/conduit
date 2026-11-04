@@ -65,13 +65,13 @@ pub fn verify_module(m: &Module) -> Result<(), Vec<Error>> {
         check_data(m, id, decl, &mut errors);
     }
     for (&id, ext) in &m.externs {
-        if let Err(message) = sig_ok(m, &ext.sig, 0) {
+        if let Err(message) = sig_ok(m, &ext.sig, 0).and_then(|()| no_row(&ext.sig)) {
             errors.push(decl_error(Item::Extern(id), message));
         }
     }
     for (&id, effect) in &m.effects {
         for (i, sig) in effect.ops.iter().enumerate() {
-            if let Err(message) = sig_ok(m, sig, 0) {
+            if let Err(message) = sig_ok(m, sig, 0).and_then(|()| no_row(sig)) {
                 errors.push(decl_error(
                     Item::Effect(id),
                     format!("operation {i}: {message}"),
@@ -160,9 +160,18 @@ fn check_handler<P: Program + ?Sized>(
     let Some(effect) = p.effect(h.effect) else {
         return err(format!("unknown effect {}", h.effect));
     };
+    if let Err(message) = row_ok(p, &h.row) {
+        err(message);
+    }
     let Some(ret) = p.func_sig(h.ret) else {
         return err(format!("unknown return clause {}", h.ret));
     };
+    if !ret.row.is_in(&h.row) {
+        err(format!(
+            "return clause {} does {}, which isn't in the handler's row {}",
+            h.ret, ret.row, h.row
+        ));
+    }
     if !ret.params.starts_with(&h.env) {
         err(format!(
             "return clause {} has type {ret}, which doesn't start with the environment",
@@ -182,7 +191,9 @@ fn check_handler<P: Program + ?Sized>(
             err(format!("unknown clause {clause} for operation {i}"));
             continue;
         };
+        // Resuming runs the rest of the body, which is still handled.
         let k = Ty::Cont(Box::new(Sig {
+            row: h.row.clone(),
             params: op.results.clone(),
             results: ret.results.clone(),
         }));
@@ -190,12 +201,18 @@ fn check_handler<P: Program + ?Sized>(
         params.extend(op.params.iter().cloned());
         params.push(k);
         let expected = Sig {
+            row: h.row.clone(),
             params,
             results: ret.results.clone(),
         };
-        if sig != expected {
+        if sig.params != expected.params || sig.results != expected.results {
             err(format!(
                 "clause {clause} for operation {i} has type {sig}, but should have {expected}"
+            ));
+        } else if !sig.row.is_in(&h.row) {
+            err(format!(
+                "clause {clause} for operation {i} does {}, which isn't in the handler's row {}",
+                sig.row, h.row
             ));
         }
     }
@@ -291,11 +308,36 @@ fn ty_ok<P: Program + ?Sized>(p: &P, ty: &Ty, allowed: Allowed) -> Result<(), St
         }
         Ty::Fn(sig, m) => {
             mut_ok(m)?;
-            sig_ok(p, sig, allowed.params)
+            sig_ok(p, sig, allowed.params)?;
+            row_ok(p, &sig.row)
         }
-        Ty::Cont(sig) => sig_ok(p, sig, allowed.params),
+        Ty::Cont(sig) => {
+            sig_ok(p, sig, allowed.params)?;
+            row_ok(p, &sig.row)
+        }
         Ty::Ref(ty) => ty_ok(p, ty, Allowed { ..allowed }),
         Ty::Any(m) => mut_ok(m),
+    }
+}
+
+/// Checks that a row's effects exist.
+fn row_ok<P: Program + ?Sized>(p: &P, row: &Row) -> Result<(), String> {
+    match row.effects().iter().find(|&&e| p.effect(e).is_none()) {
+        Some(e) => Err(format!("unknown effect {e} in row {row}")),
+        None => Ok(()),
+    }
+}
+
+/// An extern's or an effect operation's signature has no row: the host
+/// can't perform a Conduit effect, and an operation's effects are its
+/// handler's.
+fn no_row(sig: &Sig) -> Result<(), String> {
+    if sig.row.is_nothing() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{sig} has a row, which only functions, closures and continuations can"
+        ))
     }
 }
 
@@ -355,6 +397,7 @@ fn param_arg(args: &[Mutability], i: u32) -> Option<Mutability> {
 pub fn subst_sig(sig: &Sig, args: &[Mutability]) -> Sig {
     let all = |tys: &[Ty]| tys.iter().map(|ty| subst_params(ty, args)).collect();
     Sig {
+        row: sig.row.clone(),
         params: all(&sig.params),
         results: all(&sig.results),
     }
@@ -475,6 +518,9 @@ impl<P: Program + ?Sized> Cx<'_, P> {
             if let Err(message) = ty_ok(self.p, ty, allowed) {
                 self.err(format!("type of %{i}: {message}"));
             }
+        }
+        if let Err(message) = row_ok(self.p, &f.row) {
+            self.err(message);
         }
         for ty in &f.results {
             if let Err(message) = ty_ok(self.p, ty, allowed) {
@@ -751,6 +797,16 @@ impl<P: Program + ?Sized> Cx<'_, P> {
                 }
             }
             Err(message) => self.err(message),
+        }
+        let row = typing::op_row(self.p, op, tys);
+        if !row.is_in(&self.f.row) {
+            let does = if self.f.row.is_nothing() {
+                "has no effects".to_string()
+            } else {
+                format!("only does {}", self.f.row)
+            };
+            let name = crate::text::print::op_name(op);
+            self.err(format!("{name} may perform {row}, but the function {does}"));
         }
     }
 

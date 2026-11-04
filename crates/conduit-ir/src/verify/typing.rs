@@ -50,6 +50,12 @@ pub(crate) fn op_results<P: Program + ?Sized>(
                 ));
             };
             fits(tys, &sig.params[..n]).map_err(|m| format!("captures of {f}: {m}"))?;
+            if !sig.row.is_in(&fn_sig.row) {
+                return Err(format!(
+                    "{f} does {}, which isn't in the row of fn{fn_sig}",
+                    sig.row
+                ));
+            }
             if let Some(ty) = tys.iter().find(|ty| !at_most(p, ty, *m, &mp.assumes)) {
                 return Err(format!("{} {m} closure can't capture a {ty}", article(*m)));
             }
@@ -218,6 +224,15 @@ pub(crate) fn op_results<P: Program + ?Sized>(
                         .join(", ")
                 ));
             }
+            // The body's effect is handled, and what the clauses perform
+            // isn't.
+            let allowed = decl.row.union(&Row::one(decl.effect));
+            if !body.row.is_in(&allowed) {
+                return Err(format!(
+                    "the body of handle {h} does {}, which isn't in {allowed}",
+                    body.row
+                ));
+            }
             Ok(ret.results)
         }
         Op::Perform(e, i) => {
@@ -370,5 +385,24 @@ fn article(m: Mutability) -> &'static str {
     match m {
         Mutability::Imm | Mutability::Inherit => "an",
         _ => "a",
+    }
+}
+
+/// What an op may perform, given its arguments' types: an operation's
+/// effect, a callee's, closure's or continuation's row, or a handler's. A
+/// `discontinue` also performs its operation where the continuation was
+/// captured.
+pub(crate) fn op_row<P: Program + ?Sized>(p: &P, op: &Op, tys: &[Ty]) -> Row {
+    let first = || match tys.first() {
+        Some(Ty::Fn(sig, _) | Ty::Cont(sig)) => sig.row.clone(),
+        _ => Row::NOTHING,
+    };
+    match op {
+        Op::Perform(e, _) => Row::one(*e),
+        Op::Call(f, _) => p.func_sig(*f).map_or(Row::NOTHING, |sig| sig.row),
+        Op::Apply | Op::Resume => first(),
+        Op::Discontinue(e, _) => first().union(&Row::one(*e)),
+        Op::Handle(h) => p.handler(*h).map_or(Row::NOTHING, |decl| decl.row.clone()),
+        _ => Row::NOTHING,
     }
 }

@@ -157,6 +157,7 @@ pub(super) fn lex(src: &str) -> Result<Vec<(Tok, Pos)>, Error> {
                     '=' => "=",
                     '.' => ".",
                     '@' => "@",
+                    '+' => "+",
                     _ => return Err(err(pos, format!("unexpected character `{c}`"))),
                 },
             };

@@ -1,6 +1,7 @@
 use std::fmt;
 
 use crate::id::DataId;
+use crate::row::Row;
 
 /// A type.
 ///
@@ -53,12 +54,15 @@ impl Ty {
 
     /// Whether a value of this type can be used where `other` is expected.
     /// Only an object's own mutability can differ: `Imm` and `Mut` both fit
-    /// `ReadOnly`. A data type's arguments must be equal.
+    /// `ReadOnly`, and the row of a closure or continuation: a smaller one
+    /// fits a bigger one. A data type's arguments must be equal, and so
+    /// must the types inside a closure or continuation type.
     pub fn is_subtype(&self, other: &Ty) -> bool {
         match (self, other) {
             (Ty::Data(d1, m1, a1), Ty::Data(d2, m2, a2)) => d1 == d2 && a1 == a2 && m1.is_sub(*m2),
             (Ty::Array(e1, m1), Ty::Array(e2, m2)) => e1 == e2 && m1.is_sub(*m2),
-            (Ty::Fn(s1, m1), Ty::Fn(s2, m2)) => s1 == s2 && m1.is_sub(*m2),
+            (Ty::Fn(s1, m1), Ty::Fn(s2, m2)) => s1.is_sub(s2) && m1.is_sub(*m2),
+            (Ty::Cont(s1), Ty::Cont(s2)) => s1.is_sub(s2),
             (Ty::Any(m1), Ty::Any(m2)) => m1.is_sub(*m2),
             _ => self == other,
         }
@@ -128,11 +132,31 @@ impl Mutability {
     }
 }
 
-/// A signature: parameter and result types. Either list can be empty.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// A signature: parameter and result types, and the effects it may
+/// perform. Either list can be empty.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct Sig {
     pub params: Vec<Ty>,
     pub results: Vec<Ty>,
+    pub row: Row,
+}
+
+impl Sig {
+    /// A signature with no effects.
+    pub fn new(params: Vec<Ty>, results: Vec<Ty>) -> Sig {
+        Sig {
+            params,
+            results,
+            row: Row::NOTHING,
+        }
+    }
+
+    /// Whether a closure or continuation of this signature can be used
+    /// where one of `other` is expected: the same types, and a row that's
+    /// in `other`'s.
+    pub fn is_sub(&self, other: &Sig) -> bool {
+        self.params == other.params && self.results == other.results && self.row.is_in(&other.row)
+    }
 }
 
 impl fmt::Display for Ty {
@@ -172,7 +196,11 @@ impl fmt::Display for Mutability {
 
 impl fmt::Display for Sig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "({}) -> ({})", list(&self.params), list(&self.results))
+        write!(f, "({}) -> ({})", list(&self.params), list(&self.results))?;
+        if !self.row.is_nothing() {
+            write!(f, " does {}", self.row)?;
+        }
+        Ok(())
     }
 }
 

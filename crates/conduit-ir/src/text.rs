@@ -19,7 +19,7 @@
 
 mod lex;
 mod parse;
-mod print;
+pub(crate) mod print;
 
 use std::fmt;
 

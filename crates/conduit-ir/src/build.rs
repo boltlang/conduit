@@ -299,6 +299,12 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
         })
     }
 
+    /// Says what the function may perform: no effects, unless this is
+    /// called.
+    pub fn set_row(&mut self, row: Row) {
+        self.func.row = row;
+    }
+
     /// Parameter `i`. Panics if there's no such parameter.
     pub fn param(&self, i: usize) -> Var {
         self.func.params[i]
@@ -585,6 +591,7 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
         let sig = verify::subst_sig(&sig, &margs);
         let n = captures.len().min(sig.params.len());
         let rest = Sig {
+            row: sig.row,
             params: sig.params[n..].to_vec(),
             results: sig.results,
         };

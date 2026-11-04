@@ -1,0 +1,103 @@
+// Rows that don't hold: a `perform`, call, `apply`, `resume` or `handle`
+// whose effects aren't in the function's row, a closure or handler body
+// with a row that's too small, clauses that perform more than their
+// handler says, and rows where none can be.
+
+effect effect20 {
+  () -> ()
+}
+
+effect effect21 {
+  () -> ()
+}
+
+extern extern1 "env" "f" () -> () does effect20
+
+effect effect22 {
+  () -> () does effect20
+}
+
+handler handler30 for effect20 env() ops(fn9) ret fn10
+
+handler handler31 for effect20 does effect21 env() ops(fn11) ret fn10
+
+fn fn0() -> () {
+  let = perform effect20.0()
+  jump ret()
+}
+
+fn fn1() -> () does effect21 {
+  let = call fn2()
+  jump ret()
+}
+
+fn fn2() -> () does effect20 {
+  let = perform effect20.0()
+  jump ret()
+}
+
+fn fn3(%0: imm fn() -> () does effect20) -> () {
+  let = apply(%0)
+  jump ret()
+}
+
+// A closure's type must say what its function does.
+fn fn4() -> () does effect20 {
+  let %0: imm fn() -> () = closure fn2()
+  let = apply(%0)
+  jump ret()
+}
+
+// A body that does effect21 under a handler of effect20 that doesn't pass
+// it on.
+fn fn5(%0: imm fn() -> () does effect21) -> () does effect21 {
+  let = handle handler30(%0)
+  jump ret()
+}
+
+// A handle performs what its handler's row says.
+fn fn6(%0: imm fn() -> () does effect20) -> () {
+  let = handle handler31(%0)
+  jump ret()
+}
+
+// A closure of a smaller row fits where a bigger one is expected, but not
+// the other way.
+fn fn7(%0: imm fn() -> () does effect20) -> (imm fn() -> ()) {
+  jump ret(%0)
+}
+
+fn fn8(%0: imm fn() -> ()) -> (imm fn() -> () does effect20 + effect21) {
+  jump ret(%0)
+}
+
+// A clause that performs what its handler's row doesn't have.
+fn fn9(%0: cont() -> ()) -> () does effect21 {
+  let = perform effect21.0()
+  jump ret()
+}
+
+fn fn10() -> () {
+  jump ret()
+}
+
+fn fn11(%0: cont() -> () does effect21) -> () does effect21 {
+  let = resume(%0)
+  jump ret()
+}
+
+fn fn12() -> () does effect99 {
+  jump ret()
+}
+
+//# verify-error: extern1: () -> () does effect20 has a row, which only functions, closures and continuations can
+//# verify-error: effect22: operation 0: () -> () does effect20 has a row
+//# verify-error: fn0: perform effect20.0 may perform effect20, but the function has no effects
+//# verify-error: fn1: call fn2 may perform effect20, but the function only does effect21
+//# verify-error: fn3: apply may perform effect20, but the function has no effects
+//# verify-error: fn4: fn2 does effect20, which isn't in the row of fn() -> ()
+//# verify-error: fn5: the body of handle handler30 does effect21, which isn't in effect20
+//# verify-error: fn6: handle handler31 may perform effect21, but the function has no effects
+//# verify-error: fn7: jump to ret: value 0 has type imm fn() -> () does effect20, but should have imm fn() -> ()
+//# verify-error: handler30: clause fn9 for operation 0 does effect21, which isn't in the handler's row Nothing
+//# verify-error: fn12: unknown effect effect99 in row effect99

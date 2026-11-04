@@ -29,10 +29,10 @@ handler handler30 for effect20 env(i32) ops(fn1) ret fn2
 handler handler31 for effect21 env() ops(fn3) ret fn4
 
 // Ask gives the environment, resuming in tail position.
-handler handler32 for effect22 env(i32) ops(fn5) ret fn6
+handler handler32 for effect22 does effect20 env(i32) ops(fn5) ret fn6
 
 // Stop gives 0.
-handler handler33 for effect23 env() ops(fn7) ret fn8
+handler handler33 for effect23 does effect20 env() ops(fn7) ret fn8
 
 // Get gives the environment, and Fail -1, while a return adds 1000.
 handler handler34 for effect24 env(i32) ops(fn9, fn10) ret fn11
@@ -55,7 +55,7 @@ fn fn4(%0: i32) -> (i32, i64) {
   jump ret(1i32, %1)
 }
 
-fn fn5(%0: i32, %1: cont(i32) -> (i32)) -> (i32) {
+fn fn5(%0: i32, %1: cont(i32) -> (i32) does effect20) -> (i32) does effect20 {
   let %2: i32 = resume(%1, %0)
   jump ret(%2)
 }
@@ -64,7 +64,7 @@ fn fn6(%0: i32, %1: i32) -> (i32) {
   jump ret(%1)
 }
 
-fn fn7(%0: cont() -> (i32)) -> (i32) {
+fn fn7(%0: cont() -> (i32) does effect20) -> (i32) {
   jump ret(0i32)
 }
 
@@ -88,12 +88,12 @@ fn fn11(%0: i32, %1: i32) -> (i32) {
 
 // 100 / %0, with a default of -1 for 0.
 fn fn100(%0: i32) -> (i32) {
-  let %1: imm fn() -> (i32) = closure fn101(%0)
+  let %1: imm fn() -> (i32) does effect20 = closure fn101(%0)
   let %2: i32 = handle handler30(-1i32, %1)
   jump ret(%2)
 }
 
-fn fn101(%0: i32) -> (i32) {
+fn fn101(%0: i32) -> (i32) does effect20 {
   case %0 {
     0 =>
       let = perform effect20.0()
@@ -106,12 +106,12 @@ fn fn101(%0: i32) -> (i32) {
 
 // %0 back if it isn't negative, else it's raised.
 fn fn102(%0: i32) -> (i32, i64) {
-  let %1: imm fn() -> (i32) = closure fn103(%0)
+  let %1: imm fn() -> (i32) does effect21 = closure fn103(%0)
   let %2: i32, %3: i64 = handle handler31(%1)
   jump ret(%2, %3)
 }
 
-fn fn103(%0: i32) -> (i32) {
+fn fn103(%0: i32) -> (i32) does effect21 {
   let %1: i32 = lt.s(%0, 0i32)
   case %1 {
     1 =>
@@ -123,14 +123,14 @@ fn fn103(%0: i32) -> (i32) {
 
 // Under Ask 7: a Fail that unwinds through Stop and Ask 1, then an Ask,
 // which must find 7: -1 * 100 + 7.
-fn fn104() -> (i32) {
-  let %0: imm fn() -> (i32) = closure fn105()
+fn fn104() -> (i32) does effect20 {
+  let %0: imm fn() -> (i32) does effect22 = closure fn105()
   let %1: i32 = handle handler32(7i32, %0)
   jump ret(%1)
 }
 
-fn fn105() -> (i32) {
-  let %0: imm fn() -> (i32) = closure fn106()
+fn fn105() -> (i32) does effect22 {
+  let %0: imm fn() -> (i32) does effect20 = closure fn106()
   let %1: i32 = handle handler30(-1i32, %0)
   let %2: i32 = perform effect22.0()
   let %3: i32 = mul(%1, 100i32)
@@ -138,31 +138,31 @@ fn fn105() -> (i32) {
   jump ret(%4)
 }
 
-fn fn106() -> (i32) {
-  let %0: imm fn() -> (i32) = closure fn107()
+fn fn106() -> (i32) does effect20 {
+  let %0: imm fn() -> (i32) does effect20 = closure fn107()
   let %1: i32 = handle handler32(1i32, %0)
   jump ret(%1)
 }
 
-fn fn107() -> (i32) {
-  let %0: imm fn() -> (i32) = closure fn108()
+fn fn107() -> (i32) does effect20 {
+  let %0: imm fn() -> (i32) does effect20 = closure fn108()
   let %1: i32 = handle handler33(%0)
   jump ret(%1)
 }
 
-fn fn108() -> (i32) {
+fn fn108() -> (i32) does effect20 {
   let = perform effect20.0()
   unreachable
 }
 
 // One handler with a clause of each kind: 100 / Get, or -1 for 0.
 fn fn109(%0: i32) -> (i32) {
-  let %1: imm fn() -> (i32) = closure fn110()
+  let %1: imm fn() -> (i32) does effect24 = closure fn110()
   let %2: i32 = handle handler34(%0, %1)
   jump ret(%2)
 }
 
-fn fn110() -> (i32) {
+fn fn110() -> (i32) does effect24 {
   let %0: i32 = perform effect24.0()
   case %0 {
     0 =>

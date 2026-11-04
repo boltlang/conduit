@@ -688,9 +688,13 @@ These are checked by looking at a clause's body:
 
 ### Effect types
 
-**Not implemented: this is a design.** Today a `perform` without a handler
-is only found at run time, and nothing says which functions can perform,
-so a pass has to assume that every call and `apply` can.
+**Partly implemented.** Rows on functions, closure types, continuation
+types and handlers are, and the verifier checks them, but effect
+parameters aren't yet: no `E1`, and no row arguments on calls, closures,
+data types or `handle`. The text format still writes effects `effect20`,
+not `Effect20`. A frontend that doesn't track effects writes `does Any`.
+Passes don't use rows yet, so they still assume that every call and
+`apply` can perform.
 
 Effect types say which effects a function can perform: the effects come
 after the results, after `does`, joined with `+`.
@@ -1161,6 +1165,11 @@ fn fn1(%0: i32) -> (i32) {
 
 - **Types** are written as the verifier prints them: `i32`, `mut data10`,
   `imm [i32]`, `ro fn(i32) -> ()`, `cont() -> ()`, `ref i32`, `imm any`.
+  A closure or continuation type with effects has them after its
+  results, `imm fn() -> (i32) does effect20 + effect21`, and so does a
+  function, `fn fn1() -> (i32) does effect20 {`, and a handler,
+  `handler handler30 for effect20 does effect21 env(..) ..`. Without
+  `does` there are none, and `does Any` is anything.
   Mutabilities are `imm`, `mut`, `ro` and `inherit`. A data type gives its
   mutability arguments in brackets, `mut data10[imm, mut]`, and a
   declaration names its parameters the same way:

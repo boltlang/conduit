@@ -465,12 +465,14 @@ fn other_ops() {
         index: 0,
     };
     let k_ty = Ty::Cont(Box::new(Sig {
+        row: Row::NOTHING,
         params: vec![Ty::I64],
         results: vec![I32],
     }));
     let params = vec![I32, k_ty.clone()];
     let m = module(DECLS, params.clone(), vec![I32]);
     let mut f = FuncBuilder::new(&m, params, vec![I32]);
+    f.set_row(Row::one(EffectId(20)));
     let (x, k) = (f.param(0), f.param(1));
     assert_eq!(f.var_ty(k), Some(&k_ty));
     let wide = f.convert(Ty::I64, Sign::Unsigned, x);
@@ -508,7 +510,7 @@ fn other_ops() {
     f.ret([j.param(0)]);
     assert_eq!(
         text(f),
-        "fn fn0(%0: i32, %1: cont(i64) -> (i32)) -> (i32) {
+        "fn fn0(%0: i32, %1: cont(i64) -> (i32)) -> (i32) does effect20 {
   let %2: i64 = convert.u[i64](%0)
   let %3: f64 = reinterpret[f64](%2)
   let %4: f64 = mul(%3, 0.5f64)

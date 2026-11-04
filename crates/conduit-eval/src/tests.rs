@@ -381,6 +381,7 @@ fn closures_and_refs() {
 
     let closure_ty = Ty::Fn(
         Box::new(Sig {
+            row: Row::NOTHING,
             params: vec![Ty::I32],
             results: vec![],
         }),
@@ -578,6 +579,7 @@ fn host_functions() {
     }
     let mut m = module();
     let sig = Sig {
+        row: Row::NOTHING,
         params: vec![Ty::I32],
         results: vec![Ty::I32],
     };
@@ -622,6 +624,7 @@ const RET_CLAUSE: FuncId = FuncId(5);
 
 fn unit_sig() -> Sig {
     Sig {
+        row: Row::NOTHING,
         params: vec![],
         results: vec![],
     }
@@ -636,6 +639,7 @@ fn generator(n: i32, clause: impl FnOnce(&mut Func, Var, Var, Var) -> Block) -> 
         YIELD,
         EffectDecl {
             ops: vec![Sig {
+                row: Row::NOTHING,
                 params: vec![Ty::I32],
                 results: vec![],
             }],
@@ -659,11 +663,13 @@ fn generator(n: i32, clause: impl FnOnce(&mut Func, Var, Var, Var) -> Block) -> 
             env: vec![acc_ty.clone()],
             ops: vec![CLAUSE],
             ret: RET_CLAUSE,
+            row: Row::NOTHING,
         },
     );
 
     // G: join rec loop(i) = if i > n { ret() } else { perform yield(i); jump loop(i + 1) }
     let mut g = Func::new(vec![], vec![]);
+    g.row = Row::one(YIELD);
     let lp = g.new_label();
     let [i, done, i2] = [(); 3].map(|_| g.new_var(Ty::I32));
     let step = let_(
@@ -692,7 +698,11 @@ fn generator(n: i32, clause: impl FnOnce(&mut Func, Var, Var, Var) -> Block) -> 
     // MAIN: acc = ref 0; handle SUM(acc, closure G()); ret(acc)
     let mut main = Func::new(vec![], vec![Ty::I32]);
     let acc = main.new_var(acc_ty);
-    let body = main.new_var(Ty::Fn(Box::new(unit_sig()), Imm));
+    let body_sig = Sig {
+        row: Row::one(YIELD),
+        ..unit_sig()
+    };
+    let body = main.new_var(Ty::Fn(Box::new(body_sig), Imm));
     let total = main.new_var(Ty::I32);
     main.body = let_(
         vec![acc],
@@ -804,8 +814,10 @@ fn resuming_twice_is_an_error() {
 #[test]
 fn perform_without_a_handler_is_an_error() {
     let mut m = generator(4, add_and_resume);
-    // Call G directly, without the handler.
+    // Call G directly, without the handler: an entry point with effects,
+    // which only the run time can catch.
     let mut main = Func::new(vec![], vec![Ty::I32]);
+    main.row = Row::one(YIELD);
     main.body = let_(vec![], Op::Call(G, vec![]), vec![], ret(vec![int(0)]));
     m.funcs.insert(MAIN, main);
     assert_eq!(

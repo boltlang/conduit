@@ -68,13 +68,13 @@ fn fn5(%0: ref i32) -> () {
 
 fn fn6() -> (i32) {
   let %0: ref i32 = ref_new(0i32)
-  let %1: imm fn() -> () = closure fn7()
+  let %1: imm fn() -> () does effect20 = closure fn7()
   let = handle handler30(%0, %1)
   let %2: i32 = ref_get(%0)
   jump ret(%2)
 }
 
-fn fn7() -> () {
+fn fn7() -> () does effect20 {
   let = perform effect20.0(1i32)
   let = call_extern extern1(5i32)
   join j1() = jump ret()

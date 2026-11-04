@@ -217,6 +217,7 @@ impl Parser {
                         let id = HandlerId(self.id("handler")?);
                         self.keyword("for")?;
                         let effect = EffectId(self.id("effect")?);
+                        let row = self.row()?;
                         self.keyword("env")?;
                         let env = self.list(Self::ty)?;
                         self.keyword("ops")?;
@@ -231,6 +232,7 @@ impl Parser {
                                     env,
                                     ops,
                                     ret,
+                                    row,
                                 },
                             )
                             .map(|_| id.to_string())
@@ -381,7 +383,34 @@ impl Parser {
         let params = self.list(Self::ty)?;
         self.punct("->")?;
         let results = self.list(Self::ty)?;
-        Ok(Sig { params, results })
+        let row = self.row()?;
+        Ok(Sig {
+            params,
+            results,
+            row,
+        })
+    }
+
+    /// `does Effect20 + Effect21`, `does Nothing` or `does Any`, or nothing
+    /// for no effects.
+    fn row(&mut self) -> Res<Row> {
+        if !self.eat_keyword("does") {
+            return Ok(Row::NOTHING);
+        }
+        if self.eat_keyword("Nothing") {
+            return Ok(Row::NOTHING);
+        }
+        if self.eat_keyword("Any") {
+            return Ok(Row::ANY);
+        }
+        let mut effects = Vec::new();
+        loop {
+            effects.push(EffectId(self.id("effect")?));
+            if !self.eat_punct("+") {
+                break;
+            }
+        }
+        Ok(Row::new(effects))
     }
 
     fn var(&mut self) -> Res<Var> {
@@ -444,6 +473,7 @@ impl Parser {
         let params = self.list(|p| p.binder(&mut info))?;
         self.punct("->")?;
         let results = self.list(Self::ty)?;
+        let row = self.row()?;
         let mut assumes = Vec::new();
         if self.eat_keyword("where") {
             loop {
@@ -485,6 +515,7 @@ impl Parser {
             labels: labels.unwrap_or(info.max_label + 1),
             params,
             results,
+            row,
             body,
         })
     }

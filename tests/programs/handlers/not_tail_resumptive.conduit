@@ -17,14 +17,14 @@ fn fn2(%0: i32) -> (i32) {
   jump ret(%0)
 }
 
-fn fn3() -> (i32) {
+fn fn3() -> (i32) does effect20 {
   let %0: i32 = perform effect20.0()
   let %1: i32 = add(%0, 10i32)
   jump ret(%1)
 }
 
 fn fn0() -> (i32) {
-  let %0: imm fn() -> (i32) = closure fn3()
+  let %0: imm fn() -> (i32) does effect20 = closure fn3()
   let %1: i32 = handle handler30(%0)
   jump ret(%1)
 }

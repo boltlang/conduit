@@ -17,6 +17,7 @@ pub mod clause;
 pub mod id;
 mod module;
 mod op;
+mod row;
 mod term;
 pub mod text;
 mod ty;
@@ -25,6 +26,7 @@ pub mod verify;
 pub use id::{CtorId, DataId, EffectId, ExternId, FuncId, HandlerId, Label, SourceId, Var};
 pub use module::{DataDecl, EffectDecl, Extern, Func, HandlerDecl, Module, MutParams};
 pub use op::{Effects, Memory, Op, Prim, Sign};
+pub use row::Row;
 pub use term::{Arm, Atom, Block, JoinDef, Let, Lit, Tag, Tail};
 pub use ty::{CtorDecl, Mutability, Sig, Ty};
 
@@ -47,6 +49,7 @@ pub trait Program {
         let f = self.func(id)?;
         let params = f.params.iter().map(|p| f.vars.get(p.0 as usize).cloned());
         Some(Sig {
+            row: f.row.clone(),
             params: params.collect::<Option<_>>()?,
             results: f.results.clone(),
         })

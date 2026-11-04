@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use crate::id::{DataId, EffectId, ExternId, FuncId, HandlerId, Label, Var};
+use crate::row::Row;
 use crate::term::{Block, Tail};
 use crate::ty::{CtorDecl, Mutability, Sig, Ty};
 
@@ -28,6 +29,8 @@ pub struct Func {
     pub labels: u32,
     pub params: Vec<Var>,
     pub results: Vec<Ty>,
+    /// The effects it may perform.
+    pub row: Row,
     pub body: Block,
 }
 
@@ -42,6 +45,7 @@ impl Func {
             labels: 1,
             params: (0..params_len).map(Var).collect(),
             results,
+            row: Row::NOTHING,
             body: Tail::Unreachable.into(),
         }
     }
@@ -60,9 +64,10 @@ impl Func {
         &self.vars[var.0 as usize]
     }
 
-    /// The parameter and result types.
+    /// The parameter and result types, and the row.
     pub fn sig(&self) -> Sig {
         Sig {
+            row: self.row.clone(),
             params: self
                 .params
                 .iter()
@@ -123,4 +128,7 @@ pub struct HandlerDecl {
     pub ops: Vec<FuncId>,
     /// The return clause: `fn(env.., body results..) -> R`.
     pub ret: FuncId,
+    /// The effects its clauses may perform, which a `handle` of it
+    /// performs instead of the handled effect.
+    pub row: Row,
 }

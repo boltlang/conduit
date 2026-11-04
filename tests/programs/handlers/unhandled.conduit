@@ -3,7 +3,7 @@ effect effect20 {
   () -> ()
 }
 
-fn fn0() -> () {
+fn fn0() -> () does effect20 {
   let = perform effect20.0()
   jump ret()
 }
