@@ -6,6 +6,7 @@ use conduit_ir::text::parse;
 use conduit_ir::*;
 
 use crate::dce::dce;
+use crate::inline::inline;
 use crate::optimize_module;
 use crate::promote::promote;
 
@@ -108,4 +109,27 @@ fn refs_of_continuations_stay() {
     .unwrap();
     let mut f = m.funcs[&FuncId(0)].clone();
     assert!(!promote(&mut f));
+}
+
+#[test]
+fn inlining_reports_whether_it_changed_anything() {
+    let mut m = parse(
+        "fn fn0(%0: i32) -> (i32) {
+           let %1: i32 = add(%0, 1i32)
+           jump ret(%1)
+         }
+
+         fn fn1(%0: i32) -> (i32) {
+           let %1: i32 = call fn0(%0)
+           jump ret(%1)
+         }",
+    )
+    .unwrap();
+    let mut f = m.funcs[&FuncId(1)].clone();
+    assert!(inline(&m, FuncId(1), &mut f));
+    m.funcs.insert(FuncId(1), f.clone());
+    conduit_ir::verify::verify_module(&m).unwrap();
+    assert!(!inline(&m, FuncId(1), &mut f));
+    let mut g = m.funcs[&FuncId(0)].clone();
+    assert!(!inline(&m, FuncId(0), &mut g));
 }

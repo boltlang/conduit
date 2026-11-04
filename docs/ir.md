@@ -840,6 +840,18 @@ Because the IR is so small, the classic simplifications are local rewrites:
 - **Inlining functions.** Substitute the body and rename `ret` to a fresh
   join point that holds the rest of the caller. This is the same shape as
   any other join point.
+
+  The `inline` pass does this, first among the passes. After a tail call,
+  or any call whose results only go on to a jump, the callee's `ret` is
+  that jump's target, so no join point is made and the callee's tail calls
+  stay tail calls. It inlines callees of at most 20 `let`s and tails, and
+  stops once the caller has 1000. It never inlines a function into itself,
+  nor one that calls itself directly or through one other function, which
+  would unroll it a level each run. Nor a callee with mutability
+  parameters that boxes: `box` at a type with a parameter gives `mut any`,
+  and at `imm` gives `imm any`, which doesn't fit the variable it binds.
+  Inlined code keeps its sources, or gets the call's. The callee is reached
+  through `Program::func`, so a Salsa frontend records the dependency.
 - **Known closures.** When `apply(c, args..)` has a `c` bound by
   `closure f(captures..)`, replace it with `call f(captures.., args..)`.
   Because of the parameter order (captures first), this is just putting two

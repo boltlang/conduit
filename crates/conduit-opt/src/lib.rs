@@ -13,6 +13,7 @@
 
 pub mod copies;
 pub mod dce;
+pub mod inline;
 pub mod promote;
 
 use conduit_ir::{Func, FuncId, Module, Program};
@@ -27,11 +28,17 @@ pub trait Pass {
     fn run(&self, p: &dyn Program, id: FuncId, f: &mut Func) -> bool;
 }
 
-/// The passes [`optimize_func`] runs, in order. Promoting refs goes
-/// first, since a ref holding an array ties it to the ref's region, which
+/// The passes [`optimize_func`] runs, in order. Inlining goes first, since
+/// the others only see one function, and a callee's body in its caller
+/// shows them more. Promoting refs comes next, since a ref holding an array ties it to the ref's region, which
 /// keeps `copies` from freezing it. Dead code goes before `copies` too,
 /// since a dead use of a value can keep it from freezing.
-pub const PASSES: &[&dyn Pass] = &[&promote::Promote, &dce::Dce, &copies::Copies];
+pub const PASSES: &[&dyn Pass] = &[
+    &inline::Inline,
+    &promote::Promote,
+    &dce::Dce,
+    &copies::Copies,
+];
 
 /// Runs the passes over and over at most this many times, in case some
 /// pair of them keeps undoing each other.

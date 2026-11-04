@@ -1,0 +1,38 @@
+// After a tail call, the callee's `ret` is the caller's: no join point,
+// and the callee's own tail call stays one. A call whose results go
+// straight to a join point jumps there.
+fn fn0(%0: i32) -> (i32) {
+  let %1: i32 = mul(%0, 3i32)
+  let %2: i32 = call fn3(%1)
+  jump ret(%2)
+}
+
+fn fn1(%0: i32) -> (i32) {
+  let %1: i32 = call fn0(%0)
+  jump ret(%1)
+}
+
+fn fn2(%0: i32) -> (i32) {
+  join j1(%1: i32) =
+    let %2: i32 = add(%1, 1i32)
+    jump ret(%2)
+  in
+    let %3: i32 = call fn0(%0)
+    jump j1(%3)
+}
+
+// Calls itself, so it's never inlined.
+fn fn3(%0: i32) -> (i32) {
+  let %1: i32 = lt.s(%0, 100i32)
+  case %1 {
+    1 =>
+      let %2: i32 = mul(%0, 2i32)
+      let %3: i32 = call fn3(%2)
+      jump ret(%3)
+    _ => jump ret(%0)
+  }
+}
+
+//# run fn1(5i32) == 120i32
+//# run fn2(5i32) == 121i32
+//# opt: inline

@@ -1,0 +1,46 @@
+// Inlining into a clause, and inlining a function that performs into the
+// body of a handler: the clause stays tail-resumptive, and the `perform`
+// still finds the handler around it.
+effect effect20 {
+  () -> (i32)
+}
+
+handler handler30 for effect20 env(i32) ops(fn1) ret fn2
+
+fn fn0(%0: i32) -> (i32) {
+  let %1: i32 = mul(%0, 10i32)
+  jump ret(%1)
+}
+
+fn fn1(%0: i32, %1: cont(i32) -> (i32)) -> (i32) {
+  let %2: i32 = call fn0(%0)
+  let %3: i32 = resume(%1, %2)
+  jump ret(%3)
+}
+
+fn fn2(%0: i32, %1: i32) -> (i32) {
+  jump ret(%1)
+}
+
+fn fn3() -> (i32) {
+  let %0: i32 = perform effect20.0()
+  let %1: i32 = add(%0, 1i32)
+  jump ret(%1)
+}
+
+fn fn4() -> (i32) {
+  let %0: i32 = call fn3()
+  let %1: i32 = call fn3()
+  let %2: i32 = add(%0, %1)
+  jump ret(%2)
+}
+
+fn fn5(%0: i32) -> (i32) {
+  let %1: imm fn() -> (i32) = closure fn4()
+  let %2: i32 = handle handler30(%0, %1)
+  jump ret(%2)
+}
+
+//# run fn5(4i32) == 82i32
+//# opt: inline
+//# opt
