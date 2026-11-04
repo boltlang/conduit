@@ -1,0 +1,97 @@
+// A return clause runs outside its handler, so a `perform` in it goes to
+// the handlers further out, even for its own effect.
+effect effect20 {                         // Fail
+  () -> ()
+}
+
+effect effect21 {                         // Ask
+  () -> (i32)
+}
+
+// Fail gives the environment. The return clause fails again for a
+// negative result.
+handler handler30 for effect20 env(i32) ops(fn1) ret fn2
+
+// Ask gives the environment. The return clause gives
+// result * 1000 + what the next Ask out gives.
+handler handler31 for effect21 env(i32) ops(fn3) ret fn4
+
+// Ask gives the environment, with the same clause.
+handler handler32 for effect21 env(i32) ops(fn3) ret fn5
+
+fn fn1(%0: i32, %1: cont() -> (i32)) -> (i32) {
+  jump ret(%0)
+}
+
+fn fn2(%0: i32, %1: i32) -> (i32) {
+  let %2: i32 = lt.s(%1, 0i32)
+  case %2 {
+    1 =>
+      let = perform effect20.0()
+      unreachable
+    _ => jump ret(%1)
+  }
+}
+
+fn fn3(%0: i32, %1: cont(i32) -> (i32)) -> (i32) {
+  let %2: i32 = resume(%1, %0)
+  jump ret(%2)
+}
+
+fn fn4(%0: i32, %1: i32) -> (i32) {
+  let %2: i32 = perform effect21.0()
+  let %3: i32 = mul(%1, 1000i32)
+  let %4: i32 = add(%3, %2)
+  jump ret(%4)
+}
+
+fn fn5(%0: i32, %1: i32) -> (i32) {
+  jump ret(%1)
+}
+
+// Fail 100 around Fail 5 around %0: a negative %0 makes the inner return
+// clause fail, which the outer handler catches.
+fn fn10(%0: i32) -> (i32) {
+  let %1: imm fn() -> (i32) = closure fn11(%0)
+  let %2: i32 = handle handler30(100i32, %1)
+  jump ret(%2)
+}
+
+fn fn11(%0: i32) -> (i32) {
+  let %1: imm fn() -> (i32) = closure fn12(%0)
+  let %2: i32 = handle handler30(5i32, %1)
+  jump ret(%2)
+}
+
+fn fn12(%0: i32) -> (i32) {
+  jump ret(%0)
+}
+
+// Ask 9 around Ask 7 around Ask 2 around an Ask: 2, then 2 * 1000 + 7,
+// then 2007 * 1000 + 9.
+fn fn13() -> (i32) {
+  let %0: imm fn() -> (i32) = closure fn14()
+  let %1: i32 = handle handler32(9i32, %0)
+  jump ret(%1)
+}
+
+fn fn14() -> (i32) {
+  let %0: imm fn() -> (i32) = closure fn15()
+  let %1: i32 = handle handler31(7i32, %0)
+  jump ret(%1)
+}
+
+fn fn15() -> (i32) {
+  let %0: imm fn() -> (i32) = closure fn8()
+  let %1: i32 = handle handler31(2i32, %0)
+  jump ret(%1)
+}
+
+fn fn8() -> (i32) {
+  let %0: i32 = perform effect21.0()
+  jump ret(%0)
+}
+
+//# run fn10(3i32) == 3i32
+//# run fn10(-3i32) == 100i32
+//# run fn13() == 2007009i32

@@ -1,0 +1,142 @@
+// Corners of handler lowering: an effect with no operations, an aborting
+// clause that ends in a tail call, an `i8` result stored by an abort, and
+// a closure that performs after the handler it was made under is gone,
+// and a clause that resumes from a loop.
+effect effect20 {
+}
+
+effect effect21 {                         // Fail with a code
+  (i8) -> ()
+}
+
+effect effect22 {                         // Ask
+  () -> (i32)
+}
+
+// No operations: the body just runs, then the return clause.
+handler handler30 for effect20 env() ops() ret fn1
+
+// Fail gives code + 1, through a tail call.
+handler handler31 for effect21 env() ops(fn2) ret fn3
+
+// Ask gives the environment.
+handler handler32 for effect22 env(i32) ops(fn5) ret fn6
+
+// Ask gives 2 to the power of the environment, which its clause works
+// out in a loop that resumes when it ends.
+handler handler34 for effect22 env(i32) ops(fn20) ret fn6
+
+// The same, for a body that gives a closure.
+handler handler33 for effect22 env(i32) ops(fn18) ret fn19
+
+fn fn1(%0: i32) -> (i32) {
+  let %1: i32 = add(%0, 1i32)
+  jump ret(%1)
+}
+
+fn fn2(%0: i8, %1: cont() -> (i8)) -> (i8) {
+  let %2: i8 = call fn4(%0)
+  jump ret(%2)
+}
+
+fn fn3(%0: i8) -> (i8) {
+  jump ret(%0)
+}
+
+fn fn4(%0: i8) -> (i8) {
+  let %1: i8 = add(%0, 1i8)
+  jump ret(%1)
+}
+
+fn fn5(%0: i32, %1: cont(i32) -> (i32)) -> (i32) {
+  let %2: i32 = resume(%1, %0)
+  jump ret(%2)
+}
+
+fn fn6(%0: i32, %1: i32) -> (i32) {
+  jump ret(%1)
+}
+
+fn fn10() -> (i32) {
+  let %0: imm fn() -> (i32) = closure fn11()
+  let %1: i32 = handle handler30(%0)
+  jump ret(%1)
+}
+
+fn fn11() -> (i32) {
+  jump ret(41i32)
+}
+
+// Fails with %0: 127i8 + 1 wraps to -128, which reads as 128 unsigned.
+fn fn12(%0: i8) -> (i32, i32) {
+  let %1: imm fn() -> (i8) = closure fn13(%0)
+  let %2: i8 = handle handler31(%1)
+  let %3: i32 = convert.s[i32](%2)
+  let %4: i32 = convert.u[i32](%2)
+  jump ret(%3, %4)
+}
+
+fn fn13(%0: i8) -> (i8) {
+  let = perform effect21.0(%0)
+  unreachable
+}
+
+// A closure made under Ask 1 and applied under Ask 2 asks the handler
+// around it when it runs: 2.
+fn fn14() -> (i32) {
+  let %0: imm fn() -> (imm fn() -> (i32)) = closure fn15()
+  let %1: imm fn() -> (i32) = handle handler33(1i32, %0)
+  let %2: imm fn() -> (i32) = closure fn17(%1)
+  let %3: i32 = handle handler32(2i32, %2)
+  jump ret(%3)
+}
+
+fn fn15() -> (imm fn() -> (i32)) {
+  let %0: imm fn() -> (i32) = closure fn16()
+  jump ret(%0)
+}
+
+fn fn16() -> (i32) {
+  let %0: i32 = perform effect22.0()
+  jump ret(%0)
+}
+
+fn fn17(%0: imm fn() -> (i32)) -> (i32) {
+  let %1: i32 = apply(%0)
+  jump ret(%1)
+}
+
+fn fn18(%0: i32, %1: cont(i32) -> (imm fn() -> (i32))) -> (imm fn() -> (i32)) {
+  let %2: imm fn() -> (i32) = resume(%1, %0)
+  jump ret(%2)
+}
+
+fn fn19(%0: i32, %1: imm fn() -> (i32)) -> (imm fn() -> (i32)) {
+  jump ret(%1)
+}
+
+fn fn20(%0: i32, %1: cont(i32) -> (i32)) -> (i32) {
+  join rec j1(%2: i32, %3: i32) =
+    case %2 {
+      0 =>
+        let %4: i32 = resume(%1, %3)
+        jump ret(%4)
+      _ =>
+        let %5: i32 = sub(%2, 1i32)
+        let %6: i32 = mul(%3, 2i32)
+        jump j1(%5, %6)
+    }
+  in jump j1(%0, 1i32)
+}
+
+fn fn21(%0: i32) -> (i32) {
+  let %1: imm fn() -> (i32) = closure fn16()
+  let %2: i32 = handle handler34(%0, %1)
+  jump ret(%2)
+}
+
+//# run fn10() == 42i32
+//# run fn12(5i8) == (6i32, 6i32)
+//# run fn12(127i8) == (-128i32, 128i32)
+//# run fn14() == 2i32
+//# run fn21(10i32) == 1024i32
