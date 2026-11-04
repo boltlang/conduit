@@ -40,13 +40,13 @@ fn times(%n: i32, %x: i32) -> (i32) {
   jump ret(%product)
 }
 
-fn times3_twice(%x: i32) -> (i32) vars(%times3: imm fn(i32) -> (i32), %twice#3: i32) {
+fn times3_twice(%x: i32) -> (i32) {
   join j1(%once: i32) =
-    let %product#4: i32 = mul(%once, 3i32)
-    jump ret(%product#4)
+    let %product#2: i32 = mul(%once, 3i32)
+    jump ret(%product#2)
   in
-  let %product#5: i32 = mul(%x, 3i32)
-  jump j1(%product#5)
+  let %product#3: i32 = mul(%x, 3i32)
+  jump j1(%product#3)
 }
 
 fn through_join(%x: i32) -> (i32) {
@@ -63,8 +63,8 @@ fn at['m1](%xs: 'm1 [i32], %i: i32) -> (i32) {
   jump ret(%x)
 }
 
-fn at1(%x#0: i32) -> (i32) vars(%at1#2: mut fn(i32) -> (i32), %r#3: i32) {
+fn at1(%x#0: i32) -> (i32) {
   let %xs: mut [i32] = array_fill(3i32, %x#0)
-  let %x#4: i32 = array_get(%xs, 1i32)
-  jump ret(%x#4)
+  let %x#2: i32 = array_get(%xs, 1i32)
+  jump ret(%x#2)
 }

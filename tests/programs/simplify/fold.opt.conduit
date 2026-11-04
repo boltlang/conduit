@@ -1,4 +1,4 @@
-fn constants() -> (i32) vars(%wrapped: i32, %wrapped_i8: i8, %widened: i32, %lt_u: i32, %q: i32, %a: i32, %b: i32, %c: i32) {
+fn constants() -> (i32) {
   jump ret(-2147483607i32)
 }
 
@@ -7,7 +7,7 @@ fn overflow() -> (i32) {
   jump ret(%q)
 }
 
-fn by_zero() -> (i32) vars(%q: i32, %r: i32, %sum: i32) {
+fn by_zero() -> (i32) {
   jump ret(-7i32)
 }
 
@@ -22,7 +22,7 @@ fn nan() -> (i32) {
   jump ret(%same)
 }
 
-fn floats() -> (f64) vars(%p: f64, %size#2: f64) {
+fn floats() -> (f64) {
   let %root: f64 = sqrt(-3.0f64)
   jump ret(3.0f64)
 }

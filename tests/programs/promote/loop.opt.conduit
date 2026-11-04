@@ -1,24 +1,24 @@
-fn fn0(%0: i32) -> (i32) vars(%1: ref i32, %2: i32, %5: i32) {
-  join rec j1(%6: i32) =
-    let %3: i32 = lt.s(%6, %0)
-    case %3 {
+fn count(%n: i32) -> (i32) {
+  join rec loop(%i: i32) =
+    let %more: i32 = lt.s(%i, %n)
+    case %more {
       1 =>
-        let %4: i32 = add(%6, 1i32)
-        jump j1(%4)
-      _ => jump ret(%6)
+        let %i2: i32 = add(%i, 1i32)
+        jump loop(%i2)
+      _ => jump ret(%i)
     }
-  in jump j1(0i32)
+  in jump loop(0i32)
 }
 
-fn fn1(%0: i32) -> (i32) vars(%1: ref i32, %2: ref i32, %3: i32, %5: i32, %8: i32) {
-  join rec j1(%9: i32, %10: i32) =
-    let %4: i32 = lt.s(%10, %0)
-    case %4 {
+fn sum(%n: i32) -> (i32) {
+  join rec loop(%acc: i32, %i: i32) =
+    let %more: i32 = lt.s(%i, %n)
+    case %more {
       1 =>
-        let %6: i32 = add(%9, %10)
-        let %7: i32 = add(%10, 1i32)
-        jump j1(%6, %7)
-      _ => jump ret(%9)
+        let %acc2: i32 = add(%acc, %i)
+        let %i2: i32 = add(%i, 1i32)
+        jump loop(%acc2, %i2)
+      _ => jump ret(%acc)
     }
-  in jump j1(0i32, 0i32)
+  in jump loop(0i32, 0i32)
 }

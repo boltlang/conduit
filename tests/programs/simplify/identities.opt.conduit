@@ -1,8 +1,8 @@
-fn ints(%x: i32) -> (i32) vars(%a: i32, %b: i32, %c: i32, %d: i32, %e: i32) {
+fn ints(%x: i32) -> (i32) {
   jump ret(%x)
 }
 
-fn zeros(%x: i64) -> (i64) vars(%a: i64, %b: i64, %c: i64) {
+fn zeros(%x: i64) -> (i64) {
   jump ret(0i64)
 }
 

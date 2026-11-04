@@ -1,13 +1,13 @@
-fn fn0(%0: i32) -> (i32) {
-  let %1: i32 = add(%0, %0)
-  jump ret(%1)
+fn double(%x: i32) -> (i32) {
+  let %y: i32 = add(%x, %x)
+  jump ret(%y)
 }
 
-fn fn1(%0: i32) -> (i32) {
-  join j1(%1: i32) =
-    let %2: i32 = add(%1, 1i32)
-    jump ret(%2)
+fn main(%x: i32) -> (i32) {
+  join j1(%y#1: i32) =
+    let %z: i32 = add(%y#1, 1i32)
+    jump ret(%z)
   in
-  let %3: i32 = add(%0, %0)
-  jump j1(%3)
+  let %y#3: i32 = add(%x, %x)
+  jump j1(%y#3)
 }

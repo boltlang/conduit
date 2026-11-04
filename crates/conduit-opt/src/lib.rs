@@ -12,6 +12,7 @@
 //! and [`optimize_module`] does that for every function of a module.
 
 pub mod closures;
+mod compact;
 pub mod copies;
 pub mod cse;
 pub mod dce;
@@ -74,6 +75,9 @@ pub fn run_passes(passes: &[&dyn Pass], p: &dyn Program, id: FuncId, f: &mut Fun
             break;
         }
         changed = true;
+    }
+    if changed {
+        compact::compact(f);
     }
     changed
 }

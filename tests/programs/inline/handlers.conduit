@@ -1,46 +1,46 @@
 // Inlining into a clause, and inlining a function that performs into the
 // body of a handler: the clause stays tail-resumptive, and the `perform`
 // still finds the handler around it.
-effect effect20 {
+effect Ask {
   () -> (i32)
 }
 
-handler handler30 for effect20 env(i32) ops(fn1) ret fn2
+handler tenfold for Ask env(i32) ops(ask) ret done
 
-fn fn0(%0: i32) -> (i32) {
-  let %1: i32 = mul(%0, 10i32)
-  jump ret(%1)
+fn ten_times(%x: i32) -> (i32) {
+  let %y: i32 = mul(%x, 10i32)
+  jump ret(%y)
 }
 
-fn fn1(%0: i32, %1: cont(i32) -> (i32)) -> (i32) {
-  let %2: i32 = call fn0(%0)
-  let %3: i32 = resume(%1, %2)
-  jump ret(%3)
+fn ask(%x: i32, %k: cont(i32) -> (i32)) -> (i32) {
+  let %y: i32 = call ten_times(%x)
+  let %r: i32 = resume(%k, %y)
+  jump ret(%r)
 }
 
-fn fn2(%0: i32, %1: i32) -> (i32) {
-  jump ret(%1)
+fn done(%x: i32, %r: i32) -> (i32) {
+  jump ret(%r)
 }
 
-fn fn3() -> (i32) does effect20 {
-  let %0: i32 = perform effect20.0()
-  let %1: i32 = add(%0, 1i32)
-  jump ret(%1)
+fn ask_plus_one() -> (i32) does Ask {
+  let %x: i32 = perform Ask.0()
+  let %y: i32 = add(%x, 1i32)
+  jump ret(%y)
 }
 
-fn fn4() -> (i32) does effect20 {
-  let %0: i32 = call fn3()
-  let %1: i32 = call fn3()
-  let %2: i32 = add(%0, %1)
-  jump ret(%2)
+fn ask_twice() -> (i32) does Ask {
+  let %a: i32 = call ask_plus_one()
+  let %b: i32 = call ask_plus_one()
+  let %r: i32 = add(%a, %b)
+  jump ret(%r)
 }
 
-fn fn5(%0: i32) -> (i32) {
-  let %1: imm fn() -> (i32) does effect20 = closure fn4()
-  let %2: i32 = handle handler30(%0, %1)
-  jump ret(%2)
+fn main(%x: i32) -> (i32) {
+  let %body: imm fn() -> (i32) does Ask = closure ask_twice()
+  let %r: i32 = handle tenfold(%x, %body)
+  jump ret(%r)
 }
 
-//# run fn5(4i32) == 82i32
+//# run main(4i32) == 82i32
 //# opt: inline
 //# opt

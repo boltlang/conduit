@@ -1,15 +1,15 @@
 // An inlined `let` or `jump` keeps its source, or gets the call's.
-fn fn0(%0: i32) -> (i32) {
-  let %1: i32 = add(%0, 1i32) @src1
-  let %2: i32 = mul(%1, 2i32)
-  jump ret(%2)
+fn callee(%x: i32) -> (i32) {
+  let %y: i32 = add(%x, 1i32) @src1
+  let %z: i32 = mul(%y, 2i32)
+  jump ret(%z)
 }
 
-fn fn1(%0: i32) -> (i32) {
-  let %1: i32 = call fn0(%0) @src9
-  let %2: i32 = sub(%1, 1i32)
-  jump ret(%2)
+fn main(%x: i32) -> (i32) {
+  let %y: i32 = call callee(%x) @src9
+  let %z: i32 = sub(%y, 1i32)
+  jump ret(%z)
 }
 
-//# run fn1(3i32) == 7i32
+//# run main(3i32) == 7i32
 //# opt: inline

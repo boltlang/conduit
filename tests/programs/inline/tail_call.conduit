@@ -1,38 +1,38 @@
 // After a tail call, the callee's `ret` is the caller's: no join point,
 // and the callee's own tail call stays one. A call whose results go
 // straight to a join point jumps there.
-fn fn0(%0: i32) -> (i32) {
-  let %1: i32 = mul(%0, 3i32)
-  let %2: i32 = call fn3(%1)
-  jump ret(%2)
+fn triple_then(%x: i32) -> (i32) {
+  let %y: i32 = mul(%x, 3i32)
+  let %r: i32 = call double_until(%y)
+  jump ret(%r)
 }
 
-fn fn1(%0: i32) -> (i32) {
-  let %1: i32 = call fn0(%0)
-  jump ret(%1)
+fn tail(%x: i32) -> (i32) {
+  let %r: i32 = call triple_then(%x)
+  jump ret(%r)
 }
 
-fn fn2(%0: i32) -> (i32) {
-  join j1(%1: i32) =
-    let %2: i32 = add(%1, 1i32)
-    jump ret(%2)
+fn to_join(%x: i32) -> (i32) {
+  join next(%r: i32) =
+    let %y: i32 = add(%r, 1i32)
+    jump ret(%y)
   in
-    let %3: i32 = call fn0(%0)
-    jump j1(%3)
+    let %z: i32 = call triple_then(%x)
+    jump next(%z)
 }
 
 // Calls itself, so it's never inlined.
-fn fn3(%0: i32) -> (i32) {
-  let %1: i32 = lt.s(%0, 100i32)
-  case %1 {
+fn double_until(%x: i32) -> (i32) {
+  let %small: i32 = lt.s(%x, 100i32)
+  case %small {
     1 =>
-      let %2: i32 = mul(%0, 2i32)
-      let %3: i32 = call fn3(%2)
-      jump ret(%3)
-    _ => jump ret(%0)
+      let %y: i32 = mul(%x, 2i32)
+      let %r: i32 = call double_until(%y)
+      jump ret(%r)
+    _ => jump ret(%x)
   }
 }
 
-//# run fn1(5i32) == 120i32
-//# run fn2(5i32) == 121i32
+//# run tail(5i32) == 120i32
+//# run to_join(5i32) == 121i32
 //# opt: inline

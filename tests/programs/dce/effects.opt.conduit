@@ -2,7 +2,7 @@ data Pair {
   (i32, i32)
 }
 
-fn main(%x: i32) -> (i32) vars(%unused_new#2: imm Pair, %closure#3: imm fn() -> (i32), %cell#4: ref i32, %read_field#6: i32, %read_cell#7: i32, %length#9: i32, %cloned#10: imm [i32], %by_zero#12: i32, %rem#13: i32) {
+fn main(%x: i32) -> (i32) {
   let %written: mut Pair = new Pair.0(%x, %x)
   let = set Pair.0.0(%written, 1i32)
   let %called: i32 = call id(%x)

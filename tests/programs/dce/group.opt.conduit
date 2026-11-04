@@ -1,17 +1,17 @@
 fn is_even(%n: i32) -> (i32) {
-  join rec even#2(%m: i32) =
+  join rec even(%m: i32) =
     case %m {
       0 => jump ret(1i32)
       _ =>
         let %m1: i32 = sub(%m, 1i32)
-        jump odd#3(%m1)
+        jump odd(%m1)
     }
-  and odd#3(%k: i32) =
+  and odd(%k: i32) =
     case %k {
       0 => jump ret(0i32)
       _ =>
         let %k1: i32 = sub(%k, 1i32)
-        jump even#2(%k1)
+        jump even(%k1)
     }
-  in jump even#2(%n)
+  in jump even(%n)
 }

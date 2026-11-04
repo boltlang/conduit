@@ -10,7 +10,7 @@ fn fn0['m1](%0: 'm1 data10) -> (imm data10) {
   jump ret(%4)
 }
 
-fn fn1(%0: imm data10) -> (imm data10) vars(%1: imm data10, %2: imm [i32], %3: imm [i32], %4: i32, %5: imm data10) {
+fn fn1(%0: imm data10) -> (imm data10) {
   jump ret(%0)
 }
 

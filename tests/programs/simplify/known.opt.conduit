@@ -3,7 +3,7 @@ data Pair {
   (i32, i32)
 }
 
-fn imm_fields(%x: i32) -> (i32) vars(%a#2: i32, %b#3: i32) {
+fn imm_fields(%x: i32) -> (i32) {
   let %pair: imm Pair = new Pair.1(%x, 5i32)
   let %sum: i32 = add(%x, 5i32)
   jump ret(%sum)
@@ -16,7 +16,7 @@ fn mut_fields(%x: i32) -> (i32) {
   jump ret(%a)
 }
 
-fn literals(%x: i32) -> (i32) vars(%three: i32, %six: i32) {
+fn literals(%x: i32) -> (i32) {
   jump ret(%x)
 }
 

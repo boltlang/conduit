@@ -1,4 +1,4 @@
-fn main(%x: i32) -> (i32) labels 3 {
+fn main(%x: i32) -> (i32) {
   join used(%y: i32) = jump ret(%y)
   in
   let %x1: i32 = add(%x, 1i32)

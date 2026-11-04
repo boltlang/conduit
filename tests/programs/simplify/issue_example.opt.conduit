@@ -1,4 +1,4 @@
-fn main(%x: i32) -> (i32) vars(%r: i32, %small: i32) {
+fn main(%x: i32) -> (i32) {
   jump ret(%x)
 }
 

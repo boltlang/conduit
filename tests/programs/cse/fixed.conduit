@@ -3,62 +3,62 @@
 // a closure. A `mut` object and a ref are new each time, and an arm can't
 // share with its sibling.
 
-data data0 {
+data Pair {
   (i32, i32)
 }
 
-fn fn0(%0: i32, %1: i32) -> (i32) {
-  let %2: i32 = add(%0, %1)
-  let %3: i32 = add(%0, %1)
-  let %4: i32 = div.s(%0, %1)
-  let %5: i32 = div.s(%0, %1)
-  let %6: i32 = add(%4, %5)
-  jump ret(%6)
+fn arith(%x: i32, %y: i32) -> (i32) {
+  let %sum: i32 = add(%x, %y)
+  let %sum2: i32 = add(%x, %y)
+  let %q: i32 = div.s(%x, %y)
+  let %q2: i32 = div.s(%x, %y)
+  let %r: i32 = add(%q, %q2)
+  jump ret(%r)
 }
 
-fn fn1(%0: i32) -> (i32) {
-  let %1: imm data0 = new data0.0(%0, 1i32)
-  let %2: imm data0 = new data0.0(%0, 1i32)
-  let %3: mut data0 = new data0.0(%0, 1i32)
-  let %4: mut data0 = new data0.0(%0, 1i32)
-  let = set data0.0.0(%3, 5i32)
-  let %5: i32 = get data0.0.0(%4)
-  let %6: ref i32 = ref_new(%0)
-  let %7: ref i32 = ref_new(%0)
-  let = ref_set(%6, 9i32)
-  let %8: i32 = ref_get(%7)
-  let %9: imm fn(i32) -> (i32) = closure fn3(%0)
-  let %10: imm fn(i32) -> (i32) = closure fn3(%0)
-  let %11: i32 = get data0.0.1(%2)
-  let %12: i32 = add(%5, %8)
-  let %13: i32 = add(%12, %11)
-  jump ret(%13)
+fn objects(%x: i32) -> (i32) {
+  let %imm1: imm Pair = new Pair.0(%x, 1i32)
+  let %imm2: imm Pair = new Pair.0(%x, 1i32)
+  let %mut1: mut Pair = new Pair.0(%x, 1i32)
+  let %mut2: mut Pair = new Pair.0(%x, 1i32)
+  let = set Pair.0.0(%mut1, 5i32)
+  let %a: i32 = get Pair.0.0(%mut2)
+  let %cell1: ref i32 = ref_new(%x)
+  let %cell2: ref i32 = ref_new(%x)
+  let = ref_set(%cell1, 9i32)
+  let %b: i32 = ref_get(%cell2)
+  let %f1: imm fn(i32) -> (i32) = closure adder(%x)
+  let %f2: imm fn(i32) -> (i32) = closure adder(%x)
+  let %c: i32 = get Pair.0.1(%imm2)
+  let %ab: i32 = add(%a, %b)
+  let %abc: i32 = add(%ab, %c)
+  jump ret(%abc)
 }
 
 // A nested arm shares with the block around it, but not with its sibling.
-fn fn2(%0: i32, %1: i32) -> (i32) {
-  let %2: i32 = mul(%0, %1)
-  case %0 {
+fn arms(%x: i32, %y: i32) -> (i32) {
+  let %xy: i32 = mul(%x, %y)
+  case %x {
     0 =>
-      let %3: i32 = mul(%0, %1)
-      let %4: i32 = sub(%1, 1i32)
-      jump ret(%4)
+      let %xy0: i32 = mul(%x, %y)
+      let %y0: i32 = sub(%y, 1i32)
+      jump ret(%y0)
     _ =>
-      let %5: i32 = sub(%1, 1i32)
-      let %6: i32 = mul(%0, %1)
-      let %7: i32 = add(%5, %6)
-      jump ret(%7)
+      let %y1: i32 = sub(%y, 1i32)
+      let %xy1: i32 = mul(%x, %y)
+      let %r: i32 = add(%y1, %xy1)
+      jump ret(%r)
   }
 }
 
-fn fn3(%0: i32, %1: i32) -> (i32) {
-  let %2: i32 = add(%0, %1)
-  jump ret(%2)
+fn adder(%n: i32, %x: i32) -> (i32) {
+  let %sum: i32 = add(%n, %x)
+  jump ret(%sum)
 }
 
-//# run fn0(6i32, 3i32) == 4i32
-//# run fn0(-2147483648i32, -1i32) traps
-//# run fn1(4i32) == 9i32
-//# run fn2(0i32, 3i32) == 2i32
-//# run fn2(2i32, 3i32) == 8i32
+//# run arith(6i32, 3i32) == 4i32
+//# run arith(-2147483648i32, -1i32) traps
+//# run objects(4i32) == 9i32
+//# run arms(0i32, 3i32) == 2i32
+//# run arms(2i32, 3i32) == 8i32
 //# opt: cse

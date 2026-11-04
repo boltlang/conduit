@@ -1,15 +1,15 @@
 // The example from issue #3: `double` is inlined, with its `ret` as a join
-// point holding the rest of `fn1`.
-fn fn0(%0: i32) -> (i32) {
-  let %1: i32 = add(%0, %0)
-  jump ret(%1)
+// point holding the rest of `main`.
+fn double(%x: i32) -> (i32) {
+  let %y: i32 = add(%x, %x)
+  jump ret(%y)
 }
 
-fn fn1(%0: i32) -> (i32) {
-  let %1: i32 = call fn0(%0)
-  let %2: i32 = add(%1, 1i32)
-  jump ret(%2)
+fn main(%x: i32) -> (i32) {
+  let %y: i32 = call double(%x)
+  let %z: i32 = add(%y, 1i32)
+  jump ret(%z)
 }
 
-//# run fn1(5i32) == 11i32
+//# run main(5i32) == 11i32
 //# opt: inline

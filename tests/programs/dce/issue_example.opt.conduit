@@ -1,4 +1,4 @@
-fn main(%x: i32, %y: i32) -> (i32) labels 2 vars(%x1: i32) {
+fn main(%x: i32, %y: i32) -> (i32) {
   let %q: i32 = div.s(%x, %y)
   let %x2: i32 = mul(%x, 2i32)
   jump ret(%x2)
