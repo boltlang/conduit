@@ -23,14 +23,16 @@
 //! - A handler frame, which `handle` pushes on the handler stack, is a
 //!   subtype of a base holding its effect's number and the next frame. A
 //!   frame for an effect adds a reference to each of its clauses, and a
-//!   handler's frame adds its environment. A clause is called with the
-//!   frame, then the operation's parameters.
+//!   handler's frame adds its environment, then, if it has an aborting
+//!   clause, a mutable field for each result of the `handle`, which that
+//!   clause sets before it unwinds. A clause is called with the frame, then
+//!   the operation's parameters.
 //!
 //! Mutability doesn't exist at run time, and every reference is nullable,
 //! so locals of any type have a default value and join point parameters
 //! can be set inside a `block` and read after it.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use conduit_ir::{CtorId, DataId, EffectId, FuncId, HandlerId, Module, Sig, Ty};
 use wasm_encoder::{
@@ -72,6 +74,8 @@ enum Key {
 
 pub(crate) struct Types<'m> {
     m: &'m Module,
+    /// The handlers with an aborting clause.
+    pub aborting: BTreeSet<HandlerId>,
     group: Vec<Option<SubType>>,
     keys: HashMap<Key, u32>,
 }
@@ -123,6 +127,7 @@ impl<'m> Types<'m> {
     pub fn new(m: &'m Module) -> Self {
         Types {
             m,
+            aborting: BTreeSet::new(),
             group: Vec::new(),
             keys: HashMap::new(),
         }
@@ -365,8 +370,9 @@ impl<'m> Types<'m> {
         })
     }
 
-    /// The frames of `h`: those of its effect, then its environment. Also
-    /// gives the index of the first field of the environment.
+    /// The frames of `h`: those of its effect, its environment, and its
+    /// results if it has an aborting clause. Also gives the index of the
+    /// first field of the environment.
     pub fn handler_frame(&mut self, h: HandlerId) -> Result<(u32, u32), String> {
         let m: &'m Module = self.m;
         let Some(decl) = m.handlers.get(&h) else {
@@ -378,6 +384,14 @@ impl<'m> Types<'m> {
             let mut fields = t.effect_fields(decl.effect)?;
             for ty in t.vals(&decl.env)? {
                 fields.push(field(ty, false));
+            }
+            if t.aborting.contains(&h) {
+                let Some(ret) = m.funcs.get(&decl.ret) else {
+                    return Err(format!("unknown return clause {}", decl.ret));
+                };
+                for ty in t.vals(&ret.results)? {
+                    fields.push(field(ty, true));
+                }
             }
             Ok(subtype(true, Some(base), struct_(fields)))
         })?;

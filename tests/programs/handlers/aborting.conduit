@@ -1,0 +1,183 @@
+// Aborting clauses, which never resume: what they give is what the whole
+// `handle` gives, without the return clause. Wasm unwinds to the `handle`
+// with an exception.
+effect effect20 {                         // Fail
+  () -> ()
+}
+
+effect effect21 {                         // Raise an error code
+  (i32) -> ()
+}
+
+effect effect22 {                         // Ask for a value
+  () -> (i32)
+}
+
+effect effect23 {                         // Stop
+  () -> ()
+}
+
+effect effect24 {                         // Get, or fail
+  () -> (i32)
+  () -> ()
+}
+
+// Fail gives a default, the environment.
+handler handler30 for effect20 env(i32) ops(fn1) ret fn2
+
+// Raise gives (0, the code), and a normal return (1, the result).
+handler handler31 for effect21 env() ops(fn3) ret fn4
+
+// Ask gives the environment, resuming in tail position.
+handler handler32 for effect22 env(i32) ops(fn5) ret fn6
+
+// Stop gives 0.
+handler handler33 for effect23 env() ops(fn7) ret fn8
+
+// Get gives the environment, and Fail -1, while a return adds 1000.
+handler handler34 for effect24 env(i32) ops(fn9, fn10) ret fn11
+
+fn fn1(%0: i32, %1: cont() -> (i32)) -> (i32) {
+  jump ret(%0)
+}
+
+fn fn2(%0: i32, %1: i32) -> (i32) {
+  jump ret(%1)
+}
+
+fn fn3(%0: i32, %1: cont() -> (i32, i64)) -> (i32, i64) {
+  let %2: i64 = convert.s[i64](%0)
+  jump ret(0i32, %2)
+}
+
+fn fn4(%0: i32) -> (i32, i64) {
+  let %1: i64 = convert.s[i64](%0)
+  jump ret(1i32, %1)
+}
+
+fn fn5(%0: i32, %1: cont(i32) -> (i32)) -> (i32) {
+  let %2: i32 = resume(%1, %0)
+  jump ret(%2)
+}
+
+fn fn6(%0: i32, %1: i32) -> (i32) {
+  jump ret(%1)
+}
+
+fn fn7(%0: cont() -> (i32)) -> (i32) {
+  jump ret(0i32)
+}
+
+fn fn8(%0: i32) -> (i32) {
+  jump ret(%0)
+}
+
+fn fn9(%0: i32, %1: cont(i32) -> (i32)) -> (i32) {
+  let %2: i32 = resume(%1, %0)
+  jump ret(%2)
+}
+
+fn fn10(%0: i32, %1: cont() -> (i32)) -> (i32) {
+  jump ret(-1i32)
+}
+
+fn fn11(%0: i32, %1: i32) -> (i32) {
+  let %2: i32 = add(%1, 1000i32)
+  jump ret(%2)
+}
+
+// 100 / %0, with a default of -1 for 0.
+fn fn100(%0: i32) -> (i32) {
+  let %1: imm fn() -> (i32) = closure fn101(%0)
+  let %2: i32 = handle handler30(-1i32, %1)
+  jump ret(%2)
+}
+
+fn fn101(%0: i32) -> (i32) {
+  case %0 {
+    0 =>
+      let = perform effect20.0()
+      unreachable
+    _ =>
+      let %1: i32 = div.s(100i32, %0)
+      jump ret(%1)
+  }
+}
+
+// %0 back if it isn't negative, else it's raised.
+fn fn102(%0: i32) -> (i32, i64) {
+  let %1: imm fn() -> (i32) = closure fn103(%0)
+  let %2: i32, %3: i64 = handle handler31(%1)
+  jump ret(%2, %3)
+}
+
+fn fn103(%0: i32) -> (i32) {
+  let %1: i32 = lt.s(%0, 0i32)
+  case %1 {
+    1 =>
+      let = perform effect21.0(%0)
+      unreachable
+    _ => jump ret(%0)
+  }
+}
+
+// Under Ask 7: a Fail that unwinds through Stop and Ask 1, then an Ask,
+// which must find 7: -1 * 100 + 7.
+fn fn104() -> (i32) {
+  let %0: imm fn() -> (i32) = closure fn105()
+  let %1: i32 = handle handler32(7i32, %0)
+  jump ret(%1)
+}
+
+fn fn105() -> (i32) {
+  let %0: imm fn() -> (i32) = closure fn106()
+  let %1: i32 = handle handler30(-1i32, %0)
+  let %2: i32 = perform effect22.0()
+  let %3: i32 = mul(%1, 100i32)
+  let %4: i32 = add(%3, %2)
+  jump ret(%4)
+}
+
+fn fn106() -> (i32) {
+  let %0: imm fn() -> (i32) = closure fn107()
+  let %1: i32 = handle handler32(1i32, %0)
+  jump ret(%1)
+}
+
+fn fn107() -> (i32) {
+  let %0: imm fn() -> (i32) = closure fn108()
+  let %1: i32 = handle handler33(%0)
+  jump ret(%1)
+}
+
+fn fn108() -> (i32) {
+  let = perform effect20.0()
+  unreachable
+}
+
+// One handler with a clause of each kind: 100 / Get, or -1 for 0.
+fn fn109(%0: i32) -> (i32) {
+  let %1: imm fn() -> (i32) = closure fn110()
+  let %2: i32 = handle handler34(%0, %1)
+  jump ret(%2)
+}
+
+fn fn110() -> (i32) {
+  let %0: i32 = perform effect24.0()
+  case %0 {
+    0 =>
+      let = perform effect24.1()
+      unreachable
+    _ =>
+      let %1: i32 = div.s(100i32, %0)
+      jump ret(%1)
+  }
+}
+
+//# run fn100(5i32) == 20i32
+//# run fn100(0i32) == -1i32
+//# run fn102(3i32) == (1i32, 3i64)
+//# run fn102(-4i32) == (0i32, -4i64)
+//# run fn104() == -93i32
+//# run fn109(4i32) == 1025i32
+//# run fn109(0i32) == -1i32

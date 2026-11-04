@@ -29,6 +29,46 @@ pub fn plain_call(f: &Func) -> Option<Func> {
     rewrite(&mut plain.body, k).then_some(plain)
 }
 
+/// The clause `f` without its continuation `k`, its last parameter, if
+/// it's **aborting**: it never uses `k`.
+///
+/// What such a clause gives is what the whole `handle` gives, without
+/// running the rest of the body or the return clause. So a `perform` it
+/// handles can call the function this returns, which takes the same
+/// parameters but `k`, and then unwind to the `handle` with its results.
+/// As with [`plain_call`], the clause must run under the handlers outside
+/// its own, and `k`'s variable is kept, unbound and of type `i32`.
+pub fn aborting(f: &Func) -> Option<Func> {
+    let &k = f.params.last()?;
+    if !matches!(f.var_ty(k), Ty::Cont(_)) || uses(&f.body, k) {
+        return None;
+    }
+    let mut plain = f.clone();
+    plain.params.pop();
+    plain.vars[k.0 as usize] = Ty::I32;
+    Some(plain)
+}
+
+/// Whether `b` uses `v` anywhere.
+fn uses(b: &Block, v: Var) -> bool {
+    let has = |args: &[Atom]| args.contains(&Atom::Var(v));
+    b.lets.iter().any(|l| has(&l.args))
+        || match &b.tail {
+            Tail::Jump { args, .. } => has(args),
+            Tail::Join { defs, body, .. } => defs.iter().any(|d| uses(&d.body, v)) || uses(body, v),
+            Tail::Case {
+                scrut,
+                arms,
+                default,
+            } => {
+                *scrut == Atom::Var(v)
+                    || arms.iter().any(|a| uses(&a.body, v))
+                    || default.as_deref().is_some_and(|d| uses(d, v))
+            }
+            Tail::Unreachable => false,
+        }
+}
+
 /// Rewrites each `let rs = resume(k, xs); jump ret(rs)` in `b` to
 /// `jump ret(xs)`. Gives `false` if `k` is used any other way, or a way out
 /// doesn't resume.
@@ -117,6 +157,43 @@ mod tests {
         );
         assert!(got.contains("jump ret(%3)") && got.contains("jump ret(%1)"));
         assert!(!got.contains("resume"));
+    }
+
+    #[test]
+    fn finds_aborting_clauses() {
+        let clause = |body: &str| {
+            let src = format!("fn fn1(%0: i32, %1: cont(i32) -> (i64)) -> (i64) {{ {body} }}");
+            let mut m: Module = parse(&src).unwrap();
+            let f = aborting(&m.funcs[&FuncId(1)])?;
+            m.funcs.insert(FuncId(1), f.clone());
+            verify_func(&m, FuncId(1), &f).unwrap();
+            Some(print_func(FuncId(1), &f))
+        };
+        let got = clause(
+            "let %2: i64 = convert.s[i64](%0)
+             jump ret(%2)",
+        )
+        .unwrap();
+        assert!(got.starts_with("fn fn1(%0: i32) -> (i64)"), "{got}");
+        assert_eq!(
+            clause(
+                "let %2: i64 = resume(%1, %0)
+                 jump ret(%2)"
+            ),
+            None
+        );
+        // Uses `k` on one path only: neither kind.
+        assert_eq!(
+            clause(
+                "case %0 {
+                   0 =>
+                     let %2: i64 = resume(%1, %0)
+                     jump ret(%2)
+                   _ => jump ret(0i64)
+                 }"
+            ),
+            None
+        );
     }
 
     #[test]

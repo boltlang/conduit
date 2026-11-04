@@ -653,7 +653,9 @@ These are checked by looking at a clause's body:
   like this, and `conduit_ir::clause::plain_call` turns such a clause into
   that plain function: without `k`, giving what it resumed with.
 - **Aborting:** the clause never uses `k` (exceptions, early exit).
-  `perform` unwinds to the handler and nothing is captured.
+  `perform` unwinds to the handler and nothing is captured. What the clause
+  gives is what the `handle` gives, without the return clause.
+  `conduit_ir::clause::aborting` gives the clause without `k`.
 
 ### Effect types
 
@@ -784,7 +786,7 @@ Still to decide:
 ### Lowering
 
 The Wasm backend already lowers handlers whose clauses are all
-tail-resumptive, with no continuation:
+tail-resumptive or aborting, with no continuation:
 
 - A global holds a stack of handler frames. A frame holds its effect's
   number, the next frame, a reference to each clause, and the handler's
@@ -796,6 +798,11 @@ tail-resumptive, with no continuation:
   stack set to the frames below while the clause runs, so that a
   `perform` in the clause goes to an outer handler, as it would with a
   captured continuation.
+- An aborting clause's wrapper stores what the clause gives in the frame
+  and throws a Wasm exception holding the frame. A handler with such a
+  clause runs its body in a `try_table`, which catches the exception,
+  rethrows it if the frame isn't its own, and otherwise gives the frame's
+  results.
 
 Any other clause is an error. The general case has two ways to be lowered,
 both possible because handlers are confined to three ops.
@@ -980,6 +987,7 @@ Status:
 | String literal (`Lit`) | data segment | `array.new_data` | ✅ |
 | `ArrayFreeze` | nothing | nothing | ✅ |
 | `Handle`, `Perform` with tail-resumptive clauses | — | a handler stack in a global, and a direct call of the clause | ✅ |
+| `Handle`, `Perform` with aborting clauses | — | the same, then `throw`, caught by `try_table` | ✅ (exception handling, Wasm 3.0) |
 | `Handle` | `cont.new` + `resume` with `(on $op ..)` | same | ⚠️ stack switching |
 | `Perform` | `suspend` | same | ⚠️ stack switching |
 | `Resume` | `resume` | same | ⚠️ stack switching |

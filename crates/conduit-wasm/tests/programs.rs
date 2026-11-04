@@ -72,7 +72,8 @@ fn instantiate(bytes: &[u8]) -> Result<(Store<()>, Instance), String> {
     config
         .wasm_gc(true)
         .wasm_function_references(true)
-        .wasm_tail_call(true);
+        .wasm_tail_call(true)
+        .wasm_exceptions(true);
     let engine = Engine::new(&config).map_err(|e| e.to_string())?;
     let module = wasmtime::Module::new(&engine, bytes).map_err(|e| e.to_string())?;
     let mut linker = Linker::new(&engine);

@@ -6,11 +6,16 @@
 //! all part of Wasm 3.0.
 //!
 //! Effect handlers are supported when every clause of the handlers used is
-//! tail-resumptive (see [`conduit_ir::clause::plain_call`]): then no
+//! tail-resumptive or aborting (see [`conduit_ir::clause`]): then no
 //! continuation is ever captured. A global holds a stack of handler frames.
 //! `handle` pushes one, runs the body and pops it, and `perform` finds the
 //! nearest frame of its effect and calls the clause, with the stack below
 //! that frame while the clause runs. A `perform` with no handler traps.
+//!
+//! An aborting clause stores what it gives in its frame and throws an
+//! exception holding the frame, which the `handle` that pushed it catches:
+//! the output then also needs exception handling, also part of Wasm 3.0.
+//!
 //! Other clauses, and continuation types, need stack switching or evidence
 //! passing, which aren't supported yet.
 //!
@@ -21,14 +26,15 @@
 mod func;
 mod types;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 
 use conduit_ir::verify::Item;
 use conduit_ir::{EffectId, ExternId, Func, FuncId, HandlerId, Module};
 use wasm_encoder::{
     CodeSection, ConstExpr, ElementSection, Elements, EntityType, ExportKind, ExportSection,
-    Function, FunctionSection, GlobalSection, GlobalType, HeapType, ImportSection, TypeSection,
+    Function, FunctionSection, GlobalSection, GlobalType, HeapType, ImportSection, TagKind,
+    TagSection, TagType, TypeSection,
 };
 
 use crate::types::{FnSig, Types, nullable};
@@ -58,12 +64,17 @@ pub(crate) struct Cx<'m> {
     /// parameters are captured. They come after the module's functions.
     entries: Vec<(FuncId, usize)>,
     entry_keys: HashMap<(FuncId, usize), u32>,
-    /// The handlers whose clauses are all tail-resumptive, and the index
-    /// of the wrapper of their first clause: a function of the clause type
-    /// that reads the environment out of the frame and calls the clause.
-    /// They come after the module's functions.
+    /// The handlers whose clauses are all tail-resumptive or aborting, and
+    /// the index of the wrapper of their first clause: a function of the
+    /// clause type that reads the environment out of the frame and calls
+    /// the clause. They come after the module's functions.
     wrappers: BTreeMap<HandlerId, u32>,
+    /// The aborting clauses.
+    aborts: BTreeSet<FuncId>,
 }
+
+/// The exception an aborting clause throws, holding its handler's frame.
+pub(crate) const ABORT: u32 = 0;
 
 /// The global holding the top of the handler stack.
 pub(crate) const HANDLERS: u32 = 0;
@@ -98,8 +109,8 @@ impl Cx<'_> {
         match self.wrappers.get(&h) {
             Some(first) => Ok(first + i),
             None => Err(format!(
-                "{h} has a clause that isn't tail-resumptive, which needs stack switching \
-                 or evidence passing"
+                "{h} has a clause that isn't tail-resumptive or aborting, which needs \
+                 stack switching or evidence passing"
             )),
         }
     }
@@ -132,23 +143,26 @@ impl Cx<'_> {
 /// Lowers a module that has passed [`conduit_ir::verify::verify_module`]
 /// to a Wasm binary, exporting each function in `exports` under its name.
 pub fn emit_module(m: &Module, exports: &[(FuncId, &str)]) -> Result<Vec<u8>, Error> {
-    // Tail-resumptive clauses are lowered as plain functions. Any other
-    // clause keeps its continuation parameter, which has no Wasm type.
+    // Tail-resumptive and aborting clauses are lowered as plain functions,
+    // without their continuation. Any other clause keeps its continuation
+    // parameter, which has no Wasm type.
     let mut plain_clauses: BTreeMap<FuncId, Func> = BTreeMap::new();
     let mut not_plain = BTreeMap::new();
+    let mut aborts = BTreeSet::new();
+    let mut aborting = BTreeSet::new();
     for (&h, decl) in &m.handlers {
         for &clause in &decl.ops {
-            match m
-                .funcs
-                .get(&clause)
-                .and_then(conduit_ir::clause::plain_call)
-            {
-                Some(f) => {
-                    plain_clauses.insert(clause, f);
-                }
-                None => {
-                    not_plain.insert(clause, h);
-                }
+            let Some(f) = m.funcs.get(&clause) else {
+                continue;
+            };
+            if let Some(plain) = conduit_ir::clause::plain_call(f) {
+                plain_clauses.insert(clause, plain);
+            } else if let Some(plain) = conduit_ir::clause::aborting(f) {
+                plain_clauses.insert(clause, plain);
+                aborts.insert(clause);
+                aborting.insert(h);
+            } else {
+                not_plain.insert(clause, h);
             }
         }
     }
@@ -161,7 +175,9 @@ pub fn emit_module(m: &Module, exports: &[(FuncId, &str)]) -> Result<Vec<u8>, Er
         entries: Vec::new(),
         entry_keys: HashMap::new(),
         wrappers: BTreeMap::new(),
+        aborts,
     };
+    cx.types.aborting = aborting;
     let first = m.externs.len() as u32;
     cx.funcs = m.funcs.keys().zip(first..).map(|(&f, i)| (f, i)).collect();
 
@@ -201,8 +217,8 @@ pub fn emit_module(m: &Module, exports: &[(FuncId, &str)]) -> Result<Vec<u8>, Er
         };
         if let Some(h) = not_plain.get(&id) {
             return Err(err(format!(
-                "a clause of {h} that isn't tail-resumptive, which needs stack switching \
-                 or evidence passing"
+                "a clause of {h} that isn't tail-resumptive or aborting, which needs \
+                 stack switching or evidence passing"
             )));
         }
         let f = plain_clauses.get(&id).unwrap_or(f);
@@ -256,6 +272,13 @@ pub fn emit_module(m: &Module, exports: &[(FuncId, &str)]) -> Result<Vec<u8>, Er
             message,
         })?)
     };
+    let abort = match handlers {
+        Some(frame) if !cx.aborts.is_empty() => Some(plain(FnSig {
+            params: vec![nullable(frame)],
+            results: vec![],
+        })),
+        _ => None,
+    };
     let group = cx.types.finish();
     let group_len = group.len() as u32;
 
@@ -298,6 +321,14 @@ pub fn emit_module(m: &Module, exports: &[(FuncId, &str)]) -> Result<Vec<u8>, Er
     module.section(&type_section);
     module.section(&import_section);
     module.section(&function_section);
+    if let Some(sig) = abort {
+        let mut tags = TagSection::new();
+        tags.tag(TagType {
+            kind: TagKind::Exception,
+            func_type_idx: group_len + sig,
+        });
+        module.section(&tags);
+    }
     if let Some(frame) = handlers {
         let mut globals = GlobalSection::new();
         globals.global(
