@@ -1,11 +1,11 @@
 // A `perform` with no handler of its effect traps.
-effect effect20 {
+effect Fail {
   () -> ()
 }
 
-fn fn0() -> () does effect20 {
-  let = perform effect20.0()
+fn main() -> () does Fail {
+  let = perform Fail.0()
   jump ret()
 }
 
-//# run fn0() traps
+//# run main() traps

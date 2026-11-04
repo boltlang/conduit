@@ -2,61 +2,61 @@
 // discontinues it through the ref. The verifier only counts direct uses,
 // so it's the evaluator that finds the second use and traps. The clause
 // isn't tail-resumptive, so the Wasm backend can't lower it.
-effect effect20 {
+effect Wait {
   () -> (i32)
 }
 
-effect effect21 {
+effect Cancel {
   () -> (i32)
 }
 
-handler handler30 for effect20 does effect21 env(i32) ops(fn1) ret fn6
+handler stored for Wait does Cancel env(i32) ops(wait) ret stored_done
 
-handler handler31 for effect21 env() ops(fn3) ret fn2
+handler catch_cancel for Cancel env() ops(cancel) ret id
 
-// Resumes with 1, then discontinues with effect21 too, when %0 isn't 0.
-fn fn1(%0: i32, %1: cont(i32) -> (i32) does effect21) -> (i32) does effect21 {
-  let %2: ref cont(i32) -> (i32) does effect21 = ref_new(%1)
-  let %3: cont(i32) -> (i32) does effect21 = ref_get(%2)
-  let %4: i32 = resume(%3, 1i32)
-  case %0 {
-    0 => jump ret(%4)
+// Resumes with 1, then discontinues with Cancel too, when %mode isn't 0.
+fn wait(%mode: i32, %k: cont(i32) -> (i32) does Cancel) -> (i32) does Cancel {
+  let %cell: ref cont(i32) -> (i32) does Cancel = ref_new(%k)
+  let %k1: cont(i32) -> (i32) does Cancel = ref_get(%cell)
+  let %r: i32 = resume(%k1, 1i32)
+  case %mode {
+    0 => jump ret(%r)
     _ =>
-      let %5: cont(i32) -> (i32) does effect21 = ref_get(%2)
-      let %6: i32 = discontinue effect21.0(%5)
-      jump ret(%6)
+      let %k2: cont(i32) -> (i32) does Cancel = ref_get(%cell)
+      let %cancelled: i32 = discontinue Cancel.0(%k2)
+      jump ret(%cancelled)
   }
 }
 
-fn fn2(%0: i32) -> (i32) {
-  jump ret(%0)
+fn id(%r: i32) -> (i32) {
+  jump ret(%r)
 }
 
-fn fn6(%0: i32, %1: i32) -> (i32) {
-  jump ret(%1)
+fn stored_done(%mode: i32, %r: i32) -> (i32) {
+  jump ret(%r)
 }
 
-fn fn3(%0: cont(i32) -> (i32)) -> (i32) {
+fn cancel(%k: cont(i32) -> (i32)) -> (i32) {
   jump ret(7i32)
 }
 
-fn fn4() -> (i32) does effect20 {
-  let %0: i32 = perform effect20.0()
-  jump ret(%0)
+fn just_wait() -> (i32) does Wait {
+  let %x: i32 = perform Wait.0()
+  jump ret(%x)
 }
 
-fn fn0(%0: i32) -> (i32) {
-  let %1: imm fn() -> (i32) does effect20 = closure fn4()
-  let %2: imm fn() -> (i32) does effect21 = closure fn5(%0, %1)
-  let %3: i32 = handle handler31(%2)
-  jump ret(%3)
+fn main(%mode: i32) -> (i32) {
+  let %wait: imm fn() -> (i32) does Wait = closure just_wait()
+  let %task: imm fn() -> (i32) does Cancel = closure scheduled(%mode, %wait)
+  let %r: i32 = handle catch_cancel(%task)
+  jump ret(%r)
 }
 
-fn fn5(%0: i32, %1: imm fn() -> (i32) does effect20) -> (i32) does effect21 {
-  let %2: i32 = handle handler30(%0, %1)
-  jump ret(%2)
+fn scheduled(%mode: i32, %wait: imm fn() -> (i32) does Wait) -> (i32) does Cancel {
+  let %r: i32 = handle stored(%mode, %wait)
+  jump ret(%r)
 }
 
-//# run fn0(0i32) == 1i32
-//# run fn0(1i32) traps
+//# run main(0i32) == 1i32
+//# run main(1i32) traps
 //# wasm-error: isn't tail-resumptive or aborting

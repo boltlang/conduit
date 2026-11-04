@@ -2,225 +2,225 @@
 // was captured. Wasm lowers a clause whose ways out all resume or
 // discontinue in tail position as a plain call: a `discontinue` then
 // performs under the handlers of the `perform` the clause handles.
-effect effect20 {                         // Wait
+effect Wait {
   () -> (i32)
 }
 
-effect effect21 {                         // Cancel
+effect Cancel {
   () -> (i32)
 }
 
-effect effect22 {                         // Fail with a code
+effect Fail {
   (i32) -> (i32)
 }
 
-effect effect23 {                         // Tag a value
+effect Tag {
   (i32) -> (i32)
 }
 
-effect effect24 {                         // Stop
+effect Stop {
   () -> (i32)
 }
 
 // A scheduler: Wait gives 5 when the environment is 0, and cancels the
 // waiting task otherwise.
-handler handler30 for effect20 does effect21 env(i32) ops(fn1) ret fn2
+handler scheduler for Wait does Cancel env(i32) ops(wait) ret tagged_done
 
 // Catches a cancel: counts it in the ref, and gives -1.
-handler handler31 for effect21 env(ref i32) ops(fn3) ret fn4
+handler catch_cancel for Cancel env(ref i32) ops(count_cancel) ret count_done
 
 // A `defer` around a task: on a cancel, adds 10 to the ref and cancels on.
-handler handler32 for effect21 does effect20 + effect21 env(ref i32) ops(fn5) ret fn4
+handler defer for Cancel does Wait + Cancel env(ref i32) ops(cleanup) ret count_done
 
 // Recovers from a failure with twice its code.
-handler handler33 for effect22 does effect20 env() ops(fn7) ret fn8
+handler recover for Fail does Wait env() ops(recover_fail) ret id
 
 // A scheduler that fails the waiting task with code 21.
-handler handler34 for effect20 does effect22 env() ops(fn9) ret fn8
+handler fail_waiting for Wait does Fail env() ops(fail_wait) ret id
 
 // Tags a value by adding the environment.
-handler handler35 for effect23 does effect20 env(i32) ops(fn10) ret fn2
+handler tagger for Tag does Wait env(i32) ops(tag) ret tagged_done
 
 // A scheduler that tags 1 itself, then has the waiting task tag that.
-handler handler36 for effect20 does effect23 env() ops(fn11) ret fn8
+handler tag_twice for Wait does Tag env() ops(tag_twice_wait) ret id
 
 // Stop gives 0.
-handler handler37 for effect24 env() ops(fn12) ret fn8
+handler stopper for Stop env() ops(stop) ret id
 
 // A scheduler that first stops a computation of its own, then has the
 // waiting task tag 5.
-handler handler38 for effect20 does effect23 env() ops(fn13) ret fn8
+handler stop_then_tag for Wait does Tag env() ops(stop_then_tag_wait) ret id
 
-fn fn1(%0: i32, %1: cont(i32) -> (i32) does effect21) -> (i32) does effect21 {
-  case %0 {
+fn wait(%mode: i32, %k: cont(i32) -> (i32) does Cancel) -> (i32) does Cancel {
+  case %mode {
     0 =>
-      let %2: i32 = resume(%1, 5i32)
-      jump ret(%2)
+      let %r: i32 = resume(%k, 5i32)
+      jump ret(%r)
     _ =>
-      let %3: i32 = discontinue effect21.0(%1)
-      jump ret(%3)
+      let %cancelled: i32 = discontinue Cancel.0(%k)
+      jump ret(%cancelled)
   }
 }
 
-fn fn2(%0: i32, %1: i32) -> (i32) {
-  jump ret(%1)
+fn tagged_done(%env: i32, %r: i32) -> (i32) {
+  jump ret(%r)
 }
 
-fn fn3(%0: ref i32, %1: cont(i32) -> (i32)) -> (i32) {
-  let %2: i32 = ref_get(%0)
-  let %3: i32 = add(%2, 1i32)
-  let = ref_set(%0, %3)
+fn count_cancel(%count: ref i32, %k: cont(i32) -> (i32)) -> (i32) {
+  let %old: i32 = ref_get(%count)
+  let %new: i32 = add(%old, 1i32)
+  let = ref_set(%count, %new)
   jump ret(-1i32)
 }
 
-fn fn4(%0: ref i32, %1: i32) -> (i32) {
-  jump ret(%1)
+fn count_done(%count: ref i32, %r: i32) -> (i32) {
+  jump ret(%r)
 }
 
-fn fn5(%0: ref i32, %1: cont(i32) -> (i32) does effect20 + effect21) -> (i32) does effect21 {
-  let %2: i32 = ref_get(%0)
-  let %3: i32 = add(%2, 10i32)
-  let = ref_set(%0, %3)
-  let %4: i32 = perform effect21.0()
-  jump ret(%4)
+fn cleanup(%count: ref i32, %k: cont(i32) -> (i32) does Wait + Cancel) -> (i32) does Cancel {
+  let %old: i32 = ref_get(%count)
+  let %new: i32 = add(%old, 10i32)
+  let = ref_set(%count, %new)
+  let %r: i32 = perform Cancel.0()
+  jump ret(%r)
 }
 
-fn fn7(%0: i32, %1: cont(i32) -> (i32) does effect20) -> (i32) does effect20 {
-  let %2: i32 = mul(%0, 2i32)
-  let %3: i32 = resume(%1, %2)
-  jump ret(%3)
+fn recover_fail(%code: i32, %k: cont(i32) -> (i32) does Wait) -> (i32) does Wait {
+  let %twice: i32 = mul(%code, 2i32)
+  let %r: i32 = resume(%k, %twice)
+  jump ret(%r)
 }
 
-fn fn8(%0: i32) -> (i32) {
-  jump ret(%0)
+fn id(%r: i32) -> (i32) {
+  jump ret(%r)
 }
 
-fn fn9(%0: cont(i32) -> (i32) does effect22) -> (i32) does effect22 {
-  let %1: i32 = discontinue effect22.0(%0, 21i32)
-  jump ret(%1)
+fn fail_wait(%k: cont(i32) -> (i32) does Fail) -> (i32) does Fail {
+  let %r: i32 = discontinue Fail.0(%k, 21i32)
+  jump ret(%r)
 }
 
-fn fn10(%0: i32, %1: i32, %2: cont(i32) -> (i32) does effect20) -> (i32) does effect20 {
-  let %3: i32 = add(%0, %1)
-  let %4: i32 = resume(%2, %3)
-  jump ret(%4)
+fn tag(%base: i32, %x: i32, %k: cont(i32) -> (i32) does Wait) -> (i32) does Wait {
+  let %tagged: i32 = add(%base, %x)
+  let %r: i32 = resume(%k, %tagged)
+  jump ret(%r)
 }
 
 // The `perform` goes to the handlers outside the scheduler, and the
 // `discontinue` to those inside the task.
-fn fn11(%0: cont(i32) -> (i32) does effect23) -> (i32) does effect23 {
-  let %1: i32 = perform effect23.0(1i32)
-  let %2: i32 = discontinue effect23.0(%0, %1)
-  jump ret(%2)
+fn tag_twice_wait(%k: cont(i32) -> (i32) does Tag) -> (i32) does Tag {
+  let %outside: i32 = perform Tag.0(1i32)
+  let %r: i32 = discontinue Tag.0(%k, %outside)
+  jump ret(%r)
 }
 
-fn fn12(%0: cont(i32) -> (i32)) -> (i32) {
+fn stop(%k: cont(i32) -> (i32)) -> (i32) {
   jump ret(0i32)
 }
 
 // The Stop unwinds out of a `perform`, which then can't put back what the
 // `discontinue` needs: the `handle` that catches it must.
-fn fn13(%0: cont(i32) -> (i32) does effect23) -> (i32) does effect23 {
-  let %1: imm fn() -> (i32) does effect24 = closure fn14()
-  let %2: i32 = handle handler37(%1)
-  let %3: i32 = add(%2, 5i32)
-  let %4: i32 = discontinue effect23.0(%0, %3)
-  jump ret(%4)
+fn stop_then_tag_wait(%k: cont(i32) -> (i32) does Tag) -> (i32) does Tag {
+  let %body: imm fn() -> (i32) does Stop = closure do_stop()
+  let %stopped: i32 = handle stopper(%body)
+  let %five: i32 = add(%stopped, 5i32)
+  let %r: i32 = discontinue Tag.0(%k, %five)
+  jump ret(%r)
 }
 
-fn fn14() -> (i32) does effect24 {
-  let %0: i32 = perform effect24.0()
-  jump ret(%0)
+fn do_stop() -> (i32) does Stop {
+  let %r: i32 = perform Stop.0()
+  jump ret(%r)
 }
 
 // A task under a `defer`, under a scheduler, under a catch: Wait plus 100,
 // and the count of cleanups and catches.
-fn fn100(%0: i32) -> (i32, i32) {
-  let %1: ref i32 = ref_new(0i32)
-  let %2: mut fn() -> (i32) does effect21 = closure fn101(%0, %1)
-  let %3: i32 = handle handler31(%1, %2)
-  let %4: i32 = ref_get(%1)
-  jump ret(%3, %4)
+fn cancel_task(%mode: i32) -> (i32, i32) {
+  let %count: ref i32 = ref_new(0i32)
+  let %task: mut fn() -> (i32) does Cancel = closure schedule(%mode, %count)
+  let %r: i32 = handle catch_cancel(%count, %task)
+  let %cleanups: i32 = ref_get(%count)
+  jump ret(%r, %cleanups)
 }
 
-fn fn101(%0: i32, %1: ref i32) -> (i32) does effect21 {
-  let %2: mut fn() -> (i32) does effect20 + effect21 = closure fn102(%1)
-  let %3: i32 = handle handler30(%0, %2)
-  jump ret(%3)
+fn schedule(%mode: i32, %count: ref i32) -> (i32) does Cancel {
+  let %task: mut fn() -> (i32) does Wait + Cancel = closure deferred(%count)
+  let %r: i32 = handle scheduler(%mode, %task)
+  jump ret(%r)
 }
 
-fn fn102(%0: ref i32) -> (i32) does effect20 + effect21 {
-  let %1: imm fn() -> (i32) does effect20 = closure fn103()
-  let %2: i32 = handle handler32(%0, %1)
-  jump ret(%2)
+fn deferred(%count: ref i32) -> (i32) does Wait + Cancel {
+  let %task: imm fn() -> (i32) does Wait = closure wait_plus_100()
+  let %r: i32 = handle defer(%count, %task)
+  jump ret(%r)
 }
 
-fn fn103() -> (i32) does effect20 {
-  let %0: i32 = perform effect20.0()
-  let %1: i32 = add(%0, 100i32)
-  jump ret(%1)
+fn wait_plus_100() -> (i32) does Wait {
+  let %x: i32 = perform Wait.0()
+  let %r: i32 = add(%x, 100i32)
+  jump ret(%r)
 }
 
 // A task that recovers from the failure its Wait gets: 21 * 2 + 1.
-fn fn104() -> (i32) does effect22 {
-  let %0: imm fn() -> (i32) does effect20 = closure fn105()
-  let %1: i32 = handle handler34(%0)
-  jump ret(%1)
+fn recovering() -> (i32) does Fail {
+  let %task: imm fn() -> (i32) does Wait = closure recover_task()
+  let %r: i32 = handle fail_waiting(%task)
+  jump ret(%r)
 }
 
-fn fn105() -> (i32) does effect20 {
-  let %0: imm fn() -> (i32) does effect20 = closure fn106()
-  let %1: i32 = handle handler33(%0)
-  jump ret(%1)
+fn recover_task() -> (i32) does Wait {
+  let %task: imm fn() -> (i32) does Wait = closure wait_plus_1()
+  let %r: i32 = handle recover(%task)
+  jump ret(%r)
 }
 
-fn fn106() -> (i32) does effect20 {
-  let %0: i32 = perform effect20.0()
-  let %1: i32 = add(%0, 1i32)
-  jump ret(%1)
+fn wait_plus_1() -> (i32) does Wait {
+  let %x: i32 = perform Wait.0()
+  let %r: i32 = add(%x, 1i32)
+  jump ret(%r)
 }
 
 // Tag 1000 outside the scheduler, and Tag 2000 inside the task: the
 // scheduler tags 1 outside, 1001, and the task that inside, 3001.
-fn fn107() -> (i32) does effect20 {
-  let %0: imm fn() -> (i32) does effect23 = closure fn108()
-  let %1: i32 = handle handler35(1000i32, %0)
-  jump ret(%1)
+fn tag_outside() -> (i32) does Wait {
+  let %task: imm fn() -> (i32) does Tag = closure tag_scheduled()
+  let %r: i32 = handle tagger(1000i32, %task)
+  jump ret(%r)
 }
 
-fn fn108() -> (i32) does effect23 {
-  let %0: imm fn() -> (i32) does effect20 = closure fn109()
-  let %1: i32 = handle handler36(%0)
-  jump ret(%1)
+fn tag_scheduled() -> (i32) does Tag {
+  let %task: imm fn() -> (i32) does Wait = closure tag_inside()
+  let %r: i32 = handle tag_twice(%task)
+  jump ret(%r)
 }
 
-fn fn109() -> (i32) does effect20 {
-  let %0: imm fn() -> (i32) does effect20 = closure fn110()
-  let %1: i32 = handle handler35(2000i32, %0)
-  jump ret(%1)
+fn tag_inside() -> (i32) does Wait {
+  let %task: imm fn() -> (i32) does Wait = closure just_wait()
+  let %r: i32 = handle tagger(2000i32, %task)
+  jump ret(%r)
 }
 
-fn fn110() -> (i32) does effect20 {
-  let %0: i32 = perform effect20.0()
-  jump ret(%0)
+fn just_wait() -> (i32) does Wait {
+  let %x: i32 = perform Wait.0()
+  jump ret(%x)
 }
 
 // The same with the scheduler that stops first: the task tags 0 + 5
 // inside, 2005.
-fn fn111() -> (i32) does effect20 {
-  let %0: imm fn() -> (i32) does effect23 = closure fn112()
-  let %1: i32 = handle handler35(1000i32, %0)
-  jump ret(%1)
+fn stop_outside() -> (i32) does Wait {
+  let %task: imm fn() -> (i32) does Tag = closure stop_scheduled()
+  let %r: i32 = handle tagger(1000i32, %task)
+  jump ret(%r)
 }
 
-fn fn112() -> (i32) does effect23 {
-  let %0: imm fn() -> (i32) does effect20 = closure fn109()
-  let %1: i32 = handle handler38(%0)
-  jump ret(%1)
+fn stop_scheduled() -> (i32) does Tag {
+  let %task: imm fn() -> (i32) does Wait = closure tag_inside()
+  let %r: i32 = handle stop_then_tag(%task)
+  jump ret(%r)
 }
 
-//# run fn100(0i32) == (105i32, 0i32)
-//# run fn100(1i32) == (-1i32, 11i32)
-//# run fn104() == 43i32
-//# run fn107() == 3001i32
-//# run fn111() == 2005i32
+//# run cancel_task(0i32) == (105i32, 0i32)
+//# run cancel_task(1i32) == (-1i32, 11i32)
+//# run recovering() == 43i32
+//# run tag_outside() == 3001i32
+//# run stop_outside() == 2005i32

@@ -1,6 +1,6 @@
 // A continuation type has no Wasm type yet.
 
-fn fn0(%0: cont() -> ()) -> () {
+fn main(%k: cont() -> ()) -> () {
   jump ret()
 }
 

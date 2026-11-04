@@ -1,183 +1,183 @@
 // Aborting clauses, which never resume: what they give is what the whole
 // `handle` gives, without the return clause. Wasm unwinds to the `handle`
 // with an exception.
-effect effect20 {                         // Fail
+effect Fail {
   () -> ()
 }
 
-effect effect21 {                         // Raise an error code
+effect Raise {
   (i32) -> ()
 }
 
-effect effect22 {                         // Ask for a value
+effect Ask {
   () -> (i32)
 }
 
-effect effect23 {                         // Stop
+effect Stop {
   () -> ()
 }
 
-effect effect24 {                         // Get, or fail
+effect GetOrFail {
   () -> (i32)
   () -> ()
 }
 
 // Fail gives a default, the environment.
-handler handler30 for effect20 env(i32) ops(fn1) ret fn2
+handler or_default for Fail env(i32) ops(fail) ret or_default_done
 
 // Raise gives (0, the code), and a normal return (1, the result).
-handler handler31 for effect21 env() ops(fn3) ret fn4
+handler raised for Raise env() ops(raise) ret raised_done
 
 // Ask gives the environment, resuming in tail position.
-handler handler32 for effect22 does effect20 env(i32) ops(fn5) ret fn6
+handler answer for Ask does Fail env(i32) ops(ask) ret answer_done
 
 // Stop gives 0.
-handler handler33 for effect23 does effect20 env() ops(fn7) ret fn8
+handler stopper for Stop does Fail env() ops(stop) ret stopper_done
 
 // Get gives the environment, and Fail -1, while a return adds 1000.
-handler handler34 for effect24 env(i32) ops(fn9, fn10) ret fn11
+handler get_or_fail for GetOrFail env(i32) ops(get, fail_get) ret get_done
 
-fn fn1(%0: i32, %1: cont() -> (i32)) -> (i32) {
-  jump ret(%0)
+fn fail(%default: i32, %k: cont() -> (i32)) -> (i32) {
+  jump ret(%default)
 }
 
-fn fn2(%0: i32, %1: i32) -> (i32) {
-  jump ret(%1)
+fn or_default_done(%default: i32, %r: i32) -> (i32) {
+  jump ret(%r)
 }
 
-fn fn3(%0: i32, %1: cont() -> (i32, i64)) -> (i32, i64) {
-  let %2: i64 = convert.s[i64](%0)
-  jump ret(0i32, %2)
+fn raise(%code: i32, %k: cont() -> (i32, i64)) -> (i32, i64) {
+  let %code64: i64 = convert.s[i64](%code)
+  jump ret(0i32, %code64)
 }
 
-fn fn4(%0: i32) -> (i32, i64) {
-  let %1: i64 = convert.s[i64](%0)
-  jump ret(1i32, %1)
+fn raised_done(%r: i32) -> (i32, i64) {
+  let %r64: i64 = convert.s[i64](%r)
+  jump ret(1i32, %r64)
 }
 
-fn fn5(%0: i32, %1: cont(i32) -> (i32) does effect20) -> (i32) does effect20 {
-  let %2: i32 = resume(%1, %0)
-  jump ret(%2)
+fn ask(%x: i32, %k: cont(i32) -> (i32) does Fail) -> (i32) does Fail {
+  let %r: i32 = resume(%k, %x)
+  jump ret(%r)
 }
 
-fn fn6(%0: i32, %1: i32) -> (i32) {
-  jump ret(%1)
+fn answer_done(%x: i32, %r: i32) -> (i32) {
+  jump ret(%r)
 }
 
-fn fn7(%0: cont() -> (i32) does effect20) -> (i32) {
+fn stop(%k: cont() -> (i32) does Fail) -> (i32) {
   jump ret(0i32)
 }
 
-fn fn8(%0: i32) -> (i32) {
-  jump ret(%0)
+fn stopper_done(%r: i32) -> (i32) {
+  jump ret(%r)
 }
 
-fn fn9(%0: i32, %1: cont(i32) -> (i32)) -> (i32) {
-  let %2: i32 = resume(%1, %0)
-  jump ret(%2)
+fn get(%x: i32, %k: cont(i32) -> (i32)) -> (i32) {
+  let %r: i32 = resume(%k, %x)
+  jump ret(%r)
 }
 
-fn fn10(%0: i32, %1: cont() -> (i32)) -> (i32) {
+fn fail_get(%x: i32, %k: cont() -> (i32)) -> (i32) {
   jump ret(-1i32)
 }
 
-fn fn11(%0: i32, %1: i32) -> (i32) {
-  let %2: i32 = add(%1, 1000i32)
-  jump ret(%2)
+fn get_done(%x: i32, %r: i32) -> (i32) {
+  let %r1000: i32 = add(%r, 1000i32)
+  jump ret(%r1000)
 }
 
-// 100 / %0, with a default of -1 for 0.
-fn fn100(%0: i32) -> (i32) {
-  let %1: imm fn() -> (i32) does effect20 = closure fn101(%0)
-  let %2: i32 = handle handler30(-1i32, %1)
-  jump ret(%2)
+// 100 / %x, with a default of -1 for 0.
+fn hundred_over(%x: i32) -> (i32) {
+  let %body: imm fn() -> (i32) does Fail = closure divide(%x)
+  let %r: i32 = handle or_default(-1i32, %body)
+  jump ret(%r)
 }
 
-fn fn101(%0: i32) -> (i32) does effect20 {
-  case %0 {
+fn divide(%x: i32) -> (i32) does Fail {
+  case %x {
     0 =>
-      let = perform effect20.0()
+      let = perform Fail.0()
       unreachable
     _ =>
-      let %1: i32 = div.s(100i32, %0)
-      jump ret(%1)
+      let %q: i32 = div.s(100i32, %x)
+      jump ret(%q)
   }
 }
 
-// %0 back if it isn't negative, else it's raised.
-fn fn102(%0: i32) -> (i32, i64) {
-  let %1: imm fn() -> (i32) does effect21 = closure fn103(%0)
-  let %2: i32, %3: i64 = handle handler31(%1)
-  jump ret(%2, %3)
+// %x back if it isn't negative, else it's raised.
+fn raise_negative(%x: i32) -> (i32, i64) {
+  let %body: imm fn() -> (i32) does Raise = closure check(%x)
+  let %ok: i32, %code: i64 = handle raised(%body)
+  jump ret(%ok, %code)
 }
 
-fn fn103(%0: i32) -> (i32) does effect21 {
-  let %1: i32 = lt.s(%0, 0i32)
-  case %1 {
+fn check(%x: i32) -> (i32) does Raise {
+  let %negative: i32 = lt.s(%x, 0i32)
+  case %negative {
     1 =>
-      let = perform effect21.0(%0)
+      let = perform Raise.0(%x)
       unreachable
-    _ => jump ret(%0)
+    _ => jump ret(%x)
   }
 }
 
 // Under Ask 7: a Fail that unwinds through Stop and Ask 1, then an Ask,
 // which must find 7: -1 * 100 + 7.
-fn fn104() -> (i32) does effect20 {
-  let %0: imm fn() -> (i32) does effect22 = closure fn105()
-  let %1: i32 = handle handler32(7i32, %0)
-  jump ret(%1)
+fn unwinds() -> (i32) does Fail {
+  let %body: imm fn() -> (i32) does Ask = closure fail_then_ask()
+  let %r: i32 = handle answer(7i32, %body)
+  jump ret(%r)
 }
 
-fn fn105() -> (i32) does effect22 {
-  let %0: imm fn() -> (i32) does effect20 = closure fn106()
-  let %1: i32 = handle handler30(-1i32, %0)
-  let %2: i32 = perform effect22.0()
-  let %3: i32 = mul(%1, 100i32)
-  let %4: i32 = add(%3, %2)
-  jump ret(%4)
+fn fail_then_ask() -> (i32) does Ask {
+  let %body: imm fn() -> (i32) does Fail = closure under_ask1()
+  let %failed: i32 = handle or_default(-1i32, %body)
+  let %x: i32 = perform Ask.0()
+  let %f100: i32 = mul(%failed, 100i32)
+  let %r: i32 = add(%f100, %x)
+  jump ret(%r)
 }
 
-fn fn106() -> (i32) does effect20 {
-  let %0: imm fn() -> (i32) does effect20 = closure fn107()
-  let %1: i32 = handle handler32(1i32, %0)
-  jump ret(%1)
+fn under_ask1() -> (i32) does Fail {
+  let %body: imm fn() -> (i32) does Fail = closure under_stop()
+  let %r: i32 = handle answer(1i32, %body)
+  jump ret(%r)
 }
 
-fn fn107() -> (i32) does effect20 {
-  let %0: imm fn() -> (i32) does effect20 = closure fn108()
-  let %1: i32 = handle handler33(%0)
-  jump ret(%1)
+fn under_stop() -> (i32) does Fail {
+  let %body: imm fn() -> (i32) does Fail = closure just_fail()
+  let %r: i32 = handle stopper(%body)
+  jump ret(%r)
 }
 
-fn fn108() -> (i32) does effect20 {
-  let = perform effect20.0()
+fn just_fail() -> (i32) does Fail {
+  let = perform Fail.0()
   unreachable
 }
 
 // One handler with a clause of each kind: 100 / Get, or -1 for 0.
-fn fn109(%0: i32) -> (i32) {
-  let %1: imm fn() -> (i32) does effect24 = closure fn110()
-  let %2: i32 = handle handler34(%0, %1)
-  jump ret(%2)
+fn each_kind(%x: i32) -> (i32) {
+  let %body: imm fn() -> (i32) does GetOrFail = closure hundred_over_get()
+  let %r: i32 = handle get_or_fail(%x, %body)
+  jump ret(%r)
 }
 
-fn fn110() -> (i32) does effect24 {
-  let %0: i32 = perform effect24.0()
-  case %0 {
+fn hundred_over_get() -> (i32) does GetOrFail {
+  let %x: i32 = perform GetOrFail.0()
+  case %x {
     0 =>
-      let = perform effect24.1()
+      let = perform GetOrFail.1()
       unreachable
     _ =>
-      let %1: i32 = div.s(100i32, %0)
-      jump ret(%1)
+      let %q: i32 = div.s(100i32, %x)
+      jump ret(%q)
   }
 }
 
-//# run fn100(5i32) == 20i32
-//# run fn100(0i32) == -1i32
-//# run fn102(3i32) == (1i32, 3i64)
-//# run fn102(-4i32) == (0i32, -4i64)
-//# run fn104() == -93i32
-//# run fn109(4i32) == 1025i32
-//# run fn109(0i32) == -1i32
+//# run hundred_over(5i32) == 20i32
+//# run hundred_over(0i32) == -1i32
+//# run raise_negative(3i32) == (1i32, 3i64)
+//# run raise_negative(-4i32) == (0i32, -4i64)
+//# run unwinds() == -93i32
+//# run each_kind(4i32) == 1025i32
+//# run each_kind(0i32) == -1i32

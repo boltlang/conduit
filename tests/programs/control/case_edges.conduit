@@ -9,8 +9,8 @@ data Shape {
 }
 
 // Dense, from -2: Wasm subtracts the smallest tag before `br_table`.
-fn dense(%0: i32) -> (i32) {
-  case %0 {
+fn dense(%x: i32) -> (i32) {
+  case %x {
     -2 => jump ret(20i32)
     -1 => jump ret(21i32)
     0 => jump ret(22i32)

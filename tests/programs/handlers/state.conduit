@@ -1,137 +1,137 @@
 // State in a ref, with tail-resumptive clauses, which Wasm compiles as
 // plain calls.
-effect effect20 {
+effect State {
   () -> (i32)
   (i32) -> ()
 }
 
-effect effect21 {
+effect Tick {
   () -> ()
 }
 
 // State: get and set the ref.
-handler handler30 for effect20 env(ref i32) ops(fn10, fn11) ret fn12
+handler state for State env(ref i32) ops(get, set) ret state_done
 
 // Tick: add one to the state, with the State handler outside it.
-handler handler31 for effect21 does effect20 env() ops(fn13) ret fn14
+handler ticker for Tick does State env() ops(tick) ret ticker_done
 
 // State, seen one higher than the State outside it.
-handler handler32 for effect20 does effect20 env() ops(fn15, fn16) ret fn17
+handler one_higher for State does State env() ops(get_higher, set_higher) ret higher_done
 
-fn fn10(%0: ref i32, %1: cont(i32) -> (i32)) -> (i32) {
-  let %2: i32 = ref_get(%0)
-  let %3: i32 = resume(%1, %2)
-  jump ret(%3)
+fn get(%cell: ref i32, %k: cont(i32) -> (i32)) -> (i32) {
+  let %x: i32 = ref_get(%cell)
+  let %r: i32 = resume(%k, %x)
+  jump ret(%r)
 }
 
-fn fn11(%0: ref i32, %1: i32, %2: cont() -> (i32)) -> (i32) {
-  let = ref_set(%0, %1)
-  let %3: i32 = resume(%2)
-  jump ret(%3)
+fn set(%cell: ref i32, %x: i32, %k: cont() -> (i32)) -> (i32) {
+  let = ref_set(%cell, %x)
+  let %r: i32 = resume(%k)
+  jump ret(%r)
 }
 
-fn fn12(%0: ref i32, %1: i32) -> (i32) {
-  jump ret(%1)
+fn state_done(%cell: ref i32, %r: i32) -> (i32) {
+  jump ret(%r)
 }
 
 // A `perform` in a clause goes to the handlers outside it.
-fn fn13(%0: cont() -> (i32) does effect20) -> (i32) does effect20 {
-  let %1: i32 = perform effect20.0()
-  let %2: i32 = add(%1, 1i32)
-  let = perform effect20.1(%2)
-  let %3: i32 = resume(%0)
-  jump ret(%3)
+fn tick(%k: cont() -> (i32) does State) -> (i32) does State {
+  let %x: i32 = perform State.0()
+  let %x1: i32 = add(%x, 1i32)
+  let = perform State.1(%x1)
+  let %r: i32 = resume(%k)
+  jump ret(%r)
 }
 
-fn fn14(%0: i32) -> (i32) {
-  jump ret(%0)
+fn ticker_done(%r: i32) -> (i32) {
+  jump ret(%r)
 }
 
 // Even a `perform` of the clause's own effect.
-fn fn15(%0: cont(i32) -> (i32) does effect20) -> (i32) does effect20 {
-  let %1: i32 = perform effect20.0()
-  let %2: i32 = add(%1, 1i32)
-  let %3: i32 = resume(%0, %2)
-  jump ret(%3)
+fn get_higher(%k: cont(i32) -> (i32) does State) -> (i32) does State {
+  let %x: i32 = perform State.0()
+  let %x1: i32 = add(%x, 1i32)
+  let %r: i32 = resume(%k, %x1)
+  jump ret(%r)
 }
 
-fn fn16(%0: i32, %1: cont() -> (i32) does effect20) -> (i32) does effect20 {
-  let %2: i32 = sub(%0, 1i32)
-  let = perform effect20.1(%2)
-  let %3: i32 = resume(%1)
-  jump ret(%3)
+fn set_higher(%x: i32, %k: cont() -> (i32) does State) -> (i32) does State {
+  let %x1: i32 = sub(%x, 1i32)
+  let = perform State.1(%x1)
+  let %r: i32 = resume(%k)
+  jump ret(%r)
 }
 
-fn fn17(%0: i32) -> (i32) {
-  jump ret(%0)
+fn higher_done(%r: i32) -> (i32) {
+  jump ret(%r)
 }
 
-// Ticks twice under a State that starts at %0, and gives the state.
-fn fn0(%0: i32) -> (i32) {
-  let %1: ref i32 = ref_new(%0)
-  let %2: imm fn() -> (i32) does effect20 = closure fn2()
-  let %3: i32 = handle handler30(%1, %2)
-  jump ret(%3)
+// Ticks twice under a State that starts at %start, and gives the state.
+fn tick_twice(%start: i32) -> (i32) {
+  let %cell: ref i32 = ref_new(%start)
+  let %body: imm fn() -> (i32) does State = closure under_ticker()
+  let %r: i32 = handle state(%cell, %body)
+  jump ret(%r)
 }
 
-fn fn1() -> (i32) does effect20 + effect21 {
-  let = perform effect21.0()
-  let = perform effect21.0()
-  let %0: i32 = perform effect20.0()
-  jump ret(%0)
+fn ticks() -> (i32) does State + Tick {
+  let = perform Tick.0()
+  let = perform Tick.0()
+  let %x: i32 = perform State.0()
+  jump ret(%x)
 }
 
-fn fn2() -> (i32) does effect20 {
-  let %0: imm fn() -> (i32) does effect20 + effect21 = closure fn1()
-  let %1: i32 = handle handler31(%0)
-  jump ret(%1)
+fn under_ticker() -> (i32) does State {
+  let %body: imm fn() -> (i32) does State + Tick = closure ticks()
+  let %r: i32 = handle ticker(%body)
+  jump ret(%r)
 }
 
 // An inner State hides the outer one: 7 inside, 100 outside, so 7100.
-fn fn3() -> (i32) {
-  let %0: ref i32 = ref_new(100i32)
-  let %1: imm fn() -> (i32) does effect20 = closure fn4()
-  let %2: i32 = handle handler30(%0, %1)
-  jump ret(%2)
+fn nested_states() -> (i32) {
+  let %cell: ref i32 = ref_new(100i32)
+  let %body: imm fn() -> (i32) does State = closure inner_state()
+  let %r: i32 = handle state(%cell, %body)
+  jump ret(%r)
 }
 
-fn fn4() -> (i32) does effect20 {
-  let %0: ref i32 = ref_new(0i32)
-  let %1: imm fn() -> (i32) does effect20 = closure fn5()
-  let %2: i32 = handle handler30(%0, %1)
-  let %3: i32 = perform effect20.0()
-  let %4: i32 = mul(%2, 1000i32)
-  let %5: i32 = add(%4, %3)
-  jump ret(%5)
+fn inner_state() -> (i32) does State {
+  let %cell: ref i32 = ref_new(0i32)
+  let %body: imm fn() -> (i32) does State = closure set7()
+  let %inner: i32 = handle state(%cell, %body)
+  let %outer: i32 = perform State.0()
+  let %inner1000: i32 = mul(%inner, 1000i32)
+  let %r: i32 = add(%inner1000, %outer)
+  jump ret(%r)
 }
 
-fn fn5() -> (i32) does effect20 {
-  let = perform effect20.1(7i32)
-  let %0: i32 = perform effect20.0()
-  jump ret(%0)
+fn set7() -> (i32) does State {
+  let = perform State.1(7i32)
+  let %x: i32 = perform State.0()
+  jump ret(%x)
 }
 
-// handler32 over a State at %0: reads %0 + 1, and setting 5 stores 4.
-fn fn6(%0: i32) -> (i32, i32) {
-  let %1: ref i32 = ref_new(%0)
-  let %2: imm fn() -> (i32) does effect20 = closure fn7()
-  let %3: i32 = handle handler30(%1, %2)
-  let %4: i32 = ref_get(%1)
-  jump ret(%3, %4)
+// one_higher over a State at %start: reads %start + 1, and setting 5 stores 4.
+fn through_higher(%start: i32) -> (i32, i32) {
+  let %cell: ref i32 = ref_new(%start)
+  let %body: imm fn() -> (i32) does State = closure under_higher()
+  let %r: i32 = handle state(%cell, %body)
+  let %stored: i32 = ref_get(%cell)
+  jump ret(%r, %stored)
 }
 
-fn fn7() -> (i32) does effect20 {
-  let %0: imm fn() -> (i32) does effect20 = closure fn8()
-  let %1: i32 = handle handler32(%0)
-  jump ret(%1)
+fn under_higher() -> (i32) does State {
+  let %body: imm fn() -> (i32) does State = closure get_set5()
+  let %r: i32 = handle one_higher(%body)
+  jump ret(%r)
 }
 
-fn fn8() -> (i32) does effect20 {
-  let %0: i32 = perform effect20.0()
-  let = perform effect20.1(5i32)
-  jump ret(%0)
+fn get_set5() -> (i32) does State {
+  let %x: i32 = perform State.0()
+  let = perform State.1(5i32)
+  jump ret(%x)
 }
 
-//# run fn0(40i32) == 42i32
-//# run fn3() == 7100i32
-//# run fn6(10i32) == (11i32, 4i32)
+//# run tick_twice(40i32) == 42i32
+//# run nested_states() == 7100i32
+//# run through_higher(10i32) == (11i32, 4i32)

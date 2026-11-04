@@ -14,59 +14,59 @@
   (type (;10;) (func (param (ref null 0))))
   (type (;11;) (func))
   (global (;0;) (mut (ref null 4)) ref.null 4)
-  (export "fn0" (func 0))
-  (export "fn1" (func 1))
-  (export "fn2" (func 2))
-  (export "fn3" (func 3))
+  (export "fn0" (func $main))
+  (export "fn1" (func $add_yield))
+  (export "fn2" (func $done))
+  (export "fn3" (func $produce))
   (elem (;0;) declare func 4 5)
-  (func (;0;) (type 8) (result i32)
-    (local (ref null 0) (ref null 1) i32 (ref null 4))
+  (func $main (;0;) (type 8) (result i32)
+    (local $acc (ref null 0)) (local $body (ref null 1)) (local $total i32) (local (ref null 4))
     i32.const 0
     struct.new 0
-    local.set 0
+    local.set $acc
     ref.func 5
     struct.new 3
-    local.set 1
+    local.set $body
     global.get 0
     local.set 3
     i32.const 0
     local.get 3
     ref.func 4
-    local.get 0
+    local.get $acc
     struct.new 7
     global.set 0
-    local.get 1
-    local.get 1
+    local.get $body
+    local.get $body
     struct.get 1 0
     call_ref 2
     local.get 3
     global.set 0
-    local.get 0
-    call 2
-    local.get 0
+    local.get $acc
+    call $done
+    local.get $acc
     struct.get 0 0
-    local.set 2
-    local.get 2
+    local.set $total
+    local.get $total
     return
   )
-  (func (;1;) (type 9) (param (ref null 0) i32)
-    (local i32 i32 i32)
-    local.get 0
+  (func $add_yield (;1;) (type 9) (param $acc (ref null 0)) (param $x i32)
+    (local $k i32) (local $old i32) (local $new i32)
+    local.get $acc
     struct.get 0 0
-    local.set 3
-    local.get 3
-    local.get 1
+    local.set $old
+    local.get $old
+    local.get $x
     i32.add
-    local.set 4
-    local.get 0
-    local.get 4
+    local.set $new
+    local.get $acc
+    local.get $new
     struct.set 0 0
     return
   )
-  (func (;2;) (type 10) (param (ref null 0))
+  (func $done (;2;) (type 10) (param $acc (ref null 0))
     return
   )
-  (func (;3;) (type 11)
+  (func $produce (;3;) (type 11)
     (local (ref null 4) (ref null 4) (ref null 5) (ref null 4) (ref null 4) (ref null 5) (ref null 4) (ref null 4) (ref null 5))
     global.get 0
     local.tee 0
@@ -162,13 +162,13 @@
     local.get 2
     struct.get 7 3
     local.get 1
-    return_call 1
+    return_call $add_yield
   )
   (func (;5;) (type 2) (param (ref null 1))
     (local (ref null 3))
     local.get 0
     ref.cast (ref null 3)
     local.set 1
-    return_call 3
+    return_call $produce
   )
 )

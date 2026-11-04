@@ -1,33 +1,33 @@
 // A clause that does something after resuming needs its continuation
 // captured, which the Wasm backend can't do yet.
-effect effect20 {
+effect Ask {
   () -> (i32)
 }
 
-handler handler30 for effect20 env() ops(fn1) ret fn2
+handler doubler for Ask env() ops(ask) ret done
 
 // Resumes with 1, then doubles what the body gave.
-fn fn1(%0: cont(i32) -> (i32)) -> (i32) {
-  let %1: i32 = resume(%0, 1i32)
-  let %2: i32 = mul(%1, 2i32)
-  jump ret(%2)
+fn ask(%k: cont(i32) -> (i32)) -> (i32) {
+  let %x: i32 = resume(%k, 1i32)
+  let %r: i32 = mul(%x, 2i32)
+  jump ret(%r)
 }
 
-fn fn2(%0: i32) -> (i32) {
-  jump ret(%0)
+fn done(%r: i32) -> (i32) {
+  jump ret(%r)
 }
 
-fn fn3() -> (i32) does effect20 {
-  let %0: i32 = perform effect20.0()
-  let %1: i32 = add(%0, 10i32)
-  jump ret(%1)
+fn ask_plus_10() -> (i32) does Ask {
+  let %x: i32 = perform Ask.0()
+  let %r: i32 = add(%x, 10i32)
+  jump ret(%r)
 }
 
-fn fn0() -> (i32) {
-  let %0: imm fn() -> (i32) does effect20 = closure fn3()
-  let %1: i32 = handle handler30(%0)
-  jump ret(%1)
+fn main() -> (i32) {
+  let %body: imm fn() -> (i32) does Ask = closure ask_plus_10()
+  let %r: i32 = handle doubler(%body)
+  jump ret(%r)
 }
 
-//# run fn0() == 22i32
+//# run main() == 22i32
 //# wasm-error: isn't tail-resumptive
