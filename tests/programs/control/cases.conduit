@@ -1,8 +1,8 @@
 // A dense case on an i32 dispatches with `br_table` in Wasm, a sparse one
 // compares each tag, and so does a case on an i64.
 
-fn fn0(%0: i32) -> (i32) {
-  case %0 {
+fn dense(%x: i32) -> (i32) {
+  case %x {
     0 => jump ret(10i32)
     1 => jump ret(11i32)
     2 => jump ret(12i32)
@@ -12,8 +12,8 @@ fn fn0(%0: i32) -> (i32) {
   }
 }
 
-fn fn1(%0: i32) -> (i32) {
-  case %0 {
+fn sparse(%x: i32) -> (i32) {
+  case %x {
     -1000 => jump ret(1i32)
     7 => jump ret(2i32)
     1048576 => jump ret(3i32)
@@ -21,24 +21,24 @@ fn fn1(%0: i32) -> (i32) {
   }
 }
 
-fn fn2(%0: i64) -> (i64) {
-  case %0 {
+fn wide(%x: i64) -> (i64) {
+  case %x {
     1099511627776 => jump ret(1i64)
     _ => jump ret(2i64)
   }
 }
 
-//# run fn0(-1i32) == 99i32
-//# run fn0(0i32) == 10i32
-//# run fn0(3i32) == 13i32
-//# run fn0(4i32) == 99i32
-//# run fn0(5i32) == 15i32
-//# run fn0(6i32) == 99i32
-//# run fn0(-2147483648i32) == 99i32
-//# run fn1(-1000i32) == 1i32
-//# run fn1(7i32) == 2i32
-//# run fn1(1048576i32) == 3i32
-//# run fn1(8i32) == 0i32
-//# run fn2(1099511627776i64) == 1i64
-//# run fn2(1i64) == 2i64
+//# run dense(-1i32) == 99i32
+//# run dense(0i32) == 10i32
+//# run dense(3i32) == 13i32
+//# run dense(4i32) == 99i32
+//# run dense(5i32) == 15i32
+//# run dense(6i32) == 99i32
+//# run dense(-2147483648i32) == 99i32
+//# run sparse(-1000i32) == 1i32
+//# run sparse(7i32) == 2i32
+//# run sparse(1048576i32) == 3i32
+//# run sparse(8i32) == 0i32
+//# run wide(1099511627776i64) == 1i64
+//# run wide(1i64) == 2i64
 //# wat

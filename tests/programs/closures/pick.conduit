@@ -2,33 +2,33 @@
 // through the same join point.
 
 // adder(n, x) = x + n
-fn fn0(%0: i32, %1: i32) -> (i32) {
-  let %2: i32 = add(%1, %0)
-  jump ret(%2)
+fn adder(%n: i32, %x: i32) -> (i32) {
+  let %sum: i32 = add(%x, %n)
+  jump ret(%sum)
 }
 
 // multiplier(n, x) = x * n
-fn fn1(%0: i32, %1: i32) -> (i32) {
-  let %2: i32 = mul(%1, %0)
-  jump ret(%2)
+fn multiplier(%n: i32, %x: i32) -> (i32) {
+  let %product: i32 = mul(%x, %n)
+  jump ret(%product)
 }
 
 // pick(b, n, x) = (if b { adder(n) } else { multiplier(n) })(x) + 1
-fn fn2(%0: i32, %1: i32, %2: i32) -> (i32) {
-  join j1(%3: imm fn(i32) -> (i32)) =
-    let %4: i32 = apply(%3, %2)
-    let %5: i32 = add(%4, 1i32)
-    jump ret(%5)
+fn pick(%b: i32, %n: i32, %x: i32) -> (i32) {
+  join apply(%f: imm fn(i32) -> (i32)) =
+    let %r: i32 = apply(%f, %x)
+    let %r1: i32 = add(%r, 1i32)
+    jump ret(%r1)
   in
-  case %0 {
+  case %b {
     1 =>
-      let %6: imm fn(i32) -> (i32) = closure fn0(%1)
-      jump j1(%6)
+      let %add_n: imm fn(i32) -> (i32) = closure adder(%n)
+      jump apply(%add_n)
     _ =>
-      let %7: imm fn(i32) -> (i32) = closure fn1(%1)
-      jump j1(%7)
+      let %times_n: imm fn(i32) -> (i32) = closure multiplier(%n)
+      jump apply(%times_n)
   }
 }
 
-//# run fn2(1i32, 3i32, 4i32) == 8i32
-//# run fn2(0i32, 3i32, 4i32) == 13i32
+//# run pick(1i32, 3i32, 4i32) == 8i32
+//# run pick(0i32, 3i32, 4i32) == 13i32

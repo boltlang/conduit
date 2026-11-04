@@ -1,16 +1,16 @@
 // `let r = call f(..); jump ret(r)` is a tail call, so deep recursion
 // doesn't grow the stack. In Wasm it's a `return_call`.
 
-fn fn0(%0: i32, %1: i32) -> (i32) {
-  case %0 {
-    0 => jump ret(%1)
+fn count(%n: i32, %acc: i32) -> (i32) {
+  case %n {
+    0 => jump ret(%acc)
     _ =>
-      let %2: i32 = sub(%0, 1i32)
-      let %3: i32 = add(%1, 2i32)
-      let %4: i32 = call fn0(%2, %3)
-      jump ret(%4)
+      let %n1: i32 = sub(%n, 1i32)
+      let %acc1: i32 = add(%acc, 2i32)
+      let %r: i32 = call count(%n1, %acc1)
+      jump ret(%r)
   }
 }
 
-//# run fn0(1000000i32, 0i32) == 2000000i32
+//# run count(1000000i32, 0i32) == 2000000i32
 //# wat

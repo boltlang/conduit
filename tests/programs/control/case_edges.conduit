@@ -2,14 +2,14 @@
 // an arm for every constructor and no default, a case with only a default,
 // and `unreachable`.
 
-data data0 {
+data Shape {
   ()
   (i32)
   (i32, i32)
 }
 
 // Dense, from -2: Wasm subtracts the smallest tag before `br_table`.
-fn fn0(%0: i32) -> (i32) {
+fn dense(%0: i32) -> (i32) {
   case %0 {
     -2 => jump ret(20i32)
     -1 => jump ret(21i32)
@@ -20,69 +20,69 @@ fn fn0(%0: i32) -> (i32) {
 }
 
 // Every constructor and no default, so the last arm needs no check.
-fn fn1(%0: i32) -> (i32) {
-  let %1: imm data0 = new data0.0()
-  let %2: imm data0 = new data0.1(%0)
-  let %3: imm data0 = new data0.2(%0, %0)
-  let %4: i32 = call fn2(%1)
-  let %5: i32 = call fn2(%2)
-  let %6: i32 = call fn2(%3)
-  let %7: i32 = mul(%4, 100i32)
-  let %8: i32 = mul(%5, 10i32)
-  let %9: i32 = add(%7, %8)
-  let %10: i32 = add(%9, %6)
-  jump ret(%10)
+fn shapes(%x: i32) -> (i32) {
+  let %empty: imm Shape = new Shape.0()
+  let %one: imm Shape = new Shape.1(%x)
+  let %two: imm Shape = new Shape.2(%x, %x)
+  let %a: i32 = call last_field(%empty)
+  let %b: i32 = call last_field(%one)
+  let %c: i32 = call last_field(%two)
+  let %a100: i32 = mul(%a, 100i32)
+  let %b10: i32 = mul(%b, 10i32)
+  let %ab: i32 = add(%a100, %b10)
+  let %abc: i32 = add(%ab, %c)
+  jump ret(%abc)
 }
 
-fn fn2(%0: imm data0) -> (i32) {
-  case %0 {
-    data0.2 =>
-      let %1: i32 = get data0.2.1(%0)
-      jump ret(%1)
-    data0.0 => jump ret(1i32)
-    data0.1 =>
-      let %2: i32 = get data0.1.0(%0)
-      jump ret(%2)
+fn last_field(%s: imm Shape) -> (i32) {
+  case %s {
+    Shape.2 =>
+      let %y: i32 = get Shape.2.1(%s)
+      jump ret(%y)
+    Shape.0 => jump ret(1i32)
+    Shape.1 =>
+      let %x: i32 = get Shape.1.0(%s)
+      jump ret(%x)
   }
 }
 
 // Only a default.
-fn fn3(%0: i64) -> (i64) {
-  case %0 {
-    _ => jump ret(%0)
+fn only_default(%x: i64) -> (i64) {
+  case %x {
+    _ => jump ret(%x)
   }
 }
 
 // An arm for 0, and `unreachable` otherwise.
-fn fn4(%0: i32) -> (i32) {
-  case %0 {
+fn only_zero(%x: i32) -> (i32) {
+  case %x {
     0 => jump ret(1i32)
     _ => unreachable
   }
 }
 
 // A case on data with one constructor and no default.
-fn fn5(%0: i32) -> (i32) {
-  let %1: imm data1 = new data1.0(%0)
-  case %1 {
-    data1.0 =>
-      let %2: i32 = get data1.0.0(%1)
-      jump ret(%2)
+fn boxed(%x: i32) -> (i32) {
+  let %box: imm Box = new Box.0(%x)
+  case %box {
+    Box.0 =>
+      let %y: i32 = get Box.0.0(%box)
+      jump ret(%y)
   }
 }
 
-data data1 {
+data Box {
   (i32)
 }
 
-//# run fn0(-3i32) == 99i32
-//# run fn0(-2i32) == 20i32
-//# run fn0(-1i32) == 21i32
-//# run fn0(1i32) == 23i32
-//# run fn0(2i32) == 99i32
-//# run fn0(2147483647i32) == 99i32
-//# run fn1(3i32) == 133i32
-//# run fn3(-5i64) == -5i64
-//# run fn4(0i32) == 1i32
-//# run fn4(1i32) traps
-//# run fn5(8i32) == 8i32
+//# run dense(-3i32) == 99i32
+//# run dense(-2i32) == 20i32
+//# run dense(-1i32) == 21i32
+//# run dense(1i32) == 23i32
+//# run dense(2i32) == 99i32
+//# run dense(2147483647i32) == 99i32
+//# run shapes(3i32) == 133i32
+//# run only_default(-5i64) == -5i64
+//# run only_zero(0i32) == 1i32
+//# run only_zero(1i32) traps
+//# run boxed(8i32) == 8i32

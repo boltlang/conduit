@@ -1,20 +1,20 @@
 // `fac` from docs/ir.md: a join point shared by two arms, and a call
 // that isn't a tail call.
 
-fn fn0(%0: i32) -> (i32) {
-  join j1() = jump ret(1i32)
+fn fac(%n: i32) -> (i32) {
+  join one() = jump ret(1i32)
   in
-  case %0 {
-    0 => jump j1()
-    1 => jump j1()
+  case %n {
+    0 => jump one()
+    1 => jump one()
     _ =>
-      let %1: i32 = sub(%0, 1i32)
-      let %2: i32 = call fn0(%1)
-      let %3: i32 = mul(%0, %2)
-      jump ret(%3)
+      let %n1: i32 = sub(%n, 1i32)
+      let %fac_n1: i32 = call fac(%n1)
+      let %r: i32 = mul(%n, %fac_n1)
+      jump ret(%r)
   }
 }
 
-//# run fn0(0i32) == 1i32
-//# run fn0(1i32) == 1i32
-//# run fn0(5i32) == 120i32
+//# run fac(0i32) == 1i32
+//# run fac(1i32) == 1i32
+//# run fac(5i32) == 120i32
