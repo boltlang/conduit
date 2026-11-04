@@ -669,7 +669,7 @@ let %3: imm fn(i32) -> (i32) does effect20 = closure fn2()
 ```
 
 - **A row** is the effects after `does`: a set of effects, at most one
-  **effect parameter** `'e1`, `'e2`, .., or `any`. The order doesn't matter,
+  **effect parameter** `E1`, `E2`, .., or `any`. The order doesn't matter,
   and each effect is in a row at most once. A function or type with no
   `does` has no effects. `any` is for frontends without effect types: it
   can perform anything, which is what every function can do today.
@@ -680,12 +680,12 @@ let %3: imm fn(i32) -> (i32) does effect20 = closure fn2()
   handled.
 - **Effect parameters** work like mutability parameters. Functions, data
   declarations and handlers can have them, after their mutability
-  parameters: `fn fn3['m1, 'e1]`, `data data10['e1]`. Each call, closure,
+  parameters: `fn fn3['m1, E1]`, `data data10[E1]`. Each call, closure,
   data type and `handle` gives one row per parameter:
-  `call fn3[mut, effect20 + 'e2]`, `imm data10[none]`, where `none` is the
+  `call fn3[mut, effect20 + E2]`, `imm data10[none]`, where `none` is the
   empty row. The callee's rows are seen with the arguments in place, and
-  rows that end up naming an effect twice merge, so `effect20 + 'e1` with
-  `'e1` as `effect20` is `effect20`.
+  rows that end up naming an effect twice merge, so `effect20 + E1` with
+  `E1` as `effect20` is `effect20`.
 - **A handler declares a row,** the effects its clauses can perform, and
   `handle` takes its effect out of the body's row: the body can perform
   `E` and what the handler's row allows, and the `handle` performs only the
@@ -699,9 +699,9 @@ effect effect20 {                               // Yield
   (i32) -> ()
 }
 
-handler handler30['e1] for effect20 does 'e1 env(ref i32) ops(fn1) ret fn2
+handler handler30[E1] for effect20 does E1 env(ref i32) ops(fn1) ret fn2
 
-fn fn1['e1](%0: ref i32, %1: i32, %2: cont() -> () does 'e1) -> () does 'e1 {
+fn fn1[E1](%0: ref i32, %1: i32, %2: cont() -> () does E1) -> () does E1 {
   let %3: i32 = ref_get(%0)
   let %4: i32 = add(%3, %1)
   let = ref_set(%0, %4)
@@ -709,12 +709,12 @@ fn fn1['e1](%0: ref i32, %1: i32, %2: cont() -> () does 'e1) -> () does 'e1 {
   jump ret()
 }
 
-fn fn2['e1](%0: ref i32) -> () does 'e1 { jump ret() }
+fn fn2[E1](%0: ref i32) -> () does E1 { jump ret() }
 
 // Sums what `%0` yields, and performs what else it does.
-fn fn3['e1](%0: ro fn() -> () does effect20 + 'e1) -> (i32) does 'e1 {
+fn fn3[E1](%0: ro fn() -> () does effect20 + E1) -> (i32) does E1 {
   let %1: ref i32 = ref_new(0i32)
-  let = handle handler30['e1](%1, %0)
+  let = handle handler30[E1](%1, %0)
   let %2: i32 = ref_get(%1)
   jump ret(%2)
 }
@@ -761,10 +761,12 @@ The text format adds:
   `fn() -> (imm fn() -> () does effect20)` the `does` is the inner
   closure's, and `fn() -> (imm fn() -> ()) does effect20` gives it to the
   outer one. Bolt's syntax can't tell these apart yet.
-- Rows written `effect20 + 'e1`, `none` and `any`.
-- Effect parameters, named `'e1`, `'e2`, .. by position. A parameter whose
-  name starts with `'e` is an effect parameter, and any other one a
-  mutability parameter.
+- Rows written `effect20 + E1`, `none` and `any`.
+- Effect parameters, without a quote and starting with an uppercase
+  letter, as Bolt writes `E`: any such name parses, and they print as
+  `E1`, `E2`, .. by position. Mutability parameters keep the quote, so
+  `['m1, E1]` has one of each. Nothing else in the text format starts with
+  an uppercase letter, so the names can't clash with IDs or keywords.
 
 Still to decide:
 

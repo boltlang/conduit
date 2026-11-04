@@ -223,7 +223,7 @@ in `any`.
 
 **Rows.** A row has each effect at most once and at most one effect
 parameter. Its effects must exist, and its parameter must be in scope:
-`'e1` to `'en` for a function, data declaration or handler with `n` effect
+`E1` to `En` for a function, data declaration or handler with `n` effect
 parameters.
 
 **What an op performs.** Each op has a row:
