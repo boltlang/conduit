@@ -396,11 +396,11 @@ let %2: imm [i32] = call fn1[imm](3i32)  // made imm
   subtyping: a `'m1` value never fits where `Imm` is expected, whatever is
   assumed.
 
-These are Bolt's rules, where a generic function keeps its `'m`
-parameters and `where` clauses, and an instance is specialized on types
-but not on mutabilities. At run time nothing changes: mutability doesn't
-exist in a backend, so one function is compiled once for every mutability
-it's called with. Only the evaluator, whose objects know their mutability,
+A frontend that monomorphizes can keep a generic function's `'m`
+parameters and `where` clauses, specializing an instance on types but not
+on mutabilities. At run time nothing changes: mutability doesn't exist in
+a backend, so one function is compiled once for every mutability it's
+called with. Only the evaluator, whose objects know their mutability,
 carries the arguments of each call.
 
 ### Copying between mutabilities
@@ -663,9 +663,8 @@ These are checked by looking at a clause's body:
 is only found at run time, and nothing says which functions can perform,
 so a pass has to assume that every call and `apply` can.
 
-Effect types say which effects a function can perform, in the syntax
-[Bolt settled on](https://github.com/boltlang/Bolt/blob/main/site/docs/internals/effects.mdx):
-the effects come after the results, after `does`, joined with `+`.
+Effect types say which effects a function can perform: the effects come
+after the results, after `does`, joined with `+`.
 
 ```
 fn fn1(%0: i32) -> (i32) does Effect20 + Effect21 { .. }
@@ -724,11 +723,10 @@ fn fn3[E1](%0: ro fn() -> () does Effect20 + E1) -> (i32) does E1 {
 }
 ```
 
-A Bolt function like `fn map[A, B, E](xs: [A], f: fn(A) -> B does E) -> [B] does E`
-is monomorphized on `A` and `B` but keeps `E`, as it keeps mutability
-parameters, so there's one `map` for every callback. An effect with type
-parameters, like `State[i32]`, becomes one effect per instance, as a
-generic data type does.
+A frontend that monomorphizes types can keep effect parameters, as it
+keeps mutability parameters, so that one instance of a function like
+`map` serves callbacks with any effects. An effect with type parameters
+becomes one effect per instance, as a generic data type does.
 
 The verifier's rules are under "Effect types" in [verify.md](verify.md).
 In short, every op's row must be in the function's, rows are compared by
@@ -744,8 +742,8 @@ What effect types give Conduit:
   handler vector, and an `apply` of a closure with no effects is a plain
   call. An effect-polymorphic function can be compiled once, passing
   evidence for its parameter, or once per row it's called with.
-- **Knowing what suspends.** A function whose row has no suspending effect,
-  like Bolt's `Async`, never needs its stack captured.
+- **Knowing what suspends.** A function whose row has no suspending
+  effect, like one for async code, never needs its stack captured.
 - **No unhandled effects.** A function with no effects can't reach a
   `perform` without a handler, so the run-time error is left only for
   `Any` and for entry points that have effects.
@@ -764,12 +762,11 @@ The text format adds:
   Results are always in parentheses, so in
   `fn() -> (imm fn() -> () does Effect20)` the `does` is the inner
   closure's, and `fn() -> (imm fn() -> ()) does Effect20` gives it to the
-  outer one. Bolt's syntax can't tell these apart yet.
+  outer one.
 - Rows written `Effect20 + E1`, `Nothing` and `Any`.
-- Effects named with a capital, `Effect20`, as Bolt names them, in place
-  of `effect20`.
+- Effects named with a capital, `Effect20`, in place of `effect20`.
 - Effect parameters, without a quote and starting with an uppercase
-  letter, as Bolt writes `E`: any such name parses but `Nothing`, `Any`
+  letter: any such name parses but `Nothing`, `Any`
   and `Effect` followed by digits, and they print as `E1`, `E2`, .. by
   position. Mutability parameters keep the quote, so `['m1, E1]` has one
   of each. Nothing else in the text format starts with an uppercase
@@ -777,11 +774,11 @@ The text format adds:
 
 Still to decide:
 
-- Effects whose parameters are rows, like Bolt's
-  `effect Spawn[E] { fn spawn[T](task: fn() -> T does E) -> Task[T]; }`.
-- Operations with type parameters of their own, like Bolt's
-  `fn raise[T](error: E) -> T`: erase `T` to `Any`, or make one operation
-  per instance.
+- Effects whose parameters are rows, like one whose operation starts a
+  task that performs some row of effects.
+- Operations with type parameters of their own, like a `raise` that can
+  give any type: erase the type to `Any`, or make one operation per
+  instance.
 - Externs that suspend, through JSPI, which would need extern rows.
 - Whether handler clauses can also have mutability parameters, now that
   `handle` gives arguments.
@@ -890,8 +887,8 @@ Because the IR is so small, the classic simplifications are local rewrites:
     object `x` of the same type, `new C(get C.0(x), .., get C.n(x))`, is
     `x`. Nothing compares objects by identity, so an `Imm` object can't be
     told apart from another with the same fields. This is what a
-    frontend's copy to `Imm`, like Bolt's `to_imm`, comes down to on a
-    value that's `Imm` already, once it's inlined.
+    frontend's copy to `Imm` comes down to on a value that's `Imm`
+    already, once it's inlined.
   - **Freeze in place.** If nothing else can reach the original array and
     it isn't used afterwards, an `ArrayClone` to `Imm` becomes an `ArrayFreeze`.
     The pass shows this with a region analysis: variables that may reach
@@ -1069,7 +1066,7 @@ fn fn1(%0: i32) -> (i32) {
   `imm [i32]`, `ro fn(i32) -> ()`, `cont() -> ()`, `ref i32`, `imm any`.
   Mutabilities are `imm`, `mut`, `ro` and `inherit`. A data type gives its
   mutability arguments in brackets, `mut data10[imm, mut]`, and a
-  declaration names its parameters the same way, as Bolt does:
+  declaration names its parameters the same way:
   `data data10['m1, 'm2] { ('m1 [i32]) }`. A function declares them the
   same way, with its assumptions after its results:
   `fn fn1['m1, 'm2](%0: 'm2 [i32]) -> ('m1 data10['m2]) where 'm2: 'm1 {`.

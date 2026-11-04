@@ -261,7 +261,7 @@ clauses can perform.
 - `handle H[args](env.., body)` needs the body's row to be in `E + R`.
 
 So `handle` takes `E` out of what the body performs, and puts back what
-the clauses perform, which is what Bolt's type checker does with a handler.
+the clauses perform.
 
 **Externs** have no effects: a host function can't perform a Conduit
 effect.
