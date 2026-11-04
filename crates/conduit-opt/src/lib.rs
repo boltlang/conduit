@@ -11,6 +11,7 @@
 //! [`optimize_func`] runs [`PASSES`] until none of them changes anything,
 //! and [`optimize_module`] does that for every function of a module.
 
+pub mod closures;
 pub mod copies;
 pub mod dce;
 pub mod inline;
@@ -29,15 +30,17 @@ pub trait Pass {
     fn run(&self, p: &dyn Program, id: FuncId, f: &mut Func) -> bool;
 }
 
-/// The passes [`optimize_func`] runs, in order. Inlining goes first, since
-/// the others only see one function, and a callee's body in its caller
-/// shows them more. Promoting refs comes next, since a ref holding an
+/// The passes [`optimize_func`] runs, in order. Known closures go first,
+/// since the calls they make can then be inlined in the same round.
+/// Inlining is next, since the others only see one function, and a
+/// callee's body in its caller shows them more. Promoting refs comes next, since a ref holding an
 /// array ties it to the ref's region, which keeps `copies` from freezing
 /// it, and since it turns what refs hold into values that `simplify` can
 /// see. `simplify` leaves code behind for dead code to remove. Dead code
 /// goes before `copies`, since a dead use of a value can keep it from
 /// freezing.
 pub const PASSES: &[&dyn Pass] = &[
+    &closures::KnownClosures,
     &inline::Inline,
     &promote::Promote,
     &simplify::Simplify,

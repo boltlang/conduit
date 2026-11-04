@@ -12,8 +12,10 @@
 //! - **Fields of a known object.** A `get` of an `Imm` object made by
 //!   `new` in this function is the `new`'s argument. A `Mut` object's
 //!   field may have been set in between.
-//! - **Known closures.** An `apply` of a closure made by `closure f(..)` in
-//!   this function is `call f(captures.., args..)`.
+//!
+//! These go together since each gives the others more to do: a folded
+//! comparison picks a `case` arm, whose ops may then fold, and a field
+//! read may give a literal.
 //!
 //! It works forward in one pass: variables are SSA, so a variable's binding
 //! is seen before its uses. A `let` that's simplified away leaves its
@@ -47,7 +49,7 @@ pub fn simplify(f: &mut Func) -> bool {
     let mut cx = Cx {
         vars: &f.vars,
         subst: HashMap::new(),
-        known: HashMap::new(),
+        news: HashMap::new(),
         changed: false,
     };
     let body = cx.block(body);
@@ -56,17 +58,12 @@ pub fn simplify(f: &mut Func) -> bool {
     changed
 }
 
-/// What a variable is bound to.
-enum Known {
-    New(CtorId, Vec<Atom>),
-    Closure(FuncId, Vec<Mutability>, Vec<Atom>),
-}
-
 struct Cx<'f> {
     vars: &'f [Ty],
     /// Variables whose `let` was simplified away, and what they are.
     subst: HashMap<Var, Atom>,
-    known: HashMap<Var, Known>,
+    /// The objects made by `new`: their constructor and fields.
+    news: HashMap<Var, (CtorId, Vec<Atom>)>,
     changed: bool,
 }
 
@@ -107,23 +104,8 @@ impl Cx<'_> {
             self.changed = true;
             return;
         }
-        if l.op == Op::Apply
-            && let Some(Atom::Var(c)) = l.args.first()
-            && let Some(Known::Closure(g, margs, captures)) = self.known.get(c)
-        {
-            l.op = Op::Call(*g, margs.clone());
-            l.args.splice(..1, captures.iter().cloned());
-            self.changed = true;
-        }
-        match (&l.op, &l.binds[..]) {
-            (Op::New(c), [v]) => {
-                self.known.insert(*v, Known::New(*c, l.args.clone()));
-            }
-            (Op::Closure(g, margs), [v]) => {
-                self.known
-                    .insert(*v, Known::Closure(*g, margs.clone(), l.args.clone()));
-            }
-            _ => {}
+        if let (Op::New(c), [v]) = (&l.op, &l.binds[..]) {
+            self.news.insert(*v, (*c, l.args.clone()));
         }
         lets.push(l);
     }
@@ -136,7 +118,7 @@ impl Cx<'_> {
                 let Some(Atom::Var(x)) = l.args.first() else {
                     return None;
                 };
-                let Some(Known::New(made, args)) = self.known.get(x) else {
+                let Some((made, args)) = self.news.get(x) else {
                     return None;
                 };
                 let imm = matches!(self.vars[x.0 as usize], Ty::Data(_, Mutability::Imm, _));
@@ -214,10 +196,7 @@ impl Cx<'_> {
             Atom::Lit(Lit::I32(n)) => Some(Tag::Int((*n).into())),
             Atom::Lit(Lit::I64(n)) => Some(Tag::Int(*n)),
             Atom::Lit(Lit::F32(_) | Lit::F64(_)) => None,
-            Atom::Var(v) => match self.known.get(v)? {
-                Known::New(c, _) => Some(Tag::Ctor(*c)),
-                Known::Closure(..) => None,
-            },
+            Atom::Var(v) => self.news.get(v).map(|(c, _)| Tag::Ctor(*c)),
         }
     }
 }

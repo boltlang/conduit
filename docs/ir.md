@@ -842,9 +842,9 @@ Because the IR is so small, the classic simplifications are local rewrites:
   `x`, and `mul(x, 0)` is `0`. Floats get no such rules: `x + 0.0` isn't
   `x` when `x` is `-0.0`.
 
-  The `simplify` pass does these two and "Known closures" below, in one
-  forward walk. It runs after `promote`, which turns what refs held into
-  values it can see.
+  The `simplify` pass does these two in one forward walk, since each gives
+  the other more to do. It runs after `promote`, which turns what refs
+  held into values it can see.
 - **Case-of-case.** In A-normal form with join points, this becomes "a jump
   to a known join point with a known argument". Inline (copy) the join
   body at that jump, substituting the arguments, and the case inside it
@@ -854,7 +854,7 @@ Because the IR is so small, the classic simplifications are local rewrites:
   join point that holds the rest of the caller. This is the same shape as
   any other join point.
 
-  The `inline` pass does this, first among the passes. After a tail call,
+  The `inline` pass does this, right after known closures. After a tail call,
   or any call whose results only go on to a jump, the callee's `ret` is
   that jump's target, so no join point is made and the callee's tail calls
   stay tail calls. It inlines callees of at most 20 `let`s and tails, and
@@ -870,7 +870,8 @@ Because the IR is so small, the classic simplifications are local rewrites:
   Because of the parameter order (captures first), this is just putting two
   argument lists together. The result is a plain `Call`, so inlining
   applies to it, and if `c` has no uses left, dead-code elimination removes
-  the allocation.
+  the allocation. The `closures` pass does this, first among the passes,
+  so that inlining sees the calls it makes in the same round.
 - **Dead code.** Drop a `Let` whose results are unused and whose
   `op.effects()` is `Pure` or `Reads`, and drop a `Join` whose labels are
   unused. A read never traps, so an unused one can go.
