@@ -1,11 +1,11 @@
 //! Dead code elimination: drops each `let` whose results are unused and
-//! whose op is [`Effects::Pure`] or [`Effects::Reads`], and each join
-//! definition nothing jumps to. A read that's unused can go since it never
-//! traps, and what it allocates or changes, like `array_freeze`, nothing
+//! whose op [`is_removable`](conduit_ir::Effects::is_removable): it only
+//! reads, and can't trap. It also drops each join definition nothing jumps
+//! to. What an unused op allocates or changes, like `array_freeze`, nothing
 //! else can see.
 //!
 //! Ops that can trap (signed division, float-to-integer conversions, array
-//! accesses, `Unbox`) have effect `Unknown`, so a trap is never removed.
+//! accesses, `Unbox`) say so in their effects, so a trap is never removed.
 //!
 //! It works bottom-up in one pass. Variables are SSA, so whether a variable
 //! is used is known once everything below its `let` has been seen. A join
@@ -13,7 +13,7 @@
 //! uses in dead code never keep anything else alive, and a recursive join
 //! point that only jumps to itself is dropped.
 
-use conduit_ir::{Atom, Block, Effects, Func, FuncId, JoinDef, Label, Program, Tail, Var};
+use conduit_ir::{Atom, Block, Func, FuncId, JoinDef, Label, Program, Tail, Var};
 
 use crate::Pass;
 
@@ -84,7 +84,7 @@ impl Cx {
         };
         let mut lets = Vec::with_capacity(b.lets.len() + after.len());
         for l in b.lets.into_iter().rev() {
-            let droppable = matches!(l.op.effects(), Effects::Pure | Effects::Reads);
+            let droppable = l.op.effects().is_removable();
             if droppable && !l.binds.iter().any(|&v| self.is_used(v)) {
                 self.changed = true;
                 continue;

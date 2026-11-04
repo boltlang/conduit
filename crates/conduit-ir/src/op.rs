@@ -74,34 +74,66 @@ pub enum Op {
     Discontinue(EffectId, u32),
 }
 
-/// What an op may do, from least to most.
+/// What an op may do: to memory, and whether it may stop the program
+/// instead of giving results.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Effects {
+    pub memory: Memory,
+    /// Whether it may trap. An op that may trap can't be removed, nor run
+    /// where it didn't run before. Two of them with the same arguments can
+    /// still be one: if the first didn't trap, the second won't.
+    pub may_trap: bool,
+}
+
+/// What an op may do to memory that existed before it, from least to
+/// most. Making new objects isn't counted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Effects {
-    /// Nothing but compute its results: it can be removed if they're unused.
-    Pure,
-    /// May read memory or allocate, but writes nothing that existed before.
+pub enum Memory {
+    /// Nothing: it only computes its results.
+    None,
+    /// May read.
     Reads,
-    /// May write memory.
+    /// May write.
     Writes,
-    /// May do anything: call code, perform effects, trap.
+    /// May do anything: it runs code, which may also perform effects and
+    /// not come back.
     Unknown,
+}
+
+impl Effects {
+    /// Only computes its results.
+    pub const PURE: Effects = Effects::new(Memory::None, false);
+
+    pub const fn new(memory: Memory, may_trap: bool) -> Effects {
+        Effects { memory, may_trap }
+    }
+
+    /// Whether the op can be removed if its results are unused: it doesn't
+    /// write, and can't trap.
+    pub fn is_removable(&self) -> bool {
+        self.memory <= Memory::Reads && !self.may_trap
+    }
 }
 
 impl Op {
     pub fn effects(&self) -> Effects {
-        match self {
-            Op::Prim(p) if p.may_trap() => Effects::Unknown,
-            Op::Prim(_) | Op::Closure(..) | Op::Box(_) => Effects::Pure,
-            Op::New(_) | Op::ArrayNew | Op::RefNew => Effects::Pure,
-            Op::Get(..) | Op::ArrayLen | Op::ArrayClone | Op::RefGet => Effects::Reads,
+        use Memory::*;
+        let (memory, may_trap) = match self {
+            Op::Prim(p) => (None, p.may_trap()),
+            Op::Closure(..) | Op::Box(_) | Op::New(_) | Op::ArrayNew | Op::RefNew => (None, false),
+            // Its length may be negative or too big.
+            Op::ArrayFill => (None, true),
+            Op::Get(..) | Op::ArrayLen | Op::ArrayClone | Op::RefGet => (Reads, false),
             // It changes objects that nothing else can reach any more.
-            Op::ArrayFreeze => Effects::Reads,
-            Op::Set(..) | Op::RefSet => Effects::Writes,
+            Op::ArrayFreeze => (Reads, false),
             // Bounds checks and failed casts trap.
-            Op::ArrayFill | Op::ArrayGet | Op::ArraySet | Op::Unbox(_) => Effects::Unknown,
-            Op::Call(..) | Op::CallExtern(_) | Op::Apply => Effects::Unknown,
-            Op::Handle(_) | Op::Perform(..) | Op::Resume | Op::Discontinue(..) => Effects::Unknown,
-        }
+            Op::ArrayGet | Op::Unbox(_) => (Reads, true),
+            Op::Set(..) | Op::RefSet => (Writes, false),
+            Op::ArraySet => (Writes, true),
+            Op::Call(..) | Op::CallExtern(_) | Op::Apply => (Unknown, true),
+            Op::Handle(_) | Op::Perform(..) | Op::Resume | Op::Discontinue(..) => (Unknown, true),
+        };
+        Effects::new(memory, may_trap)
     }
 }
 

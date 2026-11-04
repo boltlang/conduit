@@ -126,18 +126,40 @@ fn at_most() {
 
 #[test]
 fn effects() {
-    assert_eq!(Op::Prim(Prim::Add).effects(), Effects::Pure);
+    let e = Effects::new;
+    assert_eq!(Op::Prim(Prim::Add).effects(), Effects::PURE);
     assert_eq!(
         Op::Prim(Prim::Div(Sign::Signed)).effects(),
-        Effects::Unknown
+        e(Memory::None, true)
     );
-    assert_eq!(Op::ArrayClone.effects(), Effects::Reads);
-    assert_eq!(Op::ArrayFreeze.effects(), Effects::Reads);
-    assert_eq!(Op::RefSet.effects(), Effects::Writes);
-    assert_eq!(Op::Call(FuncId(0), vec![]).effects(), Effects::Unknown);
+    assert_eq!(Op::Prim(Prim::Rem(Sign::Signed)).effects(), Effects::PURE);
+    assert_eq!(Op::ArrayClone.effects(), e(Memory::Reads, false));
+    assert_eq!(Op::ArrayFreeze.effects(), e(Memory::Reads, false));
+    assert_eq!(Op::ArrayGet.effects(), e(Memory::Reads, true));
+    assert_eq!(Op::RefSet.effects(), e(Memory::Writes, false));
+    assert_eq!(Op::ArraySet.effects(), e(Memory::Writes, true));
+    assert_eq!(
+        Op::Call(FuncId(0), vec![]).effects(),
+        e(Memory::Unknown, true)
+    );
     assert_eq!(
         Op::Closure(FuncId(0), vec![Mutability::Imm]).effects(),
-        Effects::Pure
+        Effects::PURE
     );
-    assert_eq!(Op::Perform(EffectId(0), 0).effects(), Effects::Unknown);
+    assert_eq!(
+        Op::Perform(EffectId(0), 0).effects(),
+        e(Memory::Unknown, true)
+    );
+    assert!(
+        Op::Get(
+            CtorId {
+                data: DataId(0),
+                index: 0
+            },
+            0
+        )
+        .effects()
+        .is_removable()
+    );
+    assert!(!Op::ArrayGet.effects().is_removable());
 }

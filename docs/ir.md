@@ -104,7 +104,7 @@ pub enum Op {
 }
 
 impl Op {
-    fn effects(&self) -> Effects;          // Pure | Reads | Writes | Unknown
+    fn effects(&self) -> Effects;          // memory: None | Reads | Writes | Unknown, and may_trap
     fn result_types(&self, ..) -> Vec<Ty>;
 }
 ```
@@ -112,11 +112,16 @@ impl Op {
 Adding an operation means adding an `Op` variant and its `effects()`. No
 control-flow pass needs to change.
 
-An op that can trap has effect `Unknown`, so that dead-code elimination
-never removes a trap: signed integer division (the smallest value by -1),
-float to integer conversions (out of range), array accesses (out of
-bounds), `ArrayFill` with a length above `i32::MAX`, and `Unbox` (a failed
-cast).
+An op's effects say two things: what it may do to memory that existed
+before it (nothing, read, write, or anything, for ops that run code), and
+whether it may trap. They're separate since passes ask different things:
+removing an unused op needs it not to write or trap, but two ops with the
+same arguments can be one if nothing writes in between, even if they may
+trap, since the second can't trap if the first didn't. Ops that may trap
+are signed integer division (the smallest value by -1), float to integer
+conversions (out of range), array accesses (out of bounds), `ArrayFill`
+with a length that's negative or too big, `Unbox` (a failed cast), and
+every op that runs code.
 
 Integer division and remainder by zero don't trap: `x / 0` is 0 and
 `x % 0` is `x`, so `(x / y) * y + x % y` is still `x`. A frontend whose
@@ -901,8 +906,8 @@ Because the IR is so small, the classic simplifications are local rewrites:
   the allocation. The `closures` pass does this, first among the passes,
   so that inlining sees the calls it makes in the same round.
 - **Dead code.** Drop a `Let` whose results are unused and whose
-  `op.effects()` is `Pure` or `Reads`, and drop a `Join` whose labels are
-  unused. A read never traps, so an unused one can go.
+  `op.effects()` doesn't write or trap, and drop a `Join` whose labels are
+  unused.
 - **Promote refs** (like LLVM's `mem2reg`). A ref that doesn't escape is
   one whose only uses are as the first argument of `RefGet` and `RefSet`
   in the function that creates it. It isn't captured by `Closure`, passed
@@ -945,10 +950,12 @@ Because the IR is so small, the classic simplifications are local rewrites:
     clone. The analysis follows what each closure captures through
     `Closure`'s arguments, not through the closure's type.
 - **`Imm` closures don't write.** An `Apply` on an `Fn(_, Imm)` whose
-  arguments are all `Imm` all the way down allocates and may perform
-  effects, but writes nothing that existed before. So an analysis can treat
-  it as `Reads`, unless it performs, instead of `Unknown`. Effect types
-  would tell when it can't perform: when the closure's row is empty.
+  arguments are all `Imm` all the way down can only reach `Imm` objects
+  and the ones it makes, so it writes nothing that existed before, unless
+  it performs: a clause can write whatever its handler's environment
+  holds. With effect types, an empty row on the closure says it can't, and
+  then its memory effect is `Reads`. It may still trap or not come back,
+  so it can't be removed, but a read before it can be reused after it.
 
 Several of these replace a tail with a block, like a `case` with its arm or
 a jump with the join point's body: the block's `let`s then go after the
