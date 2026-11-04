@@ -15,6 +15,13 @@
 //!
 //! A jump pushes all its arguments before setting any parameter, so a
 //! jump like `loop(y, x)` that swaps two parameters works.
+//!
+//! An `i8` or `i16` is an `i32` local whose low 8 or 16 bits are the value,
+//! as in LLVM's Wasm backend. The high bits can be anything, so ops that
+//! read them first sign- or zero-extend: `div`, `rem`, `shr`, comparisons,
+//! conversions to wider types, and `case`. Ops whose low bits only depend
+//! on the low bits of their operands (`add`, `mul`, `and`, `shl`, ..)
+//! don't, and an array of them stores only the low bits.
 
 use std::borrow::Cow;
 
@@ -159,6 +166,8 @@ impl<'m> FuncCx<'_, 'm> {
     fn atom(&mut self, a: &Atom) {
         let i = match *a {
             Atom::Var(v) => I::LocalGet(self.local(v)),
+            Atom::Lit(Lit::I8(n)) => I::I32Const(n.into()),
+            Atom::Lit(Lit::I16(n)) => I::I32Const(n.into()),
             Atom::Lit(Lit::I32(n)) => I::I32Const(n),
             Atom::Lit(Lit::I64(n)) => I::I64Const(n),
             Atom::Lit(Lit::F32(bits)) => I::F32Const(Ieee32::new(bits)),
@@ -367,12 +376,13 @@ impl<'m> FuncCx<'_, 'm> {
             }
         }
         let (min, max) = (*tags.iter().min().unwrap(), *tags.iter().max().unwrap());
-        let dense = *ty == Ty::I32 && n >= MIN_TABLE_ARMS && max - min < 2 * n as i64;
+        let small = *ty != Ty::I64;
+        let dense = small && n >= MIN_TABLE_ARMS && max - min < 2 * n as i64;
         if dense && has_default {
             let table = (min..=max)
                 .map(|v| tags.iter().position(|&t| t == v).unwrap_or(n) as u32)
                 .collect();
-            self.atom(scrut);
+            self.int(scrut, ty, Sign::Signed);
             if min != 0 {
                 self.emit(I::I32Const(min as i32));
                 self.emit(I::I32Sub);
@@ -381,9 +391,9 @@ impl<'m> FuncCx<'_, 'm> {
             return Ok(());
         }
         for (i, &tag) in tags.iter().enumerate() {
-            self.atom(scrut);
+            self.int(scrut, ty, Sign::Signed);
             match ty {
-                Ty::I32 => {
+                Ty::I8 | Ty::I16 | Ty::I32 => {
                     self.emit(I::I32Const(tag as i32));
                     self.emit(I::I32Eq);
                 }
@@ -507,16 +517,12 @@ impl<'m> FuncCx<'_, 'm> {
                 let ty = self.atom_ty(&args[0]);
                 let array = self.array_of(&ty)?;
                 self.atoms(args);
-                // A packed element is extended to an `i32` as its type says.
-                // A set keeps only the low bits by itself.
-                self.emit(match (op, &ty) {
-                    (Op::ArraySet, _) => I::ArraySet(array),
-                    (_, Ty::Array(elem, _)) => match **elem {
-                        Ty::Packed(p) if p.is_signed() => I::ArrayGetS(array),
-                        Ty::Packed(_) => I::ArrayGetU(array),
-                        _ => I::ArrayGet(array),
-                    },
-                    _ => I::ArrayGet(array),
+                let packed = matches!(&ty, Ty::Array(elem, _) if narrow_bits(elem).is_some());
+                self.emit(match op {
+                    // Either extension gives the right low bits.
+                    Op::ArrayGet if packed => I::ArrayGetS(array),
+                    Op::ArrayGet => I::ArrayGet(array),
+                    _ => I::ArraySet(array),
                 });
             }
             Op::ArrayLen => {
@@ -660,11 +666,75 @@ impl<'m> FuncCx<'_, 'm> {
         }
     }
 
+    /// Pushes an integer, with an `i8` or `i16` extended to an `i32` as
+    /// `sign` says.
+    fn int(&mut self, a: &Atom, ty: &Ty, sign: Sign) {
+        self.atom(a);
+        if let Some(bits) = narrow_bits(ty) {
+            self.extend(bits, sign);
+        }
+    }
+
+    /// Extends the low `bits` of the `i32` on the stack.
+    fn extend(&mut self, bits: u32, sign: Sign) {
+        match (sign, bits) {
+            (Sign::Signed, 8) => self.emit(I::I32Extend8S),
+            (Sign::Signed, _) => self.emit(I::I32Extend16S),
+            (Sign::Unsigned, _) => {
+                self.emit(I::I32Const((1 << bits) - 1));
+                self.emit(I::I32And);
+            }
+        }
+    }
+
+    /// Traps unless the `i32` on the stack, read as `sign`, fits in `bits`,
+    /// and leaves it there.
+    fn check_fits(&mut self, bits: u32, sign: Sign) {
+        let t = self.new_local(ValType::I32);
+        self.emit(I::LocalTee(t));
+        // Signed values in range are `-2^(bits-1) <= x < 2^(bits-1)`, so
+        // adding `2^(bits-1)` puts them, like unsigned ones, below `2^bits`.
+        if sign == Sign::Signed {
+            self.emit(I::I32Const(1 << (bits - 1)));
+            self.emit(I::I32Add);
+        }
+        self.emit(I::I32Const(1 << bits));
+        self.emit(I::I32GeU);
+        self.open(I::If(BlockType::Empty));
+        self.emit(I::Unreachable);
+        self.close();
+        self.emit(I::LocalGet(t));
+    }
+
     fn prim(&mut self, p: &Prim, args: &[Atom]) -> Result<(), String> {
         let Some(first) = args.first() else {
             return Err(format!("{p:?} needs an argument"));
         };
         let ty = self.atom_ty(first);
+        if let Some(bits) = narrow_bits(&ty) {
+            return self.narrow_prim(p, bits, &ty, args);
+        }
+        if let Prim::Convert(to, s) = p
+            && let Some(bits) = narrow_bits(to)
+        {
+            // Only the low bits matter, so from an integer this keeps them.
+            self.atom(first);
+            match ty {
+                Ty::I32 => {}
+                Ty::I64 => self.emit(I::I32WrapI64),
+                Ty::F32 | Ty::F64 => {
+                    self.emit(match (&ty, s) {
+                        (Ty::F32, Sign::Signed) => I::I32TruncF32S,
+                        (Ty::F32, Sign::Unsigned) => I::I32TruncF32U,
+                        (_, Sign::Signed) => I::I32TruncF64S,
+                        (_, Sign::Unsigned) => I::I32TruncF64U,
+                    });
+                    self.check_fits(bits, *s);
+                }
+                _ => return Err(format!("{p:?} isn't defined on {ty}")),
+            }
+            return Ok(());
+        }
         if let (Prim::Neg, Ty::I32 | Ty::I64) = (p, &ty) {
             // Wasm has no integer negation: it's `0 - x`.
             self.emit(if ty == Ty::I32 {
@@ -683,6 +753,103 @@ impl<'m> FuncCx<'_, 'm> {
             None => return Err(format!("{p:?} isn't defined on {ty}")),
         }
         Ok(())
+    }
+
+    /// A prim on `i8`s or `i16`s, done on `i32`s.
+    fn narrow_prim(&mut self, p: &Prim, bits: u32, ty: &Ty, args: &[Atom]) -> Result<(), String> {
+        use Sign::{Signed as S, Unsigned as U};
+        let undefined = || Err(format!("{p:?} isn't defined on {ty}"));
+        // Both operands extended as `sign` says, then `i`.
+        let both = |cx: &mut Self, sign: Sign, i: I<'static>| {
+            cx.int(&args[0], ty, sign);
+            cx.int(&args[1], ty, sign);
+            cx.emit(i);
+        };
+        let pick = |s: &Sign, signed: I<'static>, unsigned: I<'static>| match s {
+            S => signed,
+            U => unsigned,
+        };
+        match p {
+            // The low bits of these only depend on the low bits of the
+            // operands.
+            Prim::Add | Prim::Sub | Prim::Mul | Prim::And | Prim::Or | Prim::Xor => {
+                self.atoms(args);
+                self.emit(match p {
+                    Prim::Add => I::I32Add,
+                    Prim::Sub => I::I32Sub,
+                    Prim::Mul => I::I32Mul,
+                    Prim::And => I::I32And,
+                    Prim::Or => I::I32Or,
+                    _ => I::I32Xor,
+                });
+            }
+            Prim::Neg => {
+                self.emit(I::I32Const(0));
+                self.atom(&args[0]);
+                self.emit(I::I32Sub);
+            }
+            // The count is taken modulo the width, as for `i32` and `i64`.
+            Prim::Shl | Prim::Shr(_) => {
+                match p {
+                    Prim::Shr(s) => self.int(&args[0], ty, *s),
+                    _ => self.atom(&args[0]),
+                }
+                self.atom(&args[1]);
+                self.emit(I::I32Const(bits as i32 - 1));
+                self.emit(I::I32And);
+                self.emit(match p {
+                    Prim::Shr(s) => pick(s, I::I32ShrS, I::I32ShrU),
+                    _ => I::I32Shl,
+                });
+            }
+            Prim::Div(s) => {
+                both(self, *s, pick(s, I::I32DivS, I::I32DivU));
+                // The smallest value divided by -1 overflows, which traps as
+                // it does for `i32`.
+                if *s == S {
+                    self.check_fits(bits, S);
+                }
+            }
+            Prim::Rem(s) => both(self, *s, pick(s, I::I32RemS, I::I32RemU)),
+            Prim::Eq => both(self, U, I::I32Eq),
+            Prim::Ne => both(self, U, I::I32Ne),
+            Prim::Lt(s) => both(self, *s, pick(s, I::I32LtS, I::I32LtU)),
+            Prim::Le(s) => both(self, *s, pick(s, I::I32LeS, I::I32LeU)),
+            Prim::Gt(s) => both(self, *s, pick(s, I::I32GtS, I::I32GtU)),
+            Prim::Ge(s) => both(self, *s, pick(s, I::I32GeS, I::I32GeU)),
+            Prim::Convert(to, s) => {
+                let to_bits = narrow_bits(to);
+                match to {
+                    // Narrower or the same: the low bits are already right.
+                    _ if to_bits.is_some_and(|b| b <= bits) => self.atom(&args[0]),
+                    Ty::I8 | Ty::I16 | Ty::I32 => self.int(&args[0], ty, *s),
+                    Ty::I64 => {
+                        self.int(&args[0], ty, *s);
+                        self.emit(pick(s, I::I64ExtendI32S, I::I64ExtendI32U));
+                    }
+                    Ty::F32 => {
+                        self.int(&args[0], ty, *s);
+                        self.emit(pick(s, I::F32ConvertI32S, I::F32ConvertI32U));
+                    }
+                    Ty::F64 => {
+                        self.int(&args[0], ty, *s);
+                        self.emit(pick(s, I::F64ConvertI32S, I::F64ConvertI32U));
+                    }
+                    _ => return undefined(),
+                }
+            }
+            _ => return undefined(),
+        }
+        Ok(())
+    }
+}
+
+/// How many bits an `i8` or `i16` has; `None` for other types.
+fn narrow_bits(ty: &Ty) -> Option<u32> {
+    match ty {
+        Ty::I8 => Some(8),
+        Ty::I16 => Some(16),
+        _ => None,
     }
 }
 

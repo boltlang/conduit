@@ -1,0 +1,42 @@
+// What i8 and i16 can't do.
+
+fn fn0(%0: i8) -> () {
+  case %0 {
+    128 => jump ret()
+    _ => jump ret()
+  }
+}
+
+fn fn1(%0: i16) -> () {
+  case %0 {
+    -32769 => jump ret()
+    _ => jump ret()
+  }
+}
+
+fn fn2(%0: i16) -> (f32) {
+  let %1: f32 = reinterpret[f32](%0)
+  jump ret(%1)
+}
+
+fn fn3(%0: i8, %1: i32) -> (i8) {
+  let %2: i8 = add(%0, %1)
+  jump ret(%2)
+}
+
+fn fn4(%0: mut [i8]) -> () {
+  let = array_set(%0, 0i32, 1i32)
+  jump ret()
+}
+
+fn fn5(%0: mut [i8]) -> (imm [i32]) {
+  let %1: imm [i32] = array_clone(%0)
+  jump ret(%1)
+}
+
+//# verify-error: fn0: case on an i8 has a tag 128, which isn't an i8
+//# verify-error: fn1: case on an i16 has a tag -32769, which isn't an i16
+//# verify-error: fn2: can't reinterpret a i16 as a f32
+//# verify-error: fn3: Add needs two numbers of the same type, but got (i8, i32)
+//# verify-error: fn4: array of i8 gets an element of type i32
+//# verify-error: fn5: array clone of a mut [i8] can't give a imm [i32]: its elements are i8

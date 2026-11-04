@@ -184,7 +184,7 @@ impl Cursor<'_> {
         }
     }
 
-    /// A literal as the text format writes it: `5i32`, `-1i64`, `1.5f32`,
+    /// A literal as the text format writes it: `5i8`, `5i32`, `-1i64`, `1.5f32`,
     /// `1e300f64`, `f32_bits(2143289344)`.
     fn lit(&mut self) -> Result<Lit, String> {
         let word = self.word().to_string();
@@ -204,6 +204,20 @@ impl Cursor<'_> {
             };
         }
         let bad = || format!("`{word}` isn't a literal like `5i32` or `1.5f64`");
+        // An `i8` or `i16` can also be written unsigned, as in the text
+        // format: `255i8` is `-1i8`.
+        if let Some(num) = word.strip_suffix("i8") {
+            let n = num
+                .parse::<i8>()
+                .or_else(|_| num.parse::<u8>().map(|n| n as i8));
+            return n.map(Lit::I8).map_err(|_| bad());
+        }
+        if let Some(num) = word.strip_suffix("i16") {
+            let n = num
+                .parse::<i16>()
+                .or_else(|_| num.parse::<u16>().map(|n| n as i16));
+            return n.map(Lit::I16).map_err(|_| bad());
+        }
         let (num, ty) = word.split_at(word.len().saturating_sub(3));
         match ty {
             "i32" => num.parse().map(Lit::I32).map_err(|_| bad()),
@@ -227,6 +241,7 @@ mod tests {
                     //# run fn2() == ()\n\
                     //# run fn3(f32_bits(2143289344)) == (1i32, 2e3f32)\n\
                     //# run fn4(0i32) traps\n\
+                    //# run fn5(255i8, -3i16) == 65535i16\n\
                     //# verify-error: isn't in scope\n\
                     //# wasm-skip: effect handlers\n\
                     //# wat\n\
@@ -255,6 +270,11 @@ mod tests {
                     func: FuncId(4),
                     args: vec![Lit::I32(0)],
                     expect: Expect::Trap,
+                },
+                CheckKind::Run {
+                    func: FuncId(5),
+                    args: vec![Lit::I8(-1), Lit::I16(-3)],
+                    expect: Expect::Values(vec![Lit::I16(-1)]),
                 },
                 CheckKind::VerifyError("isn't in scope".into()),
                 CheckKind::WasmSkip("effect handlers".into()),

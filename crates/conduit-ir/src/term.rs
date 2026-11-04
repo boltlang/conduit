@@ -13,6 +13,8 @@ pub enum Atom {
 /// `Hash`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Lit {
+    I8(i8),
+    I16(i16),
     I32(i32),
     I64(i64),
     F32(u32),
@@ -30,6 +32,8 @@ impl Lit {
 
     pub fn ty(&self) -> Ty {
         match self {
+            Lit::I8(_) => Ty::I8,
+            Lit::I16(_) => Ty::I16,
             Lit::I32(_) => Ty::I32,
             Lit::I64(_) => Ty::I64,
             Lit::F32(_) => Ty::F32,

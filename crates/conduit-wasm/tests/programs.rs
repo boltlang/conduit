@@ -3,7 +3,7 @@
 //! with Wasmtime. Programs with `wasm-error` checks must fail to lower with
 //! those messages instead.
 
-use conduit_ir::{FuncId, Lit, Module};
+use conduit_ir::{FuncId, Lit, Module, Ty};
 use conduit_test::{CheckKind, Outcome, Program};
 use wasmtime::{Engine, Instance, Linker, Store, Val};
 
@@ -35,7 +35,8 @@ fn test(p: &Program) -> Result<(), String> {
     }
     let (mut store, instance) = instantiate(&bytes)?;
     for run in p.runs() {
-        let got = call(&mut store, &instance, run.func, run.args);
+        let results = m.funcs.get(&run.func).map_or(&[][..], |f| &f.results[..]);
+        let got = call(&mut store, &instance, run.func, run.args, results);
         run.check(p, got)?;
     }
     Ok(())
@@ -91,6 +92,7 @@ fn call(
     instance: &Instance,
     func: FuncId,
     args: &[Lit],
+    result_tys: &[Ty],
 ) -> Result<Outcome, String> {
     let name = func.to_string();
     let f = instance
@@ -99,6 +101,8 @@ fn call(
     let params: Vec<Val> = args
         .iter()
         .map(|l| match *l {
+            Lit::I8(n) => Val::I32(n.into()),
+            Lit::I16(n) => Val::I32(n.into()),
             Lit::I32(n) => Val::I32(n),
             Lit::I64(n) => Val::I64(n),
             Lit::F32(bits) => Val::F32(bits),
@@ -107,13 +111,18 @@ fn call(
         .collect();
     let mut results = vec![Val::I32(0); f.ty(&*store).results().len()];
     match f.call(&mut *store, &params, &mut results) {
+        // An `i8` or `i16` comes back as an `i32` whose low bits are the
+        // value.
         Ok(()) => results
             .into_iter()
-            .map(|v| match v {
-                Val::I32(n) => Ok(Lit::I32(n)),
-                Val::I64(n) => Ok(Lit::I64(n)),
-                Val::F32(bits) => Ok(Lit::F32(bits)),
-                Val::F64(bits) => Ok(Lit::F64(bits)),
+            .zip(result_tys.iter().map(Some).chain(std::iter::repeat(None)))
+            .map(|(v, ty)| match (v, ty) {
+                (Val::I32(n), Some(Ty::I8)) => Ok(Lit::I8(n as i8)),
+                (Val::I32(n), Some(Ty::I16)) => Ok(Lit::I16(n as i16)),
+                (Val::I32(n), _) => Ok(Lit::I32(n)),
+                (Val::I64(n), _) => Ok(Lit::I64(n)),
+                (Val::F32(bits), _) => Ok(Lit::F32(bits)),
+                (Val::F64(bits), _) => Ok(Lit::F64(bits)),
                 _ => Err("gave a reference, but a test can only check scalars".to_string()),
             })
             .collect::<Result<_, _>>()

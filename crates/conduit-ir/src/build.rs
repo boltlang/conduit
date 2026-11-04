@@ -145,6 +145,18 @@ impl From<Lit> for Atom {
     }
 }
 
+impl From<i8> for Atom {
+    fn from(n: i8) -> Atom {
+        Atom::Lit(Lit::I8(n))
+    }
+}
+
+impl From<i16> for Atom {
+    fn from(n: i16) -> Atom {
+        Atom::Lit(Lit::I16(n))
+    }
+}
+
 impl From<i32> for Atom {
     fn from(n: i32) -> Atom {
         Atom::Lit(Lit::I32(n))

@@ -1,10 +1,12 @@
-use conduit_ir::{CtorId, FuncId, Lit, Mutability, Packed, Ty};
+use conduit_ir::{CtorId, FuncId, Lit, Mutability, Ty};
 
 use crate::machine::Frame;
 
 /// A value: a scalar, or a reference to an object in the machine's heap.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Value {
+    I8(i8),
+    I16(i16),
     I32(i32),
     I64(i64),
     F32(f32),
@@ -15,6 +17,8 @@ pub enum Value {
 impl From<Lit> for Value {
     fn from(lit: Lit) -> Value {
         match lit {
+            Lit::I8(n) => Value::I8(n),
+            Lit::I16(n) => Value::I16(n),
             Lit::I32(n) => Value::I32(n),
             Lit::I64(n) => Value::I64(n),
             Lit::F32(bits) => Value::F32(f32::from_bits(bits)),
@@ -38,8 +42,6 @@ pub enum Object<'p> {
     Array {
         elems: Vec<Value>,
         is_mut: bool,
-        /// The element type, if it's packed: what each write wraps to.
-        packed: Option<Packed>,
     },
     Ref(Value),
     Closure {

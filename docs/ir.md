@@ -120,8 +120,7 @@ integer conversions (out of range), array accesses (out of bounds),
 
 ```rust
 pub enum Ty {
-    I32, I64, F32, F64,
-    Packed(Packed),               // i8, u8, i16 or u16: only as an array's element type
+    I8, I16, I32, I64, F32, F64,
     Data(DataId, Mutability, Vec<Mutability>),  // GC'd ADT value, with its arguments
     Array(Box<Ty>, Mutability),   // GC'd array
     Fn(Box<Sig>, Mutability),     // closure
@@ -131,7 +130,6 @@ pub enum Ty {
 }
 
 pub enum Mutability { Imm, Mut, ReadOnly, Inherit, Param(u32) }
-pub enum Packed { I8, U8, I16, U16 }
 
 impl Ty {
     fn mutability(&self) -> Option<Mutability>;   // None for scalars and Cont
@@ -150,15 +148,14 @@ at least `i`. A `Data` type gives exactly one argument per parameter of
 its declaration: `Imm`, `Mut`, `ReadOnly` or a parameter of the function
 it's in.
 
-A `Packed` type is an integer stored in 8 or 16 bits, and is only valid as
-the element type of an `Array`: `mut [u8]` holds bytes, and a string is an
-`imm [u8]`. Elements are read and written as `i32`s. `ArrayGet` extends
-the stored bits to an `i32`, copying the sign bit for `i8` and `i16` and
-filling with zeros for `u8` and `u16`. `ArrayNew`, `ArrayFill` and
-`ArraySet` keep only the low bits of the value, so storing `300i32` in a
-`[u8]` and reading it back gives `44i32`. `ArrayClone` keeps the element
-type, so a `[u8]` clones only to a `[u8]`. On Wasm, `i8` and `u8` are both
-`(array (mut i8))`, and the sign picks `array.get_s` or `array.get_u`.
+Integers are `i8`, `i16`, `i32` and `i64`. As in LLVM they have no sign:
+an op that reads one as signed or unsigned says so (`div.s`, `lt.u`,
+`convert.u[i32]`), and the others wrap. So a byte is an `i8`, and a string
+an `imm [i8]`. `convert` to a narrower integer keeps the low bits, and to
+a wider one extends as its sign says: `convert.u[i32](255i8)` is `255i32`,
+`convert.s[i32](255i8)` is `-1i32`. Literals can be written either way:
+`255i8` is `-1i8`. `case` tags are read as signed, so a `case` on an `i8`
+has tags from `-128` to `127`.
 
 A tuple or struct is a `DataDecl` with one constructor. `Bool` and
 field-less enums are `I32`. Unit is zero values and `!` is zero results, so
@@ -779,6 +776,18 @@ stack values.
 A label is only in scope inside the `block`/`loop` that implements it, so
 every `br` targets an enclosing label, as Wasm requires.
 
+Wasm has no `i8` or `i16` values, so, as in LLVM's Wasm backend, each is
+an `i32` whose low 8 or 16 bits are the value, and whose high bits can be
+anything. Ops whose low bits only depend on their operands' low bits
+(`add`, `sub`, `mul`, `and`, `or`, `xor`, `shl`, `neg`) are the `i32` op.
+The others extend their operands first, with `i32.extend8_s`/`extend16_s`
+or an `i32.and` with a mask: `div`, `rem`, `shr`, comparisons, `convert`
+to a wider type, and `case`. A signed `div` traps when the result doesn't
+fit, as `i32.div_s` does, and so does `convert` from a float out of range.
+Arrays of them are packed, `(array (mut i8))` and `(array (mut i16))`,
+which store only the low bits. A host sees an `i8` or `i16` as an `i32`,
+and should only read its low bits.
+
 **To a flat CFG (Cranelift, LLVM).** Each join definition becomes a block
 whose parameters are the join's parameters, `jump` becomes a jump with
 block arguments, and `case` becomes `br_table` or `brif`. Function
@@ -826,7 +835,7 @@ Status:
 | `Get` | `*.load` | `struct.get` | ✅ |
 | `Set` | `*.store` | `struct.set` | ✅ |
 | `ArrayNew` | allocate length + elements | `array.new` | ✅ |
-| `ArrayGet` | bounds check + `*.load` | `array.get`, or `array.get_s`/`array.get_u` for packed elements | ✅ |
+| `ArrayGet` | bounds check + `*.load` | `array.get`, or `array.get_s` for `i8` and `i16` | ✅ |
 | `ArraySet` | bounds check + `*.store` | `array.set` | ✅ |
 | `ArrayLen` | `i32.load` of the length | `array.len` | ✅ |
 | `ArrayClone` | allocate + `memory.copy` | `array.new_default` + `array.copy` | ✅ |

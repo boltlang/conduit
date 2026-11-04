@@ -211,8 +211,6 @@ fn sub(a: &Ty, b: &Ty) -> bool {
 struct Allowed {
     /// `Inherit`: in field types, and in an array's element type.
     inherit: bool,
-    /// A [`Ty::Packed`]: only as an array's element type itself.
-    packed: bool,
     /// `Param(1)` to `Param(params)`: in the field types of a declaration
     /// with that many parameters, or the types of a function.
     params: u32,
@@ -223,7 +221,6 @@ impl Allowed {
     /// effect's, a handler's.
     const PLAIN: Allowed = Allowed {
         inherit: false,
-        packed: false,
         params: 0,
     };
 
@@ -232,7 +229,6 @@ impl Allowed {
     pub(crate) fn func(params: u32) -> Allowed {
         Allowed {
             inherit: false,
-            packed: false,
             params,
         }
     }
@@ -241,15 +237,14 @@ impl Allowed {
     fn field(params: u32) -> Allowed {
         Allowed {
             inherit: true,
-            packed: false,
             params,
         }
     }
 }
 
 /// Checks that a type only refers to known data types, gives each the
-/// right number of arguments, and only uses `Inherit`, mutability
-/// parameters and packed types where they're allowed.
+/// right number of arguments, and only uses `Inherit` and mutability
+/// parameters where they're allowed.
 fn ty_ok<P: Program + ?Sized>(p: &P, ty: &Ty, allowed: Allowed) -> Result<(), String> {
     let mut_ok = |m: &Mutability| match m {
         Mutability::Inherit if !allowed.inherit => Err(format!(
@@ -267,9 +262,7 @@ fn ty_ok<P: Program + ?Sized>(p: &P, ty: &Ty, allowed: Allowed) -> Result<(), St
         _ => Ok(()),
     };
     match ty {
-        Ty::I32 | Ty::I64 | Ty::F32 | Ty::F64 => Ok(()),
-        Ty::Packed(_) if allowed.packed => Ok(()),
-        Ty::Packed(_) => Err(format!("{ty} is only allowed as an array's element type")),
+        Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::F32 | Ty::F64 => Ok(()),
         Ty::Data(d, m, args) => {
             mut_ok(m)?;
             let Some(decl) = p.data(*d) else {
@@ -284,7 +277,7 @@ fn ty_ok<P: Program + ?Sized>(p: &P, ty: &Ty, allowed: Allowed) -> Result<(), St
             }
             args.iter().try_for_each(mut_ok)
         }
-        // An element can have the array's mutability, and be packed.
+        // An element can have the array's mutability.
         Ty::Array(elem, m) => {
             mut_ok(m)?;
             ty_ok(
@@ -292,7 +285,6 @@ fn ty_ok<P: Program + ?Sized>(p: &P, ty: &Ty, allowed: Allowed) -> Result<(), St
                 elem,
                 Allowed {
                     inherit: true,
-                    packed: true,
                     ..allowed
                 },
             )
@@ -302,14 +294,7 @@ fn ty_ok<P: Program + ?Sized>(p: &P, ty: &Ty, allowed: Allowed) -> Result<(), St
             sig_ok(p, sig, allowed.params)
         }
         Ty::Cont(sig) => sig_ok(p, sig, allowed.params),
-        Ty::Ref(ty) => ty_ok(
-            p,
-            ty,
-            Allowed {
-                packed: false,
-                ..allowed
-            },
-        ),
+        Ty::Ref(ty) => ty_ok(p, ty, Allowed { ..allowed }),
         Ty::Any(m) => mut_ok(m),
     }
 }
@@ -383,8 +368,7 @@ pub fn resolve(field: &Ty, m: Mutability, args: &[Mutability]) -> Ty {
 }
 
 /// The type of the elements of an array of type `ty`, with `Inherit`
-/// made the array's mutability. `None` if `ty` isn't an array. A packed
-/// type stays packed: [`Ty::unpacked`] is the type of what reads give.
+/// made the array's mutability. `None` if `ty` isn't an array.
 pub fn elem_ty(ty: &Ty) -> Option<Ty> {
     match ty {
         Ty::Array(elem, m) => Some(inherit(elem, *m)),
@@ -419,7 +403,7 @@ fn at_most_in<P: Program + ?Sized>(
 ) -> bool {
     let le = |m: Mutability| m.at_most(bound, assumes);
     match ty {
-        Ty::I32 | Ty::I64 | Ty::F32 | Ty::F64 | Ty::Packed(_) => true,
+        Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::F32 | Ty::F64 => true,
         Ty::Data(d, m, args) => {
             if !le(*m) {
                 return false;
@@ -691,12 +675,15 @@ impl<P: Program + ?Sized> Cx<'_, P> {
 
     fn case_tags(&mut self, ty: &Ty, arms: &[Arm], has_default: bool) {
         match ty {
-            Ty::I32 | Ty::I64 => {
+            Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 => {
                 let mut seen = BTreeSet::new();
                 for arm in arms {
                     match arm.tag {
-                        Tag::Int(n) if *ty == Ty::I32 && i32::try_from(n).is_err() => {
-                            self.err(format!("case on an i32 has a tag {n}, which isn't an i32"));
+                        // Tags are read as signed.
+                        Tag::Int(n) if !fits_int(ty, n) => {
+                            self.err(format!(
+                                "case on an {ty} has a tag {n}, which isn't an {ty}"
+                            ));
                         }
                         Tag::Int(n) if !seen.insert(n) => {
                             self.err(format!("case has the tag {n} more than once"));
@@ -843,7 +830,7 @@ pub(crate) fn fits(tys: &[Ty], expected: &[Ty]) -> Checked<()> {
 }
 
 fn prim_results(prim: &Prim, tys: &[Ty]) -> Checked<Vec<Ty>> {
-    let int = |t: &Ty| matches!(t, Ty::I32 | Ty::I64);
+    let int = Ty::is_int;
     let float = |t: &Ty| matches!(t, Ty::F32 | Ty::F64);
     let num = |t: &Ty| int(t) || float(t);
     let binary = |ok: &dyn Fn(&Ty) -> bool, what: &str| match tys {
@@ -881,7 +868,12 @@ fn prim_results(prim: &Prim, tys: &[Ty]) -> Checked<Vec<Ty>> {
         }
         Prim::Reinterpret(to) => {
             let from = unary(&num, "number")?;
-            let size = |t: &Ty| matches!(t, Ty::I64 | Ty::F64);
+            let size = |t: &Ty| match t {
+                Ty::I8 => 8,
+                Ty::I16 => 16,
+                Ty::I64 | Ty::F64 => 64,
+                _ => 32,
+            };
             if !num(to) || int(&from) == int(to) || size(&from) != size(to) {
                 return Err(format!("can't reinterpret a {from} as a {to}"));
             }
@@ -889,6 +881,16 @@ fn prim_results(prim: &Prim, tys: &[Ty]) -> Checked<Vec<Ty>> {
         }
     };
     Ok(vec![ty])
+}
+
+/// Whether `n` is in the range of the integer type `ty`, read as signed.
+fn fits_int(ty: &Ty, n: i64) -> bool {
+    match ty {
+        Ty::I8 => i8::try_from(n).is_ok(),
+        Ty::I16 => i16::try_from(n).is_ok(),
+        Ty::I32 => i32::try_from(n).is_ok(),
+        _ => true,
+    }
 }
 
 fn list(tys: &[Ty]) -> String {

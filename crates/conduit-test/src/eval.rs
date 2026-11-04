@@ -45,6 +45,8 @@ fn is_trap(kind: &ErrorKind) -> bool {
 
 fn lit(v: Value) -> Result<Lit, String> {
     Ok(match v {
+        Value::I8(n) => Lit::I8(n),
+        Value::I16(n) => Lit::I16(n),
         Value::I32(n) => Lit::I32(n),
         Value::I64(n) => Lit::I64(n),
         Value::F32(x) => Lit::f32(x),

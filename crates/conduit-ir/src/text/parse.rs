@@ -339,14 +339,12 @@ impl Parser {
         let pos = self.pos();
         let name = self.ident("a type")?;
         Ok(match name.as_str() {
+            "i8" => Ty::I8,
+            "i16" => Ty::I16,
             "i32" => Ty::I32,
             "i64" => Ty::I64,
             "f32" => Ty::F32,
             "f64" => Ty::F64,
-            "i8" => Ty::Packed(Packed::I8),
-            "u8" => Ty::Packed(Packed::U8),
-            "i16" => Ty::Packed(Packed::I16),
-            "u16" => Ty::Packed(Packed::U16),
             "cont" => Ty::Cont(Box::new(self.sig()?)),
             "ref" => Ty::Ref(Box::new(self.ty()?)),
             m if matches!(m, "imm" | "mut" | "ro" | "inherit") || m.starts_with('\'') => {
@@ -781,8 +779,21 @@ fn digits(n: &str) -> Option<u64> {
     n.parse().ok()
 }
 
-/// A literal with its type suffix, like `5i32` or `1.5f64`.
+/// A literal with its type suffix, like `5i32` or `1.5f64`. An `i8` or
+/// `i16` can also be written unsigned: `255i8` is `-1i8`.
 fn parse_lit(s: &str) -> Option<Lit> {
+    if let Some(number) = s.strip_suffix("i8") {
+        let n = number.parse::<i8>().ok();
+        return n
+            .or_else(|| number.parse::<u8>().ok().map(|n| n as i8))
+            .map(Lit::I8);
+    }
+    if let Some(number) = s.strip_suffix("i16") {
+        let n = number.parse::<i16>().ok();
+        return n
+            .or_else(|| number.parse::<u16>().ok().map(|n| n as i16))
+            .map(Lit::I16);
+    }
     let (number, suffix) = s.split_at(s.len().checked_sub(3)?);
     match suffix {
         "i32" => number.parse().ok().map(Lit::I32),

@@ -27,7 +27,7 @@
 
 use std::collections::HashMap;
 
-use conduit_ir::{CtorId, DataId, FuncId, Module, Packed, Sig, Ty};
+use conduit_ir::{CtorId, DataId, FuncId, Module, Sig, Ty};
 use wasm_encoder::{
     ArrayType, CompositeInnerType, CompositeType, FieldType, FuncType, HeapType, RefType,
     StorageType, StructType, SubType, ValType,
@@ -78,12 +78,11 @@ fn field(ty: ValType, mutable: bool) -> FieldType {
     }
 }
 
-/// How Wasm stores an array element or field of type `ty`. A packed type's
-/// sign isn't part of it: reads say how to extend it.
+/// How an array stores elements of type `ty`: `i8` and `i16` packed.
 fn storage(types: &mut Types<'_>, ty: &Ty) -> Result<StorageType, String> {
     Ok(match ty {
-        Ty::Packed(Packed::I8 | Packed::U8) => StorageType::I8,
-        Ty::Packed(Packed::I16 | Packed::U16) => StorageType::I16,
+        Ty::I8 => StorageType::I8,
+        Ty::I16 => StorageType::I16,
         ty => StorageType::Val(types.val(ty)?),
     })
 }
@@ -141,7 +140,9 @@ impl<'m> Types<'m> {
 
     pub fn val(&mut self, ty: &Ty) -> Result<ValType, String> {
         Ok(match ty {
-            Ty::I32 => ValType::I32,
+            // An `i8` or `i16` is an `i32` whose low bits are the value. The
+            // high bits can be anything: see `func.rs`.
+            Ty::I8 | Ty::I16 | Ty::I32 => ValType::I32,
             Ty::I64 => ValType::I64,
             Ty::F32 => ValType::F32,
             Ty::F64 => ValType::F64,
@@ -153,7 +154,6 @@ impl<'m> Types<'m> {
             }
             Ty::Ref(inner) => nullable(self.cell(inner)?),
             Ty::Any(_) => ValType::Ref(RefType::ANYREF),
-            Ty::Packed(p) => return Err(format!("{p} is only allowed as an array's element type")),
             Ty::Cont(_) => return Err("continuations aren't supported yet".into()),
         })
     }

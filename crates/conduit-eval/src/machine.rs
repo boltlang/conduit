@@ -4,7 +4,7 @@ use std::rc::Rc;
 use conduit_ir::verify::subst_params;
 use conduit_ir::{
     Atom, Block, EffectId, Extern, ExternId, Func, FuncId, HandlerId, JoinDef, Label, Mutability,
-    Op, Packed, Program, SourceId, Tag, Tail, Ty, Var,
+    Op, Program, SourceId, Tag, Tail, Ty, Var,
 };
 
 use crate::error::{Error, ErrorKind, unverified};
@@ -212,6 +212,8 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                 default,
             } => {
                 let tag = match self.atom(scrut)? {
+                    Value::I8(n) => Tag::Int(n.into()),
+                    Value::I16(n) => Tag::Int(n.into()),
                     Value::I32(n) => Tag::Int(n.into()),
                     Value::I64(n) => Tag::Int(n),
                     Value::Obj(id) => match self.object_ref(id)? {
@@ -400,19 +402,6 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
     }
 
     /// The type of the variable an op that gives one value binds.
-    /// Whether the array an op binds is mutable, and its element type if
-    /// that's packed.
-    fn binds_array(&self, binds: &[Var]) -> Step<(bool, Option<Packed>)> {
-        let packed = match self.bind_ty(binds)? {
-            Ty::Array(elem, _) => match *elem {
-                Ty::Packed(p) => Some(p),
-                _ => None,
-            },
-            _ => return Err(unverified("an array op that doesn't bind an array")),
-        };
-        Ok((self.binds_mut(binds)?, packed))
-    }
-
     fn bind_ty(&self, binds: &[Var]) -> Step<Ty> {
         let code = self.code_ref()?;
         let f = self
@@ -511,22 +500,17 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                 vec![]
             }
             Op::ArrayNew => {
-                let (is_mut, packed) = self.binds_array(binds)?;
-                let elems = args
-                    .into_iter()
-                    .map(|v| wrap(packed, v))
-                    .collect::<Step<_>>()?;
+                let is_mut = self.binds_mut(binds)?;
                 vec![self.alloc(Object::Array {
-                    elems,
+                    elems: args,
                     is_mut,
-                    packed,
                 })]
             }
             Op::ArrayFill => {
                 let (Value::I32(len), value) = (arg(&args, 0)?, arg(&args, 1)?) else {
                     return Err(unverified("array fill needs a length"));
                 };
-                let (is_mut, packed) = self.binds_array(binds)?;
+                let is_mut = self.binds_mut(binds)?;
                 // Lengths are unsigned, as in Wasm, but an array is at most
                 // `i32::MAX` long, so that `ArrayLen` can give its length.
                 if len < 0 {
@@ -534,9 +518,8 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                 }
                 let len = len as usize;
                 vec![self.alloc(Object::Array {
-                    elems: vec![wrap(packed, value)?; len],
+                    elems: vec![value; len],
                     is_mut,
-                    packed,
                 })]
             }
             Op::ArrayGet => {
@@ -553,15 +536,10 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
             Op::ArraySet => {
                 let (index, value) = (index(arg(&args, 1)?)?, arg(&args, 2)?);
                 match self.object_mut(obj(arg(&args, 0)?)?)? {
-                    Object::Array {
-                        elems,
-                        is_mut,
-                        packed,
-                    } => {
+                    Object::Array { elems, is_mut } => {
                         if !*is_mut {
                             return Err(ErrorKind::WriteToImm);
                         }
-                        let value = wrap(*packed, value)?;
                         let len = elems.len();
                         *elems
                             .get_mut(index)
@@ -576,16 +554,12 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                 _ => return Err(unverified("array len on something that isn't an array")),
             },
             Op::ArrayClone => {
-                let (elems, packed) = match self.object_ref(obj(arg(&args, 0)?)?)? {
-                    Object::Array { elems, packed, .. } => (elems.clone(), *packed),
+                let elems = match self.object_ref(obj(arg(&args, 0)?)?)? {
+                    Object::Array { elems, .. } => elems.clone(),
                     _ => return Err(unverified("array clone of something that isn't an array")),
                 };
                 let is_mut = self.binds_mut(binds)?;
-                vec![self.alloc(Object::Array {
-                    elems,
-                    is_mut,
-                    packed,
-                })]
+                vec![self.alloc(Object::Array { elems, is_mut })]
             }
             Op::ArrayFreeze => {
                 let array = arg(&args, 0)?;
@@ -809,15 +783,4 @@ fn join_defs(f: &Func) -> Labels<'_> {
         }
     }
     table.into()
-}
-
-/// `value` as an array of `packed` elements stores it.
-fn wrap(packed: Option<Packed>, value: Value) -> Step<Value> {
-    match (packed, value) {
-        (None, value) => Ok(value),
-        (Some(p), Value::I32(v)) => Ok(Value::I32(p.wrap(v))),
-        (Some(p), _) => Err(unverified(format!(
-            "an array of {p} gets a value that isn't an i32"
-        ))),
-    }
 }

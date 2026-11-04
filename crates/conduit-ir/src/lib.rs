@@ -25,7 +25,7 @@ pub use id::{CtorId, DataId, EffectId, ExternId, FuncId, HandlerId, Label, Sourc
 pub use module::{DataDecl, EffectDecl, Extern, Func, HandlerDecl, Module, MutParams};
 pub use op::{Effects, Op, Prim, Sign};
 pub use term::{Arm, Atom, Block, JoinDef, Let, Lit, Tag, Tail};
-pub use ty::{CtorDecl, Mutability, Packed, Sig, Ty};
+pub use ty::{CtorDecl, Mutability, Sig, Ty};
 
 /// How passes reach items other than the function they work on. Each
 /// lookup gives `None` for an unknown ID.

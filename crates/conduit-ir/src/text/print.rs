@@ -298,6 +298,8 @@ pub(crate) fn atom(a: &Atom) -> String {
 /// exactly; NaNs and infinities print as their bits.
 pub(crate) fn lit_text(lit: &Lit) -> String {
     match *lit {
+        Lit::I8(n) => format!("{n}i8"),
+        Lit::I16(n) => format!("{n}i16"),
         Lit::I32(n) => format!("{n}i32"),
         Lit::I64(n) => format!("{n}i64"),
         Lit::F32(bits) => {

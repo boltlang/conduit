@@ -104,8 +104,10 @@ pub(super) fn lex(src: &str) -> Result<Vec<(Tok, Pos)>, Error> {
                     }
                 }
                 let rest: String = chars[i..chars.len().min(i + 3)].iter().collect();
-                if matches!(rest.as_str(), "i32" | "i64" | "f32" | "f64") {
+                if matches!(rest.as_str(), "i16" | "i32" | "i64" | "f32" | "f64") {
                     i += 3;
+                } else if rest.starts_with("i8") {
+                    i += 2;
                 }
             }
             Tok::Num(chars[start..i].iter().collect())
