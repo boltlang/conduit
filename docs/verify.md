@@ -32,8 +32,8 @@ has already proven them, and breaking one is **undefined behavior**:
 
 Others are checked at run time:
 
-- Traps: division by zero, an index out of bounds, a float converted out of
-  range, `unreachable`.
+- Traps: a signed division that overflows, an index out of bounds, a float
+  converted out of range, `unreachable`.
 - A continuation resumed twice through a copy the verifier can't see, like
   one stored in a closure (see "Continuations").
 - A `perform` with no handler. Effect types would check this (see "Effect

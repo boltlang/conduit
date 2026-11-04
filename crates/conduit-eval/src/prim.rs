@@ -36,34 +36,20 @@ macro_rules! int_binary {
     ($name:ident, $s:ty, $u:ty, $variant:ident) => {
         fn $name(prim: &Prim, x: $s, y: $s) -> Result<Value, ErrorKind> {
             let (ux, uy) = (x as $u, y as $u);
-            let nonzero = || {
-                if y == 0 {
-                    Err(ErrorKind::DivideByZero)
-                } else {
-                    Ok(())
-                }
-            };
             let bool = |b: bool| Ok(Value::I32(b as i32));
             let n = match prim {
                 Prim::Add => x.wrapping_add(y),
                 Prim::Sub => x.wrapping_sub(y),
                 Prim::Mul => x.wrapping_mul(y),
-                Prim::Div(Sign::Signed) => {
-                    nonzero()?;
-                    x.checked_div(y).ok_or(ErrorKind::IntegerOverflow)?
-                }
-                Prim::Div(Sign::Unsigned) => {
-                    nonzero()?;
-                    (ux / uy) as $s
-                }
-                Prim::Rem(Sign::Signed) => {
-                    nonzero()?;
-                    x.wrapping_rem(y)
-                }
-                Prim::Rem(Sign::Unsigned) => {
-                    nonzero()?;
-                    (ux % uy) as $s
-                }
+                // Dividing by zero gives 0, and the remainder is then `x`.
+                Prim::Div(_) | Prim::Rem(_) if y == 0 => match prim {
+                    Prim::Div(_) => 0,
+                    _ => x,
+                },
+                Prim::Div(Sign::Signed) => x.checked_div(y).ok_or(ErrorKind::IntegerOverflow)?,
+                Prim::Div(Sign::Unsigned) => (ux / uy) as $s,
+                Prim::Rem(Sign::Signed) => x.wrapping_rem(y),
+                Prim::Rem(Sign::Unsigned) => (ux % uy) as $s,
                 Prim::And => x & y,
                 Prim::Or => x | y,
                 Prim::Xor => x ^ y,

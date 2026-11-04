@@ -4,7 +4,7 @@
 //! traps, and what it allocates or changes, like `array_freeze`, nothing
 //! else can see.
 //!
-//! Ops that can trap (division, float-to-integer conversions, array
+//! Ops that can trap (signed division, float-to-integer conversions, array
 //! accesses, `Unbox`) have effect `Unknown`, so a trap is never removed.
 //!
 //! It works bottom-up in one pass. Variables are SSA, so whether a variable

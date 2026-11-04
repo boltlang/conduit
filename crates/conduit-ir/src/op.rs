@@ -143,10 +143,13 @@ pub enum Prim {
 }
 
 impl Prim {
-    /// Integer division and remainder trap on zero, and float-to-integer
-    /// conversions trap when out of range. The backend only knows which
-    /// from the operand types, so this is conservative.
+    /// Signed integer division traps when the result doesn't fit, as for
+    /// the smallest value divided by -1, and float-to-integer conversions
+    /// trap when out of range. This only knows the op, not its operand
+    /// types, so it's conservative: a signed float division doesn't trap,
+    /// nor does a conversion between integers. Division and remainder by
+    /// zero don't trap: `x / 0` is 0 and `x % 0` is `x`.
     pub fn may_trap(&self) -> bool {
-        matches!(self, Prim::Div(_) | Prim::Rem(_) | Prim::Convert(..))
+        matches!(self, Prim::Div(Sign::Signed) | Prim::Convert(..))
     }
 }

@@ -1,5 +1,6 @@
 // The example from issue #5: the unused join point and `add` go, and
-// `div` stays even though its result is unused, because it can trap.
+// `div.s` stays even though its result is unused, because it can trap: on
+// the smallest value divided by -1, not by zero.
 
 fn fn0(%0: i32, %1: i32) -> (i32) {
   join j1() = jump ret(0i32)
@@ -11,5 +12,6 @@ fn fn0(%0: i32, %1: i32) -> (i32) {
 }
 
 //# run fn0(6i32, 3i32) == 12i32
-//# run fn0(6i32, 0i32) traps
+//# run fn0(6i32, 0i32) == 12i32
+//# run fn0(-2147483648i32, -1i32) traps
 //# opt: dce

@@ -3,7 +3,7 @@ fn fn0() -> (i32) vars(%0: i32, %1: i8, %2: i32, %3: i32, %4: i32, %5: i32, %6: 
 }
 
 fn fn1() -> (i32) {
-  let %0: i32 = div.s(1i32, 0i32)
+  let %0: i32 = div.s(-2147483648i32, -1i32)
   jump ret(%0)
 }
 
@@ -21,4 +21,8 @@ fn fn3() -> (i32) {
 fn fn4() -> (f64) vars(%0: f64, %2: f64) {
   let %1: f64 = sqrt(-3.0f64)
   jump ret(3.0f64)
+}
+
+fn fn5() -> (i32) vars(%0: i32, %1: i32, %2: i32) {
+  jump ret(-7i32)
 }

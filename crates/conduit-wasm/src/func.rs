@@ -1027,6 +1027,61 @@ impl<'m> FuncCx<'_, 'm> {
             return Err(format!("{p:?} needs an argument"));
         };
         let ty = self.atom_ty(first);
+        if let (Prim::Div(_) | Prim::Rem(_), [x, y]) = (p, args)
+            && matches!(ty, Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64)
+        {
+            return self.div_or_rem(p, &ty, x, y);
+        }
+        self.prim_on(p, &ty, args)
+    }
+
+    /// Integer division or remainder, which Wasm traps on for a divisor of
+    /// 0: then `x / 0` is 0 and `x % 0` is `x`, without the instruction.
+    fn div_or_rem(&mut self, p: &Prim, ty: &Ty, x: &Atom, y: &Atom) -> Result<(), String> {
+        let wide = *ty == Ty::I64;
+        let on_zero = |cx: &mut Self| match p {
+            Prim::Div(_) if wide => cx.emit(I::I64Const(0)),
+            Prim::Div(_) => cx.emit(I::I32Const(0)),
+            _ => cx.atom(x),
+        };
+        match y {
+            Atom::Lit(l) => {
+                let zero = match *l {
+                    Lit::I8(n) => n == 0,
+                    Lit::I16(n) => n == 0,
+                    Lit::I32(n) => n == 0,
+                    Lit::I64(n) => n == 0,
+                    _ => false,
+                };
+                if zero {
+                    on_zero(self);
+                    return Ok(());
+                }
+                self.prim_on(p, ty, &[x.clone(), y.clone()])
+            }
+            Atom::Var(_) => {
+                // Only the low bits of an `i8` or `i16` are its value.
+                if narrow_bits(ty).is_some() {
+                    self.int(y, ty, Sign::Unsigned);
+                } else {
+                    self.atom(y);
+                }
+                self.emit(if wide { I::I64Eqz } else { I::I32Eqz });
+                let result = if wide { ValType::I64 } else { ValType::I32 };
+                self.open(I::If(BlockType::Result(result)));
+                on_zero(self);
+                self.emit(I::Else);
+                self.prim_on(p, ty, &[x.clone(), y.clone()])?;
+                self.close();
+                Ok(())
+            }
+        }
+    }
+
+    /// `p` on `args`, whose first has type `ty`.
+    fn prim_on(&mut self, p: &Prim, ty: &Ty, args: &[Atom]) -> Result<(), String> {
+        let first = &args[0];
+        let ty = ty.clone();
         if let Some(bits) = narrow_bits(&ty) {
             return self.narrow_prim(p, bits, &ty, args);
         }

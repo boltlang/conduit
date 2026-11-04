@@ -1,5 +1,7 @@
 // Every i8 operation on edge cases: wrapping, signed and unsigned
-// views, division traps, and shift amounts taken modulo the width.
+// views, division by zero, which gives 0, and its remainder, which
+// gives the dividend, the overflow of signed division, which traps, and
+// shift amounts taken modulo the width.
 // Each operand is first added to the smallest value twice, which
 // gives it back but leaves the high bits of its Wasm i32 set.
 // Generated, with results following the same rules as i32.
@@ -268,7 +270,7 @@ fn fn23(%0: i8) -> (i8) {
 //# run fn3(7i8, -3i8) == -2i8
 //# run fn3(-7i8, -3i8) == 2i8
 //# run fn3(0i8, 5i8) == 0i8
-//# run fn3(5i8, 0i8) traps
+//# run fn3(5i8, 0i8) == 0i8
 //# run fn3(-128i8, -1i8) traps
 //# run fn3(-128i8, 1i8) == -128i8
 //# run fn3(127i8, 1i8) == 127i8
@@ -283,7 +285,7 @@ fn fn23(%0: i8) -> (i8) {
 //# run fn4(7i8, -3i8) == 0i8
 //# run fn4(-7i8, -3i8) == 0i8
 //# run fn4(0i8, 5i8) == 0i8
-//# run fn4(5i8, 0i8) traps
+//# run fn4(5i8, 0i8) == 0i8
 //# run fn4(-128i8, -1i8) == 0i8
 //# run fn4(-128i8, 1i8) == -128i8
 //# run fn4(127i8, 1i8) == 127i8
@@ -298,7 +300,7 @@ fn fn23(%0: i8) -> (i8) {
 //# run fn5(7i8, -3i8) == 1i8
 //# run fn5(-7i8, -3i8) == -1i8
 //# run fn5(0i8, 5i8) == 0i8
-//# run fn5(5i8, 0i8) traps
+//# run fn5(5i8, 0i8) == 5i8
 //# run fn5(-128i8, -1i8) == 0i8
 //# run fn5(-128i8, 1i8) == 0i8
 //# run fn5(127i8, 1i8) == 0i8
@@ -313,7 +315,7 @@ fn fn23(%0: i8) -> (i8) {
 //# run fn6(7i8, -3i8) == 7i8
 //# run fn6(-7i8, -3i8) == -7i8
 //# run fn6(0i8, 5i8) == 0i8
-//# run fn6(5i8, 0i8) traps
+//# run fn6(5i8, 0i8) == 5i8
 //# run fn6(-128i8, -1i8) == -128i8
 //# run fn6(-128i8, 1i8) == 0i8
 //# run fn6(127i8, 1i8) == 0i8

@@ -36,8 +36,8 @@ pub struct Program {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Outcome {
     Values(Vec<Lit>),
-    /// A run-time error a program can cause on purpose, like a division by
-    /// zero or `unreachable`.
+    /// A run-time error a program can cause on purpose, like an index out
+    /// of bounds or `unreachable`.
     Trap(String),
 }
 

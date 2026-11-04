@@ -19,10 +19,10 @@
 //! - **Numbers** follow Rust for now: integers wrap, shifts take the amount
 //!   modulo the width, and floats use Rust's operations and `as`
 //!   conversions, except that `min` and `max` follow Wasm (NaN if either
-//!   is NaN, and `-0.0` is less than `0.0`). Integer division and
-//!   remainder by zero, division of the smallest integer by -1, and
-//!   converting a float that's NaN or out of range to an integer are
-//!   errors, as they trap in Wasm.
+//!   is NaN, and `-0.0` is less than `0.0`). Integer division by zero gives
+//!   0, and the remainder is then the dividend. Division of the smallest
+//!   integer by -1, and converting a float that's NaN or out of range to an
+//!   integer, are errors, as they trap in Wasm.
 //! - **Undefined behavior** of the IR, like `Unbox` at a type the value
 //!   wasn't boxed at, is an [`ErrorKind::Undefined`] error.
 

@@ -1,6 +1,8 @@
 // Unused `new`s, closures and refs are pure and go, and so do unused
-// reads, which never trap. Calls, writes and array accesses, which can
-// trap, stay, and so does the `new` whose object is written.
+// reads, which never trap, and unsigned divisions and remainders, which
+// don't trap even by zero. Calls, writes, array accesses and signed
+// divisions, which can trap, stay, and so does the `new` whose object is
+// written.
 
 data data0 {
   (i32, i32)
@@ -19,6 +21,9 @@ fn fn0(%0: i32) -> (i32) {
   let %9: i32 = array_len(%8)
   let %10: imm [i32] = array_clone(%8)
   let %11: i32 = array_get(%8, 1i32)
+  let %12: i32 = div.u(%0, 0i32)
+  let %13: i32 = rem.s(%0, %0)
+  let %14: i32 = div.s(%0, %0)
   jump ret(%0)
 }
 

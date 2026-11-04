@@ -1,5 +1,7 @@
 // Every i64 operation on edge cases: wrapping, signed and unsigned
-// views, division traps, and shift amounts taken modulo the width.
+// views, division by zero, which gives 0, and its remainder, which
+// gives the dividend, the overflow of signed division, which traps, and
+// shift amounts taken modulo the width.
 // Generated, with results following Wasm.
 
 fn fn0(%0: i64, %1: i64) -> (i64) {
@@ -178,7 +180,7 @@ fn fn23(%0: i64) -> (i64) {
 //# run fn3(7i64, -3i64) == -2i64
 //# run fn3(-7i64, -3i64) == 2i64
 //# run fn3(0i64, 5i64) == 0i64
-//# run fn3(5i64, 0i64) traps
+//# run fn3(5i64, 0i64) == 0i64
 //# run fn3(-9223372036854775808i64, -1i64) traps
 //# run fn3(-9223372036854775808i64, 1i64) == -9223372036854775808i64
 //# run fn3(9223372036854775807i64, 1i64) == 9223372036854775807i64
@@ -195,7 +197,7 @@ fn fn23(%0: i64) -> (i64) {
 //# run fn4(7i64, -3i64) == 0i64
 //# run fn4(-7i64, -3i64) == 0i64
 //# run fn4(0i64, 5i64) == 0i64
-//# run fn4(5i64, 0i64) traps
+//# run fn4(5i64, 0i64) == 0i64
 //# run fn4(-9223372036854775808i64, -1i64) == 0i64
 //# run fn4(-9223372036854775808i64, 1i64) == -9223372036854775808i64
 //# run fn4(9223372036854775807i64, 1i64) == 9223372036854775807i64
@@ -212,7 +214,7 @@ fn fn23(%0: i64) -> (i64) {
 //# run fn5(7i64, -3i64) == 1i64
 //# run fn5(-7i64, -3i64) == -1i64
 //# run fn5(0i64, 5i64) == 0i64
-//# run fn5(5i64, 0i64) traps
+//# run fn5(5i64, 0i64) == 5i64
 //# run fn5(-9223372036854775808i64, -1i64) == 0i64
 //# run fn5(-9223372036854775808i64, 1i64) == 0i64
 //# run fn5(9223372036854775807i64, 1i64) == 0i64
@@ -229,7 +231,7 @@ fn fn23(%0: i64) -> (i64) {
 //# run fn6(7i64, -3i64) == 7i64
 //# run fn6(-7i64, -3i64) == -7i64
 //# run fn6(0i64, 5i64) == 0i64
-//# run fn6(5i64, 0i64) traps
+//# run fn6(5i64, 0i64) == 5i64
 //# run fn6(-9223372036854775808i64, -1i64) == -9223372036854775808i64
 //# run fn6(-9223372036854775808i64, 1i64) == 0i64
 //# run fn6(9223372036854775807i64, 1i64) == 0i64

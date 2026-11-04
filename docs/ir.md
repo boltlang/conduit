@@ -113,9 +113,16 @@ Adding an operation means adding an `Op` variant and its `effects()`. No
 control-flow pass needs to change.
 
 An op that can trap has effect `Unknown`, so that dead-code elimination
-never removes a trap: integer division and remainder (on zero), float to
-integer conversions (out of range), array accesses (out of bounds),
-`ArrayFill` with a length above `i32::MAX`, and `Unbox` (a failed cast).
+never removes a trap: signed integer division (the smallest value by -1),
+float to integer conversions (out of range), array accesses (out of
+bounds), `ArrayFill` with a length above `i32::MAX`, and `Unbox` (a failed
+cast).
+
+Integer division and remainder by zero don't trap: `x / 0` is 0 and
+`x % 0` is `x`, so `(x / y) * y + x % y` is still `x`. A frontend whose
+language traps or raises an error there checks the divisor itself. An op
+that can't trap can be removed or moved, and a check the frontend wrote
+is visible to the optimizer, which a hidden trap isn't.
 
 ### Types
 
@@ -1053,8 +1060,9 @@ Notes:
 
 - `case` on an ADT reads the tag: an `i32.load` with linear memory, and
   `br_on_cast` or a tag field with Wasm GC.
-- Integer division traps on zero in Wasm. If a frontend wants its own
-  error instead, Conduit emits a check before `div`.
+- Integer division and remainder trap on zero in Wasm, so `div` and `rem`
+  check the divisor first and give 0 or the dividend, unless it's a
+  literal.
 - Linear memory has no collector yet: memory is never freed for
   now. With Wasm GC, the host collects.
 - Mutability doesn't exist at run time: `Imm` and `Mut` objects and
@@ -1165,9 +1173,10 @@ doesn't need a deep stack.
   mutability parameters.
 - **Numbers follow Wasm.** Integers wrap, shift amounts are taken modulo
   the width, and `min` and `max` give NaN if either operand is NaN and
-  treat `-0.0` as less than `0.0`. Division and remainder by zero,
-  division of the smallest integer by -1, and converting a float that is
-  NaN or out of range to an integer are errors, where Wasm traps. The test
+  treat `-0.0` as less than `0.0`. Division by zero gives 0 and its
+  remainder the dividend. Division of the smallest integer by -1, and
+  converting a float that is NaN or out of range to an integer, are
+  errors, where Wasm traps. The test
   programs in `tests/programs/prims` check that the two agree.
 - **Undefined behavior is an error,** like `Unbox` at the wrong type.
 - **Objects are never freed** yet.

@@ -230,7 +230,10 @@ fn arithmetic() {
         (Prim::Rem(Sign::Signed), i32::MIN, -1, Ok(0)),
         (Prim::Shl, 1, 33, Ok(2)),
         (Prim::Lt(Sign::Unsigned), -1, 0, Ok(0)),
-        (Prim::Div(Sign::Signed), 1, 0, Err(ErrorKind::DivideByZero)),
+        (Prim::Div(Sign::Signed), 7, 0, Ok(0)),
+        (Prim::Div(Sign::Unsigned), -7, 0, Ok(0)),
+        (Prim::Rem(Sign::Signed), -7, 0, Ok(-7)),
+        (Prim::Rem(Sign::Unsigned), 7, 0, Ok(7)),
         (
             Prim::Div(Sign::Signed),
             i32::MIN,
@@ -818,18 +821,20 @@ fn errors_say_where_they_happened() {
     f.body = (ret(vec![v(r)])).with_let(Let {
         binds: vec![r],
         op: Op::Prim(Prim::Div(Sign::Signed)),
-        args: vec![int(1), int(0)],
+        args: vec![int(i32::MIN), int(-1)],
         source: Some(SourceId(42)),
     });
     let error = run_main(f, vec![]).unwrap_err();
-    assert_eq!(error.to_string(), "fn1 (src42): division by zero");
+    assert_eq!(
+        error.to_string(),
+        "fn1 (src42): integer overflow in division"
+    );
 }
 
 /// What each kind of error says.
 #[test]
 fn error_messages() {
     let kinds = [
-        (ErrorKind::DivideByZero, "division by zero"),
         (ErrorKind::IntegerOverflow, "integer overflow in division"),
         (
             ErrorKind::InvalidConversion,

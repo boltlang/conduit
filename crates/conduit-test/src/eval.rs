@@ -34,8 +34,7 @@ pub fn check_runs(p: &Program, m: &Module) -> Result<(), String> {
 fn is_trap(kind: &ErrorKind) -> bool {
     matches!(
         kind,
-        ErrorKind::DivideByZero
-            | ErrorKind::IntegerOverflow
+        ErrorKind::IntegerOverflow
             | ErrorKind::InvalidConversion
             | ErrorKind::OutOfBounds { .. }
             | ErrorKind::Unreachable

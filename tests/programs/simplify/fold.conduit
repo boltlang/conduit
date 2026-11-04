@@ -1,6 +1,6 @@
 // Ops on literals fold to what they give: wrapping, i8 kept to 8 bits,
-// comparisons, conversions, and a division that can't trap. A division
-// by zero, a float conversion out of range and a NaN stay.
+// comparisons, conversions, and divisions, by zero too. A division that
+// overflows, a float conversion out of range and a NaN stay.
 
 fn fn0() -> (i32) {
   let %0: i32 = add(2147483647i32, 1i32)
@@ -15,8 +15,15 @@ fn fn0() -> (i32) {
 }
 
 fn fn1() -> (i32) {
-  let %0: i32 = div.s(1i32, 0i32)
+  let %0: i32 = div.s(-2147483648i32, -1i32)
   jump ret(%0)
+}
+
+fn fn5() -> (i32) {
+  let %0: i32 = div.u(7i32, 0i32)
+  let %1: i32 = rem.s(-7i32, 0i32)
+  let %2: i32 = add(%0, %1)
+  jump ret(%2)
 }
 
 fn fn2() -> (i32) {
@@ -46,4 +53,5 @@ fn fn4() -> (f64) {
 //# run fn2() traps
 //# run fn3() == 0i32
 //# run fn4() == 3.0f64
+//# run fn5() == -7i32
 //# opt: simplify

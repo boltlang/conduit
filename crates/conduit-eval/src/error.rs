@@ -14,8 +14,6 @@ pub struct Error {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ErrorKind {
-    /// Integer division or remainder by zero.
-    DivideByZero,
     /// Division of the smallest integer by -1.
     IntegerOverflow,
     /// A float converted to an integer that is NaN or out of its range.
@@ -53,7 +51,6 @@ impl fmt::Display for Error {
             write!(f, ": ")?;
         }
         match &self.kind {
-            ErrorKind::DivideByZero => write!(f, "division by zero"),
             ErrorKind::IntegerOverflow => write!(f, "integer overflow in division"),
             ErrorKind::InvalidConversion => {
                 write!(f, "a float converted to an integer is NaN or out of range")
