@@ -700,9 +700,9 @@ fn fn1(%0: i32) -> (i32) does Effect20 + Effect21 { .. }
 let %3: imm fn(i32) -> (i32) does Effect20 = closure fn2()
 ```
 
-- **A row** is the effects after `does`: a set of effects, at most one
-  **effect parameter** `E1`, `E2`, .., or `Any`. The order doesn't matter,
-  and each effect is in a row at most once. A function or type with no
+- **A row** is the effects after `does`: a set of effects and **effect
+  parameters** `E1`, `E2`, .., or `Any`. The order doesn't matter, and
+  each effect and parameter is in a row at most once. A function or type with no
   `does` has no effects. `Any` is for frontends without effect types: it
   can perform anything, which is what every function can do today.
 - **Rows are on signatures:** a function's, a closure type's
@@ -717,7 +717,10 @@ let %3: imm fn(i32) -> (i32) does Effect20 = closure fn2()
   `call fn3[mut, Effect20 + E2]`, `imm data10[Nothing]`, where `Nothing`
   is the empty row. The callee's rows are seen with the arguments in
   place, and rows that end up naming an effect twice merge, so
-  `Effect20 + E1` with `E1` as `Effect20` is `Effect20`.
+  `Effect20 + E1` with `E1` as `Effect20` is `Effect20`. A parameter
+  given `Any` makes the whole row `Any`. A row can have several
+  parameters: `compose[E1, E2]` of an `f` that does `E1` and a `g` that
+  does `E2` does `E1 + E2`.
 - **A handler declares a row,** the effects its clauses can perform, and
   `handle` takes its effect out of the body's row: the body can perform
   `E` and what the handler's row allows, and the `handle` performs only the
@@ -782,10 +785,8 @@ What effect types give Conduit:
   nothing that existed before (see "`Imm` closures don't write").
 
 The verifier only checks rows. It never infers them, since the frontend's
-type checker already has, and with at most one parameter per row,
-inclusion is a set test with no unification. Rows don't exist at run time:
-backends and the evaluator ignore them, except to decide how to lower
-handlers.
+type checker already has. Rows don't exist at run time: backends and the
+evaluator ignore them, except to decide how to lower handlers.
 
 The text format adds:
 
@@ -813,6 +814,40 @@ Still to decide:
 - Externs that suspend, through JSPI, which would need extern rows.
 - Whether handler clauses can also have mutability parameters, now that
   `handle` gives arguments.
+
+#### Why rows are sets
+
+Row systems are usually built for inference: Koka's scoped labels unify
+rows that can name an effect more than once, and Rémy-style rows, as in
+OCaml's polymorphic variants, mark each label present or absent. Conduit
+needs neither:
+
+- **It only checks.** The frontend has inferred the rows, so the verifier
+  only asks whether one row is in another. A parameter is an unknown row
+  that's only in itself, so with any number of parameters, that's a test
+  on two sets, with nothing to unify.
+- **No effect is in a row twice.** Koka allows `<state, state | e>`
+  because `mask` lets a `perform` skip the nearest handler of its effect
+  and reach an outer one. Conduit has no `mask`: a `perform` always goes
+  to the nearest handler, so when a parameter turns out to be an effect
+  the body also names, both are caught by the same handler, and one
+  `Effect20` in the row says just that. With `mask`, or handlers that are
+  found lexically, rows would need scoped labels.
+
+So a row is `Any`, or a set of effects and a set of parameters. An
+implementation can keep them as sorted vectors with no duplicates: rows
+are part of every closure and continuation type, which passes and query
+systems compare and hash all the time, and sorted vectors make that
+structural and cheap, and printing deterministic.
+
+What would take more:
+
+- **Effects with rows as parameters,** like one whose operation starts a
+  task that performs some row: an effect in a row would then be an effect
+  and its rows, compared structurally. Still sets.
+- **Constraints,** like `where E1: Effect20`, if a frontend's type checker
+  proves inclusions that the rows alone don't show. They'd be assumptions,
+  like those of mutability parameters, added when a program needs them.
 
 ### Lowering
 

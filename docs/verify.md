@@ -221,14 +221,19 @@ whose row allows it. So a function with no effects can't reach a `perform`
 without a handler: only `Any` and entry points with effects still can.
 
 **Inclusion.** A row `R1` is in a row `R2` when every effect of `R1` is in
-`R2`, and `R1`'s parameter, if it has one, is `R2`'s. A parameter is an
-unknown row: it's only in itself. Every row is in `Any`, and `Any` is only
-in `Any`.
+`R2`, and every parameter of `R1` is a parameter of `R2`. A parameter is an
+unknown row: it's only in itself, and in rows that name it. Every row is in
+`Any`, and `Any` is only in `Any`. This is a test on two sets: the
+verifier never solves for a parameter.
 
-**Rows.** A row has each effect at most once and at most one effect
-parameter. Its effects must exist, and its parameter must be in scope:
-`E1` to `En` for a function, data declaration or handler with `n` effect
-parameters.
+**Rows.** A row has each effect and each effect parameter at most once.
+Its effects must exist, and its parameters must be in scope: `E1` to `En`
+for a function, data declaration or handler with `n` effect parameters.
+
+**Substitution.** A call, closure, data type or `handle` gives a row for
+each parameter. Putting them in a row replaces each parameter with its
+row's effects and parameters, merging what's named twice, or makes the
+whole row `Any` if one of them is `Any`.
 
 **What an op performs.** Each op has a row:
 
@@ -253,8 +258,9 @@ it, with the arguments in place.
 **Subtyping.** A closure or continuation type fits where one with a bigger
 row is expected: `fn() -> () does Effect20` fits where
 `fn() -> () does Effect20 + Effect21` is expected, and everything fits a
-row of `Any`. Mutability is unchanged. Rows in a data type's arguments
-must be equal, like its mutability arguments.
+row of `Any`. Mutability is unchanged. Only the type's own row can be
+bigger: rows inside it, in its parameters or results or in a data type's
+arguments, must be equal, like mutability arguments.
 
 **Handlers.** A handler `H` for `E` declares a row `R`, the effects its
 clauses can perform.
