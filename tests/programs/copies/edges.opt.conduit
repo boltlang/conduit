@@ -1,81 +1,81 @@
-fn fn0(%0: i32) -> (i32) {
-  let %1: mut [i32] = array_fill(1i32, %0)
-  let %2: imm [i32] = array_clone(%1)
-  case %0 {
+fn one_arm(%x: i32) -> (i32) {
+  let %xs: mut [i32] = array_fill(1i32, %x)
+  let %frozen: imm [i32] = array_clone(%xs)
+  case %x {
     0 => unreachable
     _ =>
-      let = array_set(%1, 0i32, 9i32)
-      let %3: i32 = array_get(%2, 0i32)
-      jump ret(%3)
+      let = array_set(%xs, 0i32, 9i32)
+      let %first: i32 = array_get(%frozen, 0i32)
+      jump ret(%first)
   }
 }
 
-fn fn1(%0: i32) -> (i32) {
-  let %1: mut [i32] = array_fill(1i32, 0i32)
-  join rec j1(%2: i32, %3: i32) =
-    let %4: imm [i32] = array_clone(%1)
-    let %5: i32 = array_get(%4, 0i32)
-    let %6: i32 = add(%3, %5)
-    case %2 {
-      0 => jump ret(%6)
-      _ => jump j2(%2, %6)
+fn two_loops(%n: i32) -> (i32) {
+  let %xs: mut [i32] = array_fill(1i32, 0i32)
+  join rec read(%i: i32, %acc: i32) =
+    let %frozen: imm [i32] = array_clone(%xs)
+    let %first: i32 = array_get(%frozen, 0i32)
+    let %acc1: i32 = add(%acc, %first)
+    case %i {
+      0 => jump ret(%acc1)
+      _ => jump write(%i, %acc1)
     }
-  and j2(%7: i32, %8: i32) =
-    let = array_set(%1, 0i32, %7)
-    let %9: i32 = sub(%7, 1i32)
-    jump j1(%9, %8)
-  in jump j1(%0, 0i32)
+  and write(%i2: i32, %acc2: i32) =
+    let = array_set(%xs, 0i32, %i2)
+    let %i3: i32 = sub(%i2, 1i32)
+    jump read(%i3, %acc2)
+  in jump read(%n, 0i32)
 }
 
-fn fn2(%0: i32) -> (i32) {
-  let %1: mut [i32] = array_fill(1i32, %0)
-  let %2: ref mut [i32] = ref_new(%1)
-  let %3: imm [i32] = array_clone(%1)
-  let %4: mut [i32] = ref_get(%2)
-  let = array_set(%4, 0i32, 9i32)
-  let %5: i32 = array_get(%3, 0i32)
-  jump ret(%5)
+fn in_ref(%x: i32) -> (i32) {
+  let %xs: mut [i32] = array_fill(1i32, %x)
+  let %cell: ref mut [i32] = ref_new(%xs)
+  let %frozen: imm [i32] = array_clone(%xs)
+  let %xs2: mut [i32] = ref_get(%cell)
+  let = array_set(%xs2, 0i32, 9i32)
+  let %first: i32 = array_get(%frozen, 0i32)
+  jump ret(%first)
 }
 
-fn fn3(%0: i32) -> (i32) {
-  let %1: mut [i32] = array_fill(1i32, %0)
-  let %2: mut fn() -> () = closure fn4(%1)
-  let %3: imm [i32] = array_clone(%1)
-  let = apply(%2)
-  let %4: i32 = array_get(%3, 0i32)
-  jump ret(%4)
+fn in_closure(%x: i32) -> (i32) {
+  let %xs: mut [i32] = array_fill(1i32, %x)
+  let %write: mut fn() -> () = closure write9(%xs)
+  let %frozen: imm [i32] = array_clone(%xs)
+  let = apply(%write)
+  let %first: i32 = array_get(%frozen, 0i32)
+  jump ret(%first)
 }
 
-fn fn4(%0: mut [i32]) -> () {
-  let = array_set(%0, 0i32, 9i32)
+fn write9(%xs: mut [i32]) -> () {
+  let = array_set(%xs, 0i32, 9i32)
   jump ret()
 }
 
-fn fn5(%0: i32) -> (i32) {
-  let %1: mut [i32] = array_fill(1i32, %0)
-  let %2: mut any = box[mut [i32]](%1)
-  let %3: imm [i32] = array_clone(%1)
-  let %4: mut [i32] = unbox[mut [i32]](%2)
-  let = array_set(%4, 0i32, 9i32)
-  let %5: i32 = array_get(%3, 0i32)
-  jump ret(%5)
+fn in_box(%x: i32) -> (i32) {
+  let %xs: mut [i32] = array_fill(1i32, %x)
+  let %boxed: mut any = box[mut [i32]](%xs)
+  let %frozen: imm [i32] = array_clone(%xs)
+  let %xs2: mut [i32] = unbox[mut [i32]](%boxed)
+  let = array_set(%xs2, 0i32, 9i32)
+  let %first: i32 = array_get(%frozen, 0i32)
+  jump ret(%first)
 }
 
-fn fn6(%0: i32) -> (i32) {
-  let %1: mut [i32] = array_fill(1i32, %0)
-  let %2: imm [i32] = array_clone(%1)
-  let %3: i32 = array_get(%1, 0i32)
-  let %4: i32 = array_get(%2, 0i32)
-  let %5: i32 = add(%3, %4)
-  jump ret(%5)
+fn read_after(%x: i32) -> (i32) {
+  let %xs: mut [i32] = array_fill(1i32, %x)
+  let %frozen: imm [i32] = array_clone(%xs)
+  let %a: i32 = array_get(%xs, 0i32)
+  let %b: i32 = array_get(%frozen, 0i32)
+  let %sum: i32 = add(%a, %b)
+  jump ret(%sum)
 }
 
-fn fn7(%0: i32) -> (i32) {
-  let %1: mut [i32] = array_fill(1i32, %0)
-  let %2: mut [mut [i32]] = array_new(%1)
-  let %3: mut [mut [i32]] = array_clone(%2)
-  let %4: mut [i32] = array_get(%3, 0i32)
-  let = array_set(%4, 0i32, 9i32)
-  let %5: i32 = array_get(%1, 0i32)
-  jump ret(%5)
+fn nested(%x: i32) -> (i32) {
+  let %inner: mut [i32] = array_fill(1i32, %x)
+  let %outer: mut [mut [i32]] = array_new(%inner)
+  let %copy: mut [mut [i32]] = array_clone(%outer)
+  let %inner2: mut [i32] = array_get(%copy, 0i32)
+  let = array_set(%inner2, 0i32, 9i32)
+  let %first: i32 = array_get(%inner, 0i32)
+  jump ret(%first)
 }

@@ -1,47 +1,47 @@
 // Clones that must stay clones, because something other than the clone can
 // still reach the array afterwards.
 
-data data1 {
+data Holder {
   (mut [i32])
 }
 
 // The original is written after the clone.
-fn fn0(%0: i32) -> (i32) {
-  let %1: mut [i32] = array_fill(1i32, %0)
-  let %2: imm [i32] = array_clone(%1)
-  let = array_set(%1, 0i32, 5i32)
-  let %3: i32 = array_get(%2, 0i32)
-  jump ret(%3)
+fn written_after(%x: i32) -> (i32) {
+  let %xs: mut [i32] = array_fill(1i32, %x)
+  let %frozen: imm [i32] = array_clone(%xs)
+  let = array_set(%xs, 0i32, 5i32)
+  let %first: i32 = array_get(%frozen, 0i32)
+  jump ret(%first)
 }
 
 // An object holds the original, and it's used after the clone.
-fn fn1(%0: i32) -> (i32) {
-  let %1: mut [i32] = array_fill(1i32, %0)
-  let %2: mut data1 = new data1.0(%1)
-  let %3: imm [i32] = array_clone(%1)
-  let %4: mut [i32] = get data1.0.0(%2)
-  let = array_set(%4, 0i32, 5i32)
-  let %5: i32 = array_get(%3, 0i32)
-  jump ret(%5)
+fn held(%x: i32) -> (i32) {
+  let %xs: mut [i32] = array_fill(1i32, %x)
+  let %holder: mut Holder = new Holder.0(%xs)
+  let %frozen: imm [i32] = array_clone(%xs)
+  let %xs2: mut [i32] = get Holder.0.0(%holder)
+  let = array_set(%xs2, 0i32, 5i32)
+  let %first: i32 = array_get(%frozen, 0i32)
+  jump ret(%first)
 }
 
 // A parameter: the caller may still hold it.
-fn fn2(%0: mut [i32]) -> (i32) {
-  let %1: imm [i32] = array_clone(%0)
-  let %2: i32 = array_get(%1, 0i32)
-  jump ret(%2)
+fn param(%xs: mut [i32]) -> (i32) {
+  let %frozen: imm [i32] = array_clone(%xs)
+  let %first: i32 = array_get(%frozen, 0i32)
+  jump ret(%first)
 }
 
 // The original was passed to a call, which may have kept it.
-fn fn3(%0: i32) -> (i32) {
-  let %1: mut [i32] = array_fill(1i32, %0)
-  let %2: i32 = call fn2(%1)
-  let %3: imm [i32] = array_clone(%1)
-  let %4: i32 = array_get(%3, 0i32)
-  jump ret(%4)
+fn passed(%x: i32) -> (i32) {
+  let %xs: mut [i32] = array_fill(1i32, %x)
+  let %r: i32 = call param(%xs)
+  let %frozen: imm [i32] = array_clone(%xs)
+  let %first: i32 = array_get(%frozen, 0i32)
+  jump ret(%first)
 }
 
-//# run fn0(1i32) == 1i32
-//# run fn1(1i32) == 1i32
-//# run fn3(1i32) == 1i32
+//# run written_after(1i32) == 1i32
+//# run held(1i32) == 1i32
+//# run passed(1i32) == 1i32
 //# opt: copies

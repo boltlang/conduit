@@ -1,101 +1,101 @@
 // A rebuild of an `imm` object from its own fields, at the same type, is
 // the object. Rebuilds of anything else stay.
-data data10 {
+data Point {
   (i32, i32)
 }
 
 // A line between two points.
-data data11 {
-  (inherit data10, inherit data10)
+data Line {
+  (inherit Point, inherit Point)
 }
 
 // None, or Some.
-data data12 {
+data Option {
   ()
   (i32)
 }
 
 // Removed: the fields, in order, of one `imm` object.
-fn fn0(%0: imm data10) -> (imm data10) {
-  let %1: i32 = get data10.0.0(%0)
-  let %2: i32 = get data10.0.1(%0)
-  let %3: imm data10 = new data10.0(%1, %2)
-  jump ret(%3)
+fn point(%p: imm Point) -> (imm Point) {
+  let %x: i32 = get Point.0.0(%p)
+  let %y: i32 = get Point.0.1(%p)
+  let %q: imm Point = new Point.0(%x, %y)
+  jump ret(%q)
 }
 
 // Removed: a rebuild whose fields are rebuilds, so all three go.
-fn fn1(%0: imm data11) -> (imm data11) {
-  let %1: imm data10 = get data11.0.0(%0)
-  let %2: i32 = get data10.0.0(%1)
-  let %3: i32 = get data10.0.1(%1)
-  let %4: imm data10 = new data10.0(%2, %3)
-  let %5: imm data10 = get data11.0.1(%0)
-  let %6: i32 = get data10.0.0(%5)
-  let %7: i32 = get data10.0.1(%5)
-  let %8: imm data10 = new data10.0(%6, %7)
-  let %9: imm data11 = new data11.0(%4, %8)
-  jump ret(%9)
+fn line(%l: imm Line) -> (imm Line) {
+  let %a: imm Point = get Line.0.0(%l)
+  let %ax: i32 = get Point.0.0(%a)
+  let %ay: i32 = get Point.0.1(%a)
+  let %a2: imm Point = new Point.0(%ax, %ay)
+  let %b: imm Point = get Line.0.1(%l)
+  let %bx: i32 = get Point.0.0(%b)
+  let %by: i32 = get Point.0.1(%b)
+  let %b2: imm Point = new Point.0(%bx, %by)
+  let %l2: imm Line = new Line.0(%a2, %b2)
+  jump ret(%l2)
 }
 
 // Removed: in the arm that knows the constructor.
-fn fn2(%0: imm data12) -> (imm data12) {
-  case %0 {
-    data12.1 =>
-      let %1: i32 = get data12.1.0(%0)
-      let %2: imm data12 = new data12.1(%1)
-      jump ret(%2)
-    _ => jump ret(%0)
+fn option(%o: imm Option) -> (imm Option) {
+  case %o {
+    Option.1 =>
+      let %x: i32 = get Option.1.0(%o)
+      let %o2: imm Option = new Option.1(%x)
+      jump ret(%o2)
+    _ => jump ret(%o)
   }
 }
 
 // Kept: a `mut` object, which may change after.
-fn fn3(%0: mut data10) -> (imm data10) {
-  let %1: i32 = get data10.0.0(%0)
-  let %2: i32 = get data10.0.1(%0)
-  let %3: imm data10 = new data10.0(%1, %2)
-  jump ret(%3)
+fn from_mut(%p: mut Point) -> (imm Point) {
+  let %x: i32 = get Point.0.0(%p)
+  let %y: i32 = get Point.0.1(%p)
+  let %q: imm Point = new Point.0(%x, %y)
+  jump ret(%q)
 }
 
 // Kept: a `ro` view, which may be of a `mut` object.
-fn fn4(%0: ro data10) -> (imm data10) {
-  let %1: i32 = get data10.0.0(%0)
-  let %2: i32 = get data10.0.1(%0)
-  let %3: imm data10 = new data10.0(%1, %2)
-  jump ret(%3)
+fn from_ro(%p: ro Point) -> (imm Point) {
+  let %x: i32 = get Point.0.0(%p)
+  let %y: i32 = get Point.0.1(%p)
+  let %q: imm Point = new Point.0(%x, %y)
+  jump ret(%q)
 }
 
 // Kept: the fields swapped, a field from another object, and a field that
 // isn't read from one.
-fn fn5(%0: imm data10, %1: imm data10) -> (imm data10, imm data10, imm data10) {
-  let %2: i32 = get data10.0.0(%0)
-  let %3: i32 = get data10.0.1(%0)
-  let %4: imm data10 = new data10.0(%3, %2)
-  let %5: i32 = get data10.0.1(%1)
-  let %6: imm data10 = new data10.0(%2, %5)
-  let %7: imm data10 = new data10.0(%2, 0i32)
-  jump ret(%4, %6, %7)
+fn not_rebuilds(%p: imm Point, %q: imm Point) -> (imm Point, imm Point, imm Point) {
+  let %x: i32 = get Point.0.0(%p)
+  let %y: i32 = get Point.0.1(%p)
+  let %swapped: imm Point = new Point.0(%y, %x)
+  let %qy: i32 = get Point.0.1(%q)
+  let %mixed: imm Point = new Point.0(%x, %qy)
+  let %zeroed: imm Point = new Point.0(%x, 0i32)
+  jump ret(%swapped, %mixed, %zeroed)
 }
 
 // Kept: a `mut` rebuild, which is a new object that can be changed.
-fn fn6(%0: imm data10) -> (mut data10) {
-  let %1: i32 = get data10.0.0(%0)
-  let %2: i32 = get data10.0.1(%0)
-  let %3: mut data10 = new data10.0(%1, %2)
-  jump ret(%3)
+fn to_mut(%p: imm Point) -> (mut Point) {
+  let %x: i32 = get Point.0.0(%p)
+  let %y: i32 = get Point.0.1(%p)
+  let %q: mut Point = new Point.0(%x, %y)
+  jump ret(%q)
 }
 
-fn fn7() -> (i32) {
-  let %0: imm data10 = new data10.0(1i32, 2i32)
-  let %1: imm data10 = new data10.0(3i32, 4i32)
-  let %2: imm data11 = new data11.0(%0, %1)
-  let %3: imm data10 = call fn0(%0)
-  let %4: imm data11 = call fn1(%2)
-  let %5: imm data10 = get data11.0.1(%4)
-  let %6: i32 = get data10.0.0(%3)
-  let %7: i32 = get data10.0.1(%5)
-  let %8: i32 = add(%6, %7)
-  jump ret(%8)
+fn main() -> (i32) {
+  let %a: imm Point = new Point.0(1i32, 2i32)
+  let %b: imm Point = new Point.0(3i32, 4i32)
+  let %l: imm Line = new Line.0(%a, %b)
+  let %p: imm Point = call point(%a)
+  let %l2: imm Line = call line(%l)
+  let %b2: imm Point = get Line.0.1(%l2)
+  let %x: i32 = get Point.0.0(%p)
+  let %y: i32 = get Point.0.1(%b2)
+  let %sum: i32 = add(%x, %y)
+  jump ret(%sum)
 }
 
-//# run fn7() == 5i32
+//# run main() == 5i32
 //# opt: copies

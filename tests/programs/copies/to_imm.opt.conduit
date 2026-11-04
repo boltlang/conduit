@@ -1,38 +1,38 @@
-data data10 {
+data Vec {
   (inherit [i32], i32)
 }
 
-fn fn0['m1](%0: 'm1 data10) -> (imm data10) {
-  let %1: 'm1 [i32] = get data10.0.0(%0)
-  let %2: imm [i32] = array_clone(%1)
-  let %3: i32 = get data10.0.1(%0)
-  let %4: imm data10 = new data10.0(%2, %3)
-  jump ret(%4)
+fn to_imm['m1](%v: 'm1 Vec) -> (imm Vec) {
+  let %items: 'm1 [i32] = get Vec.0.0(%v)
+  let %frozen: imm [i32] = array_clone(%items)
+  let %len: i32 = get Vec.0.1(%v)
+  let %w: imm Vec = new Vec.0(%frozen, %len)
+  jump ret(%w)
 }
 
-fn fn1(%0: imm data10) -> (imm data10) {
-  jump ret(%0)
+fn to_imm_imm(%v: imm Vec) -> (imm Vec) {
+  jump ret(%v)
 }
 
-fn fn2(%0: i32) -> (i32) {
-  let %1: mut [i32] = array_fill(%0, 1i32)
-  let %2: mut data10 = new data10.0(%1, %0)
-  join j1(%3: imm data10) =
-    let %4: i32 = get data10.0.1(%3)
-    jump ret(%4)
+fn fresh(%n: i32) -> (i32) {
+  let %items#1: mut [i32] = array_fill(%n, 1i32)
+  let %v: mut Vec = new Vec.0(%items#1, %n)
+  join j1(%w#3: imm Vec) =
+    let %len#4: i32 = get Vec.0.1(%w#3)
+    jump ret(%len#4)
   in
-  let %5: mut [i32] = get data10.0.0(%2)
-  let %6: imm [i32] = array_clone(%5)
-  let %7: i32 = get data10.0.1(%2)
-  let %8: imm data10 = new data10.0(%6, %7)
-  jump j1(%8)
+  let %items#5: mut [i32] = get Vec.0.0(%v)
+  let %frozen: imm [i32] = array_clone(%items#5)
+  let %len#7: i32 = get Vec.0.1(%v)
+  let %w#8: imm Vec = new Vec.0(%frozen, %len#7)
+  jump j1(%w#8)
 }
 
-fn fn3() -> (i32) {
-  let %0: imm [i32] = array_new(1i32, 2i32)
-  let %1: imm data10 = new data10.0(%0, 2i32)
-  join j1(%2: imm data10) =
-    let %3: i32 = get data10.0.1(%2)
-    jump ret(%3)
-  in jump j1(%1)
+fn main() -> (i32) {
+  let %items: imm [i32] = array_new(1i32, 2i32)
+  let %v: imm Vec = new Vec.0(%items, 2i32)
+  join j1(%w: imm Vec) =
+    let %len: i32 = get Vec.0.1(%w)
+    jump ret(%len)
+  in jump j1(%v)
 }

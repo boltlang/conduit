@@ -1,17 +1,17 @@
 // An `imm` array cloned to `imm` can't be told apart from the array
 // itself, so the clone goes. A clone to `mut` is a new array, and stays.
 
-fn fn0(%0: i32) -> (i32) {
-  let %1: imm [i32] = array_new(%0, 2i32)
-  let %2: imm [i32] = array_clone(%1)
-  let %3: imm [i32] = array_clone(%2)
-  let %4: mut [i32] = array_clone(%3)
-  let = array_set(%4, 0i32, 7i32)
-  let %5: i32 = array_get(%3, 0i32)
-  let %6: i32 = array_get(%4, 0i32)
-  let %7: i32 = add(%5, %6)
-  jump ret(%7)
+fn main(%x: i32) -> (i32) {
+  let %xs: imm [i32] = array_new(%x, 2i32)
+  let %a: imm [i32] = array_clone(%xs)
+  let %b: imm [i32] = array_clone(%a)
+  let %c: mut [i32] = array_clone(%b)
+  let = array_set(%c, 0i32, 7i32)
+  let %first: i32 = array_get(%b, 0i32)
+  let %c0: i32 = array_get(%c, 0i32)
+  let %sum: i32 = add(%first, %c0)
+  jump ret(%sum)
 }
 
-//# run fn0(1i32) == 8i32
+//# run main(1i32) == 8i32
 //# opt: copies
