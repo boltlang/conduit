@@ -59,7 +59,12 @@ pub fn promote(f: &mut Func) -> bool {
                 unreachable!("only refs are promoted");
             };
             let inner = (**inner).clone();
-            params[l].push((r, f.new_var(inner)));
+            let value = f.new_var(inner);
+            // The value is the ref's, so it gets the ref's name.
+            if let Some(name) = f.debug.vars.get(&r).cloned() {
+                f.debug.vars.insert(value, name);
+            }
+            params[l].push((r, value));
         }
     }
     let mut cx = Rewrite {

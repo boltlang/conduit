@@ -38,8 +38,8 @@ use conduit_ir::verify::Item;
 use conduit_ir::{EffectId, ExternId, Func, FuncId, HandlerId, Module};
 use wasm_encoder::{
     CodeSection, ConstExpr, ElementSection, Elements, EntityType, ExportKind, ExportSection,
-    Function, FunctionSection, GlobalSection, GlobalType, HeapType, ImportSection, TagKind,
-    TagSection, TagType, TypeSection,
+    Function, FunctionSection, GlobalSection, GlobalType, HeapType, ImportSection, IndirectNameMap,
+    NameMap, NameSection, TagKind, TagSection, TagType, TypeSection,
 };
 
 use crate::types::{FnSig, Types, nullable};
@@ -370,7 +370,47 @@ pub fn emit_module(m: &Module, exports: &[(FuncId, &str)]) -> Result<Vec<u8>, Er
         module.section(&elements);
     }
     module.section(&code_section);
+    if let Some(names) = name_section(m, &funcs) {
+        module.section(&names);
+    }
     Ok(module.finish())
+}
+
+/// The names of the module's externs, functions and their variables, for
+/// tools and stack traces, or `None` if nothing has one. `funcs` are the
+/// lowered functions, in the order of the module's.
+fn name_section(m: &Module, funcs: &[(u32, func::Body)]) -> Option<NameSection> {
+    let mut functions = NameMap::new();
+    let mut locals = IndirectNameMap::new();
+    let mut any = false;
+    for (i, ext) in m.externs.values().enumerate() {
+        if let Some(name) = &ext.debug_name {
+            functions.append(i as u32, name);
+            any = true;
+        }
+    }
+    let first = m.externs.len() as u32;
+    for (i, (f, (_, body))) in m.funcs.values().zip(funcs).enumerate() {
+        let index = first + i as u32;
+        if let Some(name) = &f.debug.name {
+            functions.append(index, name);
+            any = true;
+        }
+        if !body.local_names.is_empty() {
+            let mut names = NameMap::new();
+            for (local, name) in &body.local_names {
+                names.append(*local, name);
+            }
+            locals.append(index, &names);
+            any = true;
+        }
+    }
+    any.then(|| {
+        let mut section = NameSection::new();
+        section.functions(&functions);
+        section.locals(&locals);
+        section
+    })
 }
 
 #[cfg(test)]

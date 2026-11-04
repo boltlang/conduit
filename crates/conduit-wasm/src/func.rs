@@ -40,6 +40,8 @@ use crate::{ABORT, Cx, HANDLERS, SITE};
 pub(crate) struct Body {
     pub locals: Vec<ValType>,
     pub code: Vec<I<'static>>,
+    /// The names of locals that hold named variables, by local index.
+    pub local_names: Vec<(u32, Box<str>)>,
 }
 
 /// Where a jump to a label goes.
@@ -97,9 +99,17 @@ pub(crate) fn lower_func<'m>(cx: &mut Cx<'m>, f: &'m Func) -> Result<Body, Strin
     };
     fcx.block(&f.body)?;
     fcx.code.push(I::End);
+    let mut local_names: Vec<(u32, Box<str>)> = f
+        .debug
+        .vars
+        .iter()
+        .filter_map(|(v, name)| Some((*fcx.locals.get(v.0 as usize)?, name.clone())))
+        .collect();
+    local_names.sort();
     Ok(Body {
         locals: fcx.extra,
         code: fcx.code,
+        local_names,
     })
 }
 
@@ -132,6 +142,7 @@ pub(crate) fn lower_entry(
     Ok(Body {
         locals: vec![nullable(captures)],
         code,
+        local_names: Vec::new(),
     })
 }
 
@@ -192,7 +203,11 @@ pub(crate) fn lower_wrapper(cx: &mut Cx<'_>, h: HandlerId, i: u32) -> Result<Bod
         code.push(I::ReturnCall(idx));
     }
     code.push(I::End);
-    Ok(Body { locals, code })
+    Ok(Body {
+        locals,
+        code,
+        local_names: Vec::new(),
+    })
 }
 
 impl<'m> FuncCx<'_, 'm> {

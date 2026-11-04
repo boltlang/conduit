@@ -9,6 +9,7 @@ to serve languages that are bare-metal.
 
 Some of its properties:
 
+ - Effects and effect handlers are built into the language.
  - Mutations and cycles are allowed.
  - ADTs are the default way to construct and manipulate structured data.
  - No need for manual memory management. The compiler optimises allocations

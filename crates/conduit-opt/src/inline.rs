@@ -9,7 +9,7 @@
 //! call in the callee stays one.
 //!
 //! A `let` or `jump` of the callee keeps its source, or gets the call's if
-//! it has none.
+//! it has none, and its variables and labels keep their names.
 //!
 //! Only small callees are inlined, never the function itself, nor one that
 //! calls itself, directly or through one other function, which would unroll
@@ -272,7 +272,11 @@ impl Rename<'_> {
             return a.clone();
         }
         let ty = subst_params(self.callee.var_ty(v), &self.margs);
-        let a = Atom::Var(f.new_var(ty));
+        let new = f.new_var(ty);
+        if let Some(name) = self.callee.debug.vars.get(&v) {
+            f.debug.vars.insert(new, name.clone());
+        }
+        let a = Atom::Var(new);
         self.vars.insert(v, a.clone());
         a
     }
@@ -290,6 +294,9 @@ impl Rename<'_> {
             return new;
         }
         let new = new_label(f);
+        if let Some(name) = self.callee.debug.labels.get(&l) {
+            f.debug.labels.insert(new, name.clone());
+        }
         self.labels.insert(l, new);
         new
     }

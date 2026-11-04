@@ -654,3 +654,17 @@ fn name_errors() {
         assert_eq!(error(src), message, "for {src:?}");
     }
 }
+
+#[test]
+fn errors_name_their_item() {
+    let m = parse("fn main() -> (i64) { jump ret(1i32) }").unwrap();
+    let errors = verify_module(&m).unwrap_err();
+    assert_eq!(
+        errors[0].named(&m),
+        "main (fn0): jump to ret: value 0 has type i32, but should have i64"
+    );
+    assert_eq!(
+        errors[0].to_string(),
+        "fn0: jump to ret: value 0 has type i32, but should have i64"
+    );
+}

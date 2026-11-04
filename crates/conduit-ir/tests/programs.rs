@@ -29,7 +29,7 @@ fn test(p: &Program) -> Result<(), String> {
     });
     let errors: Vec<String> = match verify_module(&m) {
         Ok(()) => Vec::new(),
-        Err(errors) => errors.iter().map(|e| e.to_string()).collect(),
+        Err(errors) => errors.iter().map(|e| e.named(&m)).collect(),
     };
     if expected.is_empty() && !errors.is_empty() {
         return Err(format!("the verifier rejects it:\n{}", errors.join("\n")));

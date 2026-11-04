@@ -58,6 +58,26 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+impl Error {
+    /// The error as [`Display`](fmt::Display) writes it, with the name of
+    /// its item in `p` before its number, like `sum (fn3): ..`, if it has
+    /// one.
+    pub fn named<P: Program + ?Sized>(&self, p: &P) -> String {
+        let name = match self.item {
+            Item::Func(id) => p.func(id).and_then(|f| f.debug.name.clone()),
+            Item::Data(id) => p.data(id).and_then(|d| d.debug_name.clone()),
+            Item::Extern(id) => p.extern_fn(id).and_then(|e| e.debug_name.clone()),
+            Item::Effect(id) => p.effect(id).and_then(|e| e.debug_name.clone()),
+            Item::Handler(id) => p.handler(id).and_then(|h| h.debug_name.clone()),
+        };
+        let Some(name) = name else {
+            return self.to_string();
+        };
+        let source = self.source.map_or(String::new(), |s| format!(" ({s})"));
+        format!("{name} ({}){source}: {}", self.item, self.message)
+    }
+}
+
 /// Checks every declaration and function of a module.
 pub fn verify_module(m: &Module) -> Result<(), Vec<Error>> {
     let mut errors = Vec::new();

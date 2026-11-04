@@ -77,7 +77,7 @@ fn optimized(p: &Program, passes: &[&dyn Pass]) -> Result<Module, String> {
     let names: Vec<&str> = passes.iter().map(|p| p.name()).collect();
     let after = format!("after {}", names.join(", "));
     if let Err(errors) = verify_module(&m) {
-        let errors: Vec<String> = errors.iter().map(|e| e.to_string()).collect();
+        let errors: Vec<String> = errors.iter().map(|e| e.named(&m)).collect();
         return Err(format!(
             "the program {after} doesn't verify:\n{}\n\n{}",
             errors.join("\n"),
