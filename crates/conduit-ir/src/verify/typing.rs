@@ -307,7 +307,8 @@ fn array_clone<P: Program + ?Sized>(
 }
 
 /// Checks that `obj`, of data type `d`, is known to be built by `c`:
-/// `d` has one constructor, or an enclosing `case` arm says so.
+/// `d` has one constructor, `obj` was bound by `new c`, or an enclosing
+/// `case` arm says so.
 fn field_access<P: Program + ?Sized>(
     p: &P,
     known: &[(Var, CtorId)],

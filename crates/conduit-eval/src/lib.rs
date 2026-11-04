@@ -33,6 +33,7 @@ mod value;
 
 pub use error::{Error, ErrorKind};
 pub use machine::{Host, Machine, NoHost};
+pub use prim::fold;
 pub use value::{Continuation, ObjId, Object, Value};
 
 #[cfg(test)]

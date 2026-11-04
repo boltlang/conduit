@@ -15,6 +15,7 @@ pub mod copies;
 pub mod dce;
 pub mod inline;
 pub mod promote;
+pub mod simplify;
 
 use conduit_ir::{Func, FuncId, Module, Program};
 
@@ -30,12 +31,16 @@ pub trait Pass {
 
 /// The passes [`optimize_func`] runs, in order. Inlining goes first, since
 /// the others only see one function, and a callee's body in its caller
-/// shows them more. Promoting refs comes next, since a ref holding an array ties it to the ref's region, which
-/// keeps `copies` from freezing it. Dead code goes before `copies` too,
-/// since a dead use of a value can keep it from freezing.
+/// shows them more. Promoting refs comes next, since a ref holding an
+/// array ties it to the ref's region, which keeps `copies` from freezing
+/// it, and since it turns what refs hold into values that `simplify` can
+/// see. `simplify` leaves code behind for dead code to remove. Dead code
+/// goes before `copies`, since a dead use of a value can keep it from
+/// freezing.
 pub const PASSES: &[&dyn Pass] = &[
     &inline::Inline,
     &promote::Promote,
+    &simplify::Simplify,
     &dce::Dce,
     &copies::Copies,
 ];

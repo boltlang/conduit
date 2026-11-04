@@ -1,0 +1,43 @@
+// An `apply` of a closure made here is a call of its function, with the
+// captures first. With all passes, the call is then inlined and the
+// closure is dead. A closure that comes into a join point stays applied.
+
+fn fn0(%0: i32, %1: i32) -> (i32) {
+  let %2: i32 = mul(%1, %0)
+  jump ret(%2)
+}
+
+fn fn1(%0: i32) -> (i32) {
+  let %1: imm fn(i32) -> (i32) = closure fn0(3i32)
+  let %2: i32 = apply(%1, %0)
+  let %3: i32 = apply(%1, %2)
+  jump ret(%3)
+}
+
+fn fn2(%0: i32) -> (i32) {
+  join j1(%1: imm fn(i32) -> (i32)) =
+    let %2: i32 = apply(%1, %0)
+    jump ret(%2)
+  in
+  let %3: imm fn(i32) -> (i32) = closure fn0(%0)
+  jump j1(%3)
+}
+
+// A generic function's closure keeps its mutability arguments.
+fn fn3['m1](%0: 'm1 [i32], %1: i32) -> (i32) {
+  let %2: i32 = array_get(%0, %1)
+  jump ret(%2)
+}
+
+fn fn4(%0: i32) -> (i32) {
+  let %1: mut [i32] = array_fill(3i32, %0)
+  let %2: mut fn(i32) -> (i32) = closure fn3[mut](%1)
+  let %3: i32 = apply(%2, 1i32)
+  jump ret(%3)
+}
+
+//# run fn1(2i32) == 18i32
+//# run fn2(4i32) == 16i32
+//# run fn4(6i32) == 6i32
+//# opt: simplify
+//# opt

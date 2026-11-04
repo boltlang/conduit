@@ -438,7 +438,8 @@ struct Cx<'a, P: ?Sized> {
     label_bound: Vec<bool>,
     /// The parameter types of each label in scope.
     label_params: Vec<Option<Vec<Ty>>>,
-    /// What the enclosing `case` arms say about variables.
+    /// What the enclosing `case` arms, and the `new`s in scope, say about
+    /// variables.
     known: Vec<(Var, CtorId)>,
 }
 
@@ -556,6 +557,7 @@ impl<P: Program + ?Sized> Cx<'_, P> {
     }
 
     fn block(&mut self, b: &Block) {
+        let known = self.known.len();
         for l in &b.lets {
             self.source = l.source;
             if let Some(tys) = self.atoms(&l.args) {
@@ -563,6 +565,10 @@ impl<P: Program + ?Sized> Cx<'_, P> {
             }
             for &v in &l.binds {
                 self.bind(v);
+            }
+            // What `new` builds is known for as long as it's in scope.
+            if let (Op::New(c), [v]) = (&l.op, &l.binds[..]) {
+                self.known.push((*v, *c));
             }
         }
         match &b.tail {
@@ -582,6 +588,7 @@ impl<P: Program + ?Sized> Cx<'_, P> {
             } => self.case(scrut, arms, default.as_deref()),
             Tail::Unreachable => {}
         }
+        self.known.truncate(known);
         for l in &b.lets {
             for &v in &l.binds {
                 self.unbind(v);

@@ -456,7 +456,8 @@ The verifier checks these rules, and the types of every op: see
    which a backend can recognize and emit as `return_call`.
 5. **Field reads happen where they're written.** A `Case` on an ADT binds
    no fields. `Get(C, i)` on `x` is valid in an arm `C` of a case on `x`,
-   or when `x`'s type has a single constructor. Fields aren't bound in the
+   after `x` is bound by `New(C)`, or when `x`'s type has a single
+   constructor. Fields aren't bound in the
    arm because fields can be mutable: a binding made at the `case` would
    be a snapshot that goes stale after a later `Set`.
 6. **Mutable locals are refs.** Variables are never assigned, so a frontend
@@ -833,7 +834,17 @@ Because the IR is so small, the classic simplifications are local rewrites:
 
 - **Case of known constructor or literal.** If `case x` has a scrutinee
   bound by `New(C)` or a literal, replace the case with the matching arm.
+  A constructor never changes, so this holds for `Mut` objects too.
   `Get(C, i)` of a known `New` of an `Imm` object becomes its argument.
+- **Constant folding.** A `Prim` op on literals is its result, as the
+  evaluator computes it, unless it traps or a float in it is NaN, whose
+  bits Wasm doesn't fix. Integer ops like `add(x, 0)` and `mul(x, 1)` are
+  `x`, and `mul(x, 0)` is `0`. Floats get no such rules: `x + 0.0` isn't
+  `x` when `x` is `-0.0`.
+
+  The `simplify` pass does these two and "Known closures" below, in one
+  forward walk. It runs after `promote`, which turns what refs held into
+  values it can see.
 - **Case-of-case.** In A-normal form with join points, this becomes "a jump
   to a known join point with a known argument". Inline (copy) the join
   body at that jump, substituting the arguments, and the case inside it

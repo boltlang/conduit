@@ -212,6 +212,7 @@ dependencies = [
 name = "conduit-opt"
 version = "0.1.0"
 dependencies = [
+ "conduit-eval",
  "conduit-ir",
  "conduit-test",
 ]
