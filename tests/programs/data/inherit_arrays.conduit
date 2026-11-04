@@ -1,84 +1,84 @@
 // An array's elements can inherit its mutability, as a struct's fields
-// can: `mut [inherit data0]` holds `mut` cells, which belong to the array.
+// can: `mut [inherit Cell]` holds `mut` cells, which belong to the array.
 // Seen as `ro`, the cells are `ro` too.
 
-data data0 {
+data Cell {
   (i32)
 }
 
 // A struct that owns an array of cells it owns.
-data data1 {
-  (inherit [inherit data0])
+data Owner {
+  (inherit [inherit Cell])
 }
 
 // A struct that owns an array of cells it shares.
-data data2 {
-  (inherit [imm data0])
+data Sharer {
+  (inherit [imm Cell])
 }
 
 // Through an `ro` view, the cells are `ro` as well.
-fn fn0(%0: i32) -> (i32) {
-  let %1: mut data0 = new data0.0(%0)
-  let %2: mut [inherit data0] = array_new(%1)
-  let = set data0.0.0(%1, 4i32)
-  let %3: i32 = call fn1(%2)
-  jump ret(%3)
+fn through_ro(%x: i32) -> (i32) {
+  let %cell: mut Cell = new Cell.0(%x)
+  let %cells: mut [inherit Cell] = array_new(%cell)
+  let = set Cell.0.0(%cell, 4i32)
+  let %r: i32 = call read(%cells)
+  jump ret(%r)
 }
 
-fn fn1(%0: ro [inherit data0]) -> (i32) {
-  let %1: ro data0 = array_get(%0, 0i32)
-  let %2: i32 = get data0.0.0(%1)
-  jump ret(%2)
+fn read(%cells: ro [inherit Cell]) -> (i32) {
+  let %cell: ro Cell = array_get(%cells, 0i32)
+  let %x: i32 = get Cell.0.0(%cell)
+  jump ret(%x)
 }
 
 // A clone shares the cells, even ones the array owns: a write to a cell
 // of the clone is seen through the original.
-fn fn2() -> (i32) {
-  let %0: mut data0 = new data0.0(1i32)
-  let %1: mut [inherit data0] = array_new(%0)
-  let %2: mut [inherit data0] = array_clone(%1)
-  let %3: mut data0 = array_get(%2, 0i32)
-  let = set data0.0.0(%3, 5i32)
-  let %4: mut data0 = array_get(%1, 0i32)
-  let %5: i32 = get data0.0.0(%4)
-  jump ret(%5)
+fn shared_cells() -> (i32) {
+  let %cell: mut Cell = new Cell.0(1i32)
+  let %cells: mut [inherit Cell] = array_new(%cell)
+  let %copy: mut [inherit Cell] = array_clone(%cells)
+  let %cell2: mut Cell = array_get(%copy, 0i32)
+  let = set Cell.0.0(%cell2, 5i32)
+  let %cell3: mut Cell = array_get(%cells, 0i32)
+  let %x: i32 = get Cell.0.0(%cell3)
+  jump ret(%x)
 }
 
 // A `mut` struct rebuilt from an `imm` one around a clone of its array:
 // the cells are shared, and the new array can take another cell without
 // changing the original.
-fn fn4() -> (i32) {
-  let %0: imm data0 = new data0.0(1i32)
-  let %1: imm [imm data0] = array_new(%0)
-  let %2: imm data2 = new data2.0(%1)
-  let %13: imm [imm data0] = get data2.0.0(%2)
-  let %14: mut [imm data0] = array_clone(%13)
-  let %3: mut data2 = new data2.0(%14)
-  let %4: mut [imm data0] = get data2.0.0(%3)
-  let %5: imm data0 = new data0.0(3i32)
-  let = array_set(%4, 0i32, %5)
-  let %6: imm [imm data0] = get data2.0.0(%2)
-  let %7: imm data0 = array_get(%6, 0i32)
-  let %8: i32 = get data0.0.0(%7)
-  let %9: imm data0 = array_get(%4, 0i32)
-  let %10: i32 = get data0.0.0(%9)
-  let %11: i32 = mul(%10, 10i32)
-  let %12: i32 = add(%11, %8)
-  jump ret(%12)
+fn rebuilt() -> (i32) {
+  let %cell: imm Cell = new Cell.0(1i32)
+  let %cells: imm [imm Cell] = array_new(%cell)
+  let %s: imm Sharer = new Sharer.0(%cells)
+  let %cells1: imm [imm Cell] = get Sharer.0.0(%s)
+  let %copy: mut [imm Cell] = array_clone(%cells1)
+  let %cells3: mut Sharer = new Sharer.0(%copy)
+  let %cell3: mut [imm Cell] = get Sharer.0.0(%cells3)
+  let %three: imm Cell = new Cell.0(3i32)
+  let = array_set(%cell3, 0i32, %three)
+  let %cells4: imm [imm Cell] = get Sharer.0.0(%s)
+  let %cell4: imm Cell = array_get(%cells4, 0i32)
+  let %a: i32 = get Cell.0.0(%cell4)
+  let %cell5: imm Cell = array_get(%cell3, 0i32)
+  let %b: i32 = get Cell.0.0(%cell5)
+  let %b10: i32 = mul(%b, 10i32)
+  let %r: i32 = add(%b10, %a)
+  jump ret(%r)
 }
 
 // An `imm` array of cells it owns is made of `imm` cells.
-fn fn5() -> (i32) {
-  let %0: imm data0 = new data0.0(2i32)
-  let %1: imm [inherit data0] = array_new(%0, %0)
-  let %2: i32 = array_len(%1)
-  let %3: imm data0 = array_get(%1, 1i32)
-  let %4: i32 = get data0.0.0(%3)
-  let %5: i32 = add(%2, %4)
-  jump ret(%5)
+fn imm_cells() -> (i32) {
+  let %cell: imm Cell = new Cell.0(2i32)
+  let %cells: imm [inherit Cell] = array_new(%cell, %cell)
+  let %len: i32 = array_len(%cells)
+  let %cell2: imm Cell = array_get(%cells, 1i32)
+  let %x: i32 = get Cell.0.0(%cell2)
+  let %r: i32 = add(%len, %x)
+  jump ret(%r)
 }
 
-//# run fn0(1i32) == 4i32
-//# run fn2() == 5i32
-//# run fn4() == 31i32
-//# run fn5() == 4i32
+//# run through_ro(1i32) == 4i32
+//# run shared_cells() == 5i32
+//# run rebuilt() == 31i32
+//# run imm_cells() == 4i32

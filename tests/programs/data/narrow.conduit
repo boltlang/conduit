@@ -2,60 +2,60 @@
 // fields. Each function first adds the smallest value to its argument
 // twice, which gives it back but leaves the high bits of its Wasm i32 set.
 
-data data1 {
+data Small {
   (i8, i16)
 }
 
 // To wider integers, read as signed or unsigned.
-fn fn0(%0: i8) -> (i32, i32, i64, i64, i16, i16) {
-  let %1: i8 = add(%0, -128i8)
-  let %2: i8 = add(%1, -128i8)
-  let %3: i32 = convert.s[i32](%2)
-  let %4: i32 = convert.u[i32](%2)
-  let %5: i64 = convert.s[i64](%2)
-  let %6: i64 = convert.u[i64](%2)
-  let %7: i16 = convert.s[i16](%2)
-  let %8: i16 = convert.u[i16](%2)
-  jump ret(%3, %4, %5, %6, %7, %8)
+fn widen(%x: i8) -> (i32, i32, i64, i64, i16, i16) {
+  let %x1: i8 = add(%x, -128i8)
+  let %x2: i8 = add(%x1, -128i8)
+  let %s32: i32 = convert.s[i32](%x2)
+  let %u32: i32 = convert.u[i32](%x2)
+  let %s64: i64 = convert.s[i64](%x2)
+  let %u64: i64 = convert.u[i64](%x2)
+  let %s16: i16 = convert.s[i16](%x2)
+  let %u16: i16 = convert.u[i16](%x2)
+  jump ret(%s32, %u32, %s64, %u64, %s16, %u16)
 }
 
 // To narrower integers: the low bits.
-fn fn1(%0: i64) -> (i8, i16, i8) {
-  let %1: i8 = convert.s[i8](%0)
-  let %2: i16 = convert.u[i16](%0)
-  let %3: i8 = convert.u[i8](%2)
-  jump ret(%1, %2, %3)
+fn narrow(%x: i64) -> (i8, i16, i8) {
+  let %s8: i8 = convert.s[i8](%x)
+  let %u16: i16 = convert.u[i16](%x)
+  let %u8: i8 = convert.u[i8](%u16)
+  jump ret(%s8, %u16, %u8)
 }
 
 // From and to floats. Out of range traps.
-fn fn2(%0: f64) -> (i8) {
-  let %1: i8 = convert.s[i8](%0)
-  jump ret(%1)
+fn f64_to_i8(%x: f64) -> (i8) {
+  let %y: i8 = convert.s[i8](%x)
+  jump ret(%y)
 }
 
-fn fn3(%0: f64) -> (i8) {
-  let %1: i8 = convert.u[i8](%0)
-  jump ret(%1)
+fn f64_to_u8(%x: f64) -> (i8) {
+  let %y: i8 = convert.u[i8](%x)
+  jump ret(%y)
 }
 
-fn fn4(%0: f32) -> (i16) {
-  let %1: i16 = convert.s[i16](%0)
-  jump ret(%1)
+fn f32_to_i16(%x: f32) -> (i16) {
+  let %y: i16 = convert.s[i16](%x)
+  jump ret(%y)
 }
 
-fn fn5(%0: i16) -> (f64, f32) {
-  let %1: i16 = add(%0, -32768i16)
-  let %2: i16 = add(%1, -32768i16)
-  let %3: f64 = convert.s[f64](%2)
-  let %4: f32 = convert.u[f32](%2)
-  jump ret(%3, %4)
+fn to_floats(%x: i16) -> (f64, f32) {
+  let %x1: i16 = add(%x, -32768i16)
+  let %x2: i16 = add(%x1, -32768i16)
+  let %f: f64 = convert.s[f64](%x2)
+  let %s: f32 = convert.u[f32](%x2)
+  jump ret(%f, %s)
 }
 
 // A few arms, then enough for a table.
-fn fn6(%0: i8) -> (i32) {
-  let %1: i8 = add(%0, -128i8)
-  let %2: i8 = add(%1, -128i8)
-  case %2 {
+fn case_i8(%x: i8) -> (i32) {
+  let %x1: i8 = add(%x, -128i8)
+  let %x2: i8 = add(%x1, -128i8)
+  case %x2 {
     -128 => jump ret(1i32)
     -1 => jump ret(2i32)
     127 => jump ret(3i32)
@@ -63,10 +63,10 @@ fn fn6(%0: i8) -> (i32) {
   }
 }
 
-fn fn7(%0: i16) -> (i32) {
-  let %1: i16 = add(%0, -32768i16)
-  let %2: i16 = add(%1, -32768i16)
-  case %2 {
+fn case_i16(%x: i16) -> (i32) {
+  let %x1: i16 = add(%x, -32768i16)
+  let %x2: i16 = add(%x1, -32768i16)
+  case %x2 {
     -2 => jump ret(10i32)
     -1 => jump ret(11i32)
     0 => jump ret(12i32)
@@ -77,74 +77,74 @@ fn fn7(%0: i16) -> (i32) {
 }
 
 // A boxed i8 unboxes as an i8.
-fn fn8(%0: i8) -> (i8) {
-  let %1: imm any = box[i8](%0)
-  let %2: i8 = unbox[i8](%1)
-  jump ret(%2)
+fn boxed(%x: i8) -> (i8) {
+  let %boxed: imm any = box[i8](%x)
+  let %y: i8 = unbox[i8](%boxed)
+  jump ret(%y)
 }
 
 // Arrays store only the low bits, and give them back.
-fn fn10(%0: i8) -> (i8, i32) {
-  let %1: i8 = add(%0, -128i8)
-  let %2: i8 = add(%1, -128i8)
-  let %3: mut [i8] = array_fill(2i32, 0i8)
-  let = array_set(%3, 1i32, %2)
-  let %4: imm [i8] = array_clone(%3)
-  let %5: i8 = array_get(%4, 1i32)
-  let %6: i32 = convert.u[i32](%5)
-  jump ret(%5, %6)
+fn array_i8(%x: i8) -> (i8, i32) {
+  let %x1: i8 = add(%x, -128i8)
+  let %x2: i8 = add(%x1, -128i8)
+  let %xs: mut [i8] = array_fill(2i32, 0i8)
+  let = array_set(%xs, 1i32, %x2)
+  let %frozen: imm [i8] = array_clone(%xs)
+  let %y: i8 = array_get(%frozen, 1i32)
+  let %yu: i32 = convert.u[i32](%y)
+  jump ret(%y, %yu)
 }
 
-fn fn11(%0: i16) -> (i16) {
-  let %1: imm [i16] = array_new(%0, 255i16)
-  let %2: i16 = array_get(%1, 0i32)
-  let %3: i16 = array_get(%1, 1i32)
-  let %4: i16 = add(%2, %3)
-  jump ret(%4)
+fn array_i16(%x: i16) -> (i16) {
+  let %xs: imm [i16] = array_new(%x, 255i16)
+  let %a: i16 = array_get(%xs, 0i32)
+  let %b: i16 = array_get(%xs, 1i32)
+  let %sum: i16 = add(%a, %b)
+  jump ret(%sum)
 }
 
 // Fields of data types.
-fn fn12(%0: i8, %1: i16) -> (i32) {
-  let %2: imm data1 = new data1.0(%0, %1)
-  let %3: i8 = get data1.0.0(%2)
-  let %4: i16 = get data1.0.1(%2)
-  let %5: i16 = convert.s[i16](%3)
-  let %6: i32 = lt.s(%5, %4)
-  jump ret(%6)
+fn fields(%a: i8, %b: i16) -> (i32) {
+  let %s: imm Small = new Small.0(%a, %b)
+  let %a2: i8 = get Small.0.0(%s)
+  let %b2: i16 = get Small.0.1(%s)
+  let %a16: i16 = convert.s[i16](%a2)
+  let %lt: i32 = lt.s(%a16, %b2)
+  jump ret(%lt)
 }
 
-//# run fn0(-1i8) == (-1i32, 255i32, -1i64, 255i64, -1i16, 255i16)
-//# run fn0(127i8) == (127i32, 127i32, 127i64, 127i64, 127i16, 127i16)
-//# run fn0(-128i8) == (-128i32, 128i32, -128i64, 128i64, -128i16, 128i16)
-//# run fn1(300i64) == (44i8, 300i16, 44i8)
-//# run fn1(-1i64) == (-1i8, -1i16, -1i8)
-//# run fn1(65663i64) == (127i8, 127i16, 127i8)
-//# run fn2(127.9f64) == 127i8
-//# run fn2(-128.9f64) == -128i8
-//# run fn2(128f64) traps
-//# run fn2(-129f64) traps
-//# run fn2(f64_bits(9221120237041090560)) traps
-//# run fn3(255.5f64) == 255i8
-//# run fn3(-0.5f64) == 0i8
-//# run fn3(256f64) traps
-//# run fn3(-1f64) traps
-//# run fn4(32767f32) == 32767i16
-//# run fn4(-32768f32) == -32768i16
-//# run fn4(32768f32) traps
-//# run fn5(-1i16) == (-1f64, 65535f32)
-//# run fn6(-128i8) == 1i32
-//# run fn6(255i8) == 2i32
-//# run fn6(127i8) == 3i32
-//# run fn6(0i8) == 0i32
-//# run fn7(-2i16) == 10i32
-//# run fn7(2i16) == 14i32
-//# run fn7(65535i16) == 11i32
-//# run fn7(3i16) == 0i32
-//# run fn8(-5i8) == -5i8
-//# run fn10(-1i8) == (-1i8, 255i32)
-//# run fn10(100i8) == (100i8, 100i32)
-//# run fn11(1i16) == 256i16
-//# run fn11(32767i16) == -32514i16
-//# run fn12(-1i8, 0i16) == 1i32
-//# run fn12(127i8, 127i16) == 0i32
+//# run widen(-1i8) == (-1i32, 255i32, -1i64, 255i64, -1i16, 255i16)
+//# run widen(127i8) == (127i32, 127i32, 127i64, 127i64, 127i16, 127i16)
+//# run widen(-128i8) == (-128i32, 128i32, -128i64, 128i64, -128i16, 128i16)
+//# run narrow(300i64) == (44i8, 300i16, 44i8)
+//# run narrow(-1i64) == (-1i8, -1i16, -1i8)
+//# run narrow(65663i64) == (127i8, 127i16, 127i8)
+//# run f64_to_i8(127.9f64) == 127i8
+//# run f64_to_i8(-128.9f64) == -128i8
+//# run f64_to_i8(128f64) traps
+//# run f64_to_i8(-129f64) traps
+//# run f64_to_i8(f64_bits(9221120237041090560)) traps
+//# run f64_to_u8(255.5f64) == 255i8
+//# run f64_to_u8(-0.5f64) == 0i8
+//# run f64_to_u8(256f64) traps
+//# run f64_to_u8(-1f64) traps
+//# run f32_to_i16(32767f32) == 32767i16
+//# run f32_to_i16(-32768f32) == -32768i16
+//# run f32_to_i16(32768f32) traps
+//# run to_floats(-1i16) == (-1f64, 65535f32)
+//# run case_i8(-128i8) == 1i32
+//# run case_i8(255i8) == 2i32
+//# run case_i8(127i8) == 3i32
+//# run case_i8(0i8) == 0i32
+//# run case_i16(-2i16) == 10i32
+//# run case_i16(2i16) == 14i32
+//# run case_i16(65535i16) == 11i32
+//# run case_i16(3i16) == 0i32
+//# run boxed(-5i8) == -5i8
+//# run array_i8(-1i8) == (-1i8, 255i32)
+//# run array_i8(100i8) == (100i8, 100i32)
+//# run array_i16(1i16) == 256i16
+//# run array_i16(32767i16) == -32514i16
+//# run fields(-1i8, 0i16) == 1i32
+//# run fields(127i8, 127i16) == 0i32
 //# wat

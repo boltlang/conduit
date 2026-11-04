@@ -2,118 +2,118 @@
 // mutability its fields can have, chosen by each type's arguments.
 
 // A box holding an array whose mutability the box's type chooses.
-data data0['m1] {
+data Box['m1] {
   ('m1 [i32])
 }
 
 // A list of boxes: the list owns its cells (`inherit`), and the arrays in
 // the boxes have the mutability its argument chooses.
-data data1['m1] {
+data List['m1] {
   ()
-  (inherit data0['m1], inherit data1['m1])
+  (inherit Box['m1], inherit List['m1])
 }
 
 // A `mut` box can hold an `imm` array, and take another one.
-fn fn0() -> (i32) {
-  let %0: imm [i32] = array_new(1i32, 2i32)
-  let %1: mut data0[imm] = new data0.0(%0)
-  let %2: imm [i32] = array_new(5i32)
-  let = set data0.0.0(%1, %2)
-  let %3: imm [i32] = get data0.0.0(%1)
-  let %4: i32 = array_get(%3, 0i32)
-  jump ret(%4)
+fn imm_in_mut() -> (i32) {
+  let %xs: imm [i32] = array_new(1i32, 2i32)
+  let %b: mut Box[imm] = new Box.0(%xs)
+  let %ys: imm [i32] = array_new(5i32)
+  let = set Box.0.0(%b, %ys)
+  let %xs2: imm [i32] = get Box.0.0(%b)
+  let %x: i32 = array_get(%xs2, 0i32)
+  jump ret(%x)
 }
 
 // A `mut` box of a `mut` array: a write through the array is seen
 // through the box.
-fn fn1() -> (i32) {
-  let %0: mut [i32] = array_fill(2i32, 0i32)
-  let %1: mut data0[mut] = new data0.0(%0)
-  let = array_set(%0, 1i32, 9i32)
-  let %2: mut [i32] = get data0.0.0(%1)
-  let %3: i32 = array_get(%2, 1i32)
-  jump ret(%3)
+fn mut_in_mut() -> (i32) {
+  let %xs: mut [i32] = array_fill(2i32, 0i32)
+  let %b: mut Box[mut] = new Box.0(%xs)
+  let = array_set(%xs, 1i32, 9i32)
+  let %ys: mut [i32] = get Box.0.0(%b)
+  let %x: i32 = array_get(%ys, 1i32)
+  jump ret(%x)
 }
 
 // An `imm` box rebuilt from a `mut` box of a `mut` array, around an `imm`
 // clone of the array: later writes to the original don't show in it.
-fn fn2() -> (i32) {
-  let %0: mut [i32] = array_fill(1i32, 1i32)
-  let %1: mut data0[mut] = new data0.0(%0)
-  let %2: mut [i32] = get data0.0.0(%1)
-  let %3: imm [i32] = array_clone(%2)
-  let %4: imm data0[imm] = new data0.0(%3)
-  let = array_set(%0, 0i32, 8i32)
-  let %5: imm [i32] = get data0.0.0(%4)
-  let %6: i32 = array_get(%5, 0i32)
-  jump ret(%6)
+fn frozen_box() -> (i32) {
+  let %xs: mut [i32] = array_fill(1i32, 1i32)
+  let %b: mut Box[mut] = new Box.0(%xs)
+  let %ys: mut [i32] = get Box.0.0(%b)
+  let %frozen: imm [i32] = array_clone(%ys)
+  let %fb: imm Box[imm] = new Box.0(%frozen)
+  let = array_set(%xs, 0i32, 8i32)
+  let %fs: imm [i32] = get Box.0.0(%fb)
+  let %x: i32 = array_get(%fs, 0i32)
+  jump ret(%x)
 }
 
 // Two `mut` boxes rebuilt from an `imm` one: one shares the array, and the
 // other holds a `mut` clone of it.
-fn fn3() -> (i32) {
-  let %0: imm [i32] = array_new(1i32)
-  let %1: imm data0[imm] = new data0.0(%0)
-  let %2: imm [i32] = get data0.0.0(%1)
-  let %3: mut data0[imm] = new data0.0(%2)
-  let %10: mut [i32] = array_clone(%2)
-  let %11: mut data0[mut] = new data0.0(%10)
-  let %4: mut [i32] = get data0.0.0(%11)
-  let = array_set(%4, 0i32, 4i32)
-  let %5: imm [i32] = get data0.0.0(%3)
-  let %6: i32 = array_get(%5, 0i32)
-  let %7: i32 = array_get(%4, 0i32)
-  let %8: i32 = mul(%7, 10i32)
-  let %9: i32 = add(%8, %6)
-  jump ret(%9)
+fn rebuilt() -> (i32) {
+  let %xs: imm [i32] = array_new(1i32)
+  let %b: imm Box[imm] = new Box.0(%xs)
+  let %ys: imm [i32] = get Box.0.0(%b)
+  let %shared: mut Box[imm] = new Box.0(%ys)
+  let %copy: mut [i32] = array_clone(%ys)
+  let %owned: mut Box[mut] = new Box.0(%copy)
+  let %xs2: mut [i32] = get Box.0.0(%owned)
+  let = array_set(%xs2, 0i32, 4i32)
+  let %xs3: imm [i32] = get Box.0.0(%shared)
+  let %x: i32 = array_get(%xs3, 0i32)
+  let %y: i32 = array_get(%xs2, 0i32)
+  let %y10: i32 = mul(%y, 10i32)
+  let %r: i32 = add(%y10, %x)
+  jump ret(%r)
 }
 
 // Seen as `ro`, a box still gives its argument's mutability.
-fn fn4() -> (i32) {
-  let %0: mut [i32] = array_fill(1i32, 0i32)
-  let %1: mut data0[mut] = new data0.0(%0)
-  let = call fn5(%1)
-  let %2: i32 = array_get(%0, 0i32)
-  jump ret(%2)
+fn through_ro() -> (i32) {
+  let %xs: mut [i32] = array_fill(1i32, 0i32)
+  let %b: mut Box[mut] = new Box.0(%xs)
+  let = call write3(%b)
+  let %x: i32 = array_get(%xs, 0i32)
+  jump ret(%x)
 }
 
-fn fn5(%0: ro data0[mut]) -> () {
-  let %1: mut [i32] = get data0.0.0(%0)
-  let = array_set(%1, 0i32, 3i32)
+fn write3(%b: ro Box[mut]) -> () {
+  let %xs: mut [i32] = get Box.0.0(%b)
+  let = array_set(%xs, 0i32, 3i32)
   jump ret()
 }
 
 // A list of two boxes of `imm` arrays, summed through an `ro` view.
-fn fn6() -> (i32) {
-  let %0: mut data1[imm] = new data1.0()
-  let %1: imm [i32] = array_new(2i32)
-  let %2: mut data0[imm] = new data0.0(%1)
-  let %3: mut data1[imm] = new data1.1(%2, %0)
-  let %4: imm [i32] = array_new(5i32)
-  let %5: mut data0[imm] = new data0.0(%4)
-  let %6: mut data1[imm] = new data1.1(%5, %3)
-  let %7: i32 = call fn7(%6)
-  jump ret(%7)
+fn list() -> (i32) {
+  let %nil: mut List[imm] = new List.0()
+  let %xs: imm [i32] = array_new(2i32)
+  let %b: mut Box[imm] = new Box.0(%xs)
+  let %l: mut List[imm] = new List.1(%b, %nil)
+  let %ys: imm [i32] = array_new(5i32)
+  let %b2: mut Box[imm] = new Box.0(%ys)
+  let %l2: mut List[imm] = new List.1(%b2, %l)
+  let %sum: i32 = call sum(%l2)
+  jump ret(%sum)
 }
 
-fn fn7(%0: ro data1[imm]) -> (i32) {
-  join rec j1(%1: ro data1[imm], %2: i32) =
-    case %1 {
-      data1.0 => jump ret(%2)
-      data1.1 =>
-        let %3: ro data0[imm] = get data1.1.0(%1)
-        let %4: imm [i32] = get data0.0.0(%3)
-        let %5: i32 = array_get(%4, 0i32)
-        let %6: i32 = add(%2, %5)
-        let %7: ro data1[imm] = get data1.1.1(%1)
-        jump j1(%7, %6)
+fn sum(%l: ro List[imm]) -> (i32) {
+  join rec loop(%rest: ro List[imm], %acc: i32) =
+    case %rest {
+      List.0 => jump ret(%acc)
+      List.1 =>
+        let %b: ro Box[imm] = get List.1.0(%rest)
+        let %xs: imm [i32] = get Box.0.0(%b)
+        let %x: i32 = array_get(%xs, 0i32)
+        let %acc1: i32 = add(%acc, %x)
+        let %tail: ro List[imm] = get List.1.1(%rest)
+        jump loop(%tail, %acc1)
     }
-  in jump j1(%0, 0i32)
+  in jump loop(%l, 0i32)
 }
 
-//# run fn0() == 5i32
-//# run fn1() == 9i32
-//# run fn2() == 1i32
-//# run fn3() == 41i32
-//# run fn4() == 3i32
-//# run fn6() == 7i32
+//# run imm_in_mut() == 5i32
+//# run mut_in_mut() == 9i32
+//# run frozen_box() == 1i32
+//# run rebuilt() == 41i32
+//# run through_ro() == 3i32
+//# run list() == 7i32

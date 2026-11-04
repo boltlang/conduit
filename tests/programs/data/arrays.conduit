@@ -1,17 +1,17 @@
 // a = [7; n]; a[1] = 5; b = [1, 2, 3]; a[1] + len(a) + b[2]
 
-fn fn0(%0: i32) -> (i32) {
-  let %1: mut [i32] = array_fill(%0, 7i32)
-  let = array_set(%1, 1i32, 5i32)
-  let %2: i32 = array_get(%1, 1i32)
-  let %3: i32 = array_len(%1)
-  let %4: imm [i32] = array_new(1i32, 2i32, 3i32)
-  let %5: i32 = array_get(%4, 2i32)
-  let %6: i32 = add(%2, %3)
-  let %7: i32 = add(%6, %5)
-  jump ret(%7)
+fn main(%n: i32) -> (i32) {
+  let %a: mut [i32] = array_fill(%n, 7i32)
+  let = array_set(%a, 1i32, 5i32)
+  let %a1: i32 = array_get(%a, 1i32)
+  let %len: i32 = array_len(%a)
+  let %b: imm [i32] = array_new(1i32, 2i32, 3i32)
+  let %b2: i32 = array_get(%b, 2i32)
+  let %sum: i32 = add(%a1, %len)
+  let %r: i32 = add(%sum, %b2)
+  jump ret(%r)
 }
 
-//# run fn0(10i32) == 18i32
+//# run main(10i32) == 18i32
 // With one element, a[1] is out of bounds.
-//# run fn0(1i32) traps
+//# run main(1i32) traps

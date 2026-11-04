@@ -13,77 +13,77 @@
   (type (;9;) (func (param i32) (result i32)))
   (type (;10;) (func (param i32) (result i32 i32)))
   (type (;11;) (func (param i32 i32) (result i32)))
-  (export "fn0" (func 0))
-  (export "fn1" (func 1))
-  (export "fn2" (func 2))
-  (export "fn3" (func 3))
-  (export "fn4" (func 4))
-  (export "fn5" (func 5))
-  (export "fn6" (func 6))
-  (export "fn7" (func 7))
-  (export "fn8" (func 8))
-  (export "fn10" (func 9))
-  (export "fn11" (func 10))
-  (export "fn12" (func 11))
-  (func (;0;) (type 4) (param i32) (result i32 i32 i64 i64 i32 i32)
-    (local i32 i32 i32 i32 i64 i64 i32 i32)
-    local.get 0
+  (export "fn0" (func $widen))
+  (export "fn1" (func $narrow))
+  (export "fn2" (func $f64_to_i8))
+  (export "fn3" (func $f64_to_u8))
+  (export "fn4" (func $f32_to_i16))
+  (export "fn5" (func $to_floats))
+  (export "fn6" (func $case_i8))
+  (export "fn7" (func $case_i16))
+  (export "fn8" (func $boxed))
+  (export "fn9" (func $array_i8))
+  (export "fn10" (func $array_i16))
+  (export "fn11" (func $fields))
+  (func $widen (;0;) (type 4) (param $x i32) (result i32 i32 i64 i64 i32 i32)
+    (local $x1 i32) (local $x2 i32) (local $s32 i32) (local $u32 i32) (local $s64 i64) (local $u64 i64) (local $s16 i32) (local $u16 i32)
+    local.get $x
     i32.const -128
     i32.add
-    local.set 1
-    local.get 1
+    local.set $x1
+    local.get $x1
     i32.const -128
     i32.add
-    local.set 2
-    local.get 2
+    local.set $x2
+    local.get $x2
     i32.extend8_s
-    local.set 3
-    local.get 2
+    local.set $s32
+    local.get $x2
     i32.const 255
     i32.and
-    local.set 4
-    local.get 2
+    local.set $u32
+    local.get $x2
     i32.extend8_s
     i64.extend_i32_s
-    local.set 5
-    local.get 2
+    local.set $s64
+    local.get $x2
     i32.const 255
     i32.and
     i64.extend_i32_u
-    local.set 6
-    local.get 2
+    local.set $u64
+    local.get $x2
     i32.extend8_s
-    local.set 7
-    local.get 2
+    local.set $s16
+    local.get $x2
     i32.const 255
     i32.and
-    local.set 8
-    local.get 3
-    local.get 4
-    local.get 5
-    local.get 6
-    local.get 7
-    local.get 8
+    local.set $u16
+    local.get $s32
+    local.get $u32
+    local.get $s64
+    local.get $u64
+    local.get $s16
+    local.get $u16
     return
   )
-  (func (;1;) (type 5) (param i64) (result i32 i32 i32)
-    (local i32 i32 i32)
-    local.get 0
+  (func $narrow (;1;) (type 5) (param $x i64) (result i32 i32 i32)
+    (local $s8 i32) (local $u16 i32) (local $u8 i32)
+    local.get $x
     i32.wrap_i64
-    local.set 1
-    local.get 0
+    local.set $s8
+    local.get $x
     i32.wrap_i64
-    local.set 2
-    local.get 2
-    local.set 3
-    local.get 1
-    local.get 2
-    local.get 3
+    local.set $u16
+    local.get $u16
+    local.set $u8
+    local.get $s8
+    local.get $u16
+    local.get $u8
     return
   )
-  (func (;2;) (type 6) (param f64) (result i32)
-    (local i32 i32)
-    local.get 0
+  (func $f64_to_i8 (;2;) (type 6) (param $x f64) (result i32)
+    (local $y i32) (local i32)
+    local.get $x
     i32.trunc_f64_s
     local.tee 2
     i32.const 128
@@ -94,13 +94,13 @@
       unreachable
     end
     local.get 2
-    local.set 1
-    local.get 1
+    local.set $y
+    local.get $y
     return
   )
-  (func (;3;) (type 6) (param f64) (result i32)
-    (local i32 i32)
-    local.get 0
+  (func $f64_to_u8 (;3;) (type 6) (param $x f64) (result i32)
+    (local $y i32) (local i32)
+    local.get $x
     i32.trunc_f64_u
     local.tee 2
     i32.const 256
@@ -109,13 +109,13 @@
       unreachable
     end
     local.get 2
-    local.set 1
-    local.get 1
+    local.set $y
+    local.get $y
     return
   )
-  (func (;4;) (type 7) (param f32) (result i32)
-    (local i32 i32)
-    local.get 0
+  (func $f32_to_i16 (;4;) (type 7) (param $x f32) (result i32)
+    (local $y i32) (local i32)
+    local.get $x
     i32.trunc_f32_s
     local.tee 2
     i32.const 32768
@@ -126,58 +126,58 @@
       unreachable
     end
     local.get 2
-    local.set 1
-    local.get 1
+    local.set $y
+    local.get $y
     return
   )
-  (func (;5;) (type 8) (param i32) (result f64 f32)
-    (local i32 i32 f64 f32)
-    local.get 0
+  (func $to_floats (;5;) (type 8) (param $x i32) (result f64 f32)
+    (local $x1 i32) (local $x2 i32) (local $f f64) (local $s f32)
+    local.get $x
     i32.const -32768
     i32.add
-    local.set 1
-    local.get 1
+    local.set $x1
+    local.get $x1
     i32.const -32768
     i32.add
-    local.set 2
-    local.get 2
+    local.set $x2
+    local.get $x2
     i32.extend16_s
     f64.convert_i32_s
-    local.set 3
-    local.get 2
+    local.set $f
+    local.get $x2
     i32.const 65535
     i32.and
     f32.convert_i32_u
-    local.set 4
-    local.get 3
-    local.get 4
+    local.set $s
+    local.get $f
+    local.get $s
     return
   )
-  (func (;6;) (type 9) (param i32) (result i32)
-    (local i32 i32)
-    local.get 0
+  (func $case_i8 (;6;) (type 9) (param $x i32) (result i32)
+    (local $x1 i32) (local $x2 i32)
+    local.get $x
     i32.const -128
     i32.add
-    local.set 1
-    local.get 1
+    local.set $x1
+    local.get $x1
     i32.const -128
     i32.add
-    local.set 2
+    local.set $x2
     block ;; label = @1
       block ;; label = @2
         block ;; label = @3
           block ;; label = @4
-            local.get 2
+            local.get $x2
             i32.extend8_s
             i32.const -128
             i32.eq
             br_if 0 (;@4;)
-            local.get 2
+            local.get $x2
             i32.extend8_s
             i32.const -1
             i32.eq
             br_if 1 (;@3;)
-            local.get 2
+            local.get $x2
             i32.extend8_s
             i32.const 127
             i32.eq
@@ -196,23 +196,23 @@
     i32.const 0
     return
   )
-  (func (;7;) (type 9) (param i32) (result i32)
-    (local i32 i32)
-    local.get 0
+  (func $case_i16 (;7;) (type 9) (param $x i32) (result i32)
+    (local $x1 i32) (local $x2 i32)
+    local.get $x
     i32.const -32768
     i32.add
-    local.set 1
-    local.get 1
+    local.set $x1
+    local.get $x1
     i32.const -32768
     i32.add
-    local.set 2
+    local.set $x2
     block ;; label = @1
       block ;; label = @2
         block ;; label = @3
           block ;; label = @4
             block ;; label = @5
               block ;; label = @6
-                local.get 2
+                local.get $x2
                 i32.extend16_s
                 i32.const -2
                 i32.sub
@@ -236,103 +236,103 @@
     i32.const 0
     return
   )
-  (func (;8;) (type 9) (param i32) (result i32)
-    (local anyref i32)
-    local.get 0
+  (func $boxed (;8;) (type 9) (param $x i32) (result i32)
+    (local $boxed anyref) (local $y i32)
+    local.get $x
     struct.new 0
-    local.set 1
-    local.get 1
+    local.set $boxed
+    local.get $boxed
     ref.cast (ref null 0)
     struct.get 0 0
-    local.set 2
-    local.get 2
+    local.set $y
+    local.get $y
     return
   )
-  (func (;9;) (type 10) (param i32) (result i32 i32)
-    (local i32 i32 (ref null 1) (ref null 1) i32 i32 (ref null 1))
-    local.get 0
+  (func $array_i8 (;9;) (type 10) (param $x i32) (result i32 i32)
+    (local $x1 i32) (local $x2 i32) (local $xs (ref null 1)) (local $frozen (ref null 1)) (local $y i32) (local $yu i32) (local (ref null 1))
+    local.get $x
     i32.const -128
     i32.add
-    local.set 1
-    local.get 1
+    local.set $x1
+    local.get $x1
     i32.const -128
     i32.add
-    local.set 2
+    local.set $x2
     i32.const 0
     i32.const 2
     array.new 1
-    local.set 3
-    local.get 3
+    local.set $xs
+    local.get $xs
     i32.const 1
-    local.get 2
+    local.get $x2
     array.set 1
-    local.get 3
+    local.get $xs
     array.len
     array.new_default 1
     local.tee 7
     i32.const 0
-    local.get 3
+    local.get $xs
     i32.const 0
-    local.get 3
+    local.get $xs
     array.len
     array.copy 1 1
     local.get 7
-    local.set 4
-    local.get 4
+    local.set $frozen
+    local.get $frozen
     i32.const 1
     array.get_s 1
-    local.set 5
-    local.get 5
+    local.set $y
+    local.get $y
     i32.const 255
     i32.and
-    local.set 6
-    local.get 5
-    local.get 6
+    local.set $yu
+    local.get $y
+    local.get $yu
     return
   )
-  (func (;10;) (type 9) (param i32) (result i32)
-    (local (ref null 2) i32 i32 i32)
-    local.get 0
+  (func $array_i16 (;10;) (type 9) (param $x i32) (result i32)
+    (local $xs (ref null 2)) (local $a i32) (local $b i32) (local $sum i32)
+    local.get $x
     i32.const 255
     array.new_fixed 2 2
-    local.set 1
-    local.get 1
+    local.set $xs
+    local.get $xs
     i32.const 0
     array.get_s 2
-    local.set 2
-    local.get 1
+    local.set $a
+    local.get $xs
     i32.const 1
     array.get_s 2
-    local.set 3
-    local.get 2
-    local.get 3
+    local.set $b
+    local.get $a
+    local.get $b
     i32.add
-    local.set 4
-    local.get 4
+    local.set $sum
+    local.get $sum
     return
   )
-  (func (;11;) (type 11) (param i32 i32) (result i32)
-    (local (ref null 3) i32 i32 i32 i32)
-    local.get 0
-    local.get 1
+  (func $fields (;11;) (type 11) (param $a i32) (param $b i32) (result i32)
+    (local $s (ref null 3)) (local $a2 i32) (local $b2 i32) (local $a16 i32) (local $lt i32)
+    local.get $a
+    local.get $b
     struct.new 3
-    local.set 2
-    local.get 2
+    local.set $s
+    local.get $s
     struct.get 3 0
-    local.set 3
-    local.get 2
+    local.set $a2
+    local.get $s
     struct.get 3 1
-    local.set 4
-    local.get 3
+    local.set $b2
+    local.get $a2
     i32.extend8_s
-    local.set 5
-    local.get 5
+    local.set $a16
+    local.get $a16
     i32.extend16_s
-    local.get 4
+    local.get $b2
     i32.extend16_s
     i32.lt_s
-    local.set 6
-    local.get 6
+    local.set $lt
+    local.get $lt
     return
   )
 )

@@ -1,80 +1,80 @@
 // Arrays at their edges: empty arrays, every element type, negative and
 // out-of-range indices and lengths, and writes that later reads see.
 
-fn fn0() -> (i32) {
-  let %0: imm [i32] = array_new()
-  let %1: i32 = array_len(%0)
-  jump ret(%1)
+fn empty() -> (i32) {
+  let %xs: imm [i32] = array_new()
+  let %len: i32 = array_len(%xs)
+  jump ret(%len)
 }
 
 // Index -1 is out of bounds, not the last element.
-fn fn1(%0: i32) -> (i32) {
-  let %1: imm [i32] = array_new(1i32, 2i32, 3i32)
-  let %2: i32 = array_get(%1, %0)
-  jump ret(%2)
+fn index(%i: i32) -> (i32) {
+  let %xs: imm [i32] = array_new(1i32, 2i32, 3i32)
+  let %x: i32 = array_get(%xs, %i)
+  jump ret(%x)
 }
 
 // A negative length is out of range.
-fn fn2(%0: i32) -> (i32) {
-  let %1: mut [i64] = array_fill(%0, 1i64)
-  let %2: i32 = array_len(%1)
-  jump ret(%2)
+fn negative_length(%n: i32) -> (i32) {
+  let %xs: mut [i64] = array_fill(%n, 1i64)
+  let %len: i32 = array_len(%xs)
+  jump ret(%len)
 }
 
-fn fn3(%0: i32, %1: i32) -> (i32) {
-  let %2: mut [i32] = array_fill(3i32, 0i32)
-  let = array_set(%2, %0, %1)
-  let %3: i32 = array_get(%2, 0i32)
-  let %4: i32 = array_get(%2, 2i32)
-  let %5: i32 = add(%3, %4)
-  jump ret(%5)
+fn write(%i: i32, %x: i32) -> (i32) {
+  let %xs: mut [i32] = array_fill(3i32, 0i32)
+  let = array_set(%xs, %i, %x)
+  let %a: i32 = array_get(%xs, 0i32)
+  let %b: i32 = array_get(%xs, 2i32)
+  let %sum: i32 = add(%a, %b)
+  jump ret(%sum)
 }
 
-fn fn4() -> (f32) {
-  let %0: imm [f32] = array_new(1.5f32, -2.25f32)
-  let %1: f32 = array_get(%0, 0i32)
-  let %2: f32 = array_get(%0, 1i32)
-  let %3: f32 = add(%1, %2)
-  jump ret(%3)
+fn floats() -> (f32) {
+  let %xs: imm [f32] = array_new(1.5f32, -2.25f32)
+  let %a: f32 = array_get(%xs, 0i32)
+  let %b: f32 = array_get(%xs, 1i32)
+  let %sum: f32 = add(%a, %b)
+  jump ret(%sum)
 }
 
-fn fn5() -> (f64) {
-  let %0: mut [f64] = array_fill(2i32, 0.5f64)
-  let = array_set(%0, 1i32, 4.0f64)
-  let %1: f64 = array_get(%0, 0i32)
-  let %2: f64 = array_get(%0, 1i32)
-  let %3: f64 = mul(%1, %2)
-  jump ret(%3)
+fn doubles() -> (f64) {
+  let %xs: mut [f64] = array_fill(2i32, 0.5f64)
+  let = array_set(%xs, 1i32, 4.0f64)
+  let %a: f64 = array_get(%xs, 0i32)
+  let %b: f64 = array_get(%xs, 1i32)
+  let %product: f64 = mul(%a, %b)
+  jump ret(%product)
 }
 
 // An array of arrays: writes through the inner array are seen through
 // the outer one.
-fn fn6() -> (i32) {
-  let %0: mut [i32] = array_fill(2i32, 1i32)
-  let %1: mut [mut [i32]] = array_new(%0, %0)
-  let = array_set(%0, 1i32, 9i32)
-  let %2: mut [i32] = array_get(%1, 1i32)
-  let %3: i32 = array_get(%2, 1i32)
-  jump ret(%3)
+fn nested() -> (i32) {
+  let %inner: mut [i32] = array_fill(2i32, 1i32)
+  let %outer: mut [mut [i32]] = array_new(%inner, %inner)
+  let = array_set(%inner, 1i32, 9i32)
+  let %inner2: mut [i32] = array_get(%outer, 1i32)
+  let %x: i32 = array_get(%inner2, 1i32)
+  jump ret(%x)
 }
 
 // Writing past the end traps.
-fn fn7() -> () {
-  let %0: mut [i32] = array_fill(2i32, 0i32)
-  let = array_set(%0, 2i32, 1i32)
+fn past_end() -> () {
+  let %xs: mut [i32] = array_fill(2i32, 0i32)
+  let = array_set(%xs, 2i32, 1i32)
   jump ret()
 }
 
-//# run fn0() == 0i32
-//# run fn1(2i32) == 3i32
-//# run fn1(3i32) traps
-//# run fn1(-1i32) traps
-//# run fn2(0i32) == 0i32
-//# run fn2(-1i32) traps
-//# run fn3(0i32, 5i32) == 5i32
-//# run fn3(2i32, 6i32) == 6i32
-//# run fn3(3i32, 6i32) traps
-//# run fn4() == -0.75f32
-//# run fn5() == 2.0f64
-//# run fn6() == 9i32
-//# run fn7() traps
+//# run empty() == 0i32
+//# run index(2i32) == 3i32
+//# run index(3i32) traps
+//# run index(-1i32) traps
+//# run negative_length(0i32) == 0i32
+//# run negative_length(-1i32) traps
+//# run write(0i32, 5i32) == 5i32
+//# run write(2i32, 6i32) == 6i32
+//# run write(3i32, 6i32) traps
+//# run floats() == -0.75f32
+//# run doubles() == 2.0f64
+//# run nested() == 9i32
+//# run past_end() traps

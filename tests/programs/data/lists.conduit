@@ -1,54 +1,54 @@
 // A list: build one, match on it, and read its fields.
 
-data data0 {
+data List {
   ()
-  (i32, inherit data0)
+  (i32, inherit List)
 }
 
 // build(n) = if n == 0 { Nil } else { Cons(n, build(n - 1)) }
-fn fn0(%0: i32) -> (imm data0) {
-  case %0 {
+fn build(%n: i32) -> (imm List) {
+  case %n {
     0 =>
-      let %1: imm data0 = new data0.0()
-      jump ret(%1)
+      let %nil: imm List = new List.0()
+      jump ret(%nil)
     _ =>
-      let %2: i32 = sub(%0, 1i32)
-      let %3: imm data0 = call fn0(%2)
-      let %4: imm data0 = new data0.1(%0, %3)
-      jump ret(%4)
+      let %n1: i32 = sub(%n, 1i32)
+      let %rest: imm List = call build(%n1)
+      let %list: imm List = new List.1(%n, %rest)
+      jump ret(%list)
   }
 }
 
 // sum(l) = case l { Nil => 0, Cons => l.0 + sum(l.1) }
-fn fn1(%0: imm data0) -> (i32) {
-  case %0 {
-    data0.0 => jump ret(0i32)
-    data0.1 =>
-      let %1: i32 = get data0.1.0(%0)
-      let %2: imm data0 = get data0.1.1(%0)
-      let %3: i32 = call fn1(%2)
-      let %4: i32 = add(%1, %3)
-      jump ret(%4)
+fn sum(%l: imm List) -> (i32) {
+  case %l {
+    List.0 => jump ret(0i32)
+    List.1 =>
+      let %head: i32 = get List.1.0(%l)
+      let %tail: imm List = get List.1.1(%l)
+      let %rest: i32 = call sum(%tail)
+      let %r: i32 = add(%head, %rest)
+      jump ret(%r)
   }
 }
 
 // sum(build(n))
-fn fn2(%0: i32) -> (i32) {
-  let %1: imm data0 = call fn0(%0)
-  let %2: i32 = call fn1(%1)
-  jump ret(%2)
+fn sum_build(%n: i32) -> (i32) {
+  let %l: imm List = call build(%n)
+  let %r: i32 = call sum(%l)
+  jump ret(%r)
 }
 
 // is_nil(build(n)), with a default arm
-fn fn3(%0: i32) -> (i32) {
-  let %1: imm data0 = call fn0(%0)
-  case %1 {
-    data0.1 => jump ret(0i32)
+fn is_nil(%n: i32) -> (i32) {
+  let %l: imm List = call build(%n)
+  case %l {
+    List.1 => jump ret(0i32)
     _ => jump ret(1i32)
   }
 }
 
-//# run fn2(0i32) == 0i32
-//# run fn2(10i32) == 55i32
-//# run fn3(0i32) == 1i32
-//# run fn3(3i32) == 0i32
+//# run sum_build(0i32) == 0i32
+//# run sum_build(10i32) == 55i32
+//# run is_nil(0i32) == 1i32
+//# run is_nil(3i32) == 0i32

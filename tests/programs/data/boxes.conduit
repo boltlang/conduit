@@ -1,18 +1,18 @@
 // Boxing a scalar allocates, and boxing an object is free. Both unbox to
 // what was boxed.
 
-data data0 {
+data Pair {
   (i32, i32)
 }
 
-fn fn0(%0: i32) -> (i32) {
-  let %1: imm any = box[i32](%0)
-  let %2: i32 = unbox[i32](%1)
-  let %3: imm data0 = new data0.0(%2, 1i32)
-  let %4: imm any = box[imm data0](%3)
-  let %5: imm data0 = unbox[imm data0](%4)
-  let %6: i32 = get data0.0.0(%5)
-  jump ret(%6)
+fn main(%x: i32) -> (i32) {
+  let %boxed: imm any = box[i32](%x)
+  let %x2: i32 = unbox[i32](%boxed)
+  let %pair: imm Pair = new Pair.0(%x2, 1i32)
+  let %boxed2: imm any = box[imm Pair](%pair)
+  let %pair2: imm Pair = unbox[imm Pair](%boxed2)
+  let %r: i32 = get Pair.0.0(%pair2)
+  jump ret(%r)
 }
 
-//# run fn0(42i32) == 42i32
+//# run main(42i32) == 42i32

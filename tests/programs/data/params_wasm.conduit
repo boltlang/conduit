@@ -1,22 +1,22 @@
 // Mutability arguments don't exist at run time: a data type with them
 // lowers like any other.
 
-data data0['m1] {
+data Box['m1] {
   ('m1 [i32])
 }
 
-fn fn0(%0: i32) -> (i32) {
-  let %1: mut [i32] = array_fill(2i32, %0)
-  let %2: mut data0[mut] = new data0.0(%1)
-  let %3: imm [i32] = array_new(10i32)
-  let %4: mut data0[imm] = new data0.0(%3)
-  let %5: mut [i32] = get data0.0.0(%2)
-  let = array_set(%5, 0i32, 7i32)
-  let %6: i32 = array_get(%1, 0i32)
-  let %7: imm [i32] = get data0.0.0(%4)
-  let %8: i32 = array_get(%7, 0i32)
-  let %9: i32 = add(%6, %8)
-  jump ret(%9)
+fn main(%x: i32) -> (i32) {
+  let %xs: mut [i32] = array_fill(2i32, %x)
+  let %mut_box: mut Box[mut] = new Box.0(%xs)
+  let %ys: imm [i32] = array_new(10i32)
+  let %imm_box: mut Box[imm] = new Box.0(%ys)
+  let %xs2: mut [i32] = get Box.0.0(%mut_box)
+  let = array_set(%xs2, 0i32, 7i32)
+  let %a: i32 = array_get(%xs, 0i32)
+  let %ys2: imm [i32] = get Box.0.0(%imm_box)
+  let %b: i32 = array_get(%ys2, 0i32)
+  let %r: i32 = add(%a, %b)
+  jump ret(%r)
 }
 
-//# run fn0(1i32) == 17i32
+//# run main(1i32) == 17i32
