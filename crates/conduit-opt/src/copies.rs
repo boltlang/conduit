@@ -328,7 +328,8 @@ impl RegionCx<'_> {
             | Op::Apply
             | Op::Handle(_)
             | Op::Perform(..)
-            | Op::Resume => {
+            | Op::Resume
+            | Op::Discontinue(..) => {
                 for v in all {
                     self.escape(v);
                 }

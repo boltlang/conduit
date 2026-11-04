@@ -5,7 +5,8 @@
 use crate::{Atom, Block, Func, Label, Op, Tail, Ty, Var};
 
 /// The clause `f` as a plain function, if it's **tail-resumptive**: every
-/// way out of it is `let rs = resume(k, xs); jump ret(rs)`, and it uses its
+/// way out of it is `let rs = resume(k, xs); jump ret(rs)` or
+/// `let rs = discontinue E.i(k, xs); jump ret(rs)`, and it uses its
 /// continuation `k`, its last parameter, nowhere else.
 ///
 /// Such a clause resumes once, with `xs`, and then gives back what the rest
@@ -14,6 +15,12 @@ use crate::{Atom, Block, Func, Label, Op, Tail, Ty, Var};
 /// gives `xs` instead of resuming: the code after the `perform` then runs as
 /// the rest of the body. The clause must run under the handlers outside its
 /// own, as it would if `k` were captured.
+///
+/// A `discontinue` becomes `let ys = discontinue E.i(xs); jump ret(ys)`,
+/// without `k`, with `ys` fresh variables of the types `k` takes. It means
+/// `perform E.i(xs)`, but under the handlers of the `perform` the clause
+/// handles, as it would run if `k` were captured. Only a backend sees it:
+/// the verifier doesn't accept a `discontinue` without a continuation.
 ///
 /// `k`'s variable is kept, unbound and of type `i32`, so that no other
 /// variable changes number.
@@ -26,7 +33,28 @@ pub fn plain_call(f: &Func) -> Option<Func> {
     plain.params.pop();
     plain.results = sig.params.clone();
     plain.vars[k.0 as usize] = Ty::I32;
-    rewrite(&mut plain.body, k).then_some(plain)
+    let mut cx = Rewrite {
+        k,
+        takes: &sig.params,
+        vars: &mut plain.vars,
+    };
+    cx.block(&mut plain.body).then_some(plain)
+}
+
+/// Whether some way out of `f`, a plain function from [`plain_call`],
+/// discontinues.
+pub fn discontinues(f: &Func) -> bool {
+    fn block(b: &Block) -> bool {
+        b.lets.iter().any(|l| matches!(l.op, Op::Discontinue(..)))
+            || match &b.tail {
+                Tail::Join { defs, body, .. } => defs.iter().any(|d| block(&d.body)) || block(body),
+                Tail::Case { arms, default, .. } => {
+                    arms.iter().any(|a| block(&a.body)) || default.as_deref().is_some_and(block)
+                }
+                Tail::Jump { .. } | Tail::Unreachable => false,
+            }
+    }
+    block(&f.body)
 }
 
 /// The clause `f` without its continuation `k`, its last parameter, if
@@ -69,54 +97,81 @@ fn uses(b: &Block, v: Var) -> bool {
         }
 }
 
-/// Rewrites each `let rs = resume(k, xs); jump ret(rs)` in `b` to
-/// `jump ret(xs)`. Gives `false` if `k` is used any other way, or a way out
-/// doesn't resume.
-fn rewrite(b: &mut Block, k: Var) -> bool {
-    let uses = |args: &[Atom]| args.contains(&Atom::Var(k));
-    match &mut b.tail {
-        Tail::Jump { target, args, .. } if *target == Label::RET => {
-            let Some(last) = b.lets.last() else {
-                return false;
-            };
-            let resumes = last.op == Op::Resume
-                && last.args.first() == Some(&Atom::Var(k))
-                && args.len() == last.binds.len()
-                && args
-                    .iter()
-                    .zip(&last.binds)
-                    .all(|(a, &r)| *a == Atom::Var(r));
-            if !resumes || uses(&last.args[1..]) {
-                return false;
+struct Rewrite<'a> {
+    k: Var,
+    /// The types `k` takes, which a `perform` gives.
+    takes: &'a [Ty],
+    vars: &'a mut Vec<Ty>,
+}
+
+impl Rewrite<'_> {
+    /// Rewrites each `let rs = resume(k, xs); jump ret(rs)` in `b` to
+    /// `jump ret(xs)`, and each `let rs = discontinue E.i(k, xs);
+    /// jump ret(rs)` to `let ys = discontinue E.i(xs); jump ret(ys)`. Gives
+    /// `false` if `k` is used any other way, or a way out doesn't resume or
+    /// discontinue.
+    fn block(&mut self, b: &mut Block) -> bool {
+        let k = self.k;
+        let uses = |args: &[Atom]| args.contains(&Atom::Var(k));
+        match &mut b.tail {
+            Tail::Jump { target, args, .. } if *target == Label::RET => {
+                let Some(last) = b.lets.last_mut() else {
+                    return false;
+                };
+                let passes_on = args.len() == last.binds.len()
+                    && args
+                        .iter()
+                        .zip(&last.binds)
+                        .all(|(a, &r)| *a == Atom::Var(r));
+                let ends = matches!(last.op, Op::Resume | Op::Discontinue(..))
+                    && last.args.first() == Some(&Atom::Var(k))
+                    && passes_on;
+                if !ends || uses(&last.args[1..]) {
+                    return false;
+                }
+                if last.op == Op::Resume {
+                    *args = b.lets.pop().unwrap().args.split_off(1);
+                } else {
+                    last.args.remove(0);
+                    last.binds = self
+                        .takes
+                        .iter()
+                        .map(|ty| {
+                            self.vars.push(ty.clone());
+                            Var(self.vars.len() as u32 - 1)
+                        })
+                        .collect();
+                    *args = last.binds.iter().map(|&v| Atom::Var(v)).collect();
+                }
             }
-            *args = b.lets.pop().unwrap().args.split_off(1);
-        }
-        Tail::Jump { args, .. } => {
-            if uses(args) {
-                return false;
+            Tail::Jump { args, .. } => {
+                if uses(args) {
+                    return false;
+                }
             }
-        }
-        Tail::Join { defs, body, .. } => {
-            if !defs.iter_mut().all(|d| rewrite(&mut d.body, k)) || !rewrite(body, k) {
-                return false;
+            Tail::Join { defs, body, .. } => {
+                if !defs.iter_mut().all(|d| self.block(&mut d.body)) || !self.block(body) {
+                    return false;
+                }
             }
-        }
-        Tail::Case {
-            scrut,
-            arms,
-            default,
-        } => {
-            if *scrut == Atom::Var(k)
-                || !arms.iter_mut().all(|a| rewrite(&mut a.body, k))
-                || !default.as_deref_mut().is_none_or(|d| rewrite(d, k))
-            {
-                return false;
+            Tail::Case {
+                scrut,
+                arms,
+                default,
+            } => {
+                if *scrut == Atom::Var(k)
+                    || !arms.iter_mut().all(|a| self.block(&mut a.body))
+                    || !default.as_deref_mut().is_none_or(|d| self.block(d))
+                {
+                    return false;
+                }
             }
+            Tail::Unreachable => {}
         }
-        Tail::Unreachable => {}
+        // The `resume` or `discontinue` before a `jump ret` has no `k` by
+        // now.
+        !b.lets.iter().any(|l| uses(&l.args))
     }
-    // The `resume` before a `jump ret` is gone by now.
-    !b.lets.iter().any(|l| uses(&l.args))
 }
 
 #[cfg(test)]
@@ -157,6 +212,41 @@ mod tests {
         );
         assert!(got.contains("jump ret(%3)") && got.contains("jump ret(%1)"));
         assert!(!got.contains("resume"));
+    }
+
+    #[test]
+    fn rewrites_tail_discontinues() {
+        let src = "effect effect20 { (i32) -> (i32) }
+                   fn fn1(%0: i32, %1: cont(i32) -> (i64)) -> (i64) {
+                     case %0 {
+                       0 =>
+                         let %2: i64 = resume(%1, %0)
+                         jump ret(%2)
+                       _ =>
+                         let %3: i64 = discontinue effect20.0(%1, %0)
+                         jump ret(%3)
+                     }
+                   }";
+        let m: Module = parse(src).unwrap();
+        let f = plain_call(&m.funcs[&FuncId(1)]).unwrap();
+        assert!(discontinues(&f));
+        let got = print_func(FuncId(1), &f);
+        assert!(got.starts_with("fn fn1(%0: i32) -> (i32)"), "{got}");
+        // A fresh variable of the type `k` takes, without `k`.
+        assert!(
+            got.contains("let %4: i32 = discontinue effect20.0(%0)")
+                && got.contains("jump ret(%4)"),
+            "{got}"
+        );
+        // Not in tail position.
+        let src = "effect effect20 { (i32) -> (i32) }
+                   fn fn1(%0: i32, %1: cont(i32) -> (i64)) -> (i64) {
+                     let %2: i64 = discontinue effect20.0(%1, %0)
+                     let %3: i64 = add(%2, 1i64)
+                     jump ret(%3)
+                   }";
+        let m: Module = parse(src).unwrap();
+        assert!(plain_call(&m.funcs[&FuncId(1)]).is_none());
     }
 
     #[test]

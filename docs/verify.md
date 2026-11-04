@@ -137,6 +137,7 @@ an array, and `ref_new`.
 | `handle H` | `H`'s environment, then a `fn() -> (body results)`, the results being what `H`'s return clause takes after the environment | what the return clause gives |
 | `perform E.i` | what operation `i` of `E` takes | what it gives |
 | `resume` | a continuation, then what it takes | what it gives |
+| `discontinue F.i` | a continuation, then what operation `i` of `F` takes; what the operation gives must fit what the continuation takes | what the continuation gives |
 
 Field accesses also follow rule 5: `get C.i` and `set C.i` on `x` need `x`
 to be known to be built by `C`: because `C`'s type has only one
@@ -196,7 +197,8 @@ Rule 7 of the IR says a continuation is used at most once, which the run
 time checks. The verifier also rejects a function that can use a
 continuation twice in a way it can see:
 
-- Each time it's an argument counts as a use: of `resume`, but also of
+- Each time it's an argument counts as a use: of `resume` and
+  `discontinue`, but also of
   any other op, like a call, `closure` or `new`, and of a jump.
 - Uses add up along a path. A `case` takes the most of its arms, and a jump
   adds what the join point's body uses of variables bound outside it.
@@ -236,6 +238,7 @@ parameters.
 | `call f[args]` | `f`'s row, with the arguments in place of its parameters |
 | `apply(c, ..)` | the row of `c`'s type |
 | `resume(k, ..)` | the row of `k`'s type |
+| `discontinue F.i(k, ..)` | the row of `k`'s type, and `F` |
 | `handle H[args](..)` | the row of `H`, with the arguments in place |
 | `call_extern` and every other op | `Nothing` |
 

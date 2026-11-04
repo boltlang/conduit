@@ -34,7 +34,7 @@ use wasm_encoder::{
 };
 
 use crate::types::nullable;
-use crate::{ABORT, Cx, HANDLERS};
+use crate::{ABORT, Cx, HANDLERS, SITE};
 
 /// A lowered function: the locals after its parameters, and its code.
 pub(crate) struct Body {
@@ -217,6 +217,10 @@ impl<'m> FuncCx<'_, 'm> {
     fn var_ty(&self, v: Var) -> &'m Ty {
         let f: &'m Func = self.f;
         f.var_ty(v)
+    }
+
+    fn is_cont(&self, a: &Atom) -> bool {
+        matches!(self.atom_ty(a), Ty::Cont(_))
     }
 
     fn atom_ty(&self, a: &Atom) -> Ty {
@@ -653,6 +657,17 @@ impl<'m> FuncCx<'_, 'm> {
             // A tail-resumptive clause's `resume` is gone by now, and no
             // other code can have a continuation.
             Op::Resume => return Err("continuations aren't supported yet".into()),
+            // In a tail-resumptive clause, without its continuation: the
+            // `perform` it handles performs this instead, so it runs under
+            // that `perform`'s handlers.
+            Op::Discontinue(e, i) if args.first().is_none_or(|a| !self.is_cont(a)) => {
+                self.emit(I::GlobalGet(SITE));
+                self.emit(I::GlobalSet(HANDLERS));
+                self.perform(*e, *i, args)?;
+            }
+            Op::Discontinue(..) => {
+                return Err("continuations aren't supported yet".into());
+            }
         }
         Ok(self.bind(binds, false))
     }
@@ -760,7 +775,12 @@ impl<'m> FuncCx<'_, 'm> {
         let saved = self.new_local(base);
         let me = self.new_local(nullable(frame));
         let thrown = self.new_local(base);
+        let site = self.cx.discontinues.then(|| self.new_local(base));
 
+        if let Some(site) = site {
+            self.emit(I::GlobalGet(SITE));
+            self.emit(I::LocalSet(site));
+        }
         self.emit(I::GlobalGet(HANDLERS));
         self.emit(I::LocalSet(saved));
         self.emit(I::I32Const(number));
@@ -812,7 +832,13 @@ impl<'m> FuncCx<'_, 'm> {
         self.emit(I::Throw(ABORT));
         self.close();
         // The handler stack is already `saved`: the `perform` set it to the
-        // frames below this one before calling the clause.
+        // frames below this one before calling the clause. The `perform`s
+        // the exception left didn't put back the stack of the clause they
+        // ran, so this does.
+        if let Some(site) = site {
+            self.emit(I::LocalGet(site));
+            self.emit(I::GlobalSet(SITE));
+        }
         for (j, &o) in outs.iter().enumerate() {
             self.emit(I::LocalGet(me));
             self.emit(I::StructGet {
@@ -873,6 +899,15 @@ impl<'m> FuncCx<'_, 'm> {
         self.emit(I::LocalGet(found));
         self.emit(I::RefCastNullable(HeapType::Concrete(frame)));
         self.emit(I::LocalTee(this));
+        // The clause can discontinue under this `perform`'s handlers.
+        let site = self.cx.discontinues.then(|| {
+            let old = self.new_local(nullable(base));
+            self.emit(I::GlobalGet(SITE));
+            self.emit(I::LocalSet(old));
+            self.emit(I::LocalGet(saved));
+            self.emit(I::GlobalSet(SITE));
+            old
+        });
         self.atoms(args);
         self.emit(I::LocalGet(this));
         self.emit(I::StructGet {
@@ -882,6 +917,10 @@ impl<'m> FuncCx<'_, 'm> {
         self.emit(I::CallRef(clause));
         self.emit(I::LocalGet(saved));
         self.emit(I::GlobalSet(HANDLERS));
+        if let Some(old) = site {
+            self.emit(I::LocalGet(old));
+            self.emit(I::GlobalSet(SITE));
+        }
         Ok(())
     }
 

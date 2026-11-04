@@ -67,6 +67,11 @@ pub enum Op {
     /// Continues a captured computation. Args: the continuation, then the
     /// values to resume with.
     Resume,
+    /// Continues a captured computation by performing operation `i` of the
+    /// effect where it was captured, instead of giving it values: what that
+    /// gives is what the captured `perform` gives. Args: the continuation,
+    /// then the operation's arguments.
+    Discontinue(EffectId, u32),
 }
 
 /// What an op may do, from least to most.
@@ -95,7 +100,7 @@ impl Op {
             // Bounds checks and failed casts trap.
             Op::ArrayFill | Op::ArrayGet | Op::ArraySet | Op::Unbox(_) => Effects::Unknown,
             Op::Call(..) | Op::CallExtern(_) | Op::Apply => Effects::Unknown,
-            Op::Handle(_) | Op::Perform(..) | Op::Resume => Effects::Unknown,
+            Op::Handle(_) | Op::Perform(..) | Op::Resume | Op::Discontinue(..) => Effects::Unknown,
         }
     }
 }

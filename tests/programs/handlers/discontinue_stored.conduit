@@ -1,0 +1,62 @@
+// A clause that keeps its continuation in a ref, then resumes it and
+// discontinues it through the ref. The verifier only counts direct uses,
+// so it's the evaluator that finds the second use and traps. The clause
+// isn't tail-resumptive, so the Wasm backend can't lower it.
+effect effect20 {
+  () -> (i32)
+}
+
+effect effect21 {
+  () -> (i32)
+}
+
+handler handler30 for effect20 env(i32) ops(fn1) ret fn6
+
+handler handler31 for effect21 env() ops(fn3) ret fn2
+
+// Resumes with 1, then discontinues with effect21 too, when %0 isn't 0.
+fn fn1(%0: i32, %1: cont(i32) -> (i32)) -> (i32) {
+  let %2: ref cont(i32) -> (i32) = ref_new(%1)
+  let %3: cont(i32) -> (i32) = ref_get(%2)
+  let %4: i32 = resume(%3, 1i32)
+  case %0 {
+    0 => jump ret(%4)
+    _ =>
+      let %5: cont(i32) -> (i32) = ref_get(%2)
+      let %6: i32 = discontinue effect21.0(%5)
+      jump ret(%6)
+  }
+}
+
+fn fn2(%0: i32) -> (i32) {
+  jump ret(%0)
+}
+
+fn fn6(%0: i32, %1: i32) -> (i32) {
+  jump ret(%1)
+}
+
+fn fn3(%0: cont(i32) -> (i32)) -> (i32) {
+  jump ret(7i32)
+}
+
+fn fn4() -> (i32) {
+  let %0: i32 = perform effect20.0()
+  jump ret(%0)
+}
+
+fn fn0(%0: i32) -> (i32) {
+  let %1: imm fn() -> (i32) = closure fn4()
+  let %2: imm fn() -> (i32) = closure fn5(%0, %1)
+  let %3: i32 = handle handler31(%2)
+  jump ret(%3)
+}
+
+fn fn5(%0: i32, %1: imm fn() -> (i32)) -> (i32) {
+  let %2: i32 = handle handler30(%0, %1)
+  jump ret(%2)
+}
+
+//# run fn0(0i32) == 1i32
+//# run fn0(1i32) traps
+//# wasm-error: isn't tail-resumptive or aborting

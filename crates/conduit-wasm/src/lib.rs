@@ -16,6 +16,11 @@
 //! exception holding the frame, which the `handle` that pushed it catches:
 //! the output then also needs exception handling, also part of Wasm 3.0.
 //!
+//! A tail-resumptive clause may also end in `discontinue E.i(k, xs)`
+//! instead of `resume`. It then performs `E.i(xs)` itself, under the
+//! handler stack of the `perform` it handles, which a second global holds
+//! while the clause runs, and gives what that gives.
+//!
 //! Other clauses, and continuation types, need stack switching or evidence
 //! passing, which aren't supported yet.
 //!
@@ -71,6 +76,8 @@ pub(crate) struct Cx<'m> {
     wrappers: BTreeMap<HandlerId, u32>,
     /// The aborting clauses.
     aborts: BTreeSet<FuncId>,
+    /// Whether some clause discontinues, which needs [`SITE`].
+    discontinues: bool,
 }
 
 /// The exception an aborting clause throws, holding its handler's frame.
@@ -78,6 +85,11 @@ pub(crate) const ABORT: u32 = 0;
 
 /// The global holding the top of the handler stack.
 pub(crate) const HANDLERS: u32 = 0;
+
+/// The global holding the handler stack of the `perform` whose clause is
+/// running, under which a `discontinue` in that clause performs. Only there
+/// when some clause discontinues.
+pub(crate) const SITE: u32 = 1;
 
 impl Cx<'_> {
     fn func_index(&self, f: FuncId) -> Result<u32, String> {
@@ -150,12 +162,14 @@ pub fn emit_module(m: &Module, exports: &[(FuncId, &str)]) -> Result<Vec<u8>, Er
     let mut not_plain = BTreeMap::new();
     let mut aborts = BTreeSet::new();
     let mut aborting = BTreeSet::new();
+    let mut discontinues = false;
     for (&h, decl) in &m.handlers {
         for &clause in &decl.ops {
             let Some(f) = m.funcs.get(&clause) else {
                 continue;
             };
             if let Some(plain) = conduit_ir::clause::plain_call(f) {
+                discontinues |= conduit_ir::clause::discontinues(&plain);
                 plain_clauses.insert(clause, plain);
             } else if let Some(plain) = conduit_ir::clause::aborting(f) {
                 plain_clauses.insert(clause, plain);
@@ -176,6 +190,7 @@ pub fn emit_module(m: &Module, exports: &[(FuncId, &str)]) -> Result<Vec<u8>, Er
         entry_keys: HashMap::new(),
         wrappers: BTreeMap::new(),
         aborts,
+        discontinues,
     };
     cx.types.aborting = aborting;
     let first = m.externs.len() as u32;
@@ -331,14 +346,17 @@ pub fn emit_module(m: &Module, exports: &[(FuncId, &str)]) -> Result<Vec<u8>, Er
     }
     if let Some(frame) = handlers {
         let mut globals = GlobalSection::new();
-        globals.global(
-            GlobalType {
-                val_type: nullable(frame),
-                mutable: true,
-                shared: false,
-            },
-            &ConstExpr::ref_null(HeapType::Concrete(frame)),
-        );
+        let count = if cx.discontinues { 2 } else { 1 };
+        for _ in 0..count {
+            globals.global(
+                GlobalType {
+                    val_type: nullable(frame),
+                    mutable: true,
+                    shared: false,
+                },
+                &ConstExpr::ref_null(HeapType::Concrete(frame)),
+            );
+        }
         module.section(&globals);
     }
     module.section(&export_section);

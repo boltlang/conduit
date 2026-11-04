@@ -100,6 +100,7 @@ pub enum Op {
     Handle(HandlerId),     // args = handler env, then a closure: the body
     Perform(EffectId, u32),// run operation i of the nearest handler of the effect
     Resume,                // args[0] = continuation, rest = values to resume with
+    Discontinue(EffectId, u32), // args[0] = continuation, rest = the operation's args
 }
 
 impl Op {
@@ -573,13 +574,23 @@ pub struct HandlerDecl {
 `Cont(op results -> R)`: resuming it with the operation's results runs the
 rest of the body, through the return clause, and gives back an `R`.
 
-### The three operations
+### The four operations
 
 ```
 let r = handle H(env.., body)   -- run closure `body` under handler H
 let x = perform E.op(args)      -- nearest enclosing handler of E (dynamic)
 let r = resume(k, vals)         -- continue a captured computation
+let r = discontinue F.op(k, args) -- continue it by performing F.op(args) there
 ```
+
+`discontinue` continues `k` as if the `perform` it captured had been
+`perform F.op(args)` instead, under the handlers that were around it, so
+what `F.op` gives is what that `perform` gives. Its results must fit what
+`k` takes. Like OCaml's `discontinue`, this is how a clause stops a
+computation without dropping it: with an effect whose handlers clean up
+and abort, a cancelled task unwinds through its own cleanup. The handlers
+inside the task can also recover, by resuming, as from an error. Conduit
+has no exceptions of its own, so the frontend says which effect it is.
 
 ### Why the body is a closure and not a block
 
@@ -592,8 +603,8 @@ Join points stay jumps, even inside handled code.
 
 ### Rules
 
-7. **A continuation is used at most once.** Resuming one that was already
-   resumed traps at run time: Wasm stack switching does this itself, and
+7. **A continuation is used at most once,** by `resume` or `discontinue`.
+   Using one that was already used traps at run time: Wasm stack switching does this itself, and
    the evidence-passing lowering keeps a "used" flag in each continuation.
    Continuations can be stored like any other value (captured by a
    closure, put in a field, an array, a ref or an `Any`), so a scheduler
@@ -606,7 +617,8 @@ Join points stay jumps, even inside handled code.
    code where two branches test the same condition and can never both
    run. A frontend can restructure such code, for example by moving the
    second branch into each arm of the first.
-8. **`Handle`, `Perform` and `Resume` have effect `Unknown`,** like `Call`.
+8. **`Handle`, `Perform`, `Resume` and `Discontinue` have effect
+   `Unknown`,** like `Call`.
    Every pass already treats calls as able to do anything, so none of them
    needs a special case. This is about memory, and is separate from the
    effect types below.
@@ -653,6 +665,10 @@ These are checked by looking at a clause's body:
   clause, with no stack captured. Every way out of the clause must resume
   like this, and `conduit_ir::clause::plain_call` turns such a clause into
   that plain function: without `k`, giving what it resumed with.
+
+  A way out may also be `let r = discontinue F.op(k, ..); jump ret(r)`.
+  The plain function then performs `F.op(..)` itself, under the handlers
+  of the `perform` it handles, and gives what that gives.
 - **Aborting:** the clause never uses `k` (exceptions, early exit).
   `perform` unwinds to the handler and nothing is captured. What the clause
   gives is what the `handle` gives, without the return clause.
@@ -806,6 +822,11 @@ tail-resumptive or aborting, with no continuation:
   clause runs its body in a `try_table`, which catches the exception,
   rethrows it if the frame isn't its own, and otherwise gives the frame's
   results.
+- A tail-resumptive clause that discontinues sets the stack to that of
+  the `perform` it handles, which a second global holds while the clause
+  runs, and performs. A `perform` sets that global and puts it back after,
+  and a `handle` that catches an abort puts it back too, since the
+  `perform`s the exception left couldn't.
 
 Any other clause is an error. The general case has two ways to be lowered,
 both possible because handlers are confined to three ops.
@@ -1021,10 +1042,12 @@ Status:
 | `ArrayFreeze` | nothing | nothing | ✅ |
 | `Handle`, `Perform` with tail-resumptive clauses | — | a handler stack in a global, and a direct call of the clause | ✅ |
 | `Handle`, `Perform` with aborting clauses | — | the same, then `throw`, caught by `try_table` | ✅ (exception handling, Wasm 3.0) |
+| `Discontinue` in a tail-resumptive clause | — | a `perform` under the handler stack of the `perform` the clause handles, kept in a second global | ✅ |
 | `Handle` | `cont.new` + `resume` with `(on $op ..)` | same | ⚠️ stack switching |
 | `Perform` | `suspend` | same | ⚠️ stack switching |
 | `Resume` | `resume` | same | ⚠️ stack switching |
-| `Handle`, `Perform`, `Resume` | evidence passing, then the rows above | same | 🔧 |
+| `Discontinue` | `resume` with a flag, then the `perform` after the `suspend` | same | ⚠️ stack switching |
+| `Handle`, `Perform`, `Resume`, `Discontinue` | evidence passing, then the rows above | same | 🔧 |
 
 Notes:
 
@@ -1100,8 +1123,8 @@ fn fn1(%0: i32) -> (i32) {
   `array_new`, `array_fill`, `array_get`, `array_set`, `array_len`,
   `array_clone`, `array_freeze`,
   `ref_new`, `ref_get`, `ref_set`, `box[i32](..)`, `unbox[i32](..)`,
-  `handle handler30(..)`, `perform effect20.0(..)` and
-  `resume(..)`.
+  `handle handler30(..)`, `perform effect20.0(..)`, `resume(..)` and
+  `discontinue effect20.0(..)`.
 - **Literals** carry their type: `5i32`, `-1i64`, `1.5f32`, `1e300f64`.
   Finite floats are printed in the shortest form that reads back exactly.
   NaNs and infinities are written by their bits: `f32_bits(2143289344)`.
@@ -1128,8 +1151,9 @@ doesn't need a deep stack.
   an error.
 - **Handlers move frames.** `handle` pushes a handler frame. `perform`
   moves the frames from the nearest handler of its effect up into the
-  continuation, and `resume` moves them back. A second `resume` finds the
-  frames gone, which is an error (rule 7).
+  continuation, and `resume` moves them back. `discontinue` moves them
+  back too, and then performs in the frame that was waiting. A second use
+  finds the frames gone, which is an error (rule 7).
 - **Objects know their mutability.** Every object that can be `Imm` or
   `Mut` carries an "is mut" flag. A write to an `Imm` object is an error,
   which can only happen if an optimization broke the mutability rules.

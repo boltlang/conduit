@@ -236,6 +236,22 @@ pub(crate) fn op_results<P: Program + ?Sized>(
             fits(rest, &sig.params).map_err(|m| format!("resume: {m}"))?;
             Ok(sig.results.clone())
         }
+        Op::Discontinue(e, i) => {
+            let Some((Ty::Cont(k), rest)) = tys.split_first() else {
+                return Err("discontinue needs a continuation as its first argument".into());
+            };
+            let effect = p.effect(*e).ok_or_else(|| format!("unknown effect {e}"))?;
+            let op = effect
+                .ops
+                .get(*i as usize)
+                .ok_or_else(|| format!("{e} has no operation {i}"))?;
+            let at = format!("discontinue {e}.{i}");
+            fits(rest, &op.params).map_err(|m| format!("{at}: {m}"))?;
+            // What the operation gives is what the captured `perform` gives.
+            fits(&op.results, &k.params)
+                .map_err(|m| format!("{at}: its results don't fit the continuation: {m}"))?;
+            Ok(k.results.clone())
+        }
     }
 }
 

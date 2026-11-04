@@ -699,6 +699,11 @@ impl Parser {
                 Op::Perform(e, self.index()?)
             }
             "resume" => Op::Resume,
+            "discontinue" => {
+                let e = EffectId(self.id("effect")?);
+                self.punct(".")?;
+                Op::Discontinue(e, self.index()?)
+            }
             _ => Op::Prim(self.prim(pos, &name)?),
         };
         Ok(op)

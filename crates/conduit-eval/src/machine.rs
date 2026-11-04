@@ -603,6 +603,7 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
             Op::Handle(h) => return self.handle(*h, args, binds, next),
             Op::Perform(e, i) => return self.perform(*e, *i, args, binds, next),
             Op::Resume => return self.resume(args, binds, next),
+            Op::Discontinue(e, i) => return self.discontinue(*e, *i, args, binds, next),
         };
         let code = self.code()?;
         bind(code, binds, results)?;
@@ -678,6 +679,33 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
     }
 
     fn resume(&mut self, args: Vec<Value>, binds: &'p [Var], next: At<'p>) -> Step<()> {
+        let values = self.reinstate(args, binds, next)?;
+        self.deliver(values)
+    }
+
+    /// Puts the frames of the continuation back, like `resume`, and then
+    /// performs `effect.op(args)` in the code that was waiting in them.
+    fn discontinue(
+        &mut self,
+        effect: EffectId,
+        op: u32,
+        args: Vec<Value>,
+        binds: &'p [Var],
+        next: At<'p>,
+    ) -> Step<()> {
+        let args = self.reinstate(args, binds, next)?;
+        let (binds, next) = self
+            .code()?
+            .waiting
+            .take()
+            .ok_or_else(|| unverified("a continuation that doesn't wait"))?;
+        self.perform(effect, op, args, binds, next)
+    }
+
+    /// Takes the frames out of the continuation that `args` starts with and
+    /// puts them back on the stack, so that what they give comes back to
+    /// the `let` at `binds` and `next`. Gives the rest of `args`.
+    fn reinstate(&mut self, args: Vec<Value>, binds: &'p [Var], next: At<'p>) -> Step<Vec<Value>> {
         let (k, values) = args
             .split_first()
             .ok_or_else(|| unverified("resume without a continuation"))?;
@@ -695,7 +723,7 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
             return Err(ErrorKind::StackOverflow);
         }
         self.stack.extend(frames);
-        self.deliver(values.to_vec())
+        Ok(values.to_vec())
     }
 }
 

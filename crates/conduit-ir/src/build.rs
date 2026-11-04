@@ -752,6 +752,20 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
         self.emit(Op::Resume, all, None)
     }
 
+    /// Continues `k` by performing operation `op` of `e` where it was
+    /// captured.
+    pub fn discontinue(
+        &mut self,
+        k: impl Into<Atom>,
+        e: EffectId,
+        op: u32,
+        args: impl Atoms,
+    ) -> Vec<Var> {
+        let mut all = vec![k.into()];
+        all.extend(args.atoms());
+        self.emit(Op::Discontinue(e, op), all, None)
+    }
+
     /// Ends the current block by returning `values`.
     pub fn ret(&mut self, values: impl Atoms) {
         self.jump_to(Label::RET, values.atoms());
