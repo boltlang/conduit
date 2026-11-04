@@ -1,6 +1,6 @@
-//! Checks that IR follows the rules of `docs/ir.md`: scoping, types,
-//! mutability, exhaustive cases, and continuations visibly used more than
-//! once.
+//! Checks that IR follows the rules of `docs/ir.md`, as `docs/verify.md`
+//! lists them: scoping, types, mutability, exhaustive cases, and
+//! continuations visibly used more than once.
 //!
 //! [`verify_func`] checks one function, asking a [`Program`] only for the
 //! signatures and declarations it uses, so a frontend can verify each
@@ -921,7 +921,7 @@ fn max_into(a: &mut Counts, b: &Counts) {
 ///
 /// This only sees direct uses: a continuation stored in a closure, a field,
 /// an array, a ref or an `Any` can be used again through it, which the
-/// run-time check catches instead (rule 7 in `docs/ir.md`). And it doesn't
+/// run-time check catches instead (see `docs/verify.md`). And it doesn't
 /// know which paths can run, so branches on the same condition count as if
 /// both could be taken.
 struct Linear<'a> {
