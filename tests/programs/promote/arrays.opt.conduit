@@ -1,0 +1,17 @@
+fn fn0(%0: i32) -> (i32) vars(%2: ref mut [i32], %5: mut [i32], %7: mut [i32]) {
+  let %1: mut [i32] = array_fill(%0, 0i32)
+  join rec j1(%3: i32, %11: mut [i32]) =
+    let %4: i32 = lt.s(%3, %0)
+    case %4 {
+      1 =>
+        let = array_set(%11, %3, %3)
+        let %6: i32 = add(%3, 1i32)
+        jump j1(%6, %11)
+      _ =>
+        let %8: imm [i32] = array_freeze(%11)
+        let %9: i32 = sub(%0, 1i32)
+        let %10: i32 = array_get(%8, %9)
+        jump ret(%10)
+    }
+  in jump j1(0i32, %1)
+}

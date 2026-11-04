@@ -710,6 +710,17 @@ Because the IR is so small, the classic simplifications are local rewrites:
   extra parameter for its current value, every `Jump` passes the current
   value, `RefGet` becomes that value, and `RefSet` makes a new value
   current. A ref that does escape stays a heap cell.
+
+  The `promote` pass does this. A join point gets a parameter only for the
+  refs it needs: those that some path from its start reads before writing,
+  found by a backward liveness analysis repeated over the join points until
+  it stops changing, so loops and join points that jump to each other work.
+  Promoting one ref can let another be promoted on the next round, like a
+  ref that was only stored in a promoted one. A ref of a continuation
+  stays, since the verifier counts a continuation's uses along paths and
+  reads out of a ref on different paths would look like several uses. It
+  runs before `dce` and `copies`: a ref holding an array ties the array to
+  the ref's region, so promoting it lets `copies` freeze the array.
 - **Remove copies.** The `copies` pass does two things:
   - An `ArrayClone` of an `Imm` array to `Imm` is the array itself, since
     nothing can tell the two apart.

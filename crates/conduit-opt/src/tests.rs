@@ -7,6 +7,7 @@ use conduit_ir::*;
 
 use crate::dce::dce;
 use crate::optimize_module;
+use crate::promote::promote;
 
 const TWO_DEAD_ADDS: &str = "
 fn fn0(%0: i32) -> (i32) {
@@ -68,4 +69,43 @@ fn long_functions() {
     };
     assert!(dce(&mut f));
     assert_eq!(f.body, Block::from(ret));
+}
+
+/// Without refs, or with only refs that escape, promotion changes nothing.
+#[test]
+fn promote_reports_no_change() {
+    let m = parse(
+        "fn fn0(%0: ref i32) -> (i32) {
+           let %1: i32 = ref_get(%0)
+           jump ret(%1)
+         }
+
+         fn fn1() -> (ref i32) {
+           let %0: ref i32 = ref_new(1i32)
+           jump ret(%0)
+         }",
+    )
+    .unwrap();
+    for f in m.funcs.values() {
+        let mut g = f.clone();
+        assert!(!promote(&mut g));
+        assert_eq!(&g, f);
+    }
+}
+
+/// A ref of a continuation stays, so that the verifier doesn't count
+/// reads on different paths as uses of the continuation.
+#[test]
+fn refs_of_continuations_stay() {
+    let m = parse(
+        "fn fn0(%0: cont() -> ()) -> () {
+           let %1: ref cont() -> () = ref_new(%0)
+           let %2: cont() -> () = ref_get(%1)
+           let = resume(%2)
+           jump ret()
+         }",
+    )
+    .unwrap();
+    let mut f = m.funcs[&FuncId(0)].clone();
+    assert!(!promote(&mut f));
 }

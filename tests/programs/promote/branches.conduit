@@ -1,0 +1,71 @@
+// A ref set in some branches and read where they meet: the join point
+// gets the value each branch leaves.
+fn fn0(%0: i32) -> (i32) {
+  let %1: ref i32 = ref_new(1i32)
+  join j1() =
+    let %2: i32 = ref_get(%1)
+    jump ret(%2)
+  in
+  case %0 {
+    0 => jump j1()
+    1 =>
+      let = ref_set(%1, 10i32)
+      jump j1()
+    _ =>
+      let %3: i32 = mul(%0, 100i32)
+      let = ref_set(%1, %3)
+      jump j1()
+  }
+}
+
+// A value read before a write keeps the old value.
+fn fn1() -> (i32) {
+  let %0: ref i32 = ref_new(3i32)
+  let %1: i32 = ref_get(%0)
+  let = ref_set(%0, 4i32)
+  let %2: i32 = ref_get(%0)
+  let %3: i32 = mul(%1, 10i32)
+  let %4: i32 = add(%3, %2)
+  jump ret(%4)
+}
+
+// A join point that writes the ref before reading it doesn't need its
+// value, so it gets no parameter.
+fn fn2(%0: i32) -> (i32) {
+  let %1: ref i32 = ref_new(0i32)
+  join j1() =
+    let = ref_set(%1, 7i32)
+    let %2: i32 = ref_get(%1)
+    jump ret(%2)
+  in
+  case %0 {
+    0 =>
+      let = ref_set(%1, 1i32)
+      jump j1()
+    _ => jump j1()
+  }
+}
+
+// A read that a jump to another join point needs: j1 passes it on to j2.
+fn fn3(%0: i32) -> (i32) {
+  let %1: ref i32 = ref_new(%0)
+  join j2() =
+    let %2: i32 = ref_get(%1)
+    jump ret(%2)
+  in
+  join j1() =
+    let %3: i32 = add(%0, 1i32)
+    jump j2()
+  in
+  let = ref_set(%1, 40i32)
+  jump j1()
+}
+
+//# run fn0(0i32) == 1i32
+//# run fn0(1i32) == 10i32
+//# run fn0(2i32) == 200i32
+//# run fn1() == 34i32
+//# run fn2(0i32) == 7i32
+//# run fn2(1i32) == 7i32
+//# run fn3(1i32) == 40i32
+//# opt: promote
