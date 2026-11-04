@@ -32,6 +32,20 @@ pub struct Func {
     /// The effects it may perform.
     pub row: Row,
     pub body: Block,
+    /// Names for its parts, to show them by.
+    pub debug: FuncDebug,
+}
+
+/// Names for a function and its variables and labels, which the text
+/// format, errors and backends show instead of numbers where they can.
+/// Passes don't look at them: they keep them, and give none to what they
+/// make. A name needn't be unique: an inlined function's variables keep
+/// theirs, and instances of one generic function share one.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub struct FuncDebug {
+    pub name: Option<Box<str>>,
+    pub vars: BTreeMap<Var, Box<str>>,
+    pub labels: BTreeMap<Label, Box<str>>,
 }
 
 impl Func {
@@ -47,6 +61,7 @@ impl Func {
             results,
             row: Row::NOTHING,
             body: Tail::Unreachable.into(),
+            debug: FuncDebug::default(),
         }
     }
 
@@ -101,6 +116,8 @@ pub struct DataDecl {
     /// [`Mutability::Param`](crate::Mutability::Param) 1 to `params`.
     pub params: u32,
     pub ctors: Vec<CtorDecl>,
+    /// A name to show it by. See [`FuncDebug`].
+    pub debug_name: Option<Box<str>>,
 }
 
 /// A host function.
@@ -110,12 +127,17 @@ pub struct Extern {
     pub module: Box<str>,
     pub name: Box<str>,
     pub sig: Sig,
+    /// A name to show it by in Conduit, which needn't be the host's. See
+    /// [`FuncDebug`].
+    pub debug_name: Option<Box<str>>,
 }
 
 /// An effect: the signature of each of its operations.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct EffectDecl {
     pub ops: Vec<Sig>,
+    /// A name to show it by. See [`FuncDebug`].
+    pub debug_name: Option<Box<str>>,
 }
 
 /// A deep handler of an effect.
@@ -131,4 +153,6 @@ pub struct HandlerDecl {
     /// The effects its clauses may perform, which a `handle` of it
     /// performs instead of the handled effect.
     pub row: Row,
+    /// A name to show it by. See [`FuncDebug`].
+    pub debug_name: Option<Box<str>>,
 }

@@ -2,16 +2,64 @@ use std::collections::BTreeMap;
 
 use super::Error;
 use super::lex::{Pos, Tok, lex};
+use super::names::{Names, Spelled, spelled};
 use crate::*;
 
 /// Reads a module from its text.
 pub fn parse(src: &str) -> Result<Module, Error> {
+    let toks = lex(src)?;
+    let items = item_names(&toks)?;
     let mut p = Parser {
-        toks: lex(src)?,
+        toks,
         i: 0,
         params: Vec::new(),
+        items,
+        vars: Names::default(),
+        labels: Names::default(),
     };
     p.module()
+}
+
+/// The kinds of item, by the keyword that defines one and the prefix of
+/// their numbered form.
+const KINDS: [&str; 5] = ["data", "extern", "effect", "handler", "fn"];
+
+fn kind(prefix: &str) -> usize {
+    KINDS
+        .iter()
+        .position(|k| *k == prefix)
+        .expect("a kind of item")
+}
+
+/// The names of the items `toks` defines, of each kind in [`KINDS`].
+fn item_names(toks: &[(Tok, Pos)]) -> Result<Vec<Names>, Error> {
+    let mut found: Vec<Vec<(Spelled, Pos)>> = vec![Vec::new(); KINDS.len()];
+    let mut depth = 0;
+    for w in toks.windows(2) {
+        match &w[0].0 {
+            Tok::Punct("{") => depth += 1,
+            Tok::Punct("}") => depth -= 1,
+            Tok::Ident(k) if depth == 0 => {
+                if let (Some(i), Tok::Ident(name)) = (KINDS.iter().position(|x| x == k), &w[1].0)
+                    && let Some(s) = spelled(name, k)
+                {
+                    found[i].push((s, w[1].1));
+                }
+            }
+            _ => {}
+        }
+    }
+    found
+        .iter()
+        .map(|defs| {
+            let spellings: Vec<Spelled> = defs.iter().map(|(s, _)| s.clone()).collect();
+            Names::new(&spellings, 0, true).map_err(|message| Error {
+                line: defs[0].1.line,
+                col: defs[0].1.col,
+                message,
+            })
+        })
+        .collect()
 }
 
 type Res<T> = Result<T, Error>;
@@ -22,6 +70,11 @@ struct Parser {
     /// The mutability parameters of the data declaration or function
     /// being read, by name: `Param(i + 1)` is `params[i]`.
     params: Vec<String>,
+    /// The names of items, of each kind in [`KINDS`].
+    items: Vec<Names>,
+    /// The names of the variables and labels of the function being read.
+    vars: Names,
+    labels: Names,
 }
 
 /// What a function's body says about its variables and labels.
@@ -29,6 +82,7 @@ struct Parser {
 struct FuncInfo {
     vars: BTreeMap<u32, Ty>,
     max_label: u32,
+    debug: FuncDebug,
 }
 
 impl Parser {
@@ -63,7 +117,7 @@ impl Parser {
     fn unexpected<T>(&self, expected: &str) -> Res<T> {
         let found = match self.peek() {
             Tok::Ident(s) => format!("`{s}`"),
-            Tok::Var(n) => format!("`%{n}`"),
+            Tok::Var(s) => format!("`%{s}`"),
             Tok::Num(s) => format!("`{s}`"),
             Tok::Str(s) => format!("{s:?}"),
             Tok::Punct(p) => format!("`{p}`"),
@@ -123,7 +177,7 @@ impl Parser {
         }
     }
 
-    /// An ID like `fn1`: `prefix` followed by a number.
+    /// An ID like `src1`: `prefix` followed by a number.
     fn id(&mut self, prefix: &str) -> Res<u64> {
         let pos = self.pos();
         let what = format!("an ID like `{prefix}1`");
@@ -132,6 +186,34 @@ impl Parser {
             Some(n) => Ok(n),
             None => self.error_at(pos, format!("expected {what}, found `{name}`")),
         }
+    }
+
+    /// How the next identifier spells an item of the kind `prefix`.
+    fn spelled(&mut self, prefix: &str) -> Res<Spelled> {
+        let pos = self.pos();
+        let what = format!("an ID like `{prefix}1`, or a name");
+        let name = self.ident(&what)?;
+        match spelled(&name, prefix) {
+            Some(s) => Ok(s),
+            None => self.error_at(pos, format!("expected {what}, found `{name}`")),
+        }
+    }
+
+    /// A use of an item of the kind `prefix`: `fn1`, `sum` or `sum#1`.
+    fn item(&mut self, prefix: &str) -> Res<u64> {
+        let pos = self.pos();
+        let s = self.spelled(prefix)?;
+        match self.items[kind(prefix)].get(&s) {
+            Ok(n) => Ok(n),
+            Err(message) => self.error_at(pos, message),
+        }
+    }
+
+    /// The definition of an item of the kind `prefix`: its number, and its
+    /// name if it has one.
+    fn def(&mut self, prefix: &str) -> Res<(u64, Option<Box<str>>)> {
+        let s = self.spelled(prefix)?;
+        Ok(self.items[kind(prefix)].def(&s))
     }
 
     /// A plain number, like a field index or a label count.
@@ -190,40 +272,51 @@ impl Parser {
             let duplicate =
                 match name.as_str() {
                     "data" => {
-                        let id = DataId(self.id("data")?);
-                        let decl = self.data()?;
+                        let (id, debug_name) = self.def("data")?;
+                        let id = DataId(id);
+                        let decl = DataDecl {
+                            debug_name,
+                            ..self.data()?
+                        };
                         m.data.insert(id, decl).map(|_| id.to_string())
                     }
                     "extern" => {
-                        let id = ExternId(self.id("extern")?);
+                        let (id, debug_name) = self.def("extern")?;
+                        let id = ExternId(id);
                         let (module, name) = (self.string()?, self.string()?);
                         let sig = self.sig()?;
-                        m.externs
-                            .insert(id, Extern { module, name, sig })
-                            .map(|_| id.to_string())
+                        let ext = Extern {
+                            module,
+                            name,
+                            sig,
+                            debug_name,
+                        };
+                        m.externs.insert(id, ext).map(|_| id.to_string())
                     }
                     "effect" => {
-                        let id = EffectId(self.id("effect")?);
+                        let (id, debug_name) = self.def("effect")?;
+                        let id = EffectId(id);
                         self.punct("{")?;
                         let mut ops = Vec::new();
                         while !self.eat_punct("}") {
                             ops.push(self.sig()?);
                         }
                         m.effects
-                            .insert(id, EffectDecl { ops })
+                            .insert(id, EffectDecl { ops, debug_name })
                             .map(|_| id.to_string())
                     }
                     "handler" => {
-                        let id = HandlerId(self.id("handler")?);
+                        let (id, debug_name) = self.def("handler")?;
+                        let id = HandlerId(id);
                         self.keyword("for")?;
-                        let effect = EffectId(self.id("effect")?);
+                        let effect = EffectId(self.item("effect")?);
                         let row = self.row()?;
                         self.keyword("env")?;
                         let env = self.list(Self::ty)?;
                         self.keyword("ops")?;
-                        let ops = self.list(|p| p.id("fn").map(FuncId))?;
+                        let ops = self.list(|p| p.item("fn").map(FuncId))?;
                         self.keyword("ret")?;
-                        let ret = FuncId(self.id("fn")?);
+                        let ret = FuncId(self.item("fn")?);
                         m.handlers
                             .insert(
                                 id,
@@ -233,13 +326,16 @@ impl Parser {
                                     ops,
                                     ret,
                                     row,
+                                    debug_name,
                                 },
                             )
                             .map(|_| id.to_string())
                     }
                     "fn" => {
-                        let id = FuncId(self.id("fn")?);
-                        let f = self.func()?;
+                        let (id, name) = self.def("fn")?;
+                        let id = FuncId(id);
+                        let mut f = self.func()?;
+                        f.debug.name = name;
                         m.funcs.insert(id, f).map(|_| id.to_string())
                     }
                     _ => return self.error_at(
@@ -270,7 +366,11 @@ impl Parser {
         };
         let params = std::mem::take(&mut self.params).len() as u32;
         result?;
-        Ok(DataDecl { params, ctors })
+        Ok(DataDecl {
+            params,
+            ctors,
+            debug_name: None,
+        })
     }
 
     /// The mutability parameters a data declaration or function declares,
@@ -361,7 +461,7 @@ impl Parser {
                 } else if self.eat_keyword("any") {
                     Ty::Any(m)
                 } else {
-                    let d = DataId(self.id("data")?);
+                    let d = DataId(self.item("data")?);
                     let mut args = Vec::new();
                     if self.eat_punct("[") {
                         loop {
@@ -405,7 +505,7 @@ impl Parser {
         }
         let mut effects = Vec::new();
         loop {
-            effects.push(EffectId(self.id("effect")?));
+            effects.push(EffectId(self.item("effect")?));
             if !self.eat_punct("+") {
                 break;
             }
@@ -413,21 +513,33 @@ impl Parser {
         Ok(Row::new(effects))
     }
 
-    fn var(&mut self) -> Res<Var> {
-        match self.peek() {
-            Tok::Var(n) => {
-                let n = *n;
-                self.next();
-                Ok(Var(n))
-            }
-            _ => self.unexpected("a variable"),
+    fn var(&mut self, info: &mut FuncInfo) -> Res<Var> {
+        let pos = self.pos();
+        let Tok::Var(text) = self.peek() else {
+            return self.unexpected("a variable");
+        };
+        let Some(s) = spelled(text, "") else {
+            let text = text.clone();
+            return self.error_at(pos, format!("`%{text}` isn't a variable"));
+        };
+        self.next();
+        let n = match self.vars.get(&s) {
+            Ok(n) => n,
+            Err(message) => return self.error_at(pos, format!("%{message}")),
+        };
+        let Ok(n) = u32::try_from(n) else {
+            return self.error_at(pos, "too many variables");
+        };
+        if let Spelled::Named(name, _) = s {
+            info.debug.vars.insert(Var(n), name.into());
         }
+        Ok(Var(n))
     }
 
     /// `%3: i32`, which gives `%3` its type.
     fn binder(&mut self, info: &mut FuncInfo) -> Res<Var> {
         let pos = self.pos();
-        let v = self.var()?;
+        let v = self.var(info)?;
         self.punct(":")?;
         let ty = self.ty()?;
         match info.vars.get(&v.0) {
@@ -441,26 +553,73 @@ impl Parser {
         }
     }
 
-    fn label(&mut self) -> Res<Label> {
+    fn label(&mut self, info: &mut FuncInfo) -> Res<Label> {
         let pos = self.pos();
-        let name = self.ident("a label like `j1` or `ret`")?;
+        let name = self.ident("a label like `j1`, `loop` or `ret`")?;
         if name == "ret" {
             return Ok(Label::RET);
         }
-        match name
-            .strip_prefix('j')
-            .and_then(digits)
-            .and_then(|n| u32::try_from(n).ok())
-        {
-            Some(n) if n > 0 => Ok(Label(n)),
-            _ => self.error_at(
+        let Some(s) = spelled(&name, "j") else {
+            return self.error_at(
                 pos,
-                format!("expected a label like `j1` or `ret`, found `{name}`"),
-            ),
+                format!("expected a label like `j1`, `loop` or `ret`, found `{name}`"),
+            );
+        };
+        let n = match self.labels.get(&s) {
+            Ok(n) => n,
+            Err(message) => return self.error_at(pos, message),
+        };
+        match u32::try_from(n) {
+            Ok(n) if n > 0 => {
+                if let Spelled::Named(name, _) = s {
+                    info.debug.labels.insert(Label(n), name.into());
+                }
+                Ok(Label(n))
+            }
+            _ => self.error_at(pos, format!("`{name}` isn't a label: they start at `j1`")),
         }
     }
 
+    /// Numbers the variables and labels of the function that starts at the
+    /// next token, by a look ahead to the end of its body.
+    fn func_names(&mut self) -> Res<()> {
+        let (mut vars, mut labels) = (Vec::new(), Vec::new());
+        let mut depth = 0;
+        let mut j = self.i;
+        let label = |tok: &Tok| match tok {
+            Tok::Ident(s) if s != "ret" => spelled(s, "j"),
+            _ => None,
+        };
+        while j < self.toks.len() {
+            match &self.toks[j].0 {
+                Tok::Punct("{") => depth += 1,
+                Tok::Punct("}") => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                Tok::Var(text) => vars.extend(spelled(text, "")),
+                Tok::Ident(k) if k == "join" || k == "and" || k == "jump" => {
+                    let mut next = j + 1;
+                    if k == "join" && matches!(&self.toks[next].0, Tok::Ident(r) if r == "rec") {
+                        next += 1;
+                    }
+                    labels.extend(label(&self.toks[next].0));
+                }
+                Tok::Eof => break,
+                _ => {}
+            }
+            j += 1;
+        }
+        let pos = self.pos();
+        self.vars = Names::new(&vars, 0, false).or_else(|m| self.error_at(pos, m))?;
+        self.labels = Names::new(&labels, 1, false).or_else(|m| self.error_at(pos, m))?;
+        Ok(())
+    }
+
     fn func(&mut self) -> Res<Func> {
+        self.func_names()?;
         self.params = self.param_names()?;
         let f = self.func_rest();
         self.params.clear();
@@ -517,6 +676,7 @@ impl Parser {
             results,
             row,
             body,
+            debug: info.debug,
         })
     }
 
@@ -542,7 +702,7 @@ impl Parser {
             }
             self.punct("=")?;
             let op = self.op()?;
-            let args = self.list(Self::atom)?;
+            let args = self.list(|p| p.atom(info))?;
             let source = self.source()?;
             lets.push(Let {
                 binds,
@@ -565,7 +725,7 @@ impl Parser {
                 let mut defs = Vec::new();
                 loop {
                     let label_pos = self.pos();
-                    let label = self.label()?;
+                    let label = self.label(info)?;
                     if label == Label::RET {
                         return self.error_at(label_pos, "`ret` can't be defined");
                     }
@@ -587,8 +747,8 @@ impl Parser {
                 Ok(Tail::Join { rec, defs, body })
             }
             "jump" => {
-                let target = self.label()?;
-                let args = self.list(Self::atom)?;
+                let target = self.label(info)?;
+                let args = self.list(|p| p.atom(info))?;
                 let source = self.source()?;
                 Ok(Tail::Jump {
                     target,
@@ -597,7 +757,7 @@ impl Parser {
                 })
             }
             "case" => {
-                let scrut = self.atom()?;
+                let scrut = self.atom(info)?;
                 self.punct("{")?;
                 let (mut arms, mut default) = (Vec::new(), None);
                 while !self.eat_punct("}") {
@@ -639,7 +799,7 @@ impl Parser {
 
     /// `data10.1`
     fn ctor(&mut self) -> Res<CtorId> {
-        let data = DataId(self.id("data")?);
+        let data = DataId(self.item("data")?);
         self.punct(".")?;
         Ok(CtorId {
             data,
@@ -647,13 +807,15 @@ impl Parser {
         })
     }
 
-    fn atom(&mut self) -> Res<Atom> {
+    fn atom(&mut self, info: &mut FuncInfo) -> Res<Atom> {
         let pos = self.pos();
         if !matches!(self.peek(), Tok::Var(_) | Tok::Num(_) | Tok::Ident(_)) {
             return self.unexpected("a variable or a literal");
         }
+        if let Tok::Var(_) = self.peek() {
+            return self.var(info).map(Atom::Var);
+        }
         match self.next() {
-            Tok::Var(n) => Ok(Atom::Var(Var(n))),
             Tok::Num(s) => {
                 let lit = parse_lit(&s).ok_or(());
                 lit.map(Atom::Lit).or_else(|()| {
@@ -696,9 +858,9 @@ impl Parser {
             Ok(ty)
         };
         let op = match name.as_str() {
-            "call" => Op::Call(FuncId(self.id("fn")?), self.margs()?),
-            "call_extern" => Op::CallExtern(ExternId(self.id("extern")?)),
-            "closure" => Op::Closure(FuncId(self.id("fn")?), self.margs()?),
+            "call" => Op::Call(FuncId(self.item("fn")?), self.margs()?),
+            "call_extern" => Op::CallExtern(ExternId(self.item("extern")?)),
+            "closure" => Op::Closure(FuncId(self.item("fn")?), self.margs()?),
             "apply" => Op::Apply,
             "new" => Op::New(self.ctor()?),
             "get" | "set" => {
@@ -723,15 +885,15 @@ impl Parser {
             "box" => Op::Box(in_brackets(self)?),
             "unbox" => Op::Unbox(in_brackets(self)?),
             "array_freeze" => Op::ArrayFreeze,
-            "handle" => Op::Handle(HandlerId(self.id("handler")?)),
+            "handle" => Op::Handle(HandlerId(self.item("handler")?)),
             "perform" => {
-                let e = EffectId(self.id("effect")?);
+                let e = EffectId(self.item("effect")?);
                 self.punct(".")?;
                 Op::Perform(e, self.index()?)
             }
             "resume" => Op::Resume,
             "discontinue" => {
-                let e = EffectId(self.id("effect")?);
+                let e = EffectId(self.item("effect")?);
                 self.punct(".")?;
                 Op::Discontinue(e, self.index()?)
             }

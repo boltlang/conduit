@@ -18,6 +18,7 @@
 //! ```
 
 mod lex;
+mod names;
 mod parse;
 pub(crate) mod print;
 
@@ -36,6 +37,40 @@ pub fn print(m: &Module) -> String {
 /// The text of one function, as it appears in a module.
 pub fn print_func(id: FuncId, f: &Func) -> String {
     print::func(id, f)
+}
+
+/// The function of `m` that `name` means where a function is used in the
+/// text: `fn3`, `sum` or `sum#3`.
+pub fn find_func(m: &Module, name: &str) -> Result<FuncId, String> {
+    let found = |id: FuncId| {
+        if m.funcs.contains_key(&id) {
+            Ok(id)
+        } else {
+            Err(format!("there's no function `{name}`"))
+        }
+    };
+    match names::spelled(name, "fn") {
+        Some(names::Spelled::Number(n) | names::Spelled::Named(_, Some(n))) => found(FuncId(n)),
+        Some(names::Spelled::Named(_, None)) => {
+            let ids: Vec<FuncId> = m
+                .funcs
+                .iter()
+                .filter(|(_, f)| f.debug.name.as_deref() == Some(name))
+                .map(|(&id, _)| id)
+                .collect();
+            match ids[..] {
+                [id] => Ok(id),
+                [] => Err(format!("there's no function `{name}`")),
+                _ => Err(format!(
+                    "more than one function is `{name}`: say which, like `{name}#{}`",
+                    ids[0].0
+                )),
+            }
+        }
+        None => Err(format!(
+            "`{name}` isn't a function: expected `fn1` or a name"
+        )),
+    }
 }
 
 impl fmt::Display for Module {

@@ -232,11 +232,11 @@ fn errors_say_where() {
     );
     assert_eq!(
         error("fn fn1() -> () {\n  jump j0()\n}"),
-        "2:8: expected a label like `j1` or `ret`, found `j0`"
+        "2:8: `j0` isn't a label: they start at `j1`"
     );
     assert_eq!(
         error("fn fn1() -> (mut i32) { jump ret() }"),
-        "1:18: expected an ID like `data1`, found `i32`"
+        "1:18: expected an ID like `data1`, or a name, found `i32`"
     );
     assert_eq!(
         error("fn fn1() -> () {"),
@@ -305,12 +305,12 @@ fn parse_errors() {
         ),
         (
             "fn",
-            "1:3: expected an ID like `fn1`, found the end of the text",
+            "1:3: expected an ID like `fn1`, or a name, found the end of the text",
         ),
         ("fn fn1", "1:7: expected `(`, found the end of the text"),
         (
-            "fn fnx() -> () { jump ret() }",
-            "1:4: expected an ID like `fn1`, found `fnx`",
+            "fn ret() -> () { jump ret() }",
+            "1:4: expected an ID like `fn1`, or a name, found `ret`",
         ),
         (
             "fn fn1() -> () { jump ret() }\ndata data1 { }\ndata data1 { }",
@@ -338,7 +338,7 @@ fn parse_errors() {
         ),
         (
             "data data1 { (imm) }",
-            "1:18: expected an ID like `data1`, found `)`",
+            "1:18: expected an ID like `data1`, or a name, found `)`",
         ),
         (
             "data data1 { (frob data2) }",
@@ -419,8 +419,8 @@ fn parse_errors() {
         ("extern extern1 \"a", "1:16: unterminated string"),
         ("extern extern1 \"a\\", "1:16: unterminated string"),
         (
-            "fn fn1(%x: i32) -> () { jump ret() }",
-            "1:8: expected a variable number after `%`",
+            "fn fn1(% : i32) -> () { jump ret() }",
+            "1:8: expected a variable after `%`, like `%3` or `%acc`",
         ),
         (
             "fn fn1() -> () { jump ret() } $",
@@ -467,4 +467,190 @@ fn broken_ir_prints_without_reading_back() {
     let text = print_func(FuncId(1), &f);
     assert!(text.contains("%3: ?"), "{text}");
     assert!(parse(&text).is_err());
+}
+
+/// The same constructs as [`CANONICAL`], with names, in the form `print`
+/// writes them: names alone where they read back to the same number, and
+/// with it where they don't.
+const NAMED: &str = r#"data Pair {
+  (i32, i32)
+}
+
+data List {
+  ()
+  (i32, inherit List)
+}
+
+extern print "env" "print" (i32) -> ()
+
+effect Yield {
+  (i32) -> ()
+}
+
+handler adder for Yield env(ref i32) ops(add_yield) ret done
+
+fn add_yield(%acc: ref i32, %x: i32, %k: cont() -> ()) -> () {
+  let %old: i32 = ref_get(%acc)
+  let %new: i32 = add(%old, %x)
+  let = ref_set(%acc, %new)
+  let = resume(%k)
+  jump ret()
+}
+
+fn done(%acc: ref i32) -> () {
+  jump ret()
+}
+
+fn sum(%n: i32) -> (i32) {
+  let %acc: ref i32 = ref_new(0i32)
+  let %body: imm fn() -> () does Yield = closure count(%n)
+  let = handle adder(%acc, %body)
+  let %total: i32 = ref_get(%acc)
+  let = call_extern print(%total)
+  jump ret(%total)
+}
+
+fn count(%n: i32) -> () does Yield {
+  join rec loop(%i: i32) =
+    let %more: i32 = lt.s(%i, %n)
+    case %more {
+      1 =>
+        let = perform Yield.0(%i)
+        let %next: i32 = add(%i, 1i32)
+        jump loop(%next)
+      _ => jump ret()
+    }
+  in jump loop(0i32)
+}
+
+fn length(%xs: imm List) -> (i32) {
+  case %xs {
+    List.0 => jump ret(0i32)
+    List.1 =>
+      let %rest: imm List = get List.1.1(%xs)
+      let %n: i32 = call length(%rest)
+      let %m: i32 = add(%n, 1i32)
+      jump ret(%m)
+  }
+}
+"#;
+
+#[test]
+fn names_round_trip() {
+    let m = parse(NAMED).unwrap();
+    assert_eq!(print(&m), NAMED);
+    verify_module(&m).unwrap();
+    // Names are numbered in order, from 0: `sum` is the third function.
+    let sum = &m.funcs[&FuncId(2)];
+    assert_eq!(sum.debug.name.as_deref(), Some("sum"));
+    assert_eq!(sum.debug.vars[&Var(0)].as_ref(), "n");
+    assert_eq!(
+        m.handlers[&HandlerId(0)].debug_name.as_deref(),
+        Some("adder")
+    );
+    let count = &m.funcs[&FuncId(3)];
+    assert_eq!(count.debug.labels[&Label(1)].as_ref(), "loop");
+}
+
+#[test]
+fn names_that_dont_give_their_number_are_written_with_it() {
+    // Two functions share a name, as instances of a generic function do,
+    // and a numbered one comes before a named one that isn't number 0.
+    let src = "fn map#3() -> () { jump ret() }
+
+fn map#7() -> () {
+  let = call map#3()
+  jump ret()
+}
+
+fn fn1() -> () { jump ret() }
+";
+    let m = parse(src).unwrap();
+    assert_eq!(m.funcs[&FuncId(7)].debug.name.as_deref(), Some("map"));
+    let printed = print(&m);
+    assert!(
+        printed.contains("fn map#3()") && printed.contains("call map#3()"),
+        "{printed}"
+    );
+    assert_eq!(print(&parse(&printed).unwrap()), printed);
+
+    // A name alone where it gives its number, and with it where it doesn't.
+    let mut m = Module::default();
+    for (id, name) in [(0, "zero"), (5, "five"), (1, "one")] {
+        let mut f = Func::new(vec![], vec![]);
+        f.debug.name = Some(name.into());
+        f.body = Tail::Jump {
+            target: Label::RET,
+            args: vec![],
+            source: None,
+        }
+        .into();
+        m.funcs.insert(FuncId(id), f);
+    }
+    let printed = print(&m);
+    assert!(printed.contains("fn zero()"), "{printed}");
+    assert!(printed.contains("fn one()"), "{printed}");
+    assert!(printed.contains("fn five#5()"), "{printed}");
+    assert_eq!(parse(&printed).unwrap(), m);
+}
+
+#[test]
+fn variables_with_the_same_name_are_written_with_their_number() {
+    // As after inlining a function twice.
+    let mut f = Func::new(vec![Ty::I32], vec![Ty::I32]);
+    let x = f.params[0];
+    let y = f.new_var(Ty::I32);
+    let z = f.new_var(Ty::I32);
+    for v in [x, y, z] {
+        f.debug.vars.insert(v, "x".into());
+    }
+    f.body = Block {
+        lets: vec![
+            Let {
+                binds: vec![y],
+                op: Op::Prim(Prim::Add),
+                args: vec![Atom::Var(x), Atom::Var(x)],
+                source: None,
+            },
+            Let {
+                binds: vec![z],
+                op: Op::Prim(Prim::Add),
+                args: vec![Atom::Var(y), Atom::Var(y)],
+                source: None,
+            },
+        ],
+        tail: Tail::Jump {
+            target: Label::RET,
+            args: vec![Atom::Var(z)],
+            source: None,
+        },
+    };
+    let mut m = Module::default();
+    m.funcs.insert(FuncId(0), f);
+    let printed = print(&m);
+    assert!(
+        printed.contains("let %x#1: i32 = add(%x#0, %x#0)"),
+        "{printed}"
+    );
+    assert_eq!(parse(&printed).unwrap(), m);
+}
+
+#[test]
+fn name_errors() {
+    for (src, message) in [
+        (
+            "fn a() -> () { jump ret() }\nfn a() -> () { jump ret() }",
+            "1:4: `a` is defined more than once: give each a number, like `a#1`",
+        ),
+        (
+            "fn a() -> () {\n  let = call b()\n  jump ret()\n}",
+            "2:14: `b` isn't defined",
+        ),
+        (
+            "fn a#1() -> () { jump ret() }\nfn a#2() -> () {\n  let = call a()\n  jump ret()\n}",
+            "3:14: `a` is the name of more than one: say which, like `a#1`",
+        ),
+    ] {
+        assert_eq!(error(src), message, "for {src:?}");
+    }
 }

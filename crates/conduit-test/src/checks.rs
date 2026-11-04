@@ -1,6 +1,6 @@
 //! The checks in a test program: comment lines starting with `//#`.
 
-use conduit_ir::{FuncId, Lit};
+use conduit_ir::Lit;
 
 /// A check, and the line it's on.
 #[derive(Debug, Clone, PartialEq)]
@@ -12,9 +12,10 @@ pub struct Check {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum CheckKind {
-    /// `//# run fn1(5i32) == 120i32`, or `traps` instead of `== ..`.
+    /// `//# run fn1(5i32) == 120i32`, or `traps` instead of `== ..`. The
+    /// function is as the text writes it: `fn1`, `sum` or `sum#1`.
     Run {
-        func: FuncId,
+        func: String,
         args: Vec<Lit>,
         expect: Expect,
     },
@@ -103,12 +104,10 @@ fn opt(s: &str) -> Result<CheckKind, String> {
 /// `fn1(5i32, 1i64) == 120i32`, `== (1i32, 2i32)`, `== ()` or `traps`.
 fn run(s: &str) -> Result<CheckKind, String> {
     let mut c = Cursor { s: s.trim() };
-    let name = c.word();
-    let func = name
-        .strip_prefix("fn")
-        .and_then(|n| n.parse().ok())
-        .map(FuncId)
-        .ok_or_else(|| format!("expected a function like `fn1`, found `{name}`"))?;
+    let func = c.word().to_string();
+    if func.is_empty() {
+        return Err("expected a function like `fn1` or `sum`".into());
+    }
     let args = c.lits()?;
     let expect = if c.eat("==") {
         if c.peek_is('(') {
@@ -252,27 +251,27 @@ mod tests {
             kinds,
             [
                 CheckKind::Run {
-                    func: FuncId(1),
+                    func: "fn1".into(),
                     args: vec![Lit::I32(5), Lit::I64(-2), Lit::f64(1.5)],
                     expect: Expect::Values(vec![Lit::I32(120)]),
                 },
                 CheckKind::Run {
-                    func: FuncId(2),
+                    func: "fn2".into(),
                     args: vec![],
                     expect: Expect::Values(vec![]),
                 },
                 CheckKind::Run {
-                    func: FuncId(3),
+                    func: "fn3".into(),
                     args: vec![Lit::F32(2143289344)],
                     expect: Expect::Values(vec![Lit::I32(1), Lit::f32(2000.0)]),
                 },
                 CheckKind::Run {
-                    func: FuncId(4),
+                    func: "fn4".into(),
                     args: vec![Lit::I32(0)],
                     expect: Expect::Trap,
                 },
                 CheckKind::Run {
-                    func: FuncId(5),
+                    func: "fn5".into(),
                     args: vec![Lit::I8(-1), Lit::I16(-3)],
                     expect: Expect::Values(vec![Lit::I16(-1)]),
                 },
@@ -299,10 +298,7 @@ mod tests {
         assert!(parse("//# wat please").is_err());
         assert!(parse("//# opt: dce,").is_err());
         for (check, message) in [
-            (
-                "run frob() == ()",
-                "expected a function like `fn1`, found `frob`",
-            ),
+            ("run () == ()", "expected a function like `fn1` or `sum`"),
             ("run fn1() == 1i32 2i32", "unexpected `2i32` at the end"),
             ("run fn1 == ()", "expected `(`"),
             ("run fn1(1i32 2i32) == ()", "expected `,` or `)`"),

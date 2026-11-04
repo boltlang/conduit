@@ -24,7 +24,7 @@ mod ty;
 pub mod verify;
 
 pub use id::{CtorId, DataId, EffectId, ExternId, FuncId, HandlerId, Label, SourceId, Var};
-pub use module::{DataDecl, EffectDecl, Extern, Func, HandlerDecl, Module, MutParams};
+pub use module::{DataDecl, EffectDecl, Extern, Func, FuncDebug, HandlerDecl, Module, MutParams};
 pub use op::{Effects, Memory, Op, Prim, Sign};
 pub use row::Row;
 pub use term::{Arm, Atom, Block, JoinDef, Let, Lit, Tag, Tail};

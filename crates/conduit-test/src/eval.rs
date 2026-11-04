@@ -12,7 +12,7 @@ const FUEL: u64 = 100_000_000;
 /// Runs every `run` check of `p` on `m` with the evaluator. `m` is usually
 /// `p`'s module, but can be one derived from it, like after optimization.
 pub fn check_runs(p: &Program, m: &Module) -> Result<(), String> {
-    for run in p.runs() {
+    for run in p.runs(m)? {
         let mut machine = Machine::new(m, TestHost);
         machine.fuel = Some(FUEL);
         let args = run.args.iter().map(|&l| Value::from(l)).collect();

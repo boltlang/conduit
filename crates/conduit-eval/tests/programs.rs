@@ -7,7 +7,7 @@ fn main() {
 }
 
 fn applies(p: &Program) -> bool {
-    p.runs().next().is_some() && !p.has(|k| matches!(k, CheckKind::VerifyError(_)))
+    p.has_runs() && !p.has(|k| matches!(k, CheckKind::VerifyError(_)))
 }
 
 fn test(p: &Program) -> Result<(), String> {

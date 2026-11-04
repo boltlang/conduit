@@ -45,6 +45,8 @@ pub enum Outcome {
 pub struct Run<'a> {
     pub line: u32,
     pub func: FuncId,
+    /// The function as the check writes it.
+    pub name: &'a str,
     pub args: &'a [Lit],
     pub expect: &'a Expect,
 }
@@ -81,16 +83,29 @@ impl Program {
         self.checks.iter().any(|c| f(&c.kind))
     }
 
-    pub fn runs(&self) -> impl Iterator<Item = Run<'_>> {
-        self.checks.iter().filter_map(|c| match &c.kind {
-            CheckKind::Run { func, args, expect } => Some(Run {
-                line: c.line,
-                func: *func,
-                args,
-                expect,
-            }),
-            _ => None,
-        })
+    pub fn has_runs(&self) -> bool {
+        self.has(|k| matches!(k, CheckKind::Run { .. }))
+    }
+
+    /// The `run` checks, with their functions found in `m`.
+    pub fn runs(&self, m: &Module) -> Result<Vec<Run<'_>>, String> {
+        self.checks
+            .iter()
+            .filter_map(|c| match &c.kind {
+                CheckKind::Run { func, args, expect } => Some(
+                    conduit_ir::text::find_func(m, func)
+                        .map(|id| Run {
+                            line: c.line,
+                            func: id,
+                            name: func,
+                            args,
+                            expect,
+                        })
+                        .map_err(|e| format!("{}: {e}", self.at(c.line))),
+                ),
+                _ => None,
+            })
+            .collect()
     }
 
     /// The messages of the checks `f` picks.
@@ -134,7 +149,7 @@ impl Run<'_> {
     pub fn check(&self, program: &Program, got: Result<Outcome, String>) -> Result<(), String> {
         let call = format!(
             "{}({})",
-            self.func,
+            self.name,
             self.args.iter().map(lit).collect::<Vec<_>>().join(", ")
         );
         let at = program.at(self.line);

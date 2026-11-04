@@ -4,11 +4,11 @@ use super::Error;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum Tok {
-    /// A keyword, a name like `add`, an ID like `fn1` or `data10`, or a
-    /// mutability parameter like `'m1`.
+    /// A keyword, a name like `add` or `sum#3`, an ID like `fn1` or
+    /// `data10`, or a mutability parameter like `'m1`.
     Ident(String),
-    /// `%3`
-    Var(u32),
+    /// What follows the `%` of a variable: `3`, `acc` or `acc#3`.
+    Var(String),
     /// A number, with its suffix if it has one: `5`, `-3i64`, `1.5e-3f32`.
     Num(String),
     Str(String),
@@ -64,18 +64,22 @@ pub(super) fn lex(src: &str) -> Result<Vec<(Tok, Pos)>, Error> {
             while i < chars.len() && (chars[i].is_ascii_alphanumeric() || chars[i] == '_') {
                 i += 1;
             }
+            i = number_suffix(&chars, i);
             Tok::Ident(chars[start..i].iter().collect())
         } else if c == '%' {
             i += 1;
-            let digits = i;
-            while i < chars.len() && chars[i].is_ascii_digit() {
+            let name = i;
+            while i < chars.len() && (chars[i].is_ascii_alphanumeric() || chars[i] == '_') {
                 i += 1;
             }
-            let text: String = chars[digits..i].iter().collect();
-            let n = text
-                .parse()
-                .map_err(|_| err(pos, "expected a variable number after `%`".into()))?;
-            Tok::Var(n)
+            if i == name {
+                return Err(err(
+                    pos,
+                    "expected a variable after `%`, like `%3` or `%acc`".into(),
+                ));
+            }
+            i = number_suffix(&chars, i);
+            Tok::Var(chars[name..i].iter().collect())
         } else if c.is_ascii_digit()
             || (c == '-' && chars.get(i + 1).is_some_and(char::is_ascii_digit))
         {
@@ -169,4 +173,17 @@ pub(super) fn lex(src: &str) -> Result<Vec<(Tok, Pos)>, Error> {
     }
     toks.push((Tok::Eof, Pos { line, col }));
     Ok(toks)
+}
+
+/// After a name, the end of `#3` if there is one, or `i`.
+fn number_suffix(chars: &[char], i: usize) -> usize {
+    if chars.get(i) == Some(&'#') && chars.get(i + 1).is_some_and(char::is_ascii_digit) {
+        let mut j = i + 1;
+        while j < chars.len() && chars[j].is_ascii_digit() {
+            j += 1;
+        }
+        j
+    } else {
+        i
+    }
 }

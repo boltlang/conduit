@@ -13,8 +13,7 @@ fn main() {
 
 fn applies(p: &Program) -> bool {
     !p.has(|k| matches!(k, CheckKind::VerifyError(_) | CheckKind::WasmSkip(_)))
-        && (p.runs().next().is_some()
-            || p.has(|k| matches!(k, CheckKind::Wat | CheckKind::WasmError(_))))
+        && (p.has_runs() || p.has(|k| matches!(k, CheckKind::Wat | CheckKind::WasmError(_))))
 }
 
 fn test(p: &Program) -> Result<(), String> {
@@ -30,11 +29,11 @@ fn test(p: &Program) -> Result<(), String> {
         let wat = wasmprinter::print_bytes(&bytes).map_err(|e| e.to_string())?;
         p.snapshot("wat", &wat)?;
     }
-    if p.runs().next().is_none() {
+    if !p.has_runs() {
         return Ok(());
     }
     let (mut store, instance) = instantiate(&bytes)?;
-    for run in p.runs() {
+    for run in p.runs(&m)? {
         let results = m.funcs.get(&run.func).map_or(&[][..], |f| &f.results[..]);
         let got = call(&mut store, &instance, run.func, run.args, results);
         run.check(p, got)?;

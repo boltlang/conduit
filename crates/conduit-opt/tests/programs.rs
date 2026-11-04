@@ -19,7 +19,7 @@ fn main() {
 
 fn applies(p: &Program) -> bool {
     !p.has(|k| matches!(k, CheckKind::VerifyError(_)))
-        && (p.runs().next().is_some() || p.has(|k| matches!(k, CheckKind::Opt(_))))
+        && (p.has_runs() || p.has(|k| matches!(k, CheckKind::Opt(_))))
 }
 
 fn test(p: &Program) -> Result<(), String> {

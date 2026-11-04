@@ -67,6 +67,7 @@ fn ctor(data: DataId, index: u32) -> CtorId {
 fn module() -> Module {
     let mut m = Module::default();
     let ctors = |fields: Vec<Vec<Ty>>| DataDecl {
+        debug_name: None,
         params: 0,
         ctors: fields
             .into_iter()
@@ -586,6 +587,7 @@ fn host_functions() {
     m.externs.insert(
         ExternId(1),
         Extern {
+            debug_name: None,
             module: "env".into(),
             name: "double".into(),
             sig,
@@ -638,6 +640,7 @@ fn generator(n: i32, clause: impl FnOnce(&mut Func, Var, Var, Var) -> Block) -> 
     m.effects.insert(
         YIELD,
         EffectDecl {
+            debug_name: None,
             ops: vec![Sig {
                 row: Row::NOTHING,
                 params: vec![Ty::I32],
@@ -659,6 +662,7 @@ fn generator(n: i32, clause: impl FnOnce(&mut Func, Var, Var, Var) -> Block) -> 
     m.handlers.insert(
         SUM,
         HandlerDecl {
+            debug_name: None,
             effect: YIELD,
             env: vec![acc_ty.clone()],
             ops: vec![CLAUSE],

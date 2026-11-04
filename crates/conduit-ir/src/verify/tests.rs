@@ -46,6 +46,7 @@ fn module() -> Module {
     m.data.insert(
         POINT,
         DataDecl {
+            debug_name: None,
             params: 0,
             ctors: vec![CtorDecl {
                 fields: vec![Ty::I32, Ty::I32],
@@ -55,6 +56,7 @@ fn module() -> Module {
     m.data.insert(
         OPTION,
         DataDecl {
+            debug_name: None,
             params: 0,
             ctors: vec![
                 CtorDecl { fields: vec![] },
@@ -67,6 +69,7 @@ fn module() -> Module {
     m.data.insert(
         HOLDER,
         DataDecl {
+            debug_name: None,
             params: 0,
             ctors: vec![CtorDecl {
                 fields: vec![Ty::data(POINT, Mut)],
@@ -521,6 +524,7 @@ fn handler_module(body: impl FnOnce(&mut Func, Var) -> Block) -> Module {
     m.effects.insert(
         YIELD,
         EffectDecl {
+            debug_name: None,
             ops: vec![Sig {
                 row: Row::NOTHING,
                 params: vec![Ty::I32],
@@ -538,6 +542,7 @@ fn handler_module(body: impl FnOnce(&mut Func, Var) -> Block) -> Module {
     m.handlers.insert(
         SUM,
         HandlerDecl {
+            debug_name: None,
             effect: YIELD,
             env: vec![],
             ops: vec![CLAUSE],

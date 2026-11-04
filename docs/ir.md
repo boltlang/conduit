@@ -1131,9 +1131,29 @@ Notes:
 
 `conduit_ir::text` reads (`parse`) and writes (`print`) a text form of a
 module. Printing then parsing gives back the same module, and text that
-`print` wrote parses and prints back unchanged. Names are the ones the
-verifier's messages use: `fn1`, `data10`, `data10.1` (constructor 1),
-`extern1`, `effect20`, `handler30`, `%3`, `j1` and `ret`.
+`print` wrote parses and prints back unchanged. Without names, things are
+written by number, as the verifier's messages write them: `fn1`, `data10`,
+`data10.1` (constructor 1), `extern1`, `effect20`, `handler30`, `%3`, `j1`
+and `ret`.
+
+**Names.** A function, data type, extern, effect or handler can have a
+name instead (`debug.name` of a `Func`, `debug_name` of the others), and
+so can a function's variables and labels (`debug.vars`, `debug.labels`):
+`fn sum`, `imm List`, `List.1`, `perform Yield.0`, `%acc`, `jump loop`.
+They're for showing code. Passes don't look at them, but keep them, and
+what a pass makes has none.
+
+- A name without a number gets the smallest number of its kind that
+  nothing else is written with: in the order they're defined for items,
+  from 0, and in the order they first appear in their function for
+  variables (from 0) and labels (from 1).
+- `name#3` gives both, for a name that would get another number, or that
+  more than one thing has, as an inlined function's variables or the
+  instances of one generic function do. `print` writes the name alone
+  wherever it reads back to the same number, and `name#3` everywhere else.
+- Only identifiers can be names, and not the words the format uses where a
+  name can be, like `ret`, `rec` or `Any`. `print` writes a thing whose
+  name can't be one by its number.
 
 ```
 data data11 {
