@@ -1,0 +1,81 @@
+data data10 {
+  (i32, i32)
+}
+
+data data11 {
+  (inherit data10, inherit data10)
+}
+
+data data12 {
+  ()
+  (i32)
+}
+
+fn fn0(%0: imm data10) -> (imm data10) vars(%3: imm data10) {
+  let %1: i32 = get data10.0.0(%0)
+  let %2: i32 = get data10.0.1(%0)
+  jump ret(%0)
+}
+
+fn fn1(%0: imm data11) -> (imm data11) vars(%4: imm data10, %8: imm data10, %9: imm data11) {
+  let %1: imm data10 = get data11.0.0(%0)
+  let %2: i32 = get data10.0.0(%1)
+  let %3: i32 = get data10.0.1(%1)
+  let %5: imm data10 = get data11.0.1(%0)
+  let %6: i32 = get data10.0.0(%5)
+  let %7: i32 = get data10.0.1(%5)
+  jump ret(%0)
+}
+
+fn fn2(%0: imm data12) -> (imm data12) vars(%2: imm data12) {
+  case %0 {
+    data12.1 =>
+      let %1: i32 = get data12.1.0(%0)
+      jump ret(%0)
+    _ => jump ret(%0)
+  }
+}
+
+fn fn3(%0: mut data10) -> (imm data10) {
+  let %1: i32 = get data10.0.0(%0)
+  let %2: i32 = get data10.0.1(%0)
+  let %3: imm data10 = new data10.0(%1, %2)
+  jump ret(%3)
+}
+
+fn fn4(%0: ro data10) -> (imm data10) {
+  let %1: i32 = get data10.0.0(%0)
+  let %2: i32 = get data10.0.1(%0)
+  let %3: imm data10 = new data10.0(%1, %2)
+  jump ret(%3)
+}
+
+fn fn5(%0: imm data10, %1: imm data10) -> (imm data10, imm data10, imm data10) {
+  let %2: i32 = get data10.0.0(%0)
+  let %3: i32 = get data10.0.1(%0)
+  let %4: imm data10 = new data10.0(%3, %2)
+  let %5: i32 = get data10.0.1(%1)
+  let %6: imm data10 = new data10.0(%2, %5)
+  let %7: imm data10 = new data10.0(%2, 0i32)
+  jump ret(%4, %6, %7)
+}
+
+fn fn6(%0: imm data10) -> (mut data10) {
+  let %1: i32 = get data10.0.0(%0)
+  let %2: i32 = get data10.0.1(%0)
+  let %3: mut data10 = new data10.0(%1, %2)
+  jump ret(%3)
+}
+
+fn fn7() -> (i32) {
+  let %0: imm data10 = new data10.0(1i32, 2i32)
+  let %1: imm data10 = new data10.0(3i32, 4i32)
+  let %2: imm data11 = new data11.0(%0, %1)
+  let %3: imm data10 = call fn0(%0)
+  let %4: imm data11 = call fn1(%2)
+  let %5: imm data10 = get data11.0.1(%4)
+  let %6: i32 = get data10.0.0(%3)
+  let %7: i32 = get data10.0.1(%5)
+  let %8: i32 = add(%6, %7)
+  jump ret(%8)
+}

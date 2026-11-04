@@ -1,5 +1,6 @@
-// Unused `new`s, closures and refs are pure and go. Calls and writes
-// stay, and so does the `new` whose object is written.
+// Unused `new`s, closures and refs are pure and go, and so do unused
+// reads, which never trap. Calls, writes and array accesses, which can
+// trap, stay, and so does the `new` whose object is written.
 
 data data0 {
   (i32, i32)
@@ -12,6 +13,12 @@ fn fn0(%0: i32) -> (i32) {
   let %3: imm fn() -> (i32) = closure fn2(%0)
   let %4: ref i32 = ref_new(%0)
   let %5: i32 = call fn1(%0)
+  let %6: i32 = get data0.0.1(%1)
+  let %7: i32 = ref_get(%4)
+  let %8: mut [i32] = array_fill(2i32, %0)
+  let %9: i32 = array_len(%8)
+  let %10: imm [i32] = array_clone(%8)
+  let %11: i32 = array_get(%8, 1i32)
   jump ret(%0)
 }
 

@@ -1,9 +1,14 @@
-//! Removes array copies: `ArrayClone` ops. See "Remove copies" in
-//! `docs/ir.md`.
+//! Removes copies: `ArrayClone` ops, and data objects rebuilt from their
+//! own fields. See "Remove copies" in `docs/ir.md`.
 //!
 //! - **Clones that change nothing.** An `Imm` array cloned to `Imm` can't
 //!   be told apart from the array itself, so the clone is the array, and
 //!   its uses use the array instead.
+//! - **Rebuilds that change nothing.** A `new C(get C.0(x), .., get C.n(x))`
+//!   of an `Imm` object `x`, to `Imm` at the same type, gives an object
+//!   with the same fields as `x`. Nothing compares objects by identity, so
+//!   it's `x`. This is what a frontend's own copy to `Imm`, like Bolt's
+//!   `to_imm`, comes down to on a value that's `Imm` already.
 //! - **Freeze in place.** An `ArrayClone` to `Imm` becomes an
 //!   [`Op::ArrayFreeze`] when nothing but the clone can reach the original array
 //!   any more.
@@ -52,8 +57,9 @@ impl Pass for Copies {
 /// anything changed.
 pub fn copies(p: &dyn Program, f: &mut Func) -> bool {
     let removed = remove_noop_copies(f);
+    let rebuilt = remove_rebuilds(f);
     let frozen = freeze_in_place(p, f);
-    removed || frozen
+    removed || rebuilt || frozen
 }
 
 /// Drops each clone of an `Imm` array to `Imm`, and uses its argument
@@ -79,6 +85,75 @@ fn remove_noop_copies(f: &mut Func) -> bool {
     if subst.is_empty() {
         return false;
     }
+    substitute(&mut f.body, &subst);
+    true
+}
+
+/// Drops each rebuild of an `Imm` object from its own fields, and uses the
+/// object instead of the rebuild.
+fn remove_rebuilds(f: &mut Func) -> bool {
+    // What each field read reads: the object, the constructor, the field.
+    let mut gets = BTreeMap::new();
+    let mut news = Vec::new();
+    for_each_block(&f.body, &mut |b| {
+        for l in &b.lets {
+            match (&l.op, &l.args[..], &l.binds[..]) {
+                (Op::Get(c, i), [Atom::Var(x)], [v]) => {
+                    gets.insert(*v, (*x, *c, *i));
+                }
+                (Op::New(c), args, [y])
+                    if !args.is_empty()
+                        && matches!(f.vars[y.0 as usize], Ty::Data(_, Mutability::Imm, _)) =>
+                {
+                    news.push((*y, *c, args.to_vec()));
+                }
+                _ => {}
+            }
+        }
+    });
+
+    // A rebuild's fields can be rebuilds themselves, so this goes on until
+    // nothing more is found.
+    let mut subst: BTreeMap<Var, Atom> = BTreeMap::new();
+    let resolve = |subst: &BTreeMap<Var, Atom>, mut v: Var| {
+        while let Some(Atom::Var(to)) = subst.get(&v) {
+            v = *to;
+        }
+        v
+    };
+    loop {
+        let mut found = false;
+        for (y, c, args) in &news {
+            if subst.contains_key(y) {
+                continue;
+            }
+            let mut object = None;
+            let rebuilds = args.iter().enumerate().all(|(i, a)| {
+                let Atom::Var(v) = a else { return false };
+                let Some(&(x, gc, gi)) = gets.get(&resolve(&subst, *v)) else {
+                    return false;
+                };
+                let x = resolve(&subst, x);
+                gc == *c && gi == i as u32 && *object.get_or_insert(x) == x
+            });
+            if let Some(x) = object.filter(|_| rebuilds)
+                && f.vars[x.0 as usize] == f.vars[y.0 as usize]
+            {
+                subst.insert(*y, Atom::Var(x));
+                found = true;
+            }
+        }
+        if !found {
+            break;
+        }
+    }
+    if subst.is_empty() {
+        return false;
+    }
+    for_each_block_mut(&mut f.body, &mut |b| {
+        b.lets
+            .retain(|l| !l.binds.iter().any(|v| subst.contains_key(v)));
+    });
     substitute(&mut f.body, &subst);
     true
 }

@@ -859,7 +859,8 @@ Because the IR is so small, the classic simplifications are local rewrites:
   applies to it, and if `c` has no uses left, dead-code elimination removes
   the allocation.
 - **Dead code.** Drop a `Let` whose results are unused and whose
-  `op.effects()` is `Pure`, and drop a `Join` whose labels are unused.
+  `op.effects()` is `Pure` or `Reads`, and drop a `Join` whose labels are
+  unused. A read never traps, so an unused one can go.
 - **Promote refs** (like LLVM's `mem2reg`). A ref that doesn't escape is
   one whose only uses are as the first argument of `RefGet` and `RefSet`
   in the function that creates it. It isn't captured by `Closure`, passed
@@ -879,9 +880,15 @@ Because the IR is so small, the classic simplifications are local rewrites:
   reads out of a ref on different paths would look like several uses. It
   runs before `dce` and `copies`: a ref holding an array ties the array to
   the ref's region, so promoting it lets `copies` freeze the array.
-- **Remove copies.** The `copies` pass does two things:
+- **Remove copies.** The `copies` pass does three things:
   - An `ArrayClone` of an `Imm` array to `Imm` is the array itself, since
     nothing can tell the two apart.
+  - A `New` of an `Imm` object rebuilt from the fields of another `Imm`
+    object `x` of the same type, `new C(get C.0(x), .., get C.n(x))`, is
+    `x`. Nothing compares objects by identity, so an `Imm` object can't be
+    told apart from another with the same fields. This is what a
+    frontend's copy to `Imm`, like Bolt's `to_imm`, comes down to on a
+    value that's `Imm` already, once it's inlined.
   - **Freeze in place.** If nothing else can reach the original array and
     it isn't used afterwards, an `ArrayClone` to `Imm` becomes an `ArrayFreeze`.
     The pass shows this with a region analysis: variables that may reach

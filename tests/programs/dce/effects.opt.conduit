@@ -2,10 +2,12 @@ data data0 {
   (i32, i32)
 }
 
-fn fn0(%0: i32) -> (i32) vars(%2: imm data0, %3: imm fn() -> (i32), %4: ref i32) {
+fn fn0(%0: i32) -> (i32) vars(%2: imm data0, %3: imm fn() -> (i32), %4: ref i32, %6: i32, %7: i32, %9: i32, %10: imm [i32]) {
   let %1: mut data0 = new data0.0(%0, %0)
   let = set data0.0.0(%1, 1i32)
   let %5: i32 = call fn1(%0)
+  let %8: mut [i32] = array_fill(2i32, %0)
+  let %11: i32 = array_get(%8, 1i32)
   jump ret(%0)
 }
 

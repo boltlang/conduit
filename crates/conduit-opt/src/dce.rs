@@ -1,6 +1,8 @@
 //! Dead code elimination: drops each `let` whose results are unused and
-//! whose op is [`Effects::Pure`], and each join definition nothing jumps
-//! to.
+//! whose op is [`Effects::Pure`] or [`Effects::Reads`], and each join
+//! definition nothing jumps to. A read that's unused can go since it never
+//! traps, and what it allocates or changes, like `array_freeze`, nothing
+//! else can see.
 //!
 //! Ops that can trap (division, float-to-integer conversions, array
 //! accesses, `Unbox`) have effect `Unknown`, so a trap is never removed.
@@ -82,7 +84,8 @@ impl Cx {
         };
         let mut lets = Vec::with_capacity(b.lets.len() + after.len());
         for l in b.lets.into_iter().rev() {
-            if l.op.effects() == Effects::Pure && !l.binds.iter().any(|&v| self.is_used(v)) {
+            let droppable = matches!(l.op.effects(), Effects::Pure | Effects::Reads);
+            if droppable && !l.binds.iter().any(|&v| self.is_used(v)) {
                 self.changed = true;
                 continue;
             }
