@@ -1063,7 +1063,8 @@ IR is so small, the classic simplifications are local rewrites:
   it performs: a clause can write whatever its handler's environment
   holds. With effect types, an empty row on the closure says it can't, and
   then its memory effect is `Reads`. It may still trap or not come back,
-  so it can't be removed, but a read before it can be reused after it.
+  so it can't be removed, but a read before it can be reused after it,
+  which `cse` does.
 
 Several of these replace a tail with a block, like a `case` with its arm or
 a jump with the join point's body: the block's `let`s then go after the

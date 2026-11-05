@@ -21,6 +21,11 @@
 //! its `array_new`, or what a ref holds right after its `ref_new`. This
 //! lasts, like a read, until something may write.
 //!
+//! An `apply` of an `imm` closure without effects, to arguments that are
+//! `imm` all the way down, doesn't stop sharing reads: it can only reach
+//! `imm` objects and the ones it makes, so it writes nothing that existed
+//! before.
+//!
 //! A continuation is never reused: the verifier counts its uses along each
 //! path, so reading one twice, or reading one back, would look like using
 //! it twice, as `promote` keeps refs of them too.
@@ -35,6 +40,7 @@
 
 use std::collections::HashMap;
 
+use conduit_ir::verify::deep_imm;
 use conduit_ir::{
     Atom, Block, Func, FuncId, Let, Lit, Memory, Mutability, Op, Program, Tail, Ty, Var,
 };
@@ -49,14 +55,15 @@ impl Pass for Cse {
         "cse"
     }
 
-    fn run(&self, _: &dyn Program, _: FuncId, f: &mut Func) -> bool {
-        cse(f)
+    fn run(&self, p: &dyn Program, _: FuncId, f: &mut Func) -> bool {
+        cse(p, f)
     }
 }
 
 /// Replaces repeated ops in `f`. Returns whether anything changed.
-pub fn cse(f: &mut Func) -> bool {
+pub fn cse(p: &dyn Program, f: &mut Func) -> bool {
     let mut cx = Cx {
+        p,
         vars: &f.vars,
         subst: HashMap::new(),
         fixed: HashMap::new(),
@@ -70,6 +77,7 @@ pub fn cse(f: &mut Func) -> bool {
 type Key = (Op, Vec<Atom>);
 
 struct Cx<'f> {
+    p: &'f dyn Program,
     vars: &'f [Ty],
     /// The variables of `let`s that were replaced, and what they are.
     subst: HashMap<Var, Atom>,
@@ -170,7 +178,7 @@ impl Cx<'_> {
     /// Records what `l` gives, or replaces it with an earlier `let`'s
     /// variable or what was written. Returns whether it was replaced.
     fn let_(&mut self, l: &Let) -> bool {
-        if l.op.effects().memory >= Memory::Writes {
+        if l.op.effects().memory >= Memory::Writes && !self.imm_apply(l) {
             self.changing.clear();
         }
         self.written(l);
@@ -203,6 +211,21 @@ impl Cx<'_> {
                 false
             }
         }
+    }
+
+    /// Whether `l` applies an `imm` closure without effects to arguments
+    /// that are `imm` all the way down. It only reaches `imm` objects and
+    /// the ones it makes, so it writes nothing that existed before.
+    fn imm_apply(&self, l: &Let) -> bool {
+        let Some((Atom::Var(c), rest)) = l.args.split_first() else {
+            return false;
+        };
+        let Ty::Fn(sig, Mutability::Imm) = self.ty(*c) else {
+            return false;
+        };
+        l.op == Op::Apply
+            && sig.row.is_nothing()
+            && rest.iter().all(|a| deep_imm(self.p, &self.atom_ty(a)))
     }
 
     /// Records what reading back what `l` writes, or what a `mut` object

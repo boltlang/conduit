@@ -1,0 +1,48 @@
+// An `apply` of an `imm` closure without effects, to arguments that are
+// `imm` all the way down, writes nothing that existed before, so a read
+// before it is shared with one after. A `mut` closure, or one given a
+// `mut` argument, may write, so reads after those stay.
+
+data Cell {
+  (i32)
+}
+
+fn reads(%c: mut Cell, %f: imm fn(i32) -> (i32), %g: mut fn(i32) -> (i32), %h: imm fn(mut Cell) -> (i32)) -> (i32) {
+  let %a: i32 = get Cell.0.0(%c)
+  let %x: i32 = apply(%f, %a)
+  let %b: i32 = get Cell.0.0(%c)
+  let %y: i32 = apply(%g, %b)
+  let %d: i32 = get Cell.0.0(%c)
+  let %z: i32 = apply(%h, %c)
+  let %e: i32 = get Cell.0.0(%c)
+  let %s1: i32 = add(%x, %y)
+  let %s2: i32 = add(%s1, %z)
+  let %s3: i32 = add(%s2, %b)
+  let %s4: i32 = add(%s3, %d)
+  let %s5: i32 = add(%s4, %e)
+  jump ret(%s5)
+}
+
+fn double(%x: i32) -> (i32) {
+  let %y: i32 = mul(%x, 2i32)
+  jump ret(%y)
+}
+
+fn bump(%c: mut Cell) -> (i32) {
+  let %x: i32 = get Cell.0.0(%c)
+  let %y: i32 = add(%x, 1i32)
+  let = set Cell.0.0(%c, %y)
+  jump ret(0i32)
+}
+
+fn main(%x: i32) -> (i32) {
+  let %c: mut Cell = new Cell.0(%x)
+  let %f: imm fn(i32) -> (i32) = closure double()
+  let %g: mut fn(i32) -> (i32) = closure double()
+  let %h: imm fn(mut Cell) -> (i32) = closure bump()
+  let %r: i32 = call reads(%c, %f, %g, %h)
+  jump ret(%r)
+}
+
+//# run main(3i32) == 22i32
+//# opt: cse

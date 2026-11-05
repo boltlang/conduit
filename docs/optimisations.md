@@ -100,8 +100,10 @@ after `set C.i(x, v)` is `v`, and likewise for `array_set` and `ref_set`,
 and for a field of a `mut` object right after its `new`, an element of a
 `mut` array right after its `array_new`, and a ref right after its
 `ref_new`. Like any read of what can change, this lasts until something
-may write. A continuation is never reused, since the verifier counts its
-uses along each path.
+may write. An `apply` of an `imm` closure without effects, to arguments
+that are `imm` all the way down, doesn't count as a write: it can only
+reach `imm` objects and the ones it makes. A continuation is never reused,
+since the verifier counts its uses along each path.
 
 ## Dead code (`dce`)
 
@@ -122,8 +124,6 @@ so code only dead code uses goes too.
 
 ## Not done yet
 
-- `imm` closures with no effects don't write, so `cse` could reuse reads
-  across an `apply` of one.
 - Calls of functions known to only read, which `cse` could share.
 - Handlers: a `perform` whose `handle` is in the same function could call
   the clause directly.
