@@ -1,0 +1,96 @@
+// A `mut` object or array that doesn't escape becomes a ref per field or
+// element, which `promote` turns into values: here a running sum and
+// count, kept in a `mut` pair through a loop, and two counters in a `mut`
+// array. One passed to a call, or read at an index that isn't a literal,
+// stays.
+
+data Stats {
+  (i64, i32)
+}
+
+// The mean of 1..n, rounded down, from a sum and count kept in a `Stats`.
+fn mean(%n: i32) -> (i64) {
+  let %s: mut Stats = new Stats.0(0i64, 0i32)
+  join rec loop(%i: i32) =
+    let %done: i32 = gt.s(%i, %n)
+    case %done {
+      1 =>
+        let %sum: i64 = get Stats.0.0(%s)
+        let %count: i32 = get Stats.0.1(%s)
+        let %c64: i64 = convert.s[i64](%count)
+        let %m: i64 = div.s(%sum, %c64)
+        jump ret(%m)
+      _ =>
+        let %sum0: i64 = get Stats.0.0(%s)
+        let %i64: i64 = convert.s[i64](%i)
+        let %sum1: i64 = add(%sum0, %i64)
+        let = set Stats.0.0(%s, %sum1)
+        let %count0: i32 = get Stats.0.1(%s)
+        let %count1: i32 = add(%count0, 1i32)
+        let = set Stats.0.1(%s, %count1)
+        let %i1: i32 = add(%i, 1i32)
+        jump loop(%i1)
+    }
+  in jump loop(1i32)
+}
+
+// Counting evens and odds in a two-element array.
+fn parity(%n: i32) -> (i32) {
+  let %counts: mut [i32] = array_new(0i32, 0i32)
+  join rec loop(%i: i32) =
+    case %i {
+      0 =>
+        let %evens: i32 = array_get(%counts, 0i32)
+        let %odds: i32 = array_get(%counts, 1i32)
+        let %e100: i32 = mul(%evens, 100i32)
+        let %r: i32 = add(%e100, %odds)
+        jump ret(%r)
+      _ =>
+        let %bit: i32 = and(%i, 1i32)
+        let %i1: i32 = sub(%i, 1i32)
+        case %bit {
+          0 =>
+            let %e: i32 = array_get(%counts, 0i32)
+            let %e1: i32 = add(%e, 1i32)
+            let = array_set(%counts, 0i32, %e1)
+            jump loop(%i1)
+          _ =>
+            let %o: i32 = array_get(%counts, 1i32)
+            let %o1: i32 = add(%o, 1i32)
+            let = array_set(%counts, 1i32, %o1)
+            jump loop(%i1)
+        }
+    }
+  in jump loop(%n)
+}
+
+// Passed to a call, so it stays.
+fn escapes(%x: i64) -> (i64) {
+  let %s: mut Stats = new Stats.0(%x, 1i32)
+  let = call reset(%s)
+  let %sum: i64 = get Stats.0.0(%s)
+  jump ret(%sum)
+}
+
+fn reset(%s: mut Stats) -> () {
+  let = set Stats.0.0(%s, 0i64)
+  jump ret()
+}
+
+// Read at an index that isn't a literal, so it stays.
+fn pick(%i: i32) -> (i32) {
+  let %xs: mut [i32] = array_new(4i32, 5i32)
+  let = array_set(%xs, 0i32, 6i32)
+  let %x: i32 = array_get(%xs, %i)
+  jump ret(%x)
+}
+
+//# run mean(10i32) == 5i64
+//# run mean(0i32) == 0i64
+//# run parity(7i32) == 304i32
+//# run escapes(9i64) == 0i64
+//# run pick(0i32) == 6i32
+//# run pick(1i32) == 5i32
+//# run pick(2i32) traps
+//# opt: sroa, promote, dce
+//# opt

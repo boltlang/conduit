@@ -32,6 +32,17 @@ calls. Only callees of at most 20 `let`s and tails are inlined, and only
 while the caller is below 1000. A function is never inlined into itself,
 nor one that calls itself directly or through one other function.
 
+## Scalar replacement (`sroa`)
+
+Like LLVM's SROA. A `mut` object made by `new` whose only uses are `get`
+and `set` of its fields becomes a ref per field, and a `mut` array made by
+`array_new` whose only uses are `array_get` and `array_set` at literal
+indices in bounds becomes a ref per element. `promote`, next, turns those
+refs into values, so nothing is allocated: a `mut` pair updated in a loop
+becomes two loop parameters. Any other use keeps the object, like passing
+it to a call; a `case` on it or its `array_len` goes first, in `simplify`.
+The refs are named after the object, like `s_0`.
+
 ## Ref promotion (`promote`)
 
 Like LLVM's `mem2reg`. Frontends turn mutable locals into refs; a ref
@@ -113,8 +124,6 @@ so code only dead code uses goes too.
 
 - `imm` closures with no effects don't write, so `cse` could reuse reads
   across an `apply` of one.
-- Scalar replacement: a `mut` object or small array that doesn't escape
-  becomes its fields, as `promote` does for refs.
 - Calls of functions known to only read, which `cse` could share.
 - Handlers: a `perform` whose `handle` is in the same function could call
   the clause directly.

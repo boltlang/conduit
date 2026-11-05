@@ -1,0 +1,126 @@
+// after sroa, promote, dce
+
+data Stats {
+  (i64, i32)
+}
+
+fn mean(%n: i32) -> (i64) {
+  join rec loop(%i: i32, %s_0: i64, %s_1: i32) =
+    let %done: i32 = gt.s(%i, %n)
+    case %done {
+      1 =>
+        let %c64: i64 = convert.s[i64](%s_1)
+        let %m: i64 = div.s(%s_0, %c64)
+        jump ret(%m)
+      _ =>
+        let %i64: i64 = convert.s[i64](%i)
+        let %sum1: i64 = add(%s_0, %i64)
+        let %count1: i32 = add(%s_1, 1i32)
+        let %i1: i32 = add(%i, 1i32)
+        jump loop(%i1, %sum1, %count1)
+    }
+  in jump loop(1i32, 0i64, 0i32)
+}
+
+fn parity(%n: i32) -> (i32) {
+  join rec loop(%i: i32, %counts_0: i32, %counts_1: i32) =
+    case %i {
+      0 =>
+        let %e100: i32 = mul(%counts_0, 100i32)
+        let %r: i32 = add(%e100, %counts_1)
+        jump ret(%r)
+      _ =>
+        let %bit: i32 = and(%i, 1i32)
+        let %i1: i32 = sub(%i, 1i32)
+        case %bit {
+          0 =>
+            let %e1: i32 = add(%counts_0, 1i32)
+            jump loop(%i1, %e1, %counts_1)
+          _ =>
+            let %o1: i32 = add(%counts_1, 1i32)
+            jump loop(%i1, %counts_0, %o1)
+        }
+    }
+  in jump loop(%n, 0i32, 0i32)
+}
+
+fn escapes(%x: i64) -> (i64) {
+  let %s: mut Stats = new Stats.0(%x, 1i32)
+  let = call reset(%s)
+  let %sum: i64 = get Stats.0.0(%s)
+  jump ret(%sum)
+}
+
+fn reset(%s: mut Stats) -> () {
+  let = set Stats.0.0(%s, 0i64)
+  jump ret()
+}
+
+fn pick(%i: i32) -> (i32) {
+  let %xs: mut [i32] = array_new(4i32, 5i32)
+  let = array_set(%xs, 0i32, 6i32)
+  let %x: i32 = array_get(%xs, %i)
+  jump ret(%x)
+}
+
+// after all passes
+
+data Stats {
+  (i64, i32)
+}
+
+fn mean(%n: i32) -> (i64) {
+  join rec loop(%i: i32, %s_0: i64, %s_1: i32) =
+    let %done: i32 = gt.s(%i, %n)
+    case %done {
+      1 =>
+        let %c64: i64 = convert.s[i64](%s_1)
+        let %m: i64 = div.s(%s_0, %c64)
+        jump ret(%m)
+      _ =>
+        let %i64: i64 = convert.s[i64](%i)
+        let %sum1: i64 = add(%s_0, %i64)
+        let %count1: i32 = add(%s_1, 1i32)
+        let %i1: i32 = add(%i, 1i32)
+        jump loop(%i1, %sum1, %count1)
+    }
+  in jump loop(1i32, 0i64, 0i32)
+}
+
+fn parity(%n: i32) -> (i32) {
+  join rec loop(%i: i32, %counts_0: i32, %counts_1: i32) =
+    case %i {
+      0 =>
+        let %e100: i32 = mul(%counts_0, 100i32)
+        let %r: i32 = add(%e100, %counts_1)
+        jump ret(%r)
+      _ =>
+        let %bit: i32 = and(%i, 1i32)
+        let %i1: i32 = sub(%i, 1i32)
+        case %bit {
+          0 =>
+            let %e1: i32 = add(%counts_0, 1i32)
+            jump loop(%i1, %e1, %counts_1)
+          _ =>
+            let %o1: i32 = add(%counts_1, 1i32)
+            jump loop(%i1, %counts_0, %o1)
+        }
+    }
+  in jump loop(%n, 0i32, 0i32)
+}
+
+fn escapes(%x: i64) -> (i64) {
+  jump ret(0i64)
+}
+
+fn reset(%s: mut Stats) -> () {
+  let = set Stats.0.0(%s, 0i64)
+  jump ret()
+}
+
+fn pick(%i: i32) -> (i32) {
+  let %xs: mut [i32] = array_new(4i32, 5i32)
+  let = array_set(%xs, 0i32, 6i32)
+  let %x: i32 = array_get(%xs, %i)
+  jump ret(%x)
+}

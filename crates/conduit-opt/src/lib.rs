@@ -21,6 +21,7 @@ pub mod inline;
 pub mod joins;
 pub mod promote;
 pub mod simplify;
+pub mod sroa;
 
 use conduit_ir::{Func, FuncId, Module, Program};
 
@@ -37,7 +38,9 @@ pub trait Pass {
 /// The passes [`optimize_func`] runs, in order. Known closures go first,
 /// since the calls they make can then be inlined in the same round.
 /// Inlining is next, since the others only see one function, and a
-/// callee's body in its caller shows them more. Promoting refs comes next, since a ref holding an
+/// callee's body in its caller shows them more. Scalar replacement turns
+/// objects that don't escape into refs, which promoting refs, next, turns
+/// into values. Promoting refs comes early, since a ref holding an
 /// array ties it to the ref's region, which keeps `copies` from freezing
 /// it, and since it turns what refs hold into values that `simplify` can
 /// see. Join points are inlined right before `simplify`, which picks the
@@ -48,6 +51,7 @@ pub trait Pass {
 pub const PASSES: &[&dyn Pass] = &[
     &closures::KnownClosures,
     &inline::Inline,
+    &sroa::Sroa,
     &promote::Promote,
     &joins::Joins,
     &simplify::Simplify,
