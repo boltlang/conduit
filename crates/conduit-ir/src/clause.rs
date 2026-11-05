@@ -51,7 +51,7 @@ pub fn discontinues(f: &Func) -> bool {
                 Tail::Case { arms, default, .. } => {
                     arms.iter().any(|a| block(&a.body)) || default.as_deref().is_some_and(block)
                 }
-                Tail::Jump { .. } | Tail::Unreachable => false,
+                Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => false,
             }
     }
     block(&f.body)
@@ -93,7 +93,7 @@ fn uses(b: &Block, v: Var) -> bool {
                     || arms.iter().any(|a| uses(&a.body, v))
                     || default.as_deref().is_some_and(|d| uses(d, v))
             }
-            Tail::Unreachable => false,
+            Tail::Unreachable | Tail::Trap => false,
         }
 }
 
@@ -166,7 +166,7 @@ impl Rewrite<'_> {
                     return false;
                 }
             }
-            Tail::Unreachable => {}
+            Tail::Unreachable | Tail::Trap => {}
         }
         // The `resume` or `discontinue` before a `jump ret` has no `k` by
         // now.

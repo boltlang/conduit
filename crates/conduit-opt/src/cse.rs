@@ -189,7 +189,7 @@ impl Cx<'_> {
                 }
                 self.block(body);
             }
-            Tail::Unreachable => {}
+            Tail::Unreachable | Tail::Trap => {}
         }
         self.fixed = fixed;
         self.changing = changing;
@@ -356,7 +356,7 @@ fn lets_all(b: &Block, test: &mut impl FnMut(&Let) -> bool) -> bool {
                 todo.extend(arms.iter().map(|a| &a.body));
                 todo.extend(default.as_deref());
             }
-            Tail::Jump { .. } | Tail::Unreachable => {}
+            Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
         }
     }
     true

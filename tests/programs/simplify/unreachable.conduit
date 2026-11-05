@@ -1,0 +1,48 @@
+// An arm that's only `unreachable` is never taken: a `case` with one other
+// arm is that arm, and with none, it's `unreachable` too. A `trap` arm is
+// taken when it's reached, so it stays. Nor does an arm that reads a field
+// of what the `case` is on go, since only the arm shows it can.
+
+data Shape {
+  (f64)
+  (f64, f64)
+}
+
+fn positive(%x: i32) -> (i32) {
+  case %x {
+    0 => unreachable
+    _ =>
+      let %y: i32 = add(%x, 1i32)
+      jump ret(%y)
+  }
+}
+
+fn checked(%x: i32) -> (i32) {
+  case %x {
+    0 => trap
+    _ =>
+      let %y: i32 = add(%x, 1i32)
+      jump ret(%y)
+  }
+}
+
+fn side(%s: imm Shape) -> (f64) {
+  case %s {
+    Shape.0 =>
+      let %r: f64 = get Shape.0.0(%s)
+      jump ret(%r)
+    Shape.1 => unreachable
+  }
+}
+
+fn kind(%s: imm Shape) -> (i32) {
+  case %s {
+    Shape.0 => jump ret(0i32)
+    Shape.1 => unreachable
+  }
+}
+
+//# run positive(4i32) == 5i32
+//# run checked(4i32) == 5i32
+//# run checked(0i32) traps
+//# opt: simplify

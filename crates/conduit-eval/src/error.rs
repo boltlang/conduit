@@ -20,8 +20,8 @@ pub enum ErrorKind {
     InvalidConversion,
     /// An array index, or a length for `ArrayFill`, that's out of range.
     OutOfBounds { index: u64, len: u64 },
-    /// `unreachable` was reached.
-    Unreachable,
+    /// A `trap` was reached.
+    Trap,
     /// A continuation was resumed after it had been resumed already.
     ContinuationResumedTwice,
     /// `perform` with no enclosing handler of its effect.
@@ -58,7 +58,7 @@ impl fmt::Display for Error {
             ErrorKind::OutOfBounds { index, len } => {
                 write!(f, "index {index} is out of bounds for length {len}")
             }
-            ErrorKind::Unreachable => write!(f, "reached unreachable code"),
+            ErrorKind::Trap => write!(f, "trap"),
             ErrorKind::ContinuationResumedTwice => {
                 write!(f, "a continuation was resumed more than once")
             }

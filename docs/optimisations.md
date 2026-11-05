@@ -81,6 +81,10 @@ Rewrites from what a variable is known to be, in one forward walk:
   when `x` is `-0.0`.
 - **Case of a known value.** A `case` on a literal, an object made by
   `new` or a constant takes its arm.
+- **Arms that can't be taken.** An arm that's only `unreachable` is never
+  taken, so a `case` with one other arm is that arm, and one with none is
+  `unreachable`, unless the arm reads a field of what the `case` is on.
+  `trap` is reached, so its arm stays.
 - **What an arm says.** In an arm `C =>` of a `case` on `x`, another
   `case` on `x` takes `C`, and in an arm `3 =>`, `x` is `3`.
 - **Fields of a known object.** A `get` of an `imm` object made by `new`

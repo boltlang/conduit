@@ -32,11 +32,13 @@ has already proven them, and breaking one is **undefined behavior**:
 - `array_get` of an element that `array_alloc` made and nothing has set.
 - Using what `undefined` gives: as the operand of an op that looks at it,
   or in a `case`. Passing it on, storing it or returning it is fine.
+- Reaching `unreachable`. A program that means to stop there writes `trap`.
+  The evaluator reports it as undefined behavior, and Wasm traps.
 
 Others are checked at run time:
 
 - Traps: a signed division that overflows, an index out of bounds, a float
-  converted out of range, `unreachable`.
+  converted out of range, `trap`.
 - A continuation resumed twice through a copy the verifier can't see, like
   one stored in a closure (see "Continuations").
 - A `perform` with no handler. Effect types would check this (see "Effect

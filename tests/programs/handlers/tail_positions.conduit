@@ -27,7 +27,7 @@ fn ask(%n: i32, %f: imm fn(i32) -> (i32), %k: cont(i32) -> (i32)) -> (i32) {
     let %r: i32 = resume(%k, %x)
     jump ret(%r)
   in case %n {
-    -1 => unreachable
+    -1 => trap
     0 => jump give(0i32)
     _ =>
       let %y: i32 = apply(%f, %n)

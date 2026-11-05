@@ -385,7 +385,7 @@ fn walk<'a>(b: &'a Block, visit: &mut impl FnMut(&'a Block)) {
                 todo.extend(arms.iter().map(|a| &a.body));
                 todo.extend(default.as_deref());
             }
-            Tail::Jump { .. } | Tail::Unreachable => {}
+            Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
         }
     }
 }
@@ -456,7 +456,7 @@ impl Printer<'_> {
     /// ends in a jump or `unreachable`.
     fn simple(&self, b: &Block) -> Option<String> {
         match &b.tail {
-            tail @ (Tail::Jump { .. } | Tail::Unreachable) if b.lets.is_empty() => {
+            tail @ (Tail::Jump { .. } | Tail::Unreachable | Tail::Trap) if b.lets.is_empty() => {
                 Some(self.tail_text(tail))
             }
             _ => None,
@@ -475,6 +475,7 @@ impl Printer<'_> {
                 self.atoms(args),
                 at(*source)
             ),
+            Tail::Trap => "trap".to_string(),
             _ => "unreachable".to_string(),
         }
     }
@@ -539,7 +540,7 @@ impl Printer<'_> {
                 }
                 self.line(depth, "}");
             }
-            tail @ (Tail::Jump { .. } | Tail::Unreachable) => {
+            tail @ (Tail::Jump { .. } | Tail::Unreachable | Tail::Trap) => {
                 let text = self.tail_text(tail);
                 self.line(depth, &text);
             }

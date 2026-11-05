@@ -1,0 +1,31 @@
+data Shape {
+  (f64)
+  (f64, f64)
+}
+
+fn positive(%x: i32) -> (i32) {
+  let %y: i32 = add(%x, 1i32)
+  jump ret(%y)
+}
+
+fn checked(%x: i32) -> (i32) {
+  case %x {
+    0 => trap
+    _ =>
+      let %y: i32 = add(%x, 1i32)
+      jump ret(%y)
+  }
+}
+
+fn side(%s: imm Shape) -> (f64) {
+  case %s {
+    Shape.0 =>
+      let %r: f64 = get Shape.0.0(%s)
+      jump ret(%r)
+    Shape.1 => unreachable
+  }
+}
+
+fn kind(%s: imm Shape) -> (i32) {
+  jump ret(0i32)
+}

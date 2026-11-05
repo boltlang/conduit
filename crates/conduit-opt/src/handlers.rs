@@ -97,7 +97,7 @@ fn block(p: &dyn Program, b: &mut Block, f: &mut Func) -> bool {
                 changed |= block(p, d, f);
             }
         }
-        Tail::Jump { .. } | Tail::Unreachable => {}
+        Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
     }
     changed
 }

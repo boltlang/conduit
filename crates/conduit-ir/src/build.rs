@@ -225,6 +225,7 @@ enum Pending {
     },
     Case(CaseRef),
     Unreachable,
+    Trap,
 }
 
 struct OpenCase {
@@ -894,9 +895,15 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
         );
     }
 
-    /// Ends the current block with `unreachable`.
+    /// Ends the current block with `unreachable`, which the frontend
+    /// promises is never reached.
     pub fn unreachable(&mut self) {
         self.end(Pending::Unreachable, "unreachable");
+    }
+
+    /// Ends the current block with `trap`, which stops the program.
+    pub fn trap(&mut self) {
+        self.end(Pending::Trap, "trap");
     }
 
     /// Ends the current block with `join j(params) = .. in ..`, and moves
@@ -1200,6 +1207,7 @@ fn assemble(blocks: &mut [Open], cases: &[OpenCase], b: BlockRef) -> Block {
             }
         }
         Pending::Unreachable => Tail::Unreachable,
+        Pending::Trap => Tail::Trap,
     };
     Block { lets, tail }
 }

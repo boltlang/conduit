@@ -116,8 +116,15 @@ pub enum Tail {
         default: Option<Box<Block>>,
     },
 
-    /// This point is never reached.
+    /// This point is never reached: the frontend promises it, so reaching
+    /// it is undefined behavior, and passes may assume it doesn't happen,
+    /// like after a call of a function that never returns, or in an arm
+    /// its type checker shows can't be taken. Compare [`Tail::Trap`].
     Unreachable,
+
+    /// Stops the program with an error, like an `abort()`. Unlike
+    /// [`Tail::Unreachable`], reaching it is defined, so passes keep it.
+    Trap,
 }
 
 /// One definition of a [`Tail::Join`].

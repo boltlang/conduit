@@ -101,7 +101,7 @@ pub fn sroa(p: &dyn Program, f: &mut Func) -> bool {
         match &b.tail {
             Tail::Jump { args, .. } => args.iter().for_each(&mut keep),
             Tail::Case { scrut, .. } => keep(scrut),
-            Tail::Join { .. } | Tail::Unreachable => {}
+            Tail::Join { .. } | Tail::Unreachable | Tail::Trap => {}
         }
     });
     candidates.retain(|v, _| !kept.contains(v));
@@ -249,7 +249,7 @@ fn walk<'a>(b: &'a Block, visit: &mut impl FnMut(&'a Block)) {
                 todo.extend(arms.iter().map(|a| &a.body));
                 todo.extend(default.as_deref());
             }
-            Tail::Jump { .. } | Tail::Unreachable => {}
+            Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
         }
     }
 }

@@ -53,8 +53,14 @@ pub enum Tail {
     /// `default` runs when no arm's tag matches.
     Case { scrut: Atom, arms: Vec<Arm>, default: Option<Box<Block>> },
 
-    /// This point is never reached (a failed match, a call to a `!` function).
+    /// This point is never reached: the frontend promises it, so reaching
+    /// it is undefined behavior, and passes may assume it doesn't happen
+    /// (after a call to a `!` function, an arm the type checker rules out).
     Unreachable,
+
+    /// Stops the program with an error (an abort, a failed match the
+    /// frontend reports). Reaching it is defined, so passes keep it.
+    Trap,
 }
 
 pub struct JoinDef { label: Label, params: Vec<Var>, body: Block }
@@ -1320,6 +1326,7 @@ fn fn1(%0: i32) -> (i32) {
 - **Sources** follow a `let` or a `jump`: `@src7`.
 - `case` arms are `1 =>`, `data10.1 =>` or `_ =>` for the default.
   `join` definitions are separated by `and`, and the body follows `in`.
+  A block can end in `unreachable` or `trap`.
 - Line comments start with `//`.
 
 A long function is a long list of `let`s, so parsing and printing it

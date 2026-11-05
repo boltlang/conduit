@@ -12,6 +12,11 @@
 //! - **Fields of a known object.** A `get` of an `Imm` object made by
 //!   `new` in this function is the `new`'s argument. A `Mut` object's
 //!   field may have been set in between.
+//! - **Arms that can't be taken.** An arm that's only `unreachable` is
+//!   never taken, so a `case` with one other arm is that arm, and one with
+//!   none is `unreachable`. Not if the arm reads a field of what the
+//!   `case` is on, which only the arm shows can be read. `trap` is reached,
+//!   so its arm stays.
 //! - **What an arm says.** In an arm `C =>` of a `case` on `x`, a `case`
 //!   on `x` is known to be `C`, and in an arm `3 =>`, `x` is `3`.
 //! - **Unboxing what was boxed.** `unbox[T]` of `box[T](x)` is `x`. At
@@ -319,6 +324,34 @@ impl<'f> Cx<'f> {
                         }
                     }
                 }
+                // An arm that's only `unreachable` is never taken. With
+                // none left, the `case` isn't reached either, and with one,
+                // it's that arm, unless it reads a field of what the
+                // `case` is on, which only the arm shows can be read.
+                let dead = |b: &Block| b.lets.is_empty() && matches!(b.tail, Tail::Unreachable);
+                let total = arms.len() + usize::from(default.is_some());
+                let live = arms.iter().filter(|a| !dead(&a.body)).count()
+                    + usize::from(default.as_deref().is_some_and(|d| !dead(d)));
+                if live == 0 {
+                    return Ok(Tail::Unreachable);
+                }
+                if live == 1 && total > 1 {
+                    let only = arms
+                        .iter()
+                        .map(|a| &a.body)
+                        .chain(default.as_deref())
+                        .find(|b| !dead(b))
+                        .unwrap();
+                    if !reads_fields(only, &scrut) {
+                        let only = arms
+                            .into_iter()
+                            .map(|a| a.body)
+                            .chain(default.map(|d| *d))
+                            .find(|b| !dead(b))
+                            .unwrap();
+                        return Err(only);
+                    }
+                }
                 let arms = arms
                     .into_iter()
                     .map(|a| Arm {
@@ -344,6 +377,7 @@ impl<'f> Cx<'f> {
                 body: Box::new(self.block(*body)),
             },
             Tail::Unreachable => Tail::Unreachable,
+            Tail::Trap => Tail::Trap,
         })
     }
 
@@ -454,4 +488,29 @@ fn identity(p: &Prim, args: &[Atom]) -> Option<Atom> {
         (Prim::Mul | Prim::And, _, Some(0)) => Some(y.clone()),
         _ => None,
     }
+}
+
+/// Whether `b` reads or writes a field of `obj`.
+fn reads_fields(b: &Block, obj: &Atom) -> bool {
+    let mut todo = vec![b];
+    while let Some(b) = todo.pop() {
+        if b.lets
+            .iter()
+            .any(|l| matches!(l.op, Op::Get(..) | Op::Set(..)) && l.args.first() == Some(obj))
+        {
+            return true;
+        }
+        match &b.tail {
+            Tail::Join { defs, body, .. } => {
+                todo.extend(defs.iter().map(|d| &d.body));
+                todo.push(body);
+            }
+            Tail::Case { arms, default, .. } => {
+                todo.extend(arms.iter().map(|a| &a.body));
+                todo.extend(default.as_deref());
+            }
+            Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
+        }
+    }
+    false
 }

@@ -295,7 +295,7 @@ fn walk<'a>(b: &'a Block, visit: &mut impl FnMut(&'a Block)) {
                 todo.extend(arms.iter().map(|a| &a.body));
                 todo.extend(default.as_deref());
             }
-            Tail::Jump { .. } | Tail::Unreachable => {}
+            Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
         }
     }
 }
@@ -337,7 +337,7 @@ fn free_vars(b: &Block) -> BTreeSet<Var> {
                     bound.extend(d.params.iter().copied());
                 }
             }
-            Tail::Unreachable => {}
+            Tail::Unreachable | Tail::Trap => {}
         }
     });
     used.difference(&bound).copied().collect()
@@ -798,7 +798,7 @@ impl Lower {
                     self.scope_at_sites(d, scope, vars, lifted, defs);
                 }
             }
-            Tail::Jump { .. } | Tail::Unreachable => {}
+            Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
         }
     }
 }
@@ -874,6 +874,7 @@ fn rewrite_jumps(b: Block, table: &BTreeMap<Label, Lifted>, into: &mut Func, ori
             default: default.map(|d| Box::new(rewrite_jumps(*d, table, into, orig))),
         },
         Tail::Unreachable => Tail::Unreachable,
+        Tail::Trap => Tail::Trap,
     };
     block(lets, tail)
 }
@@ -1140,9 +1141,10 @@ impl Lower {
             Tail::Case {
                 scrut: v(hs),
                 arms: vec![
+                    // No handler: an unhandled effect stops the program.
                     Arm {
                         tag: Tag::Ctor(Runtime::ctor(self.rt.hs_d, 0)),
-                        body: Tail::Unreachable.into(),
+                        body: Tail::Trap.into(),
                     },
                     Arm {
                         tag: Tag::Ctor(rt_hs),
@@ -1627,7 +1629,7 @@ impl Lower {
         // A second use traps.
         f.body = block(
             lets,
-            case_zero(u, block(first, ret(vs(&rs))), Tail::Unreachable.into()),
+            case_zero(u, block(first, ret(vs(&rs))), Tail::Trap.into()),
         );
         self.out.funcs.insert(kont, f);
     }
@@ -1830,7 +1832,7 @@ impl Lower {
                     source: *source,
                 }
             }
-            Tail::Jump { .. } | Tail::Unreachable => t.clone(),
+            Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => t.clone(),
             Tail::Join { rec, defs, body } => Tail::Join {
                 rec: *rec,
                 defs: defs

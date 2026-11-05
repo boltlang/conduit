@@ -278,7 +278,9 @@ impl<'m> FuncCx<'_, 'm> {
                 arms,
                 default,
             } => self.case(scrut, arms, default.as_deref()),
-            Tail::Unreachable => {
+            // Wasm's `unreachable` traps, which is what `trap` does, and
+            // one of the things undefined behavior can do.
+            Tail::Unreachable | Tail::Trap => {
                 self.emit(I::Unreachable);
                 Ok(())
             }

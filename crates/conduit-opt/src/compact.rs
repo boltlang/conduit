@@ -100,7 +100,7 @@ impl Order {
                 }
             }
             Tail::Jump { args, .. } => self.atoms(args),
-            Tail::Unreachable => {}
+            Tail::Unreachable | Tail::Trap => {}
         }
     }
 }
@@ -147,6 +147,6 @@ fn rename(b: &mut Block, vars: &HashMap<Var, Var>, labels: &HashMap<Label, Label
             *target = labels.get(target).copied().unwrap_or(*target);
             atoms(args);
         }
-        Tail::Unreachable => {}
+        Tail::Unreachable | Tail::Trap => {}
     }
 }

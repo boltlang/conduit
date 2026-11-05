@@ -405,7 +405,7 @@ impl Liveness<'_> {
                 self.add_uses(&mut live, std::slice::from_ref(scrut));
                 live
             }
-            Tail::Unreachable => BTreeSet::new(),
+            Tail::Unreachable | Tail::Trap => BTreeSet::new(),
             Tail::Join { rec, defs, body } => {
                 // Live sets only grow, so a recursive group reaches a fixed
                 // point. A copy blocked on an earlier round would be on the
@@ -458,7 +458,7 @@ fn for_each_block(b: &Block, f: &mut impl FnMut(&Block)) {
                 for_each_block(d, f);
             }
         }
-        Tail::Jump { .. } | Tail::Unreachable => {}
+        Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
     }
 }
 
@@ -480,7 +480,7 @@ fn for_each_block_mut(b: &mut Block, f: &mut impl FnMut(&mut Block)) {
                 for_each_block_mut(d, f);
             }
         }
-        Tail::Jump { .. } | Tail::Unreachable => {}
+        Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
     }
 }
 
@@ -501,7 +501,7 @@ fn substitute(b: &mut Block, subst: &BTreeMap<Var, Atom>) {
         match &mut b.tail {
             Tail::Jump { args, .. } => args.iter_mut().for_each(resolve),
             Tail::Case { scrut, .. } => resolve(scrut),
-            Tail::Join { .. } | Tail::Unreachable => {}
+            Tail::Join { .. } | Tail::Unreachable | Tail::Trap => {}
         }
     });
 }

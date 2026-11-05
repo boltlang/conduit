@@ -88,7 +88,7 @@ impl Cx {
                     self.block(d);
                 }
             }
-            Tail::Jump { .. } | Tail::Unreachable => {}
+            Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
         }
     }
 }

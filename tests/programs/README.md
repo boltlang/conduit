@@ -29,7 +29,7 @@ checks apply to that crate.
 | Check | Meaning |
 |---|---|
 | `//# run fac(5i32) == 120i32` | Calling `fac` gives `120i32`. Several results are `== (1i32, 2i32)`, none are `== ()`. The function is written as the text format writes it: a name like `fac`, a number like `fn1`, or both, `fac#1`. |
-| `//# run fn1(0i32) traps` | Calling `fn1` stops with a trap: a signed division that overflows, an index out of bounds, `unreachable`, or a continuation resumed twice. |
+| `//# run fn1(0i32) traps` | Calling `fn1` stops with a trap: a signed division that overflows, an index out of bounds, `trap`, or a continuation resumed twice. Reaching `unreachable` is undefined behavior, which the evaluator reports as an error rather than a trap. |
 | `//# verify-error: message` | The verifier rejects the program with an error containing `message`. Only `conduit-ir` looks at such programs. |
 | `//# wasm-error: message` | The Wasm backend can't lower the program, with an error containing `message`. |
 | `//# wasm-skip: reason` | The Wasm backend doesn't look at the program, for example because it uses a feature the backend doesn't have yet. |

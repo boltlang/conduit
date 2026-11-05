@@ -134,6 +134,7 @@ impl Cx {
             }
             Tail::Join { rec, defs, body } => self.join(rec, defs, *body),
             Tail::Unreachable => Tail::Unreachable,
+            Tail::Trap => Tail::Trap,
         }
     }
 

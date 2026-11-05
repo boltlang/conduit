@@ -105,7 +105,7 @@ fn promotable(f: &Func) -> BTreeSet<Var> {
         match &b.tail {
             Tail::Jump { args, .. } => escape(args, &mut escaped),
             Tail::Case { scrut, .. } => escape(std::slice::from_ref(scrut), &mut escaped),
-            Tail::Join { .. } | Tail::Unreachable => {}
+            Tail::Join { .. } | Tail::Unreachable | Tail::Trap => {}
         }
     });
     made.retain(|v| {
@@ -158,7 +158,7 @@ fn live_in(b: &Block, refs: &BTreeSet<Var>, needs: &[BTreeSet<Var>]) -> BTreeSet
         }
         // The definitions only run when jumped to.
         Tail::Join { body, .. } => live_in(body, refs, needs),
-        Tail::Unreachable => BTreeSet::new(),
+        Tail::Unreachable | Tail::Trap => BTreeSet::new(),
     };
     for l in b.lets.iter().rev() {
         match (&l.op, l.args.first()) {
@@ -288,6 +288,7 @@ impl Rewrite<'_> {
                 }
             }
             Tail::Unreachable => Tail::Unreachable,
+            Tail::Trap => Tail::Trap,
         };
         Block { lets, tail }
     }
@@ -307,7 +308,7 @@ fn walk<'a>(b: &'a Block, visit: &mut impl FnMut(&'a Block)) {
                 todo.extend(arms.iter().map(|a| &a.body));
                 todo.extend(default.as_deref());
             }
-            Tail::Jump { .. } | Tail::Unreachable => {}
+            Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
         }
     }
 }

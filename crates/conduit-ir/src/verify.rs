@@ -886,7 +886,7 @@ impl<P: Program + ?Sized> Cx<'_, P> {
                 arms,
                 default,
             } => self.case(scrut, arms, default.as_deref()),
-            Tail::Unreachable => {}
+            Tail::Unreachable | Tail::Trap => {}
         }
         self.known.truncate(known);
         for l in &b.lets {
@@ -1341,7 +1341,7 @@ impl Linear<'_> {
                 }
                 self.uses(body)
             }
-            Tail::Unreachable => Counts::new(),
+            Tail::Unreachable | Tail::Trap => Counts::new(),
         };
         add(&mut c, &tail);
         c
@@ -1379,7 +1379,7 @@ fn binds(b: &Block, out: &mut BTreeSet<Var>) {
                 binds(default, out);
             }
         }
-        Tail::Jump { .. } | Tail::Unreachable => {}
+        Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
     }
 }
 

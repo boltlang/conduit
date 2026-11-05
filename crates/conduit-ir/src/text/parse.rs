@@ -863,6 +863,7 @@ impl Parser {
                 })
             }
             "unreachable" => Ok(Tail::Unreachable),
+            "trap" => Ok(Tail::Trap),
             _ => self.error_at(
                 pos,
                 format!("expected `let`, `join`, `jump`, `case` or `unreachable`, found `{name}`"),

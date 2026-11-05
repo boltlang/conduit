@@ -234,6 +234,7 @@ impl Cx {
                 default: default.map(|d| Box::new(self.block(*d, f))),
             },
             Tail::Unreachable => Tail::Unreachable,
+            Tail::Trap => Tail::Trap,
         })
     }
 
@@ -373,6 +374,7 @@ impl Subst {
                 }
             }
             Tail::Unreachable => Tail::Unreachable,
+            Tail::Trap => Tail::Trap,
         };
         b
     }
@@ -392,7 +394,7 @@ fn walk<'a>(b: &'a Block, visit: &mut impl FnMut(&'a Block)) {
                 todo.extend(arms.iter().map(|a| &a.body));
                 todo.extend(default.as_deref());
             }
-            Tail::Jump { .. } | Tail::Unreachable => {}
+            Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
         }
     }
 }
@@ -437,7 +439,7 @@ fn mentions_cont(b: &Block, vars: &[Ty]) -> bool {
             Tail::Jump { args, .. } => args.iter().any(atom_cont),
             Tail::Case { scrut, .. } => atom_cont(scrut),
             Tail::Join { defs, .. } => defs.iter().any(|d| d.params.iter().any(is_cont)),
-            Tail::Unreachable => false,
+            Tail::Unreachable | Tail::Trap => false,
         };
     });
     found

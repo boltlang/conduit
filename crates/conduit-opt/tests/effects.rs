@@ -67,7 +67,7 @@ fn effects_left(m: &Module) -> Option<String> {
                     todo.extend(arms.iter().map(|a| &a.body));
                     todo.extend(default.as_deref());
                 }
-                Tail::Jump { .. } | Tail::Unreachable => {}
+                Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
             }
         }
     }

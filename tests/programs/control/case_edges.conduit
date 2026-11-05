@@ -1,6 +1,6 @@
 // Cases at the edges: dense tags starting below zero, a case on data with
 // an arm for every constructor and no default, a case with only a default,
-// and `unreachable`.
+// and `trap`.
 
 data Shape {
   ()
@@ -53,11 +53,11 @@ fn only_default(%x: i64) -> (i64) {
   }
 }
 
-// An arm for 0, and `unreachable` otherwise.
+// An arm for 0, and a trap otherwise.
 fn only_zero(%x: i32) -> (i32) {
   case %x {
     0 => jump ret(1i32)
-    _ => unreachable
+    _ => trap
   }
 }
 

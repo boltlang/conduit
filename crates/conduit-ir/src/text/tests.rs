@@ -134,6 +134,13 @@ fn fn11['m1](%0: i32) -> ('m1 [i32]) vars(%1: i32) {
   let %2: 'm1 [i32] = array_fill(%0, 0i32)
   jump ret(%2)
 }
+
+fn fn12(%0: i32) -> () {
+  case %0 {
+    0 => trap
+    _ => unreachable
+  }
+}
 "#;
 
 #[test]

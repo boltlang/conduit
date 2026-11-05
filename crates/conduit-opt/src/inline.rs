@@ -77,7 +77,7 @@ fn size(b: &Block) -> usize {
                 arms.iter().map(|a| size(&a.body)).sum::<usize>()
                     + default.as_deref().map_or(0, size)
             }
-            Tail::Jump { .. } | Tail::Unreachable => 0,
+            Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => 0,
         }
 }
 
@@ -92,7 +92,7 @@ fn has_op(b: &Block, is: &dyn Fn(&Op) -> bool) -> bool {
                 arms.iter().any(|a| has_op(&a.body, is))
                     || default.as_deref().is_some_and(|d| has_op(d, is))
             }
-            Tail::Jump { .. } | Tail::Unreachable => false,
+            Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => false,
         }
 }
 
@@ -188,7 +188,7 @@ impl<'p> Cx<'p> {
                     .collect(),
                 default: default.map(|d| Box::new(self.block(*d, f))),
             },
-            t @ (Tail::Jump { .. } | Tail::Unreachable) => t,
+            t @ (Tail::Jump { .. } | Tail::Unreachable | Tail::Trap) => t,
         }
     }
 
@@ -378,6 +378,7 @@ impl Rename<'_> {
                 default: default.as_deref().map(|d| Box::new(self.block(d, f))),
             },
             Tail::Unreachable => Tail::Unreachable,
+            Tail::Trap => Tail::Trap,
         };
         Block { lets, tail }
     }

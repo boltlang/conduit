@@ -37,7 +37,7 @@ fn is_trap(kind: &ErrorKind) -> bool {
         ErrorKind::IntegerOverflow
             | ErrorKind::InvalidConversion
             | ErrorKind::OutOfBounds { .. }
-            | ErrorKind::Unreachable
+            | ErrorKind::Trap
             | ErrorKind::ContinuationResumedTwice
             | ErrorKind::Unhandled(_)
     )

@@ -913,7 +913,7 @@ fn error_messages() {
             ErrorKind::OutOfBounds { index: 3, len: 2 },
             "index 3 is out of bounds for length 2",
         ),
-        (ErrorKind::Unreachable, "reached unreachable code"),
+        (ErrorKind::Trap, "trap"),
         (
             ErrorKind::ContinuationResumedTwice,
             "a continuation was resumed more than once",

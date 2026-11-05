@@ -275,7 +275,10 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                 let next = next.ok_or_else(|| unverified("no arm of a case matches"))?;
                 self.code()?.at = At::start(next);
             }
-            Tail::Unreachable => return Err(ErrorKind::Unreachable),
+            Tail::Unreachable => {
+                return Err(ErrorKind::Undefined("reached unreachable code".into()));
+            }
+            Tail::Trap => return Err(ErrorKind::Trap),
         }
         Ok(None)
     }
@@ -913,7 +916,7 @@ fn join_defs(f: &Func) -> Labels<'_> {
                 todo.extend(arms.iter().map(|arm| &arm.body));
                 todo.extend(default.as_deref());
             }
-            Tail::Jump { .. } | Tail::Unreachable => {}
+            Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
         }
     }
     table.into()
