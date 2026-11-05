@@ -1,0 +1,141 @@
+// `array_alloc` makes a `mut` array whose elements aren't set yet, and
+// `array_copy` copies a range of one array into another, as a growable
+// array does when it grows.
+
+// Fill a new array with 1, 2, .., n, then sum it.
+fn fill_and_sum(%n: i32) -> (i32) {
+  let %xs: mut [i32] = array_alloc(%n)
+  join rec fill(%i: i32) =
+    let %done: i32 = ge.s(%i, %n)
+    case %done {
+      1 =>
+        jump sum(0i32, 0i32)
+      _ =>
+        let %x: i32 = add(%i, 1i32)
+        let = array_set(%xs, %i, %x)
+        let %i1: i32 = add(%i, 1i32)
+        jump fill(%i1)
+    }
+  and sum(%j: i32, %acc: i32) =
+    let %end: i32 = ge.s(%j, %n)
+    case %end {
+      1 => jump ret(%acc)
+      _ =>
+        let %y: i32 = array_get(%xs, %j)
+        let %acc1: i32 = add(%acc, %y)
+        let %j1: i32 = add(%j, 1i32)
+        jump sum(%j1, %acc1)
+    }
+  in jump fill(0i32)
+}
+
+// Grow: copy the elements that are set into a bigger array, whose others
+// stay unset, then set one more.
+fn grow() -> (i32) {
+  let %old: mut [i64] = array_alloc(2i32)
+  let = array_set(%old, 0i32, 10i64)
+  let = array_set(%old, 1i32, 20i64)
+  let %new: mut [i64] = array_alloc(4i32)
+  let = array_copy(%new, 0i32, %old, 0i32, 2i32)
+  let = array_set(%new, 2i32, 30i64)
+  let %a: i64 = array_get(%new, 0i32)
+  let %b: i64 = array_get(%new, 1i32)
+  let %c: i64 = array_get(%new, 2i32)
+  let %ab: i64 = add(%a, %b)
+  let %abc: i64 = add(%ab, %c)
+  let %len: i32 = array_len(%new)
+  let %r: i32 = convert.s[i32](%abc)
+  let %r2: i32 = add(%r, %len)
+  jump ret(%r2)
+}
+
+// Unset elements are copied as they are, and can be set afterwards.
+fn copy_unset() -> (i32) {
+  let %xs: mut [i32] = array_alloc(3i32)
+  let = array_set(%xs, 1i32, 5i32)
+  let %ys: mut [i32] = array_alloc(3i32)
+  let = array_copy(%ys, 0i32, %xs, 0i32, 3i32)
+  let = array_set(%ys, 2i32, 7i32)
+  let %a: i32 = array_get(%ys, 1i32)
+  let %b: i32 = array_get(%ys, 2i32)
+  let %r: i32 = add(%a, %b)
+  jump ret(%r)
+}
+
+// [1, 2, 3, 4, 5] shifted within itself, as through a temporary: right by
+// one gives [1, 1, 2, 3, 4], and left by one [2, 3, 4, 5, 5].
+fn overlap(%right: i32) -> (i32) {
+  let %xs: mut [i32] = array_new(1i32, 2i32, 3i32, 4i32, 5i32)
+  case %right {
+    1 =>
+      let = array_copy(%xs, 1i32, %xs, 0i32, 4i32)
+      let %r: i32 = call digits(%xs)
+      jump ret(%r)
+    _ =>
+      let = array_copy(%xs, 0i32, %xs, 1i32, 4i32)
+      let %l: i32 = call digits(%xs)
+      jump ret(%l)
+  }
+}
+
+// The digits of a 5-element array, as a number: [1, 2, 3, 4, 5] is 12345.
+fn digits(%xs: ro [i32]) -> (i32) {
+  join rec go(%i: i32, %acc: i32) =
+    let %end: i32 = ge.s(%i, 5i32)
+    case %end {
+      1 => jump ret(%acc)
+      _ =>
+        let %x: i32 = array_get(%xs, %i)
+        let %acc10: i32 = mul(%acc, 10i32)
+        let %acc1: i32 = add(%acc10, %x)
+        let %i1: i32 = add(%i, 1i32)
+        jump go(%i1, %acc1)
+    }
+  in jump go(0i32, 0i32)
+}
+
+// From an `imm` array into a `mut` one, of bytes, which Wasm packs.
+fn bytes() -> (i32) {
+  let %src: imm [i8] = array_new(1i8, 255i8, 3i8)
+  let %dst: mut [i8] = array_fill(4i32, 0i8)
+  let = array_copy(%dst, 1i32, %src, 1i32, 2i32)
+  let %a: i8 = array_get(%dst, 2i32)
+  let %b: i8 = array_get(%dst, 1i32)
+  let %x: i32 = convert.s[i32](%a)
+  let %y: i32 = convert.u[i32](%b)
+  let %x10: i32 = mul(%x, 10i32)
+  let %r: i32 = add(%x10, %y)
+  jump ret(%r)
+}
+
+// Copying nothing, even from the end, is fine; a range past the end, a
+// negative start or count, and a negative length trap.
+fn copy_range(%dst_start: i32, %src_start: i32, %count: i32) -> (i32) {
+  let %src: mut [i32] = array_fill(3i32, 1i32)
+  let %dst: mut [i32] = array_fill(3i32, 0i32)
+  let = array_copy(%dst, %dst_start, %src, %src_start, %count)
+  let %x: i32 = array_get(%dst, 0i32)
+  jump ret(%x)
+}
+
+fn alloc_len(%n: i32) -> (i32) {
+  let %xs: mut [f64] = array_alloc(%n)
+  let %len: i32 = array_len(%xs)
+  jump ret(%len)
+}
+
+//# run fill_and_sum(10i32) == 55i32
+//# run fill_and_sum(0i32) == 0i32
+//# run grow() == 64i32
+//# run copy_unset() == 12i32
+//# run overlap(1i32) == 11234i32
+//# run overlap(0i32) == 23455i32
+//# run bytes() == 285i32
+//# run copy_range(0i32, 0i32, 3i32) == 1i32
+//# run copy_range(3i32, 3i32, 0i32) == 0i32
+//# run copy_range(1i32, 0i32, 3i32) traps
+//# run copy_range(0i32, 1i32, 3i32) traps
+//# run copy_range(-1i32, 0i32, 1i32) traps
+//# run copy_range(0i32, 0i32, -1i32) traps
+//# run alloc_len(3i32) == 3i32
+//# run alloc_len(-1i32) traps

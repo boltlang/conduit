@@ -112,6 +112,8 @@ fn fn8(%0: mut data10) -> (imm data10) {
   let %13: imm [i64] = array_clone(%5)
   let %14: imm [f64] = array_freeze(%4)
   let %15: ro [i8] = const const40()
+  let %16: mut [i64] = array_alloc(2i32)
+  let = array_copy(%16, 0i32, %5, 1i32, 2i32)
   jump ret(%1)
 }
 

@@ -599,6 +599,24 @@ impl<'m> FuncCx<'_, 'm> {
                 self.atoms(args);
                 self.emit(I::ArrayLen);
             }
+            Op::ArrayAlloc => {
+                // Every element type has a default, since references are
+                // nullable: unset elements are null or 0.
+                let array = self.array_of(self.var_ty(binds[0]))?;
+                self.atom(&args[0]);
+                self.emit(I::ArrayNewDefault(array));
+            }
+            Op::ArrayCopy => {
+                // Wasm takes the same arguments in the same order, and
+                // copies as through a temporary too.
+                let dst = self.array_of(&self.atom_ty(&args[0]))?;
+                let src = self.array_of(&self.atom_ty(&args[2]))?;
+                self.atoms(args);
+                self.emit(I::ArrayCopy {
+                    array_type_index_dst: dst,
+                    array_type_index_src: src,
+                });
+            }
             Op::ArrayClone => {
                 // A new array as long as the original, then all of the
                 // original's elements copied into it. Mutability doesn't

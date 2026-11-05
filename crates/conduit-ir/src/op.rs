@@ -35,6 +35,9 @@ pub enum Op {
     /// Allocates an array of one value repeated. Args: the length, then
     /// the value.
     ArrayFill,
+    /// Allocates a `Mut` array whose elements aren't set yet. Reading one
+    /// before it's set is undefined behavior. Args: the length.
+    ArrayAlloc,
     /// Args: the array, then the index.
     ArrayGet,
     /// Writes to a `Mut` array; binds nothing. Args: the array, the index,
@@ -42,6 +45,11 @@ pub enum Op {
     ArraySet,
     /// Args: the array.
     ArrayLen,
+    /// Copies elements from one array into a `Mut` one, as if through a
+    /// temporary, so the two can be the same array and the ranges can
+    /// overlap; binds nothing. Unset elements stay unset. Args: the
+    /// destination, its start, the source, its start, then how many.
+    ArrayCopy,
     /// A new array with the same elements, which it shares, of the
     /// mutability the variable it binds says. Args: the array.
     ArrayClone,
@@ -126,14 +134,14 @@ impl Op {
             Op::Closure(..) | Op::Box(_) | Op::New(_) | Op::ArrayNew | Op::RefNew => (None, false),
             Op::Const(_) => (None, false),
             // Its length may be negative or too big.
-            Op::ArrayFill => (None, true),
+            Op::ArrayFill | Op::ArrayAlloc => (None, true),
             Op::Get(..) | Op::ArrayLen | Op::ArrayClone | Op::RefGet => (Reads, false),
             // It changes objects that nothing else can reach any more.
             Op::ArrayFreeze => (Reads, false),
             // Bounds checks and failed casts trap.
             Op::ArrayGet | Op::Unbox(_) => (Reads, true),
             Op::Set(..) | Op::RefSet => (Writes, false),
-            Op::ArraySet => (Writes, true),
+            Op::ArraySet | Op::ArrayCopy => (Writes, true),
             Op::Call(..) | Op::CallExtern(_) | Op::Apply => (Unknown, true),
             Op::Handle(_) | Op::Perform(..) | Op::Resume | Op::Discontinue(..) => (Unknown, true),
         };

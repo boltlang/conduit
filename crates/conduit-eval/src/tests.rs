@@ -847,6 +847,47 @@ fn errors_say_where_they_happened() {
     );
 }
 
+/// An element `array_alloc` made can be read once it's set, but reading
+/// one before is undefined, also after `array_copy` copied it.
+#[test]
+fn unset_elements() {
+    let m = conduit_ir::text::parse(
+        "fn fn0(%0: i32) -> (i32) {
+  let %1: mut [i32] = array_alloc(2i32)
+  case %0 {
+    1 =>
+      let = array_set(%1, 1i32, 4i32)
+      let %2: i32 = array_get(%1, 1i32)
+      jump ret(%2)
+    2 =>
+      let %3: mut [i32] = array_alloc(2i32)
+      let = array_copy(%3, 0i32, %1, 0i32, 2i32)
+      let %4: i32 = array_get(%3, 1i32)
+      jump ret(%4)
+    _ =>
+      let %5: i32 = array_get(%1, 1i32)
+      jump ret(%5)
+  }
+}",
+    )
+    .unwrap();
+    verify_module(&m).unwrap();
+    let mut machine = Machine::new(&m, NoHost);
+    assert_eq!(
+        machine.call(FuncId(0), vec![Value::I32(1)]),
+        Ok(vec![Value::I32(4)])
+    );
+    for which in [0, 2] {
+        let error = machine
+            .call(FuncId(0), vec![Value::I32(which)])
+            .unwrap_err();
+        assert_eq!(
+            error.kind,
+            ErrorKind::Undefined("array get of element 1, which isn't set".into())
+        );
+    }
+}
+
 /// What each kind of error says.
 #[test]
 fn error_messages() {

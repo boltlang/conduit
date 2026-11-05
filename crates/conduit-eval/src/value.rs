@@ -12,6 +12,10 @@ pub enum Value {
     F32(f32),
     F64(f64),
     Obj(ObjId),
+    /// An element of an array that `ArrayAlloc` made and nothing has set
+    /// yet. It's only ever in an array: reading one is undefined behavior,
+    /// so `ArrayGet` stops there.
+    Unset,
 }
 
 impl From<Lit> for Value {

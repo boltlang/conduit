@@ -941,6 +941,8 @@ impl Parser {
             }
             "array_new" => Op::ArrayNew,
             "array_fill" => Op::ArrayFill,
+            "array_alloc" => Op::ArrayAlloc,
+            "array_copy" => Op::ArrayCopy,
             "array_get" => Op::ArrayGet,
             "array_set" => Op::ArraySet,
             "array_len" => Op::ArrayLen,

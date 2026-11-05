@@ -152,7 +152,7 @@ fn unary(prim: &Prim, a: Value) -> Result<Value, ErrorKind> {
             Value::I64(x) => Ok(Value::I64(x.wrapping_neg())),
             Value::F32(x) => Ok(Value::F32(-x)),
             Value::F64(x) => Ok(Value::F64(-x)),
-            Value::Obj(_) => Err(mismatch(prim)),
+            Value::Obj(_) | Value::Unset => Err(mismatch(prim)),
         },
         Prim::Abs | Prim::Sqrt => {
             let sqrt = matches!(prim, Prim::Sqrt);
@@ -258,6 +258,6 @@ pub fn fold(prim: &Prim, args: &[Lit]) -> Option<Lit> {
         Value::I64(n) => Lit::I64(n),
         Value::F32(x) => Lit::f32(x),
         Value::F64(x) => Lit::f64(x),
-        Value::Obj(_) => return None,
+        Value::Obj(_) | Value::Unset => return None,
     })
 }

@@ -29,6 +29,7 @@ has already proven them, and breaking one is **undefined behavior**:
 
 - `Unbox(ty)` of a value that wasn't boxed at a subtype of `ty`.
 - `ArrayFreeze` of an array that something else can still reach.
+- `array_get` of an element that `array_alloc` made and nothing has set.
 
 Others are checked at run time:
 
@@ -133,9 +134,11 @@ an array, and `ref_new`.
 | `set C.i` | a `mut` object of `C`'s type, then a value for field `i` | nothing |
 | `array_new` | elements | the array it binds |
 | `array_fill` | an `i32` length, then an element | the array it binds |
+| `array_alloc` | an `i32` length | the array it binds, which is `mut` |
 | `array_get` | an array and an `i32` index | an element |
 | `array_set` | a `mut` array, an `i32` index, then an element | nothing |
 | `array_len` | an array | `i32` |
+| `array_copy` | a `mut` array, an `i32` start, an array whose elements fit the first's, an `i32` start and an `i32` count | nothing |
 | `array_clone` | an array whose elements fit the array it binds | the array it binds |
 | `array_freeze` | the same, binding an `imm` array | the array it binds |
 | `ref_new` | a value that fits the ref it binds | the ref it binds |
@@ -176,8 +179,8 @@ These rules are what make `imm` mean that nothing ever changes.
    down, in the order `imm ⊑ ro ⊑ mut`. So an `imm` object or closure holds
    or captures only scalars and `imm` values: never a ref, a continuation,
    or anything `mut` or `ro`. A `mut` one can hold anything. This is checked
-   at `new`, `array_new`, `array_fill`, `array_clone`, `array_freeze` and
-   `closure`, and decides what `box` gives. A data type that's being
+   at `new`, `array_new`, `array_fill`, `array_alloc`, `array_clone`,
+   `array_freeze` and `closure`, and decides what `box` gives. A data type that's being
    checked already counts as fine where it recurses, so recursive types
    terminate.
 2. **Only `mut` can be written.** `set` and `array_set` need a `mut` object.

@@ -570,16 +570,71 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                     is_mut,
                 })]
             }
+            Op::ArrayAlloc => {
+                let Value::I32(len) = arg(&args, 0)? else {
+                    return Err(unverified("array alloc needs a length"));
+                };
+                if len < 0 {
+                    return Err(out_of_bounds(len as u32 as usize, i32::MAX as usize));
+                }
+                vec![self.alloc(Object::Array {
+                    elems: vec![Value::Unset; len as usize],
+                    is_mut: true,
+                })]
+            }
             Op::ArrayGet => {
                 let index = index(arg(&args, 1)?)?;
                 match self.object_ref(obj(arg(&args, 0)?)?)? {
-                    Object::Array { elems, .. } => vec![
-                        *elems
+                    Object::Array { elems, .. } => {
+                        match *elems
                             .get(index)
-                            .ok_or_else(|| out_of_bounds(index, elems.len()))?,
-                    ],
+                            .ok_or_else(|| out_of_bounds(index, elems.len()))?
+                        {
+                            Value::Unset => {
+                                return Err(ErrorKind::Undefined(format!(
+                                    "array get of element {index}, which isn't set"
+                                )));
+                            }
+                            value => vec![value],
+                        }
+                    }
                     _ => return Err(unverified("array get on something that isn't an array")),
                 }
+            }
+            Op::ArrayCopy => {
+                let (dst, src) = (obj(arg(&args, 0)?)?, obj(arg(&args, 2)?)?);
+                let (dst_start, src_start, count) = (
+                    index(arg(&args, 1)?)?,
+                    index(arg(&args, 3)?)?,
+                    index(arg(&args, 4)?)?,
+                );
+                // The source's elements first, as through a temporary, so
+                // that the two can be the same array.
+                let elems = match self.object_ref(src)? {
+                    Object::Array { elems, .. } => {
+                        let end = src_start + count;
+                        elems
+                            .get(src_start..end)
+                            .ok_or_else(|| out_of_bounds(end, elems.len()))?
+                            .to_vec()
+                    }
+                    _ => return Err(unverified("array copy from something that isn't an array")),
+                };
+                match self.object_mut(dst)? {
+                    Object::Array { elems: to, is_mut } => {
+                        let end = dst_start + count;
+                        let len = to.len();
+                        let range = to
+                            .get_mut(dst_start..end)
+                            .ok_or_else(|| out_of_bounds(end, len))?;
+                        if !*is_mut {
+                            return Err(ErrorKind::WriteToImm);
+                        }
+                        range.copy_from_slice(&elems);
+                    }
+                    _ => return Err(unverified("array copy into something that isn't an array")),
+                }
+                vec![]
             }
             Op::ArraySet => {
                 let (index, value) = (index(arg(&args, 1)?)?, arg(&args, 2)?);

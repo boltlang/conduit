@@ -54,6 +54,7 @@ fn lit(v: Value) -> Result<Lit, String> {
         Value::Obj(_) => {
             return Err("gave an object, but a test can only check scalars".into());
         }
+        Value::Unset => return Err("gave an unset array element".into()),
     })
 }
 

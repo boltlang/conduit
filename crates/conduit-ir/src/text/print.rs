@@ -692,6 +692,8 @@ pub(crate) fn op_name(op: &Op) -> String {
         Op::Set(c, i) => format!("set {c}.{i}"),
         Op::ArrayNew => "array_new".into(),
         Op::ArrayFill => "array_fill".into(),
+        Op::ArrayAlloc => "array_alloc".into(),
+        Op::ArrayCopy => "array_copy".into(),
         Op::ArrayGet => "array_get".into(),
         Op::ArraySet => "array_set".into(),
         Op::ArrayLen => "array_len".into(),

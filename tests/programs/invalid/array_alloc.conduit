@@ -1,0 +1,20 @@
+// `array_alloc` binding an array that isn't `mut`, and `array_copy` into
+// an array that isn't `mut`, or between arrays whose elements don't fit.
+
+fn fn1(%0: imm [i32], %1: mut [i64], %2: mut [ro [i32]], %3: imm [mut [i32]]) -> () {
+  let %4: imm [i32] = array_alloc(3i32)
+  let %5: mut [i32] = array_alloc(3i64)
+  let = array_copy(%0, 0i32, %0, 0i32, 1i32)
+  let = array_copy(%1, 0i32, %0, 0i32, 1i32)
+  let = array_copy(%2, 0i32, %3, 0i32, 1i32)
+  let = array_copy(%3, 0i32, %2, 0i32, 1i32)
+  let = array_copy(%1, 0i64, %1, 0i32, 1i32)
+  jump ret()
+}
+
+//# verify-error: fn1: array alloc makes a mut array, so it can't bind a imm [i32]
+//# verify-error: fn1: array alloc needs an i32 length
+//# verify-error: fn1: can't copy into a imm [i32]
+//# verify-error: fn1: array copy from a imm [i32] to a mut [i64]: its elements are i32, not i64
+//# verify-error: fn1: can't copy into a imm [mut [i32]]
+//# verify-error: fn1: array copy needs a destination array, an i32 start, a source array, an i32 start and an i32 count

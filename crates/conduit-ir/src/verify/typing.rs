@@ -151,6 +151,49 @@ pub(crate) fn op_results<P: Program + ?Sized>(
             }
             Ok(out.to_vec())
         }
+        Op::ArrayAlloc => {
+            new_array(p, mp, out)?;
+            if !matches!(out, [Ty::Array(_, Mutability::Mut)]) {
+                return Err(format!(
+                    "array alloc makes a mut array, so it can't bind a {}",
+                    out[0]
+                ));
+            }
+            match tys {
+                [Ty::I32] => Ok(out.to_vec()),
+                _ => Err("array alloc needs an i32 length".into()),
+            }
+        }
+        Op::ArrayCopy => match tys {
+            [
+                dst @ Ty::Array(_, Mutability::Mut),
+                Ty::I32,
+                src @ Ty::Array(..),
+                Ty::I32,
+                Ty::I32,
+            ] => {
+                let (have, want) = (elem_ty(src).unwrap(), elem_ty(dst).unwrap());
+                if sub(&have, &want) {
+                    Ok(vec![])
+                } else {
+                    Err(format!(
+                        "array copy from a {src} to a {dst}: its elements are {have}, not {want}"
+                    ))
+                }
+            }
+            [
+                dst @ Ty::Array(..),
+                Ty::I32,
+                Ty::Array(..),
+                Ty::I32,
+                Ty::I32,
+            ] => Err(format!("can't copy into a {dst}")),
+            _ => Err(
+                "array copy needs a destination array, an i32 start, a source array, \
+                 an i32 start and an i32 count"
+                    .into(),
+            ),
+        },
         Op::ArrayGet => match tys {
             [array @ Ty::Array(..), Ty::I32] => Ok(vec![elem_ty(array).unwrap()]),
             _ => Err("array get needs an array and an i32 index".into()),

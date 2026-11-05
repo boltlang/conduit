@@ -90,6 +90,8 @@ pub enum Op {
     Set(CtorId, u32),      // write field i of a Mut object; binds nothing
     ArrayNew,              // args = the elements
     ArrayFill,             // args = a length, then the value to repeat
+    ArrayAlloc,            // args = a length; a Mut array whose elements aren't set yet
+    ArrayCopy,             // args = dst, dst start, src, src start, count; binds nothing
     ArrayGet, ArraySet, ArrayLen,   // ArraySet: Mut arrays only
     ArrayClone,            // args = an array; a new one with the same elements: see "Mutability"
     ArrayFreeze,           // args = an array; `ArrayClone` to `Imm` done in place
@@ -120,9 +122,24 @@ removing an unused op needs it not to write or trap, but two ops with the
 same arguments can be one if nothing writes in between, even if they may
 trap, since the second can't trap if the first didn't. Ops that may trap
 are signed integer division (the smallest value by -1), float to integer
-conversions (out of range), array accesses (out of bounds), `ArrayFill`
-with a length that's negative or too big, `Unbox` (a failed cast), and
-every op that runs code.
+conversions (out of range), array accesses and `ArrayCopy` (out of
+bounds), `ArrayFill` and `ArrayAlloc` with a length that's negative or
+too big, `Unbox` (a failed cast), and every op that runs code.
+
+**Arrays whose elements aren't set yet.** `ArrayAlloc(n)` makes a `Mut`
+array of `n` elements that aren't set, for code that keeps track of which
+ones it has set, like a growable array's spare room. Reading one before
+it's set is undefined behavior, as reading uninitialized memory is in
+LLVM. That's the rule every backend can follow for free: Wasm GC's
+`array.new_default` gives null or 0, a native backend's collector needs
+zeroed memory anyway, and a data type has no value Conduit could give
+instead. The evaluator stops at such a read. `ArrayCopy` copies a range
+of one array into a `Mut` one, as `memmove` does: as through a
+temporary, so the ranges can overlap. Unset elements stay unset, so a
+growable array can move its elements to a bigger array with `ArrayAlloc`
+and `ArrayCopy`. It traps, as Wasm's `array.copy` does, if either range
+doesn't fit in its array, its starts and count read as unsigned, so a
+negative one always does; copying nothing at the end is fine.
 
 Integer division and remainder by zero don't trap: `x / 0` is 0 and
 `x % 0` is `x`, so `(x / y) * y + x % y` is still `x`. A frontend whose
@@ -1124,6 +1141,8 @@ Status:
 | `ArrayGet` | bounds check + `*.load` | `array.get`, or `array.get_s` for `i8` and `i16` | ✅ |
 | `ArraySet` | bounds check + `*.store` | `array.set` | ✅ |
 | `ArrayLen` | `i32.load` of the length | `array.len` | ✅ |
+| `ArrayAlloc` | allocate | `array.new_default` | ✅ |
+| `ArrayCopy` | bounds checks + `memory.copy` | `array.copy` | ✅ |
 | `ArrayClone` | allocate + `memory.copy` | `array.new_default` + `array.copy` | ✅ |
 | `RefNew` | allocate one slot + store, or a local if promoted | `struct.new` of a one-field mutable struct, or a local if promoted | ✅ |
 | `RefGet` | `*.load` | `struct.get` | ✅ |
@@ -1249,7 +1268,8 @@ fn fn1(%0: i32) -> (i32) {
   `call fn2(..)`, `call_extern extern1(..)`, `closure fn2(..)`, `apply(..)`,
   `new data10.0(..)`, `const const40()`, `get data10.0.1(..)`,
   `set data10.0.1(..)`,
-  `array_new`, `array_fill`, `array_get`, `array_set`, `array_len`,
+  `array_new`, `array_fill`, `array_alloc`, `array_get`, `array_set`,
+  `array_len`, `array_copy`,
   `array_clone`, `array_freeze`,
   `ref_new`, `ref_get`, `ref_set`, `box[i32](..)`, `unbox[i32](..)`,
   `handle handler30(..)`, `perform effect20.0(..)`, `resume(..)` and
@@ -1296,7 +1316,8 @@ doesn't need a deep stack.
   `Mut` carries an "is mut" flag. A write to an `Imm` object is an error,
   which can only happen if an optimization broke the mutability rules.
   `ArrayFreeze` clears it, so a write through an alias that a wrong `ArrayFreeze`
-  left behind is an error too. A frame and a closure carry their
+  left behind is an error too. An element `ArrayAlloc` made is unset
+  until something sets it, and reading it is an error too. A frame and a closure carry their
   function's mutability arguments, so that an object made at a parameter's
   mutability gets the caller's, and `Box` and `Unbox` compare types with
   the arguments in place. `Machine::call_at` calls a function with

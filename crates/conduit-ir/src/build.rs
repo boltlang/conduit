@@ -677,6 +677,32 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
         self.emit1(Op::ArrayFill, vec![len.into(), value.into()], Some(ty))
     }
 
+    /// A `mut` array of `len` elements of type `elem` that aren't set yet.
+    pub fn array_alloc(&mut self, elem: Ty, len: impl Into<Atom>) -> Var {
+        let ty = Ty::Array(Box::new(elem), Mutability::Mut);
+        self.emit1(Op::ArrayAlloc, vec![len.into()], Some(ty))
+    }
+
+    /// Copies `count` elements of `src` from `src_start` into `dst` from
+    /// `dst_start`.
+    pub fn array_copy(
+        &mut self,
+        dst: impl Into<Atom>,
+        dst_start: impl Into<Atom>,
+        src: impl Into<Atom>,
+        src_start: impl Into<Atom>,
+        count: impl Into<Atom>,
+    ) {
+        let args = vec![
+            dst.into(),
+            dst_start.into(),
+            src.into(),
+            src_start.into(),
+            count.into(),
+        ];
+        self.emit(Op::ArrayCopy, args, None);
+    }
+
     pub fn array_get(&mut self, array: impl Into<Atom>, index: impl Into<Atom>) -> Var {
         self.emit1(Op::ArrayGet, vec![array.into(), index.into()], None)
     }
