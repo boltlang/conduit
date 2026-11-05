@@ -1,0 +1,143 @@
+// Effect parameters: a function, a data type or a handler can be generic
+// over effects, and each call, closure, data type and `handle` gives a
+// row for each parameter.
+
+effect Log {
+  (i32) -> ()
+}
+
+effect Yield {
+  (i32) -> ()
+}
+
+// A closure that may perform E1, kept in a data type.
+data Thunk[E1] {
+  (imm fn() -> (i32) does E1)
+}
+
+// Calls `f` twice, performing what it performs.
+fn twice[E1](%f: imm fn(i32) -> (i32) does E1, %x: i32) -> (i32) does E1 {
+  let %y: i32 = apply(%f, %x)
+  let %z: i32 = apply(%f, %y)
+  jump ret(%z)
+}
+
+fn force[E1](%t: imm Thunk[E1]) -> (i32) does E1 {
+  let %f: imm fn() -> (i32) does E1 = get Thunk.0.0(%t)
+  let %r: i32 = apply(%f)
+  jump ret(%r)
+}
+
+fn add3(%x: i32) -> (i32) {
+  let %y: i32 = add(%x, 3i32)
+  jump ret(%y)
+}
+
+fn log_and_double(%x: i32) -> (i32) does Log {
+  let = perform Log.0(%x)
+  let %y: i32 = mul(%x, 2i32)
+  jump ret(%y)
+}
+
+fn seven() -> (i32) {
+  jump ret(7i32)
+}
+
+// With no effects: (1 + 3) + 3, then a thunk without effects.
+fn pure(%x: i32) -> (i32) {
+  let %f: imm fn(i32) -> (i32) = closure add3()
+  let %r: i32 = call twice[Nothing](%f, %x)
+  let %g: imm fn() -> (i32) = closure seven()
+  let %t: imm Thunk[Nothing] = new Thunk.0(%g)
+  let %s: i32 = call force[Nothing](%t)
+  let %rs: i32 = add(%r, %s)
+  jump ret(%rs)
+}
+
+handler logger for Log env(ref i32) ops(log) ret logged
+
+fn log(%total: ref i32, %x: i32, %k: cont() -> (i32)) -> (i32) {
+  let %t: i32 = ref_get(%total)
+  let %t1: i32 = add(%t, %x)
+  let = ref_set(%total, %t1)
+  let %r: i32 = resume(%k)
+  jump ret(%r)
+}
+
+fn logged(%total: ref i32, %r: i32) -> (i32) {
+  jump ret(%r)
+}
+
+fn twice_logging(%x: i32) -> (i32) does Log {
+  let %f: imm fn(i32) -> (i32) does Log = closure log_and_double()
+  let %r: i32 = call twice[Log](%f, %x)
+  jump ret(%r)
+}
+
+// With Log: x * 4, logging x and 2x.
+fn logging(%x: i32) -> (i32, i32) {
+  let %total: ref i32 = ref_new(0i32)
+  let %body: imm fn() -> (i32) does Log = closure twice_logging(%x)
+  let %r: i32 = handle logger(%total, %body)
+  let %t: i32 = ref_get(%total)
+  jump ret(%r, %t)
+}
+
+// A handler generic over what else its body performs, from docs/ir.md.
+handler adder[E1] for Yield does E1 env(ref i32) ops(add_yield) ret done
+
+fn add_yield[E1](%acc: ref i32, %x: i32, %k: cont() -> () does E1) -> () does E1 {
+  let %a: i32 = ref_get(%acc)
+  let %b: i32 = add(%a, %x)
+  let = ref_set(%acc, %b)
+  let = resume(%k)
+  jump ret()
+}
+
+fn done[E1](%acc: ref i32) -> () does E1 {
+  jump ret()
+}
+
+fn sum[E1](%body: imm fn() -> () does Yield + E1) -> (i32) does E1 {
+  let %acc: ref i32 = ref_new(0i32)
+  let = handle adder[E1](%acc, %body)
+  let %r: i32 = ref_get(%acc)
+  jump ret(%r)
+}
+
+// Yields 1 and 2, logging 10 in between.
+fn yields_and_logs() -> () does Yield + Log {
+  let = perform Yield.0(1i32)
+  let = perform Log.0(10i32)
+  let = perform Yield.0(2i32)
+  jump ret()
+}
+
+fn sum_logging() -> (i32) does Log {
+  let %body: imm fn() -> () does Yield + Log = closure yields_and_logs()
+  let %r: i32 = call sum[Log](%body)
+  jump ret(%r)
+}
+
+fn yields() -> () does Yield {
+  let = perform Yield.0(5i32)
+  let = perform Yield.0(6i32)
+  jump ret()
+}
+
+// The sum, then what was logged.
+fn summed() -> (i32, i32) {
+  let %body: imm fn() -> () does Yield = closure yields()
+  let %pure: i32 = call sum[Nothing](%body)
+  let %total: ref i32 = ref_new(0i32)
+  let %logging: imm fn() -> (i32) does Log = closure sum_logging()
+  let %r: i32 = handle logger(%total, %logging)
+  let %t: i32 = ref_get(%total)
+  let %s: i32 = add(%pure, %r)
+  jump ret(%s, %t)
+}
+
+//# run pure(1i32) == 14i32
+//# run logging(3i32) == (12i32, 9i32)
+//# run summed() == (14i32, 10i32)
+//# opt: inline

@@ -4,7 +4,7 @@ use std::rc::Rc;
 use conduit_ir::verify::subst_params;
 use conduit_ir::{
     Atom, Block, ConstId, ConstValue, EffectId, Extern, ExternId, Func, FuncId, HandlerId, JoinDef,
-    Label, Mutability, Op, Program, SourceId, Tag, Tail, Ty, Var,
+    Label, Mutability, Op, Program, Row, Sig, SourceId, Tag, Tail, Ty, Var,
 };
 
 use crate::error::{Error, ErrorKind, unverified};
@@ -445,7 +445,7 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
     /// A type in the running function, with its parameters' arguments in
     /// place of them.
     fn concrete_ty(&self, ty: &Ty) -> Step<Ty> {
-        Ok(subst_params(ty, &self.code_ref()?.margs))
+        Ok(erase_rows(&subst_params(ty, &self.code_ref()?.margs)))
     }
 
     /// The type of the variable an op that gives one value binds.
@@ -463,7 +463,7 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
     fn op(&mut self, op: &'p Op, args: Vec<Value>, binds: &'p [Var], next: At<'p>) -> Step<()> {
         let results = match op {
             Op::Prim(prim) => vec![prim::eval(prim, &args)?],
-            Op::Call(f, margs) => {
+            Op::Call(f, margs, _) => {
                 let margs = self.concrete_all(margs)?;
                 return self.call_from(*f, margs, args, binds, next);
             }
@@ -474,7 +474,7 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                     .ok_or_else(|| unverified(format!("unknown extern {e}")))?;
                 self.host.call(*e, decl, &args).map_err(ErrorKind::Host)?
             }
-            Op::Closure(f, margs) => {
+            Op::Closure(f, margs, _) => {
                 let is_mut = self.binds_mut(binds)?;
                 let margs = self.concrete_all(margs)?;
                 vec![self.alloc(Object::Closure {
@@ -703,7 +703,7 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                 }
                 _ => return Err(unverified("unbox of something that isn't boxed")),
             },
-            Op::Handle(h) => return self.handle(*h, args, binds, next),
+            Op::Handle(h, _) => return self.handle(*h, args, binds, next),
             Op::Perform(e, i) => return self.perform(*e, *i, args, binds, next),
             Op::Resume => return self.resume(args, binds, next),
             Op::Discontinue(e, i) => return self.discontinue(*e, *i, args, binds, next),
@@ -914,4 +914,23 @@ fn join_defs(f: &Func) -> Labels<'_> {
         }
     }
     table.into()
+}
+
+/// `ty` with every row `Any`. Rows don't exist at run time, and a frame
+/// doesn't know its function's row arguments, so `Box` and `Unbox` compare
+/// types without them.
+fn erase_rows(ty: &Ty) -> Ty {
+    let sig = |sig: &Sig| Sig {
+        row: Row::ANY,
+        params: sig.params.iter().map(erase_rows).collect(),
+        results: sig.results.iter().map(erase_rows).collect(),
+    };
+    match ty {
+        Ty::Data(d, m, args, rows) => Ty::Data(*d, *m, args.clone(), vec![Row::ANY; rows.len()]),
+        Ty::Array(elem, m) => Ty::Array(Box::new(erase_rows(elem)), *m),
+        Ty::Fn(s, m) => Ty::Fn(Box::new(sig(s)), *m),
+        Ty::Cont(s) => Ty::Cont(Box::new(sig(s))),
+        Ty::Ref(inner) => Ty::Ref(Box::new(erase_rows(inner))),
+        other => other.clone(),
+    }
 }

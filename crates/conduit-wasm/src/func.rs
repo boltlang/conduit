@@ -508,7 +508,7 @@ impl<'m> FuncCx<'_, 'm> {
         let tail = self.is_tail(binds, block, next)?;
         match op {
             Op::Prim(p) => self.prim(p, args)?,
-            Op::Call(f, _) => {
+            Op::Call(f, ..) => {
                 let idx = self.cx.func_index(*f)?;
                 self.atoms(args);
                 self.emit(if tail {
@@ -528,7 +528,7 @@ impl<'m> FuncCx<'_, 'm> {
                 });
                 return Ok(self.bind(binds, tail));
             }
-            Op::Closure(f, _) => {
+            Op::Closure(f, ..) => {
                 let (entry, captures) = self.cx.entry(*f, args.len())?;
                 self.emit(I::RefFunc(entry));
                 self.atoms(args);
@@ -704,7 +704,7 @@ impl<'m> FuncCx<'_, 'm> {
             }
             // Mutability doesn't exist at run time.
             Op::ArrayFreeze => self.atoms(args),
-            Op::Handle(h) => {
+            Op::Handle(h, _) => {
                 let tail = self.handle(*h, args, tail)?;
                 return Ok(self.bind(binds, tail));
             }

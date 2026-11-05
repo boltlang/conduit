@@ -282,7 +282,7 @@ impl<'f> Cx<'f> {
             return None;
         };
         let (made, args) = self.news.get(x)?;
-        let imm = matches!(self.vars[x.0 as usize], Ty::Data(_, Mutability::Imm, _));
+        let imm = matches!(self.vars[x.0 as usize], Ty::Data(_, Mutability::Imm, ..));
         (imm && *made == c).then(|| args[i as usize].clone())
     }
 

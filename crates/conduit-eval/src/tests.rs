@@ -69,6 +69,7 @@ fn module() -> Module {
     let ctors = |fields: Vec<Vec<Ty>>| DataDecl {
         debug_name: None,
         params: 0,
+        effect_params: 0,
         ctors: fields
             .into_iter()
             .map(|fields| CtorDecl { fields })
@@ -174,7 +175,7 @@ fn count(tail: bool) -> Func {
                 vec![v(acc), int(1)],
                 let_(
                     vec![r],
-                    Op::Call(MAIN, vec![]),
+                    Op::Call(MAIN, vec![], vec![]),
                     vec![v(n1), v(r1)],
                     ret(vec![v(r)]),
                 ),
@@ -187,7 +188,7 @@ fn count(tail: bool) -> Func {
             vec![v(n), int(1)],
             let_(
                 vec![r],
-                Op::Call(MAIN, vec![]),
+                Op::Call(MAIN, vec![], vec![]),
                 vec![v(n1)],
                 prim(r1, Prim::Add, vec![v(r), int(1)], ret(vec![v(r1)])),
             ),
@@ -289,7 +290,7 @@ fn sum_list() -> Func {
             vec![v(xs)],
             let_(
                 vec![rest_sum],
-                Op::Call(G, vec![]),
+                Op::Call(G, vec![], vec![]),
                 vec![v(tail)],
                 prim(
                     total,
@@ -348,7 +349,12 @@ fn data_and_case() {
                     l1,
                     1,
                     l2,
-                    let_(vec![r], Op::Call(G, vec![]), vec![v(l1)], ret(vec![v(r)])),
+                    let_(
+                        vec![r],
+                        Op::Call(G, vec![], vec![]),
+                        vec![v(l1)],
+                        ret(vec![v(r)]),
+                    ),
                 ),
             ),
         ),
@@ -398,7 +404,7 @@ fn closures_and_refs() {
         vec![int(0)],
         let_(
             vec![add],
-            Op::Closure(G, vec![]),
+            Op::Closure(G, vec![], vec![]),
             vec![v(counter)],
             let_(
                 vec![],
@@ -664,6 +670,7 @@ fn generator(n: i32, clause: impl FnOnce(&mut Func, Var, Var, Var) -> Block) -> 
         HandlerDecl {
             debug_name: None,
             effect: YIELD,
+            effect_params: 0,
             env: vec![acc_ty.clone()],
             ops: vec![CLAUSE],
             ret: RET_CLAUSE,
@@ -714,11 +721,11 @@ fn generator(n: i32, clause: impl FnOnce(&mut Func, Var, Var, Var) -> Block) -> 
         vec![int(0)],
         let_(
             vec![body],
-            Op::Closure(G, vec![]),
+            Op::Closure(G, vec![], vec![]),
             vec![],
             let_(
                 vec![],
-                Op::Handle(SUM),
+                Op::Handle(SUM, vec![]),
                 vec![v(acc), v(body)],
                 let_(vec![total], Op::RefGet, vec![v(acc)], ret(vec![v(total)])),
             ),
@@ -797,7 +804,7 @@ fn resuming_twice_is_an_error() {
         let c = f.new_var(Ty::Fn(Box::new(unit_sig()), Mut));
         let_(
             vec![c],
-            Op::Closure(H, vec![]),
+            Op::Closure(H, vec![], vec![]),
             vec![v(k)],
             let_(
                 vec![],
@@ -822,7 +829,12 @@ fn perform_without_a_handler_is_an_error() {
     // which only the run time can catch.
     let mut main = Func::new(vec![], vec![Ty::I32]);
     main.row = Row::one(YIELD);
-    main.body = let_(vec![], Op::Call(G, vec![]), vec![], ret(vec![int(0)]));
+    main.body = let_(
+        vec![],
+        Op::Call(G, vec![], vec![]),
+        vec![],
+        ret(vec![int(0)]),
+    );
     m.funcs.insert(MAIN, main);
     assert_eq!(
         run(&m, vec![]).unwrap_err().kind,

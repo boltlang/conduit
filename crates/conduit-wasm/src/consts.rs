@@ -77,7 +77,7 @@ fn value_code(
                 array_size: elems.len() as u32,
             });
         }
-        (ConstValue::New(c, fields), Ty::Data(_, m, args)) => {
+        (ConstValue::New(c, fields), Ty::Data(_, m, args, rows)) => {
             let (idx, first) = cx.types.ctor(*c)?;
             if first == 1 {
                 code.push(I::I32Const(c.index as i32));
@@ -88,7 +88,7 @@ fn value_code(
                     .and_then(|d| d.ctors.get(c.index as usize))
                     .ok_or_else(|| format!("unknown constructor {c}"))?;
             for (field, value) in decls.fields.iter().zip(fields) {
-                value_code(cx, value, &resolve(field, *m, args), code)?;
+                value_code(cx, value, &resolve(field, *m, args, rows), code)?;
             }
             code.push(I::StructNew(idx));
         }

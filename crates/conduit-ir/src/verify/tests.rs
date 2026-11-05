@@ -48,6 +48,7 @@ fn module() -> Module {
         DataDecl {
             debug_name: None,
             params: 0,
+            effect_params: 0,
             ctors: vec![CtorDecl {
                 fields: vec![Ty::I32, Ty::I32],
             }],
@@ -58,6 +59,7 @@ fn module() -> Module {
         DataDecl {
             debug_name: None,
             params: 0,
+            effect_params: 0,
             ctors: vec![
                 CtorDecl { fields: vec![] },
                 CtorDecl {
@@ -71,6 +73,7 @@ fn module() -> Module {
         DataDecl {
             debug_name: None,
             params: 0,
+            effect_params: 0,
             ctors: vec![CtorDecl {
                 fields: vec![Ty::data(POINT, Mut)],
             }],
@@ -386,7 +389,7 @@ fn mut_and_imm_fit_read_only() {
 
     let mut f = Func::new(vec![Ty::data(POINT, Mut)], vec![]);
     let p = f.params[0];
-    f.body = let_(vec![], Op::Call(G, vec![]), vec![v(p)], ret(vec![]));
+    f.body = let_(vec![], Op::Call(G, vec![], vec![]), vec![v(p)], ret(vec![]));
     assert_eq!(check_in(m.clone(), f), Vec::<String>::new());
 
     let mut h = Func::new(vec![Ty::data(POINT, Mut)], vec![]);
@@ -394,7 +397,7 @@ fn mut_and_imm_fit_read_only() {
     m.funcs.insert(G, h);
     let mut f = Func::new(vec![Ty::data(POINT, ReadOnly)], vec![]);
     let p = f.params[0];
-    f.body = let_(vec![], Op::Call(G, vec![]), vec![v(p)], ret(vec![]));
+    f.body = let_(vec![], Op::Call(G, vec![], vec![]), vec![v(p)], ret(vec![]));
     let errors = check_in(m, f);
     assert!(
         errors
@@ -425,7 +428,12 @@ fn closure_capturing_ref(m: Mutability) -> Vec<String> {
         vec![r],
         Op::RefNew,
         vec![int(0)],
-        let_(vec![c], Op::Closure(G, vec![]), vec![v(r)], ret(vec![])),
+        let_(
+            vec![c],
+            Op::Closure(G, vec![], vec![]),
+            vec![v(r)],
+            ret(vec![]),
+        ),
     );
     check_in(module, f)
 }
@@ -544,6 +552,7 @@ fn handler_module(body: impl FnOnce(&mut Func, Var) -> Block) -> Module {
         HandlerDecl {
             debug_name: None,
             effect: YIELD,
+            effect_params: 0,
             env: vec![],
             ops: vec![CLAUSE],
             ret: RET_CLAUSE,
@@ -702,9 +711,9 @@ fn handle_and_perform() {
     let body = f.new_var(Ty::Fn(Box::new(body_sig), Imm));
     f.body = let_(
         vec![body],
-        Op::Closure(G, vec![]),
+        Op::Closure(G, vec![], vec![]),
         vec![],
-        let_(vec![], Op::Handle(SUM), vec![v(body)], ret(vec![])),
+        let_(vec![], Op::Handle(SUM, vec![]), vec![v(body)], ret(vec![])),
     );
     m.funcs.insert(F, f);
     assert_eq!(verify(&m), Vec::<String>::new());
@@ -733,7 +742,7 @@ fn call_of_a_broken_function_is_an_error() {
     let mut m = module();
     m.funcs.insert(G, g);
     let mut f = Func::new(vec![], vec![]);
-    f.body = let_(vec![], Op::Call(G, vec![]), vec![], ret(vec![]));
+    f.body = let_(vec![], Op::Call(G, vec![], vec![]), vec![], ret(vec![]));
     let errors = check_in(m, f);
     assert!(
         errors.iter().any(|e| e.contains("unknown function fn2")),
@@ -764,7 +773,7 @@ fn continuation_used_through_a_closure_is_left_to_run_time() {
         let c = f.new_var(closure_ty);
         let_(
             vec![c],
-            Op::Closure(G, vec![]),
+            Op::Closure(G, vec![], vec![]),
             vec![v(k)],
             let_(
                 vec![],
@@ -786,7 +795,7 @@ fn continuation_captured_and_resumed_counts_twice() {
         let c = f.new_var(closure_ty);
         let_(
             vec![c],
-            Op::Closure(G, vec![]),
+            Op::Closure(G, vec![], vec![]),
             vec![v(k)],
             resume(k, ret(vec![])),
         )
@@ -894,4 +903,20 @@ fn long_functions_dont_need_a_deep_stack() {
         },
     };
     assert_ok(f);
+}
+
+/// A row can only name the effect parameters of the item it's in.
+#[test]
+fn effect_parameter_out_of_range() {
+    let mut m = Module::default();
+    let mut f = Func::new(vec![], vec![]);
+    f.effect_params = 1;
+    f.row = Row::param(2);
+    f.body = ret(vec![]);
+    m.funcs.insert(FuncId(0), f);
+    let errors = verify_module(&m).unwrap_err();
+    assert_eq!(
+        errors[0].message,
+        "E2 in row E2 isn't an effect parameter here: there is E1"
+    );
 }

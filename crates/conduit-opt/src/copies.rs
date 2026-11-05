@@ -104,7 +104,7 @@ fn remove_rebuilds(f: &mut Func) -> bool {
                 }
                 (Op::New(c), args, [y])
                     if !args.is_empty()
-                        && matches!(f.vars[y.0 as usize], Ty::Data(_, Mutability::Imm, _)) =>
+                        && matches!(f.vars[y.0 as usize], Ty::Data(_, Mutability::Imm, ..)) =>
                 {
                     news.push((*y, *c, args.to_vec()));
                 }
@@ -329,7 +329,7 @@ impl RegionCx<'_> {
             | Op::Call(..)
             | Op::CallExtern(_)
             | Op::Apply
-            | Op::Handle(_)
+            | Op::Handle(..)
             | Op::Perform(..)
             | Op::Resume
             | Op::Discontinue(..) => {

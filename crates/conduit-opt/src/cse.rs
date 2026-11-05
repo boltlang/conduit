@@ -142,7 +142,7 @@ impl Cx<'_> {
             Op::Get(..) | Op::ArrayGet | Op::RefGet => reads(self),
             // A call that only reads gives the same again, unless it makes
             // something that can change, which two calls make two of.
-            Op::Call(g, _) if self.reads_only(*g) && deep_imm(self.p, self.ty(bind)) => {
+            Op::Call(g, ..) if self.reads_only(*g) && deep_imm(self.p, self.ty(bind)) => {
                 if l.args.iter().any(|a| self.can_change(a)) {
                     Kind::Changing
                 } else {
@@ -198,7 +198,7 @@ impl Cx<'_> {
     /// Records what `l` gives, or replaces it with an earlier `let`'s
     /// variable or what was written. Returns whether it was replaced.
     fn let_(&mut self, l: &Let) -> bool {
-        let reads_only_call = matches!(&l.op, Op::Call(g, _) if self.reads_only(*g));
+        let reads_only_call = matches!(&l.op, Op::Call(g, ..) if self.reads_only(*g));
         if l.op.effects().memory >= Memory::Writes && !self.imm_apply(l) && !reads_only_call {
             self.changing.clear();
         }
@@ -254,7 +254,7 @@ impl Cx<'_> {
             };
             ok = f.row.is_nothing()
                 && lets_all(&f.body, &mut |l| match &l.op {
-                    Op::Call(next, _) => {
+                    Op::Call(next, ..) => {
                         if seen.insert(*next) {
                             todo.push(*next);
                         }

@@ -736,13 +736,11 @@ These are checked by looking at a clause's body:
 
 ### Effect types
 
-**Partly implemented.** Rows on functions, closure types, continuation
-types and handlers are, and the verifier checks them, but effect
-parameters aren't yet: no `E1`, and no row arguments on calls, closures,
-data types or `handle`. The text format still writes effects `effect20`,
-not `Effect20`. A frontend that doesn't track effects writes `does Any`.
-Passes don't use rows yet, so they still assume that every call and
-`apply` can perform.
+Rows on functions, closure types, continuation types and handlers, and
+effect parameters on functions, data types and handlers, are
+implemented, and the verifier checks them. A frontend that doesn't track
+effects writes `does Any`. `cse` and `handlers` use rows; the other
+passes still assume that every call and `apply` can perform.
 
 Effect types say which effects a function can perform: the effects come
 after the results, after `does`, joined with `+`.
@@ -848,13 +846,16 @@ The text format adds:
   closure's, and `fn() -> (imm fn() -> ()) does Effect20` gives it to the
   outer one.
 - Rows written `Effect20 + E1`, `Nothing` and `Any`.
-- Effects named with a capital, `Effect20`, in place of `effect20`.
 - Effect parameters, without a quote and starting with an uppercase
-  letter: any such name parses but `Nothing`, `Any`
-  and `Effect` followed by digits, and they print as `E1`, `E2`, .. by
-  position. Mutability parameters keep the quote, so `['m1, E1]` has one
-  of each. Nothing else in the text format starts with an uppercase
-  letter, so the names can't clash with IDs or keywords.
+  letter, after the mutability parameters: any such name parses but
+  `Nothing` and `Any`, and they print as `E1`, `E2`, .. by position.
+  Mutability parameters keep the quote, so `['m1, E1]` has one of each.
+  In a row, a name is a parameter if the item being read declares one of
+  that name, and an effect otherwise. No effect is named `E` followed by
+  digits, so `print` writes such an effect by its number. Effects are
+  still numbered `effect20`, and named like any other item.
+- Rows as arguments, after the mutabilities: `call fn3[mut, effect20 + E1]`,
+  `closure fn3[Nothing]`, `handle handler30[E1](..)`, `imm data10[imm, Any]`.
 
 Still to decide:
 
@@ -1433,6 +1434,8 @@ yet:
     pub trait Program {
         fn func(&self, id: FuncId) -> Option<&Func>;
         fn func_sig(&self, id: FuncId) -> Option<Sig>;   // has a default
+        fn func_mut_params(&self, id: FuncId) -> Option<MutParams>;  // has a default
+        fn func_effect_params(&self, id: FuncId) -> Option<u32>;     // has a default
         fn data(&self, id: DataId) -> Option<&DataDecl>;
         fn extern_fn(&self, id: ExternId) -> Option<&Extern>;
         fn effect(&self, id: EffectId) -> Option<&EffectDecl>;

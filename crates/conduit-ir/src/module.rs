@@ -24,6 +24,9 @@ pub struct Module {
 pub struct Func {
     /// The mutability parameters its types can use.
     pub mut_params: MutParams,
+    /// How many effect parameters its rows can use, as `E1` to `En`. Each
+    /// call and closure of it gives a row for each.
+    pub effect_params: u32,
     /// The type of every variable, indexed by [`Var`].
     pub vars: Vec<Ty>,
     /// How many labels the body uses, [`Label::RET`] included.
@@ -56,6 +59,7 @@ impl Func {
         let params_len = params.len() as u32;
         Func {
             mut_params: MutParams::default(),
+            effect_params: 0,
             vars: params,
             labels: 1,
             params: (0..params_len).map(Var).collect(),
@@ -116,6 +120,9 @@ pub struct DataDecl {
     /// How many mutability parameters the field types can use, as
     /// [`Mutability::Param`](crate::Mutability::Param) 1 to `params`.
     pub params: u32,
+    /// How many effect parameters the field types' rows can use, as `E1`
+    /// to `En`. Each data type of it gives a row for each.
+    pub effect_params: u32,
     pub ctors: Vec<CtorDecl>,
     /// A name to show it by. See [`FuncDebug`].
     pub debug_name: Option<Box<str>>,
@@ -145,6 +152,10 @@ pub struct EffectDecl {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct HandlerDecl {
     pub effect: EffectId,
+    /// How many effect parameters its types and row can use, as `E1` to
+    /// `En`. Each `handle` of it gives a row for each, and each clause has
+    /// as many, which the `handle`'s rows are given to.
+    pub effect_params: u32,
     /// The values the clauses share, like a closure's captures.
     pub env: Vec<Ty>,
     /// Clause `i` handles operation `i`: `fn(env.., op params.., k) -> R`.

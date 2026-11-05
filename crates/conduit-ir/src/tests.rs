@@ -139,11 +139,11 @@ fn effects() {
     assert_eq!(Op::RefSet.effects(), e(Memory::Writes, false));
     assert_eq!(Op::ArraySet.effects(), e(Memory::Writes, true));
     assert_eq!(
-        Op::Call(FuncId(0), vec![]).effects(),
+        Op::Call(FuncId(0), vec![], vec![]).effects(),
         e(Memory::Unknown, true)
     );
     assert_eq!(
-        Op::Closure(FuncId(0), vec![Mutability::Imm]).effects(),
+        Op::Closure(FuncId(0), vec![Mutability::Imm], vec![]).effects(),
         Effects::PURE
     );
     assert_eq!(

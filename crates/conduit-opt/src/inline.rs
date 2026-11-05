@@ -24,10 +24,10 @@
 
 use std::collections::BTreeMap;
 
-use conduit_ir::verify::subst_params;
+use conduit_ir::verify::subst_all;
 use conduit_ir::{
-    Arm, Atom, Block, Func, FuncId, JoinDef, Label, Let, Mutability, Op, Program, SourceId, Tail,
-    Var,
+    Arm, Atom, Block, Func, FuncId, JoinDef, Label, Let, Mutability, Op, Program, Row, SourceId,
+    Tail, Var,
 };
 
 use crate::Pass;
@@ -107,7 +107,7 @@ struct Cx<'p> {
 impl<'p> Cx<'p> {
     /// The callee of `l`, if it's a call worth inlining.
     fn callee(&self, l: &Let) -> Option<&'p Func> {
-        let Op::Call(g, _) = l.op else {
+        let Op::Call(g, ..) = l.op else {
             return None;
         };
         if g == self.id {
@@ -125,9 +125,9 @@ impl<'p> Cx<'p> {
 
     /// Whether `g` calls itself, or a function that calls `g`.
     fn recursive(&self, g: FuncId, callee: &Func) -> bool {
-        let calls = |b: &Block| has_op(b, &|op| matches!(op, Op::Call(h, _) if *h == g));
+        let calls = |b: &Block| has_op(b, &|op| matches!(op, Op::Call(h, ..) if *h == g));
         has_op(&callee.body, &|op| match op {
-            Op::Call(h, _) => *h == g || self.p.func(*h).is_some_and(|hf| calls(&hf.body)),
+            Op::Call(h, ..) => *h == g || self.p.func(*h).is_some_and(|hf| calls(&hf.body)),
             _ => false,
         })
     }
@@ -197,7 +197,7 @@ impl<'p> Cx<'p> {
     fn inline_call(&mut self, callee: &Func, call: Let, after: Block, f: &mut Func) -> Block {
         self.changed = true;
         self.size += size(&callee.body);
-        let Op::Call(_, margs) = call.op else {
+        let Op::Call(_, margs, rows) = call.op else {
             unreachable!("only calls are inlined")
         };
         let binds_args: Vec<Atom> = call.binds.iter().map(|&b| Atom::Var(b)).collect();
@@ -219,6 +219,7 @@ impl<'p> Cx<'p> {
                 .collect(),
             labels: BTreeMap::from([(Label::RET, ret)]),
             margs,
+            rows,
             source: call.source,
             callee,
         };
@@ -251,6 +252,8 @@ struct Rename<'a> {
     vars: BTreeMap<Var, Atom>,
     labels: BTreeMap<Label, Label>,
     margs: Vec<Mutability>,
+    /// The rows the call gives for the callee's effect parameters.
+    rows: Vec<Row>,
     source: Option<SourceId>,
     callee: &'a Func,
 }
@@ -271,7 +274,7 @@ impl Rename<'_> {
         if let Some(a) = self.vars.get(&v) {
             return a.clone();
         }
-        let ty = subst_params(self.callee.var_ty(v), &self.margs);
+        let ty = subst_all(self.callee.var_ty(v), &self.margs, &self.rows);
         let new = f.new_var(ty);
         if let Some(name) = self.callee.debug.vars.get(&v) {
             f.debug.vars.insert(new, name.clone());
@@ -310,11 +313,13 @@ impl Rename<'_> {
 
     fn op(&self, op: &Op) -> Op {
         let margs = |ms: &[Mutability]| ms.iter().map(|&m| self.mutability(m)).collect();
+        let rows = |rs: &[Row]| rs.iter().map(|r| r.subst(&self.rows)).collect();
         match op {
-            Op::Call(g, ms) => Op::Call(*g, margs(ms)),
-            Op::Closure(g, ms) => Op::Closure(*g, margs(ms)),
-            Op::Box(ty) => Op::Box(subst_params(ty, &self.margs)),
-            Op::Unbox(ty) => Op::Unbox(subst_params(ty, &self.margs)),
+            Op::Call(g, ms, rs) => Op::Call(*g, margs(ms), rows(rs)),
+            Op::Closure(g, ms, rs) => Op::Closure(*g, margs(ms), rows(rs)),
+            Op::Handle(h, rs) => Op::Handle(*h, rows(rs)),
+            Op::Box(ty) => Op::Box(subst_all(ty, &self.margs, &self.rows)),
+            Op::Unbox(ty) => Op::Unbox(subst_all(ty, &self.margs, &self.rows)),
             op => op.clone(),
         }
     }

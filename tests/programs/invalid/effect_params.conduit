@@ -1,0 +1,48 @@
+// Effect parameters given the wrong number of rows, and rows that don't
+// fit. An effect parameter used where none is declared doesn't parse.
+
+effect effect0 {
+  () -> ()
+}
+
+data data0[E1] {
+  (imm fn() -> () does E1)
+}
+
+handler handler0[E1] for effect0 does E1 env() ops(fn2) ret fn3
+
+fn fn1[E1](%0: imm fn() -> () does E1) -> () does E1 {
+  let = apply(%0)
+  jump ret()
+}
+
+// A clause without the handler's effect parameter.
+fn fn2(%0: cont() -> ()) -> () {
+  jump ret()
+}
+
+fn fn3[E1]() -> () does E1 {
+  jump ret()
+}
+
+fn fn4(%0: imm data0, %1: imm fn() -> () does effect0) -> () does effect0 {
+  let = call fn1(%1)
+  let = call fn1[effect0, effect0](%1)
+  let = call fn1[Nothing](%1)
+  let = handle handler0(%1)
+  jump ret()
+}
+
+// The generic call performs effect0, which isn't in this function's row.
+fn fn5(%0: imm fn() -> () does effect0) -> () {
+  let = call fn1[effect0](%0)
+  jump ret()
+}
+
+//# verify-error: handler0: clause fn2 has 0 effect parameters, but the handler has 1
+//# verify-error: fn4: type of %0: data0 takes 1 rows, but imm data0 gives 0
+//# verify-error: fn4: call of fn1: takes 1 rows, but gets 0
+//# verify-error: fn4: call of fn1: takes 1 rows, but gets 2
+//# verify-error: fn4: call of fn1: value 0 has type imm fn() -> () does effect0, but should have imm fn() -> ()
+//# verify-error: fn4: handle handler0: takes 1 rows, but gets 0
+//# verify-error: fn5: call fn1[effect0] may perform effect0, but the function has no effects

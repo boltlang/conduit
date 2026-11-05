@@ -1,0 +1,143 @@
+data Thunk[E1] {
+  (imm fn() -> (i32) does E1)
+}
+
+effect Log {
+  (i32) -> ()
+}
+
+effect Yield {
+  (i32) -> ()
+}
+
+handler logger for Log env(ref i32) ops(log) ret logged
+
+handler adder[E1] for Yield does E1 env(ref i32) ops(add_yield) ret done
+
+fn twice[E1](%f: imm fn(i32) -> (i32) does E1, %x: i32) -> (i32) does E1 {
+  let %y: i32 = apply(%f, %x)
+  let %z: i32 = apply(%f, %y)
+  jump ret(%z)
+}
+
+fn force[E1](%t: imm Thunk[E1]) -> (i32) does E1 {
+  let %f: imm fn() -> (i32) does E1 = get Thunk.0.0(%t)
+  let %r: i32 = apply(%f)
+  jump ret(%r)
+}
+
+fn add3(%x: i32) -> (i32) {
+  let %y: i32 = add(%x, 3i32)
+  jump ret(%y)
+}
+
+fn log_and_double(%x: i32) -> (i32) does Log {
+  let = perform Log.0(%x)
+  let %y: i32 = mul(%x, 2i32)
+  jump ret(%y)
+}
+
+fn seven() -> (i32) {
+  jump ret(7i32)
+}
+
+fn pure(%x: i32) -> (i32) {
+  let %f#1: imm fn(i32) -> (i32) = closure add3()
+  join j1(%r#2: i32) =
+    let %g: imm fn() -> (i32) = closure seven()
+    let %t: imm Thunk[Nothing] = new Thunk.0(%g)
+    join j2(%s: i32) =
+      let %rs: i32 = add(%r#2, %s)
+      jump ret(%rs)
+    in
+    let %f#7: imm fn() -> (i32) = get Thunk.0.0(%t)
+    let %r#8: i32 = apply(%f#7)
+    jump j2(%r#8)
+  in
+  let %y: i32 = apply(%f#1, %x)
+  let %z: i32 = apply(%f#1, %y)
+  jump j1(%z)
+}
+
+fn log(%total: ref i32, %x: i32, %k: cont() -> (i32)) -> (i32) {
+  let %t: i32 = ref_get(%total)
+  let %t1: i32 = add(%t, %x)
+  let = ref_set(%total, %t1)
+  let %r: i32 = resume(%k)
+  jump ret(%r)
+}
+
+fn logged(%total: ref i32, %r: i32) -> (i32) {
+  jump ret(%r)
+}
+
+fn twice_logging(%x: i32) -> (i32) does Log {
+  let %f: imm fn(i32) -> (i32) does Log = closure log_and_double()
+  let %y: i32 = apply(%f, %x)
+  let %z: i32 = apply(%f, %y)
+  jump ret(%z)
+}
+
+fn logging(%x: i32) -> (i32, i32) {
+  let %total: ref i32 = ref_new(0i32)
+  let %body: imm fn() -> (i32) does Log = closure twice_logging(%x)
+  let %r: i32 = handle logger(%total, %body)
+  let %t: i32 = ref_get(%total)
+  jump ret(%r, %t)
+}
+
+fn add_yield[E1](%acc: ref i32, %x: i32, %k: cont() -> () does E1) -> () does E1 {
+  let %a: i32 = ref_get(%acc)
+  let %b: i32 = add(%a, %x)
+  let = ref_set(%acc, %b)
+  let = resume(%k)
+  jump ret()
+}
+
+fn done[E1](%acc: ref i32) -> () does E1 {
+  jump ret()
+}
+
+fn sum[E1](%body: imm fn() -> () does Yield + E1) -> (i32) does E1 {
+  let %acc: ref i32 = ref_new(0i32)
+  let = handle adder[E1](%acc, %body)
+  let %r: i32 = ref_get(%acc)
+  jump ret(%r)
+}
+
+fn yields_and_logs() -> () does Log + Yield {
+  let = perform Yield.0(1i32)
+  let = perform Log.0(10i32)
+  let = perform Yield.0(2i32)
+  jump ret()
+}
+
+fn sum_logging() -> (i32) does Log {
+  let %body: imm fn() -> () does Log + Yield = closure yields_and_logs()
+  let %acc: ref i32 = ref_new(0i32)
+  let = handle adder[Log](%acc, %body)
+  let %r: i32 = ref_get(%acc)
+  jump ret(%r)
+}
+
+fn yields() -> () does Yield {
+  let = perform Yield.0(5i32)
+  let = perform Yield.0(6i32)
+  jump ret()
+}
+
+fn summed() -> (i32, i32) {
+  let %body: imm fn() -> () does Yield = closure yields()
+  join j1(%pure: i32) =
+    let %total: ref i32 = ref_new(0i32)
+    let %logging: imm fn() -> (i32) does Log = closure sum_logging()
+    let %r#4: i32 = handle logger(%total, %logging)
+    let %t: i32 = ref_get(%total)
+    let %s: i32 = add(%pure, %r#4)
+    jump ret(%s, %t)
+  in
+  let %acc: ref i32 = ref_new(0i32)
+  let = handle adder[Nothing](%acc, %body)
+  let %r#8: i32 = ref_get(%acc)
+  jump j1(%r#8)
+}

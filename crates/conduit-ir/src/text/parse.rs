@@ -13,6 +13,7 @@ pub fn parse(src: &str) -> Result<Module, Error> {
         toks,
         i: 0,
         params: Vec::new(),
+        effect_params: Vec::new(),
         items,
         vars: Names::default(),
         labels: Names::default(),
@@ -70,6 +71,9 @@ struct Parser {
     /// The mutability parameters of the data declaration or function
     /// being read, by name: `Param(i + 1)` is `params[i]`.
     params: Vec<String>,
+    /// The effect parameters of the data declaration, function or handler
+    /// being read, by name: `E{i + 1}` is `effect_params[i]`.
+    effect_params: Vec<String>,
     /// The names of items, of each kind in [`KINDS`].
     items: Vec<Names>,
     /// The names of the variables and labels of the function being read.
@@ -326,6 +330,14 @@ impl Parser {
                     "handler" => {
                         let (id, debug_name) = self.def("handler")?;
                         let id = HandlerId(id);
+                        let (mut_params, effect_params) = self.param_names()?;
+                        if let Some(m) = mut_params.first() {
+                            return self.error_at(
+                                pos,
+                                format!("a handler has no mutability parameters, but {m} is one"),
+                            );
+                        }
+                        self.effect_params = effect_params;
                         self.keyword("for")?;
                         let effect = EffectId(self.item("effect")?);
                         let row = self.row()?;
@@ -335,11 +347,14 @@ impl Parser {
                         let ops = self.list(|p| p.item("fn").map(FuncId))?;
                         self.keyword("ret")?;
                         let ret = FuncId(self.item("fn")?);
+                        let effect_params =
+                            std::mem::take(&mut self.effect_params).len() as u32;
                         m.handlers
                             .insert(
                                 id,
                                 HandlerDecl {
                                     effect,
+                                    effect_params,
                                     env,
                                     ops,
                                     ret,
@@ -370,7 +385,7 @@ impl Parser {
     }
 
     fn data(&mut self) -> Res<DataDecl> {
-        self.params = self.param_names()?;
+        (self.params, self.effect_params) = self.param_names()?;
         self.punct("{")?;
         let mut ctors = Vec::new();
         let result = loop {
@@ -383,54 +398,84 @@ impl Parser {
             }
         };
         let params = std::mem::take(&mut self.params).len() as u32;
+        let effect_params = std::mem::take(&mut self.effect_params).len() as u32;
         result?;
         Ok(DataDecl {
             params,
+            effect_params,
             ctors,
             debug_name: None,
         })
     }
 
-    /// The mutability parameters a data declaration or function declares,
-    /// like `['m1, 'm2]`, if it has any.
-    fn param_names(&mut self) -> Res<Vec<String>> {
-        let mut params = Vec::new();
+    /// The mutability and effect parameters a data declaration, function
+    /// or handler declares, like `['m1, 'm2, E1]`, if it has any: names
+    /// with a quote are mutability parameters, and names starting with an
+    /// uppercase letter are effect parameters, which come after.
+    fn param_names(&mut self) -> Res<(Vec<String>, Vec<String>)> {
+        let (mut params, mut effects) = (Vec::new(), Vec::new());
         if !self.eat_punct("[") {
-            return Ok(params);
+            return Ok((params, effects));
         }
         loop {
             let pos = self.pos();
-            let name = self.ident("a mutability parameter like `'m1`")?;
-            if !name.starts_with('\'') {
+            let name = self.ident("a parameter like `'m1` or `E1`")?;
+            let is_effect = name.starts_with(|c: char| c.is_ascii_uppercase());
+            if !name.starts_with('\'') && !is_effect {
                 return self.error_at(
                     pos,
-                    format!("expected a mutability parameter like `'m1`, found `{name}`"),
+                    format!("expected a parameter like `'m1` or `E1`, found `{name}`"),
                 );
             }
-            if params.contains(&name) {
+            if is_effect && matches!(name.as_str(), "Nothing" | "Any") {
+                return self.error_at(pos, format!("`{name}` can't be an effect parameter"));
+            }
+            if params.contains(&name) || effects.contains(&name) {
                 return self.error_at(pos, format!("`{name}` is declared more than once"));
             }
-            params.push(name);
+            if is_effect {
+                effects.push(name);
+            } else if !effects.is_empty() {
+                return self.error_at(
+                    pos,
+                    format!("mutability parameter `{name}` comes after an effect parameter"),
+                );
+            } else {
+                params.push(name);
+            }
             if self.eat_punct("]") {
-                return Ok(params);
+                return Ok((params, effects));
             }
             self.punct(",")?;
         }
     }
 
-    /// Mutability arguments in brackets, like `[imm, 'm1]`, if there are any.
-    fn margs(&mut self) -> Res<Vec<Mutability>> {
-        let mut margs = Vec::new();
+    /// Mutability arguments and rows in brackets, like `[imm, 'm1, Log]`,
+    /// if there are any. The mutabilities come first.
+    fn margs(&mut self) -> Res<(Vec<Mutability>, Vec<Row>)> {
+        let (mut margs, mut rows) = (Vec::new(), Vec::new());
         if self.eat_punct("[") {
             loop {
-                margs.push(self.mutability()?);
+                if self.is_mutability() {
+                    if !rows.is_empty() {
+                        return self.error("a mutability argument comes after a row");
+                    }
+                    margs.push(self.mutability()?);
+                } else {
+                    rows.push(self.row_items()?);
+                }
                 if self.eat_punct("]") {
                     break;
                 }
                 self.punct(",")?;
             }
         }
-        Ok(margs)
+        Ok((margs, rows))
+    }
+
+    /// Whether the next token is a mutability.
+    fn is_mutability(&self) -> bool {
+        matches!(self.peek(), Tok::Ident(s) if matches!(s.as_str(), "imm" | "mut" | "ro" | "inherit") || s.starts_with('\''))
     }
 
     fn mutability(&mut self) -> Res<Mutability> {
@@ -480,17 +525,8 @@ impl Parser {
                     Ty::Any(m)
                 } else {
                     let d = DataId(self.item("data")?);
-                    let mut args = Vec::new();
-                    if self.eat_punct("[") {
-                        loop {
-                            args.push(self.mutability()?);
-                            if self.eat_punct("]") {
-                                break;
-                            }
-                            self.punct(",")?;
-                        }
-                    }
-                    Ty::Data(d, m, args)
+                    let (args, rows) = self.margs()?;
+                    Ty::Data(d, m, args, rows)
                 }
             }
             _ => return self.error_at(pos, format!("expected a type, found `{name}`")),
@@ -509,26 +545,43 @@ impl Parser {
         })
     }
 
-    /// `does Effect20 + Effect21`, `does Nothing` or `does Any`, or nothing
-    /// for no effects.
+    /// `does Effect20 + E1`, `does Nothing` or `does Any`, or nothing for
+    /// no effects.
     fn row(&mut self) -> Res<Row> {
         if !self.eat_keyword("does") {
             return Ok(Row::NOTHING);
         }
+        self.row_items()
+    }
+
+    /// A row: `Effect20 + E1`, `Nothing` or `Any`. A name is an effect
+    /// parameter if the declaration being read has one of that name, and
+    /// an effect otherwise.
+    fn row_items(&mut self) -> Res<Row> {
         if self.eat_keyword("Nothing") {
             return Ok(Row::NOTHING);
         }
         if self.eat_keyword("Any") {
             return Ok(Row::ANY);
         }
-        let mut effects = Vec::new();
+        let (mut effects, mut params) = (Vec::new(), Vec::new());
         loop {
-            effects.push(EffectId(self.item("effect")?));
+            let param = match self.peek() {
+                Tok::Ident(s) => self.effect_params.iter().position(|p| p == s),
+                _ => None,
+            };
+            match param {
+                Some(i) => {
+                    self.next();
+                    params.push(i as u32 + 1);
+                }
+                None => effects.push(EffectId(self.item("effect")?)),
+            }
             if !self.eat_punct("+") {
                 break;
             }
         }
-        Ok(Row::new(effects))
+        Ok(Row::with_params(effects, params))
     }
 
     fn var(&mut self, info: &mut FuncInfo) -> Res<Var> {
@@ -638,9 +691,10 @@ impl Parser {
 
     fn func(&mut self) -> Res<Func> {
         self.func_names()?;
-        self.params = self.param_names()?;
+        (self.params, self.effect_params) = self.param_names()?;
         let f = self.func_rest();
         self.params.clear();
+        self.effect_params.clear();
         f
     }
 
@@ -688,6 +742,7 @@ impl Parser {
                 count: self.params.len() as u32,
                 assumes,
             },
+            effect_params: self.effect_params.len() as u32,
             vars,
             labels: labels.unwrap_or(info.max_label + 1),
             params,
@@ -923,9 +978,17 @@ impl Parser {
             Ok(ty)
         };
         let op = match name.as_str() {
-            "call" => Op::Call(FuncId(self.item("fn")?), self.margs()?),
+            "call" => {
+                let f = FuncId(self.item("fn")?);
+                let (margs, rows) = self.margs()?;
+                Op::Call(f, margs, rows)
+            }
             "call_extern" => Op::CallExtern(ExternId(self.item("extern")?)),
-            "closure" => Op::Closure(FuncId(self.item("fn")?), self.margs()?),
+            "closure" => {
+                let f = FuncId(self.item("fn")?);
+                let (margs, rows) = self.margs()?;
+                Op::Closure(f, margs, rows)
+            }
             "apply" => Op::Apply,
             "new" => Op::New(self.ctor()?),
             "const" => Op::Const(ConstId(self.item("const")?)),
@@ -953,7 +1016,14 @@ impl Parser {
             "box" => Op::Box(in_brackets(self)?),
             "unbox" => Op::Unbox(in_brackets(self)?),
             "array_freeze" => Op::ArrayFreeze,
-            "handle" => Op::Handle(HandlerId(self.item("handler")?)),
+            "handle" => {
+                let h = HandlerId(self.item("handler")?);
+                let (margs, rows) = self.margs()?;
+                if !margs.is_empty() {
+                    return self.error_at(pos, "a handler takes rows, not mutabilities");
+                }
+                Op::Handle(h, rows)
+            }
             "perform" => {
                 let e = EffectId(self.item("effect")?);
                 self.punct(".")?;

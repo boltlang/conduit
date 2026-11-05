@@ -10,7 +10,7 @@ result.
   every function.
 - **`verify_func(p, id, f)`** checks one function, asking the `Program` `p`
   only for the signatures and declarations it uses (`func_sig`, `data`,
-  `extern_fn`, `effect`, `handler`, `constant`). So a frontend can verify each
+  `extern_fn`, `effect`, `handler`, `constant`, and `func_effect_params`). So a frontend can verify each
   function on its own, and a Salsa frontend only recompiles a function's
   check when what it uses changes. The declarations are assumed to be well
   formed.
@@ -225,8 +225,7 @@ run.
 
 ## Effect types
 
-**Partly implemented:** everything here but effect parameters, which
-rows can't name yet. See "Effect types" in [the IR](ir.md#effect-types).
+See "Effect types" in [the IR](ir.md#effect-types).
 
 Every function, closure type and continuation type has a row of effects
 after `does`. The verifier checks that each `perform` is in a function

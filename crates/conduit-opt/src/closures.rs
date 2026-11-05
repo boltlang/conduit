@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 
-use conduit_ir::{Atom, Block, Func, FuncId, Mutability, Op, Program, Tail, Var};
+use conduit_ir::{Atom, Block, Func, FuncId, Mutability, Op, Program, Row, Tail, Var};
 
 use crate::Pass;
 
@@ -38,10 +38,17 @@ pub fn known_closures(f: &mut Func) -> bool {
     cx.changed
 }
 
+/// A closure made by `closure f[margs, rows](captures..)`.
+struct Made {
+    func: FuncId,
+    margs: Vec<Mutability>,
+    rows: Vec<Row>,
+    captures: Vec<Atom>,
+}
+
 struct Cx {
-    /// The closures made so far: their function, its mutability arguments
-    /// and the captures.
-    closures: HashMap<Var, (FuncId, Vec<Mutability>, Vec<Atom>)>,
+    /// The closures made so far.
+    closures: HashMap<Var, Made>,
     changed: bool,
 }
 
@@ -50,15 +57,20 @@ impl Cx {
         for l in &mut b.lets {
             if l.op == Op::Apply
                 && let Some(Atom::Var(c)) = l.args.first()
-                && let Some((g, margs, captures)) = self.closures.get(c)
+                && let Some(made) = self.closures.get(c)
             {
-                l.op = Op::Call(*g, margs.clone());
-                l.args.splice(..1, captures.iter().cloned());
+                l.op = Op::Call(made.func, made.margs.clone(), made.rows.clone());
+                l.args.splice(..1, made.captures.iter().cloned());
                 self.changed = true;
             }
-            if let (Op::Closure(g, margs), [v]) = (&l.op, &l.binds[..]) {
-                self.closures
-                    .insert(*v, (*g, margs.clone(), l.args.clone()));
+            if let (Op::Closure(g, margs, rows), [v]) = (&l.op, &l.binds[..]) {
+                let made = Made {
+                    func: *g,
+                    margs: margs.clone(),
+                    rows: rows.clone(),
+                    captures: l.args.clone(),
+                };
+                self.closures.insert(*v, made);
             }
         }
         match &mut b.tail {

@@ -290,7 +290,7 @@ fn parse_errors() {
         ),
         (
             "data data1[m1] { }",
-            "1:12: expected a mutability parameter like `'m1`, found `m1`",
+            "1:12: expected a parameter like `'m1` or `E1`, found `m1`",
         ),
         (
             "fn fn1(%0: 'm1 [i32]) -> () { jump ret() }",
@@ -445,7 +445,7 @@ fn parse_errors() {
         ),
         (
             "fn fn1(%0: mut data1[frob]) -> () { jump ret() }",
-            "1:22: expected `imm`, `mut`, `ro` or `inherit`, found `frob`",
+            "1:22: `frob` isn't defined",
         ),
     ];
     for (src, expected) in cases {
@@ -715,4 +715,36 @@ fn errors_name_their_item() {
         errors[0].to_string(),
         "fn0: jump to ret: value 0 has type i32, but should have i64"
     );
+}
+
+/// An effect named like an effect parameter is written by its number, so
+/// that `E1` in a row always means the parameter.
+#[test]
+fn effects_named_like_parameters() {
+    let mut m = Module::default();
+    m.effects.insert(
+        EffectId(3),
+        EffectDecl {
+            ops: vec![],
+            debug_name: Some("E1".into()),
+        },
+    );
+    let mut f = Func::new(vec![], vec![]);
+    f.effect_params = 1;
+    f.row = Row::with_params([EffectId(3)], [1]);
+    f.body = Tail::Jump {
+        target: Label::RET,
+        args: vec![],
+        source: None,
+    }
+    .into();
+    m.funcs.insert(FuncId(0), f);
+    let text = print(&m);
+    assert!(
+        text.contains("fn fn0[E1]() -> () does effect3 + E1 {"),
+        "{text}"
+    );
+    // The name can't be written, so it's lost, as for any such name.
+    m.effects.get_mut(&EffectId(3)).unwrap().debug_name = None;
+    assert_eq!(parse(&text).unwrap(), m);
 }

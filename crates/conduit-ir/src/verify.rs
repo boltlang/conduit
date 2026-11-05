@@ -88,13 +88,13 @@ pub fn verify_module(m: &Module) -> Result<(), Vec<Error>> {
         check_data(m, id, decl, &mut errors);
     }
     for (&id, ext) in &m.externs {
-        if let Err(message) = sig_ok(m, &ext.sig, 0).and_then(|()| no_row(&ext.sig)) {
+        if let Err(message) = sig_ok(m, &ext.sig, 0, 0).and_then(|()| no_row(&ext.sig)) {
             errors.push(decl_error(Item::Extern(id), message));
         }
     }
     for (&id, effect) in &m.effects {
         for (i, sig) in effect.ops.iter().enumerate() {
-            if let Err(message) = sig_ok(m, sig, 0).and_then(|()| no_row(sig)) {
+            if let Err(message) = sig_ok(m, sig, 0, 0).and_then(|()| no_row(sig)) {
                 errors.push(decl_error(
                     Item::Effect(id),
                     format!("operation {i}: {message}"),
@@ -162,7 +162,7 @@ fn decl_error(item: Item, message: String) -> Error {
 fn check_data<P: Program + ?Sized>(p: &P, id: DataId, decl: &DataDecl, errors: &mut Vec<Error>) {
     for (c, ctor) in decl.ctors.iter().enumerate() {
         for (i, field) in ctor.fields.iter().enumerate() {
-            if let Err(message) = ty_ok(p, field, Allowed::field(decl.params)) {
+            if let Err(message) = ty_ok(p, field, Allowed::field(decl.params, decl.effect_params)) {
                 errors.push(decl_error(
                     Item::Data(id),
                     format!("field {i} of constructor {c}: {message}"),
@@ -185,16 +185,26 @@ fn check_handler<P: Program + ?Sized>(
                 "clause {clause} has mutability parameters, which a handler can't give"
             ));
         }
+        // A clause's effect parameters are the handler's.
+        if let Some(n) = p.func_effect_params(*clause)
+            && n != h.effect_params
+        {
+            err(format!(
+                "clause {clause} has {n} effect parameters, but the handler has {}",
+                h.effect_params
+            ));
+        }
     }
+    let allowed = Allowed::func(0, h.effect_params);
     for ty in &h.env {
-        if let Err(message) = ty_ok(p, ty, Allowed::PLAIN) {
+        if let Err(message) = ty_ok(p, ty, allowed) {
             err(format!("environment: {message}"));
         }
     }
     let Some(effect) = p.effect(h.effect) else {
         return err(format!("unknown effect {}", h.effect));
     };
-    if let Err(message) = row_ok(p, &h.row) {
+    if let Err(message) = row_ok(p, &h.row, h.effect_params) {
         err(message);
     }
     let Some(ret) = p.func_sig(h.ret) else {
@@ -281,7 +291,7 @@ fn const_value_ok<P: Program + ?Sized>(p: &P, value: &ConstValue, ty: &Ty) -> Re
             })
         }
         (ConstValue::Array(_), _) => Err(format!("an array isn't a {ty}")),
-        (ConstValue::New(c, fields), Ty::Data(d, m, args)) if c.data == *d => {
+        (ConstValue::New(c, fields), Ty::Data(d, m, args, rows)) if c.data == *d => {
             let decl = p.data(*d).ok_or_else(|| format!("unknown data type {d}"))?;
             let ctor = decl
                 .ctors
@@ -299,7 +309,7 @@ fn const_value_ok<P: Program + ?Sized>(p: &P, value: &ConstValue, ty: &Ty) -> Re
                 .zip(fields)
                 .enumerate()
                 .try_for_each(|(i, (field, value))| {
-                    let field = resolve(field, *m, args);
+                    let field = resolve(field, *m, args, rows);
                     const_value_ok(p, value, &field).map_err(|m| format!("field {i} of {c}: {m}"))
                 })
         }
@@ -393,6 +403,9 @@ struct Allowed {
     /// `Param(1)` to `Param(params)`: in the field types of a declaration
     /// with that many parameters, or the types of a function.
     params: u32,
+    /// Effect parameters `E1` to `E{rows}` in rows: those of the data
+    /// declaration, function or handler the type is in.
+    rows: u32,
 }
 
 impl Allowed {
@@ -401,22 +414,27 @@ impl Allowed {
     const PLAIN: Allowed = Allowed {
         inherit: false,
         params: 0,
+        rows: 0,
     };
 
-    /// A type in a function with `params` mutability parameters: a
-    /// variable's, a result's, or one an op takes.
-    pub(crate) fn func(params: u32) -> Allowed {
+    /// A type in a function with `params` mutability parameters and
+    /// `rows` effect parameters: a variable's, a result's, or one an op
+    /// takes.
+    pub(crate) fn func(params: u32, rows: u32) -> Allowed {
         Allowed {
             inherit: false,
             params,
+            rows,
         }
     }
 
-    /// A field type of a declaration with `params` parameters.
-    fn field(params: u32) -> Allowed {
+    /// A field type of a declaration with `params` mutability parameters
+    /// and `rows` effect parameters.
+    fn field(params: u32, rows: u32) -> Allowed {
         Allowed {
             inherit: true,
             params,
+            rows,
         }
     }
 }
@@ -442,7 +460,7 @@ fn ty_ok<P: Program + ?Sized>(p: &P, ty: &Ty, allowed: Allowed) -> Result<(), St
     };
     match ty {
         Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::F32 | Ty::F64 => Ok(()),
-        Ty::Data(d, m, args) => {
+        Ty::Data(d, m, args, rows) => {
             mut_ok(m)?;
             let Some(decl) = p.data(*d) else {
                 return Err(format!("unknown data type {d}"));
@@ -454,7 +472,15 @@ fn ty_ok<P: Program + ?Sized>(p: &P, ty: &Ty, allowed: Allowed) -> Result<(), St
                     args.len()
                 ));
             }
-            args.iter().try_for_each(mut_ok)
+            if rows.len() != decl.effect_params as usize {
+                return Err(format!(
+                    "{d} takes {} rows, but {ty} gives {}",
+                    decl.effect_params,
+                    rows.len()
+                ));
+            }
+            args.iter().try_for_each(mut_ok)?;
+            rows.iter().try_for_each(|r| row_ok(p, r, allowed.rows))
         }
         // An element can have the array's mutability.
         Ty::Array(elem, m) => {
@@ -470,22 +496,33 @@ fn ty_ok<P: Program + ?Sized>(p: &P, ty: &Ty, allowed: Allowed) -> Result<(), St
         }
         Ty::Fn(sig, m) => {
             mut_ok(m)?;
-            sig_ok(p, sig, allowed.params)?;
-            row_ok(p, &sig.row)
+            sig_ok(p, sig, allowed.params, allowed.rows)?;
+            row_ok(p, &sig.row, allowed.rows)
         }
         Ty::Cont(sig) => {
-            sig_ok(p, sig, allowed.params)?;
-            row_ok(p, &sig.row)
+            sig_ok(p, sig, allowed.params, allowed.rows)?;
+            row_ok(p, &sig.row, allowed.rows)
         }
         Ty::Ref(ty) => ty_ok(p, ty, Allowed { ..allowed }),
         Ty::Any(m) => mut_ok(m),
     }
 }
 
-/// Checks that a row's effects exist.
-fn row_ok<P: Program + ?Sized>(p: &P, row: &Row) -> Result<(), String> {
-    match row.effects().iter().find(|&&e| p.effect(e).is_none()) {
-        Some(e) => Err(format!("unknown effect {e} in row {row}")),
+/// Checks that a row's effects exist, and that it only uses effect
+/// parameters `E1` to `E{params}`.
+pub(crate) fn row_ok<P: Program + ?Sized>(p: &P, row: &Row, params: u32) -> Result<(), String> {
+    if let Some(e) = row.effects().iter().find(|&&e| p.effect(e).is_none()) {
+        return Err(format!("unknown effect {e} in row {row}"));
+    }
+    match row.params().iter().find(|&&i| i == 0 || i > params) {
+        Some(i) => Err(format!(
+            "E{i} in row {row} isn't an effect parameter here: there {}",
+            match params {
+                0 => "are none".to_string(),
+                1 => "is E1".to_string(),
+                n => format!("are E1 to E{n}"),
+            }
+        )),
         None => Ok(()),
     }
 }
@@ -504,12 +541,12 @@ fn no_row(sig: &Sig) -> Result<(), String> {
 }
 
 /// Checks a signature's types, which can use mutability parameters 1 to
-/// `params` but not `Inherit`.
-fn sig_ok<P: Program + ?Sized>(p: &P, sig: &Sig, params: u32) -> Result<(), String> {
+/// `params` and effect parameters 1 to `rows`, but not `Inherit`.
+fn sig_ok<P: Program + ?Sized>(p: &P, sig: &Sig, params: u32, rows: u32) -> Result<(), String> {
     sig.params
         .iter()
         .chain(&sig.results)
-        .try_for_each(|ty| ty_ok(p, ty, Allowed::func(params)))
+        .try_for_each(|ty| ty_ok(p, ty, Allowed::func(params, rows)))
 }
 
 /// A field or element type in an object of mutability `m`: `Inherit`
@@ -518,7 +555,12 @@ fn sig_ok<P: Program + ?Sized>(p: &P, sig: &Sig, params: u32) -> Result<(), Stri
 pub fn inherit(ty: &Ty, m: Mutability) -> Ty {
     let pick = |own: Mutability| if own == Mutability::Inherit { m } else { own };
     match ty {
-        Ty::Data(d, own, args) => Ty::Data(*d, pick(*own), args.iter().map(|&a| pick(a)).collect()),
+        Ty::Data(d, own, args, rows) => Ty::Data(
+            *d,
+            pick(*own),
+            args.iter().map(|&a| pick(a)).collect(),
+            rows.clone(),
+        ),
         Ty::Array(elem, own) => Ty::Array(elem.clone(), pick(*own)),
         Ty::Fn(sig, own) => Ty::Fn(sig.clone(), pick(*own)),
         Ty::Ref(inner) => Ty::Ref(Box::new(inherit(inner, m))),
@@ -538,7 +580,12 @@ pub fn subst_params(ty: &Ty, args: &[Mutability]) -> Ty {
         m => m,
     };
     match ty {
-        Ty::Data(d, own, a) => Ty::Data(*d, pick(*own), a.iter().map(|&m| pick(m)).collect()),
+        Ty::Data(d, own, a, rows) => Ty::Data(
+            *d,
+            pick(*own),
+            a.iter().map(|&m| pick(m)).collect(),
+            rows.clone(),
+        ),
         Ty::Array(elem, own) => Ty::Array(Box::new(subst_params(elem, args)), pick(*own)),
         Ty::Fn(sig, own) => Ty::Fn(Box::new(subst_sig(sig, args)), pick(*own)),
         Ty::Cont(sig) => Ty::Cont(Box::new(subst_sig(sig, args))),
@@ -565,11 +612,49 @@ pub fn subst_sig(sig: &Sig, args: &[Mutability]) -> Sig {
     }
 }
 
+/// `ty` with each effect parameter `Ei` in its rows replaced by
+/// `rows[i - 1]`, wherever it is.
+pub fn subst_rows(ty: &Ty, rows: &[Row]) -> Ty {
+    if rows.is_empty() {
+        return ty.clone();
+    }
+    match ty {
+        Ty::Data(d, own, a, r) => Ty::Data(
+            *d,
+            *own,
+            a.clone(),
+            r.iter().map(|r| r.subst(rows)).collect(),
+        ),
+        Ty::Array(elem, own) => Ty::Array(Box::new(subst_rows(elem, rows)), *own),
+        Ty::Fn(sig, own) => Ty::Fn(Box::new(subst_sig_rows(sig, rows)), *own),
+        Ty::Cont(sig) => Ty::Cont(Box::new(subst_sig_rows(sig, rows))),
+        Ty::Ref(inner) => Ty::Ref(Box::new(subst_rows(inner, rows))),
+        other => other.clone(),
+    }
+}
+
+/// `sig` with each effect parameter `Ei` replaced by `rows[i - 1]`, in its
+/// row and its types.
+pub fn subst_sig_rows(sig: &Sig, rows: &[Row]) -> Sig {
+    let all = |tys: &[Ty]| tys.iter().map(|ty| subst_rows(ty, rows)).collect();
+    Sig {
+        row: sig.row.subst(rows),
+        params: all(&sig.params),
+        results: all(&sig.results),
+    }
+}
+
+/// `ty` with both kinds of parameter replaced: mutability parameters by
+/// `margs`, effect parameters by `rows`.
+pub fn subst_all(ty: &Ty, margs: &[Mutability], rows: &[Row]) -> Ty {
+    subst_rows(&subst_params(ty, margs), rows)
+}
+
 /// The type of a field declared as `field` in an object of type
-/// `Data(_, m, args)`: the arguments in place of the parameters, and `m`
-/// in place of `Inherit`.
-pub fn resolve(field: &Ty, m: Mutability, args: &[Mutability]) -> Ty {
-    inherit(&subst_params(field, args), m)
+/// `Data(_, m, args, rows)`: the arguments in place of the parameters, and
+/// `m` in place of `Inherit`.
+pub fn resolve(field: &Ty, m: Mutability, args: &[Mutability], rows: &[Row]) -> Ty {
+    inherit(&subst_all(field, args, rows), m)
 }
 
 /// The type of the elements of an array of type `ty`, with `Inherit`
@@ -609,12 +694,12 @@ fn at_most_in<P: Program + ?Sized>(
     let le = |m: Mutability| m.at_most(bound, assumes);
     match ty {
         Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::F32 | Ty::F64 => true,
-        Ty::Data(d, m, args) => {
+        Ty::Data(d, m, args, rows) => {
             if !le(*m) {
                 return false;
             }
             // A data type already being checked is assumed fine, so that
-            // recursive types terminate.
+            // recursive types terminate. Rows don't change mutabilities.
             if !seen.insert((*d, *m, args.clone())) {
                 return true;
             }
@@ -622,7 +707,7 @@ fn at_most_in<P: Program + ?Sized>(
             decl.ctors
                 .iter()
                 .flat_map(|c| &c.fields)
-                .all(|field| at_most_in(p, &resolve(field, *m, args), bound, assumes, seen))
+                .all(|field| at_most_in(p, &resolve(field, *m, args, rows), bound, assumes, seen))
         }
         Ty::Array(elem, m) => le(*m) && at_most_in(p, &inherit(elem, *m), bound, assumes, seen),
         Ty::Fn(_, m) | Ty::Any(m) => le(*m),
@@ -661,7 +746,7 @@ impl<P: Program + ?Sized> Cx<'_, P> {
 
     fn func(&mut self) {
         let f = self.f;
-        let allowed = Allowed::func(f.mut_params.count);
+        let allowed = Allowed::func(f.mut_params.count, f.effect_params);
         for &(a, b) in &f.mut_params.assumes {
             for m in [a, b] {
                 let ok = match m {
@@ -681,7 +766,7 @@ impl<P: Program + ?Sized> Cx<'_, P> {
                 self.err(format!("type of %{i}: {message}"));
             }
         }
-        if let Err(message) = row_ok(self.p, &f.row) {
+        if let Err(message) = row_ok(self.p, &f.row, f.effect_params) {
             self.err(message);
         }
         for ty in &f.results {
@@ -981,7 +1066,16 @@ impl<P: Program + ?Sized> Cx<'_, P> {
 
     /// The types an op gives: see [`typing::op_results`].
     fn op_results(&self, op: &Op, args: &[Atom], tys: &[Ty], out: &[Ty]) -> Checked<Vec<Ty>> {
-        typing::op_results(self.p, &self.f.mut_params, op, args, tys, out, &self.known)
+        typing::op_results(
+            self.p,
+            &self.f.mut_params,
+            self.f.effect_params,
+            op,
+            args,
+            tys,
+            out,
+            &self.known,
+        )
     }
 }
 
@@ -994,16 +1088,32 @@ fn object_mutability(m: Mutability) -> Checked<()> {
     }
 }
 
-/// Checks the mutability arguments a call or closure of `f` gives, in a
-/// function with parameters `caller`, and gives `f`'s signature with them.
-/// `what` is "call" or "closure", for messages.
+/// Checks the mutability arguments and rows a call or closure of `f`
+/// gives, in a function with mutability parameters `caller` and `effects`
+/// effect parameters, and gives `f`'s signature with them. `what` is
+/// "call" or "closure", for messages.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn instantiate<P: Program + ?Sized>(
     p: &P,
     caller: &MutParams,
+    effects: u32,
     what: &str,
     f: FuncId,
     margs: &[Mutability],
+    rows: &[Row],
 ) -> Checked<Sig> {
+    let callee_rows = p
+        .func_effect_params(f)
+        .ok_or_else(|| format!("unknown function {f}"))?;
+    if rows.len() != callee_rows as usize {
+        return Err(format!(
+            "{what} of {f}: takes {callee_rows} rows, but gets {}",
+            rows.len()
+        ));
+    }
+    for row in rows {
+        row_ok(p, row, effects).map_err(|m| format!("{what} of {f}: {m}"))?;
+    }
     let sig = p
         .func_sig(f)
         .ok_or_else(|| format!("unknown function {f}"))?;
@@ -1041,7 +1151,7 @@ pub(crate) fn instantiate<P: Program + ?Sized>(
             ));
         }
     }
-    Ok(subst_sig(&sig, margs))
+    Ok(subst_sig_rows(&subst_sig(&sig, margs), rows))
 }
 
 /// Checks that values of types `tys` can be passed where `expected` are.

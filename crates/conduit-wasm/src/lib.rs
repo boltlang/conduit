@@ -649,7 +649,10 @@ pub fn emit_module(m: &Module, exports: &[(FuncId, &str)]) -> Result<Vec<u8>, Er
     let mut extra_names = Vec::new();
     for (h, switch) in &cx.switches {
         let decl = &m.handlers[h];
-        let name = decl.debug_name.as_deref().map_or(h.to_string(), str::to_string);
+        let name = decl
+            .debug_name
+            .as_deref()
+            .map_or(h.to_string(), str::to_string);
         extra_names.push((switch.start, format!("{name}.start")));
         for (kind, fs) in [
             ("drive", &switch.drive),
@@ -663,7 +666,10 @@ pub fn emit_module(m: &Module, exports: &[(FuncId, &str)]) -> Result<Vec<u8>, Er
         }
     }
     for (&(e, i), &(body, entry)) in &cx.thunks {
-        let name = m.effects[&e].debug_name.as_deref().map_or(e.to_string(), str::to_string);
+        let name = m.effects[&e]
+            .debug_name
+            .as_deref()
+            .map_or(e.to_string(), str::to_string);
         extra_names.push((body, format!("{name}.{i}.thunk")));
         extra_names.push((entry, format!("{name}.{i}.thunk_entry")));
     }

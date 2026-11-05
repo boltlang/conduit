@@ -51,7 +51,9 @@ pub(super) fn valid(name: &str, prefix: &str) -> bool {
         || (prefix.is_empty() && first.is_ascii_digit()))
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
     let number = name.strip_prefix(prefix).and_then(digits).is_some();
-    ident && !number && name != "_" && (prefix.is_empty() || !KEYWORDS.contains(&name))
+    // `E1` in a row is an effect parameter, so no effect is named that.
+    let param = prefix == "effect" && name.strip_prefix('E').and_then(digits).is_some();
+    ident && !number && !param && name != "_" && (prefix.is_empty() || !KEYWORDS.contains(&name))
 }
 
 /// Words that mean something where a name of an item or label can be.

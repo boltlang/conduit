@@ -99,11 +99,7 @@ impl Items {
 
     fn ty(&self, ty: &Ty) -> String {
         match ty {
-            Ty::Data(d, m, args) if args.is_empty() => format!("{m} {}", self.data(*d)),
-            Ty::Data(d, m, args) => {
-                let args: Vec<String> = args.iter().map(Mutability::to_string).collect();
-                format!("{m} {}[{}]", self.data(*d), args.join(", "))
-            }
+            Ty::Data(d, m, args, rows) => format!("{m} {}{}", self.data(*d), self.args(args, rows)),
             Ty::Array(elem, m) => format!("{m} [{}]", self.ty(elem)),
             Ty::Fn(sig, m) => format!("{m} fn{}", self.sig(sig)),
             Ty::Cont(sig) => format!("cont{}", self.sig(sig)),
@@ -132,26 +128,56 @@ impl Items {
     fn does(&self, row: &Row) -> String {
         if row.is_nothing() {
             String::new()
-        } else if row.is_any() {
-            " does Any".to_string()
         } else {
-            let effects: Vec<String> = row.effects().iter().map(|&e| self.effect(e)).collect();
-            format!(" does {}", effects.join(" + "))
+            format!(" does {}", self.row(row))
         }
+    }
+
+    /// A row: `Effect20 + E1`, `Nothing` or `Any`.
+    fn row(&self, row: &Row) -> String {
+        if row.is_any() {
+            return "Any".to_string();
+        }
+        if row.is_nothing() {
+            return "Nothing".to_string();
+        }
+        let items: Vec<String> = row
+            .effects()
+            .iter()
+            .map(|&e| self.effect(e))
+            .chain(row.params().iter().map(|p| format!("E{p}")))
+            .collect();
+        items.join(" + ")
+    }
+
+    /// Mutability arguments and rows in brackets, like `[imm, Log]`, or
+    /// nothing if there are none.
+    fn args(&self, margs: &[Mutability], rows: &[Row]) -> String {
+        if margs.is_empty() && rows.is_empty() {
+            return String::new();
+        }
+        let all: Vec<String> = margs
+            .iter()
+            .map(Mutability::to_string)
+            .chain(rows.iter().map(|r| self.row(r)))
+            .collect();
+        format!("[{}]", all.join(", "))
     }
 
     fn op(&self, op: &Op) -> String {
         match op {
-            Op::Call(f, margs) => format!("call {}{}", self.func(*f), margs_text(margs)),
+            Op::Call(f, margs, rows) => format!("call {}{}", self.func(*f), self.args(margs, rows)),
             Op::CallExtern(e) => format!("call_extern {}", self.extern_(*e)),
-            Op::Closure(f, margs) => format!("closure {}{}", self.func(*f), margs_text(margs)),
+            Op::Closure(f, margs, rows) => {
+                format!("closure {}{}", self.func(*f), self.args(margs, rows))
+            }
             Op::New(c) => format!("new {}", self.ctor(*c)),
             Op::Const(id) => format!("const {}", self.constant(*id)),
             Op::Get(c, i) => format!("get {}.{i}", self.ctor(*c)),
             Op::Set(c, i) => format!("set {}.{i}", self.ctor(*c)),
             Op::Box(ty) => format!("box[{}]", self.ty(ty)),
             Op::Unbox(ty) => format!("unbox[{}]", self.ty(ty)),
-            Op::Handle(h) => format!("handle {}", self.handler(*h)),
+            Op::Handle(h, rows) => format!("handle {}{}", self.handler(*h), self.args(&[], rows)),
             Op::Perform(e, i) => format!("perform {}.{i}", self.effect(*e)),
             Op::Discontinue(e, i) => format!("discontinue {}.{i}", self.effect(*e)),
             op => op_name(op),
@@ -163,15 +189,9 @@ pub(super) fn module(m: &Module) -> String {
     let names = Items::new(m);
     let mut items = Vec::new();
     for (id, decl) in &m.data {
-        let params: Vec<String> = (1..=decl.params)
-            .map(|i| Mutability::Param(i).to_string())
-            .collect();
         let name = names.data(*id);
-        let mut s = if params.is_empty() {
-            format!("data {name} {{\n")
-        } else {
-            format!("data {name}[{}] {{\n", params.join(", "))
-        };
+        let params = param_list(decl.params, decl.effect_params);
+        let mut s = format!("data {name}{params} {{\n");
         for ctor in &decl.ctors {
             let _ = writeln!(s, "  ({})", names.types(&ctor.fields));
         }
@@ -211,8 +231,9 @@ pub(super) fn module(m: &Module) -> String {
             .collect::<Vec<_>>()
             .join(", ");
         items.push(format!(
-            "handler {} for {}{} env({}) ops({ops}) ret {}",
+            "handler {}{} for {}{} env({}) ops({ops}) ret {}",
             names.handler(*id),
+            param_list(0, h.effect_params),
             names.effect(h.effect),
             names.does(&h.row),
             names.types(&h.env),
@@ -253,14 +274,7 @@ fn func_with(names: &Items, id: FuncId, f: &Func) -> String {
         .map(|&v| p.binder(v))
         .collect::<Vec<_>>()
         .join(", ");
-    let mparams: Vec<String> = (1..=f.mut_params.count)
-        .map(|i| Mutability::Param(i).to_string())
-        .collect();
-    let mparams = if mparams.is_empty() {
-        String::new()
-    } else {
-        format!("[{}]", mparams.join(", "))
-    };
+    let mparams = param_list(f.mut_params.count, f.effect_params);
     let _ = write!(
         p.out,
         "fn {}{mparams}({params}) -> ({}){}",
@@ -668,13 +682,32 @@ pub(super) fn prim_name(p: &Prim) -> String {
     }
 }
 
-/// Mutability arguments, like `[imm, 'm1]`, or nothing if there are none.
-fn margs_text(margs: &[Mutability]) -> String {
-    if margs.is_empty() {
+/// Mutability arguments and rows, like `[imm, 'm1, effect20]`, or nothing
+/// if there are none.
+fn margs_text(margs: &[Mutability], rows: &[Row]) -> String {
+    if margs.is_empty() && rows.is_empty() {
         return String::new();
     }
-    let margs: Vec<String> = margs.iter().map(Mutability::to_string).collect();
-    format!("[{}]", margs.join(", "))
+    let all: Vec<String> = margs
+        .iter()
+        .map(Mutability::to_string)
+        .chain(rows.iter().map(Row::to_string))
+        .collect();
+    format!("[{}]", all.join(", "))
+}
+
+/// The parameters a declaration declares, like `['m1, 'm2, E1]`, or
+/// nothing if it has none.
+fn param_list(muts: u32, effects: u32) -> String {
+    let all: Vec<String> = (1..=muts)
+        .map(|i| Mutability::Param(i).to_string())
+        .chain((1..=effects).map(|i| format!("E{i}")))
+        .collect();
+    if all.is_empty() {
+        String::new()
+    } else {
+        format!("[{}]", all.join(", "))
+    }
 }
 
 /// What comes before an op's arguments: its name, and the IDs or types
@@ -682,9 +715,9 @@ fn margs_text(margs: &[Mutability]) -> String {
 pub(crate) fn op_name(op: &Op) -> String {
     match op {
         Op::Prim(p) => prim_name(p),
-        Op::Call(f, margs) => format!("call {f}{}", margs_text(margs)),
+        Op::Call(f, margs, rows) => format!("call {f}{}", margs_text(margs, rows)),
         Op::CallExtern(e) => format!("call_extern {e}"),
-        Op::Closure(f, margs) => format!("closure {f}{}", margs_text(margs)),
+        Op::Closure(f, margs, rows) => format!("closure {f}{}", margs_text(margs, rows)),
         Op::Apply => "apply".into(),
         Op::New(c) => format!("new {c}"),
         Op::Const(id) => format!("const {id}"),
@@ -704,7 +737,7 @@ pub(crate) fn op_name(op: &Op) -> String {
         Op::Box(ty) => format!("box[{ty}]"),
         Op::Unbox(ty) => format!("unbox[{ty}]"),
         Op::ArrayFreeze => "array_freeze".into(),
-        Op::Handle(h) => format!("handle {h}"),
+        Op::Handle(h, rows) => format!("handle {h}{}", margs_text(&[], rows)),
         Op::Perform(e, i) => format!("perform {e}.{i}"),
         Op::Resume => "resume".into(),
         Op::Discontinue(e, i) => format!("discontinue {e}.{i}"),

@@ -17,8 +17,9 @@ pub enum Ty {
     F32,
     F64,
     /// A GC'd ADT value: its own mutability, then one argument for each
-    /// mutability parameter its declaration has.
-    Data(DataId, Mutability, Vec<Mutability>),
+    /// mutability parameter its declaration has, then one row for each
+    /// effect parameter.
+    Data(DataId, Mutability, Vec<Mutability>, Vec<Row>),
     /// A GC'd array.
     Array(Box<Ty>, Mutability),
     /// A closure. `Imm` means it captured only what's `Imm` all the way down.
@@ -33,9 +34,9 @@ pub enum Ty {
 }
 
 impl Ty {
-    /// A data type whose declaration has no mutability parameters.
+    /// A data type whose declaration has no parameters.
     pub fn data(d: DataId, m: Mutability) -> Ty {
-        Ty::Data(d, m, Vec::new())
+        Ty::Data(d, m, Vec::new(), Vec::new())
     }
 
     /// Whether this is an integer type: `i8`, `i16`, `i32` or `i64`.
@@ -47,7 +48,7 @@ impl Ty {
     pub fn mutability(&self) -> Option<Mutability> {
         match self {
             Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::F32 | Ty::F64 | Ty::Cont(_) => None,
-            Ty::Data(_, m, _) | Ty::Array(_, m) | Ty::Fn(_, m) | Ty::Any(m) => Some(*m),
+            Ty::Data(_, m, ..) | Ty::Array(_, m) | Ty::Fn(_, m) | Ty::Any(m) => Some(*m),
             Ty::Ref(_) => Some(Mutability::Mut),
         }
     }
@@ -55,11 +56,14 @@ impl Ty {
     /// Whether a value of this type can be used where `other` is expected.
     /// Only an object's own mutability can differ: `Imm` and `Mut` both fit
     /// `ReadOnly`, and the row of a closure or continuation: a smaller one
-    /// fits a bigger one. A data type's arguments must be equal, and so
-    /// must the types inside a closure or continuation type.
+    /// fits a bigger one. A data type's arguments, mutabilities and rows,
+    /// must be equal, and so must the types inside a closure or
+    /// continuation type.
     pub fn is_subtype(&self, other: &Ty) -> bool {
         match (self, other) {
-            (Ty::Data(d1, m1, a1), Ty::Data(d2, m2, a2)) => d1 == d2 && a1 == a2 && m1.is_sub(*m2),
+            (Ty::Data(d1, m1, a1, r1), Ty::Data(d2, m2, a2, r2)) => {
+                d1 == d2 && a1 == a2 && r1 == r2 && m1.is_sub(*m2)
+            }
             (Ty::Array(e1, m1), Ty::Array(e2, m2)) => e1 == e2 && m1.is_sub(*m2),
             (Ty::Fn(s1, m1), Ty::Fn(s2, m2)) => s1.is_sub(s2) && m1.is_sub(*m2),
             (Ty::Cont(s1), Ty::Cont(s2)) => s1.is_sub(s2),
@@ -72,7 +76,7 @@ impl Ty {
     /// mutability of its own (scalars, `Cont`, `Ref`).
     pub fn with_mutability(&self, m: Mutability) -> Ty {
         match self {
-            Ty::Data(d, _, args) => Ty::Data(*d, m, args.clone()),
+            Ty::Data(d, _, args, rows) => Ty::Data(*d, m, args.clone(), rows.clone()),
             Ty::Array(elem, _) => Ty::Array(elem.clone(), m),
             Ty::Fn(sig, _) => Ty::Fn(sig.clone(), m),
             Ty::Any(_) => Ty::Any(m),
@@ -168,9 +172,15 @@ impl fmt::Display for Ty {
             Ty::I64 => write!(f, "i64"),
             Ty::F32 => write!(f, "f32"),
             Ty::F64 => write!(f, "f64"),
-            Ty::Data(d, m, args) if args.is_empty() => write!(f, "{m} {d}"),
-            Ty::Data(d, m, args) => {
-                let args: Vec<String> = args.iter().map(Mutability::to_string).collect();
+            Ty::Data(d, m, args, rows) if args.is_empty() && rows.is_empty() => {
+                write!(f, "{m} {d}")
+            }
+            Ty::Data(d, m, args, rows) => {
+                let args: Vec<String> = args
+                    .iter()
+                    .map(Mutability::to_string)
+                    .chain(rows.iter().map(Row::to_string))
+                    .collect();
                 write!(f, "{m} {d}[{}]", args.join(", "))
             }
             Ty::Array(elem, m) => write!(f, "{m} [{elem}]"),

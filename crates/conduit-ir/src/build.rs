@@ -289,6 +289,12 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
         self.func.mut_params = mp;
     }
 
+    /// Gives the function `n` effect parameters, `E1` to `En`, which its
+    /// rows can then use.
+    pub fn set_effect_params(&mut self, n: u32) {
+        self.func.effect_params = n;
+    }
+
     /// The function's parameters. Panics if it doesn't have `N` of them.
     pub fn params<const N: usize>(&self) -> [Var; N] {
         self.func.params.as_slice().try_into().unwrap_or_else(|_| {
@@ -418,6 +424,7 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
         let results = match op_results(
             self.p,
             &self.func.mut_params,
+            self.func.effect_params,
             &op,
             &args,
             &tys,
@@ -540,23 +547,35 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
     }
 
     pub fn call(&mut self, f: FuncId, args: impl Atoms) -> Vec<Var> {
-        self.emit(Op::Call(f, Vec::new()), args.atoms(), None)
+        self.emit(Op::Call(f, Vec::new(), Vec::new()), args.atoms(), None)
     }
 
     /// A call of a function with one result.
     pub fn call1(&mut self, f: FuncId, args: impl Atoms) -> Var {
-        self.emit1(Op::Call(f, Vec::new()), args.atoms(), None)
+        self.emit1(Op::Call(f, Vec::new(), Vec::new()), args.atoms(), None)
     }
 
     /// A call of a function with mutability parameters, giving `margs` for
     /// them.
     pub fn call_at(&mut self, f: FuncId, margs: Vec<Mutability>, args: impl Atoms) -> Vec<Var> {
-        self.emit(Op::Call(f, margs), args.atoms(), None)
+        self.emit(Op::Call(f, margs, Vec::new()), args.atoms(), None)
     }
 
     /// [`call_at`](Self::call_at) of a function with one result.
     pub fn call1_at(&mut self, f: FuncId, margs: Vec<Mutability>, args: impl Atoms) -> Var {
-        self.emit1(Op::Call(f, margs), args.atoms(), None)
+        self.emit1(Op::Call(f, margs, Vec::new()), args.atoms(), None)
+    }
+
+    /// A call of a function with mutability and effect parameters, giving
+    /// `margs` and `rows` for them.
+    pub fn call_with(
+        &mut self,
+        f: FuncId,
+        margs: Vec<Mutability>,
+        rows: Vec<Row>,
+        args: impl Atoms,
+    ) -> Vec<Var> {
+        self.emit(Op::Call(f, margs, rows), args.atoms(), None)
     }
 
     pub fn call_extern(&mut self, e: ExternId, args: impl Atoms) -> Vec<Var> {
@@ -571,7 +590,7 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
     /// A closure of `f` with mutability `m`, capturing `captures` as its
     /// first parameters.
     pub fn closure(&mut self, f: FuncId, m: Mutability, captures: impl Atoms) -> Var {
-        self.closure_at(f, Vec::new(), m, captures)
+        self.closure_with(f, Vec::new(), Vec::new(), m, captures)
     }
 
     /// A closure of a function with mutability parameters, giving `margs`
@@ -583,12 +602,25 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
         m: Mutability,
         captures: impl Atoms,
     ) -> Var {
+        self.closure_with(f, margs, Vec::new(), m, captures)
+    }
+
+    /// A closure of a function with mutability and effect parameters,
+    /// giving `margs` and `rows` for them.
+    pub fn closure_with(
+        &mut self,
+        f: FuncId,
+        margs: Vec<Mutability>,
+        rows: Vec<Row>,
+        m: Mutability,
+        captures: impl Atoms,
+    ) -> Var {
         let captures = captures.atoms();
         let Some(sig) = self.p.func_sig(f) else {
             self.error(format!("unknown function {f}"));
             return self.func.new_var(Ty::I32);
         };
-        let sig = verify::subst_sig(&sig, &margs);
+        let sig = verify::subst_sig_rows(&verify::subst_sig(&sig, &margs), &rows);
         let n = captures.len().min(sig.params.len());
         let rest = Sig {
             row: sig.row,
@@ -596,7 +628,7 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
             results: sig.results,
         };
         self.emit1(
-            Op::Closure(f, margs),
+            Op::Closure(f, margs, rows),
             captures,
             Some(Ty::Fn(Box::new(rest), m)),
         )
@@ -629,7 +661,22 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
         args: Vec<Mutability>,
         fields: impl Atoms,
     ) -> Var {
-        self.emit1(Op::New(c), fields.atoms(), Some(Ty::Data(c.data, m, args)))
+        self.new_object_full(c, m, args, Vec::new(), fields)
+    }
+
+    /// `new c(fields)`, as an object of mutability `m` whose declaration
+    /// has mutability and effect parameters, with `args` and `rows` for
+    /// them.
+    pub fn new_object_full(
+        &mut self,
+        c: CtorId,
+        m: Mutability,
+        args: Vec<Mutability>,
+        rows: Vec<Row>,
+        fields: impl Atoms,
+    ) -> Var {
+        let ty = Ty::Data(c.data, m, args, rows);
+        self.emit1(Op::New(c), fields.atoms(), Some(ty))
     }
 
     /// The value of constant `c`, of its declared type.
@@ -777,7 +824,13 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
     /// Runs a closure under handler `h`. `args` is the handler's
     /// environment, then the closure.
     pub fn handle(&mut self, h: HandlerId, args: impl Atoms) -> Vec<Var> {
-        self.emit(Op::Handle(h), args.atoms(), None)
+        self.handle_with(h, Vec::new(), args)
+    }
+
+    /// Runs a closure under handler `h`, which has effect parameters,
+    /// giving `rows` for them.
+    pub fn handle_with(&mut self, h: HandlerId, rows: Vec<Row>, args: impl Atoms) -> Vec<Var> {
+        self.emit(Op::Handle(h, rows), args.atoms(), None)
     }
 
     pub fn perform(&mut self, e: EffectId, op: u32, args: impl Atoms) -> Vec<Var> {

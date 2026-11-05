@@ -3,17 +3,19 @@
 
 use super::{
     Allowed, Checked, at_most, elem_ty, fits, inherit, instantiate, object_mutability,
-    prim_results, resolve, sub, ty_ok,
+    prim_results, resolve, row_ok, sub, subst_rows, subst_sig_rows, ty_ok,
 };
 use crate::*;
 
 /// The types an op gives. For ops whose result type the IR doesn't
 /// spell out, like `New`'s mutability, that's the types of the
-/// variables it binds, `out`. `mp` is the parameters of the function the
-/// op is in.
+/// variables it binds, `out`. `mp` and `effects` are the mutability
+/// and effect parameters of the function the op is in.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn op_results<P: Program + ?Sized>(
     p: &P,
     mp: &MutParams,
+    effects: u32,
     op: &Op,
     args: &[Atom],
     tys: &[Ty],
@@ -22,8 +24,8 @@ pub(crate) fn op_results<P: Program + ?Sized>(
 ) -> Checked<Vec<Ty>> {
     match op {
         Op::Prim(prim) => prim_results(prim, tys),
-        Op::Call(f, margs) => {
-            let sig = instantiate(p, mp, "call", *f, margs)?;
+        Op::Call(f, margs, rows) => {
+            let sig = instantiate(p, mp, effects, "call", *f, margs, rows)?;
             fits(tys, &sig.params).map_err(|m| format!("call of {f}: {m}"))?;
             Ok(sig.results)
         }
@@ -34,8 +36,8 @@ pub(crate) fn op_results<P: Program + ?Sized>(
             fits(tys, &ext.sig.params).map_err(|m| format!("call of {e}: {m}"))?;
             Ok(ext.sig.results.clone())
         }
-        Op::Closure(f, margs) => {
-            let sig = instantiate(p, mp, "closure", *f, margs)?;
+        Op::Closure(f, margs, rows) => {
+            let sig = instantiate(p, mp, effects, "closure", *f, margs, rows)?;
             let [Ty::Fn(fn_sig, m)] = out else {
                 return Err(format!("closure of {f} must bind one closure"));
             };
@@ -69,7 +71,7 @@ pub(crate) fn op_results<P: Program + ?Sized>(
             Ok(sig.results.clone())
         }
         Op::New(c) => {
-            let [Ty::Data(d, m, margs)] = out else {
+            let [Ty::Data(d, m, margs, rows)] = out else {
                 return Err(format!("new {c} must bind one value of its data type"));
             };
             if *d != c.data {
@@ -85,7 +87,7 @@ pub(crate) fn op_results<P: Program + ?Sized>(
                 ));
             }
             for (i, (ty, field)) in tys.iter().zip(fields).enumerate() {
-                let field = resolve(field, *m, margs);
+                let field = resolve(field, *m, margs, rows);
                 if !at_most(p, &field, *m, &mp.assumes) {
                     return Err(format!(
                         "{} {m} {c} can't hold field {i} of type {field}",
@@ -110,21 +112,21 @@ pub(crate) fn op_results<P: Program + ?Sized>(
             Ok(vec![decl.ty.clone()])
         }
         Op::Get(c, i) => {
-            let [Ty::Data(d, m, margs)] = tys else {
+            let [Ty::Data(d, m, margs, rows)] = tys else {
                 return Err(format!("get of {c} needs one object"));
             };
             field_access(p, known, c, *d, &args[0])?;
-            Ok(vec![field(p, *c, *i, *m, margs)?])
+            Ok(vec![field(p, *c, *i, *m, margs, rows)?])
         }
         Op::Set(c, i) => {
-            let [Ty::Data(d, m, margs), value] = tys else {
+            let [Ty::Data(d, m, margs, rows), value] = tys else {
                 return Err(format!("set of {c} needs an object and a value"));
             };
             if *m != Mutability::Mut {
                 return Err(format!("can't set a field of a {}", tys[0]));
             }
             field_access(p, known, c, *d, &args[0])?;
-            let field = field(p, *c, *i, Mutability::Mut, margs)?;
+            let field = field(p, *c, *i, Mutability::Mut, margs, rows)?;
             if !sub(value, &field) {
                 return Err(format!(
                     "field {i} of {c} has type {field}, but gets a {value}"
@@ -231,7 +233,7 @@ pub(crate) fn op_results<P: Program + ?Sized>(
             _ => Err("ref set needs a ref and a value".into()),
         },
         Op::Box(ty) => {
-            ty_ok(p, ty, Allowed::func(mp.count))?;
+            ty_ok(p, ty, Allowed::func(mp.count, effects))?;
             match tys {
                 [arg] if sub(arg, ty) => {}
                 [arg] => return Err(format!("box of {ty} gets a {arg}")),
@@ -245,7 +247,7 @@ pub(crate) fn op_results<P: Program + ?Sized>(
             Ok(vec![Ty::Any(m)])
         }
         Op::Unbox(ty) => {
-            ty_ok(p, ty, Allowed::func(mp.count))?;
+            ty_ok(p, ty, Allowed::func(mp.count, effects))?;
             match tys {
                 [Ty::Any(_)] => Ok(vec![ty.clone()]),
                 _ => Err("unbox needs one any".into()),
@@ -253,18 +255,32 @@ pub(crate) fn op_results<P: Program + ?Sized>(
         }
         Op::ArrayClone => array_clone(p, mp, tys, out, false),
         Op::ArrayFreeze => array_clone(p, mp, tys, out, true),
-        Op::Handle(h) => {
+        Op::Handle(h, rows) => {
             let decl = p
                 .handler(*h)
                 .ok_or_else(|| format!("unknown handler {h}"))?;
+            if rows.len() != decl.effect_params as usize {
+                return Err(format!(
+                    "handle {h}: takes {} rows, but gets {}",
+                    decl.effect_params,
+                    rows.len()
+                ));
+            }
+            for row in rows {
+                row_ok(p, row, effects).map_err(|m| format!("handle {h}: {m}"))?;
+            }
+            // The handler's types and row with the rows in place.
             let ret = p
                 .func_sig(decl.ret)
+                .map(|sig| subst_sig_rows(&sig, rows))
                 .ok_or_else(|| format!("unknown function {}", decl.ret))?;
+            let env_tys: Vec<Ty> = decl.env.iter().map(|t| subst_rows(t, rows)).collect();
+            let handler_row = decl.row.subst(rows);
             let n = decl.env.len();
             let Some((Ty::Fn(body, _), env)) = tys.split_last() else {
                 return Err(format!("handle {h} needs its environment, then a closure"));
             };
-            fits(env, &decl.env).map_err(|m| format!("environment of {h}: {m}"))?;
+            fits(env, &env_tys).map_err(|m| format!("environment of {h}: {m}"))?;
             let returns = ret.params.get(n..).unwrap_or_default();
             if !body.params.is_empty() || body.results != returns {
                 return Err(format!(
@@ -278,7 +294,7 @@ pub(crate) fn op_results<P: Program + ?Sized>(
             }
             // The body's effect is handled, and what the clauses perform
             // isn't.
-            let allowed = decl.row.union(&Row::one(decl.effect));
+            let allowed = handler_row.union(&Row::one(decl.effect));
             if !body.row.is_in(&allowed) {
                 return Err(format!(
                     "the body of handle {h} does {}, which isn't in {allowed}",
@@ -333,19 +349,20 @@ fn fields<P: Program + ?Sized>(p: &P, c: CtorId) -> Checked<&[Ty]> {
     Ok(&ctor.fields)
 }
 
-/// The type of field `i` of an object of constructor `c`, mutability `m`
-/// and mutability arguments `args`.
+/// The type of field `i` of an object of constructor `c`, mutability `m`,
+/// mutability arguments `args` and rows `rows`.
 fn field<P: Program + ?Sized>(
     p: &P,
     c: CtorId,
     i: u32,
     m: Mutability,
     args: &[Mutability],
+    rows: &[Row],
 ) -> Checked<Ty> {
     let field = fields(p, c)?
         .get(i as usize)
         .ok_or_else(|| format!("{c} has no field {i}"))?;
-    Ok(resolve(field, m, args))
+    Ok(resolve(field, m, args, rows))
 }
 
 /// The types an `ArrayClone` gives, or with `freeze`, an `ArrayFreeze`: an array
@@ -451,10 +468,14 @@ pub(crate) fn op_row<P: Program + ?Sized>(p: &P, op: &Op, tys: &[Ty]) -> Row {
     };
     match op {
         Op::Perform(e, _) => Row::one(*e),
-        Op::Call(f, _) => p.func_sig(*f).map_or(Row::NOTHING, |sig| sig.row),
+        Op::Call(f, _, rows) => p
+            .func_sig(*f)
+            .map_or(Row::NOTHING, |sig| sig.row.subst(rows)),
         Op::Apply | Op::Resume => first(),
         Op::Discontinue(e, _) => first().union(&Row::one(*e)),
-        Op::Handle(h) => p.handler(*h).map_or(Row::NOTHING, |decl| decl.row.clone()),
+        Op::Handle(h, rows) => p
+            .handler(*h)
+            .map_or(Row::NOTHING, |decl| decl.row.subst(rows)),
         _ => Row::NOTHING,
     }
 }

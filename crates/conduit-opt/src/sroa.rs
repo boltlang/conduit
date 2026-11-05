@@ -51,14 +51,14 @@ pub fn sroa(p: &dyn Program, f: &mut Func) -> bool {
             let [x] = l.binds[..] else { continue };
             let ty = f.var_ty(x);
             let candidate = match (&l.op, ty) {
-                (Op::New(c), Ty::Data(d, Mutability::Mut, args)) => {
+                (Op::New(c), Ty::Data(d, Mutability::Mut, args, rows)) => {
                     let Some(ctor) = p.data(*d).and_then(|d| d.ctors.get(c.index as usize)) else {
                         continue;
                     };
                     let tys = ctor
                         .fields
                         .iter()
-                        .map(|field| resolve(field, Mutability::Mut, args))
+                        .map(|field| resolve(field, Mutability::Mut, args, rows))
                         .collect();
                     Candidate {
                         ctor: Some(*c),

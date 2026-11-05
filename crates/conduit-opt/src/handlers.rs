@@ -23,7 +23,7 @@
 //! it where `F` was performed, inside the body, under `H`. A body that
 //! performs nothing has nothing captured in it, so that can't happen.
 
-use conduit_ir::{Atom, Block, Func, FuncId, Let, Op, Program, Tail, Ty};
+use conduit_ir::{Atom, Block, Func, FuncId, Let, Op, Program, Row, Tail, Ty};
 
 use crate::Pass;
 
@@ -54,7 +54,7 @@ fn block(p: &dyn Program, b: &mut Block, f: &mut Func) -> bool {
     let mut lets = Vec::with_capacity(b.lets.len());
     for l in std::mem::take(&mut b.lets) {
         match unused(p, &l, f) {
-            Some(ret) => {
+            Some((ret, rows)) => {
                 changed = true;
                 let (c, env) = l.args.split_last().expect("a handle has a body");
                 let Ty::Fn(sig, _) = f.var_ty(var(c)).clone() else {
@@ -71,7 +71,9 @@ fn block(p: &dyn Program, b: &mut Block, f: &mut Func) -> bool {
                 args.extend(xs.into_iter().map(Atom::Var));
                 lets.push(Let {
                     binds: l.binds,
-                    op: Op::Call(ret, Vec::new()),
+                    // The return clause has the handler's effect
+                    // parameters, which the `handle` gave rows for.
+                    op: Op::Call(ret, Vec::new(), rows),
                     args,
                     source: l.source,
                 });
@@ -100,10 +102,14 @@ fn block(p: &dyn Program, b: &mut Block, f: &mut Func) -> bool {
     changed
 }
 
-/// The return clause of the handler `l` runs its body under, if `l` is a
-/// `handle` whose body can't perform the handler's effect.
-fn unused(p: &dyn Program, l: &Let, f: &Func) -> Option<FuncId> {
-    let Op::Handle(h) = l.op else { return None };
+/// The return clause of the handler `l` runs its body under, and the rows
+/// the `handle` gives, if `l` is a `handle` whose body can't perform the
+/// handler's effect.
+fn unused(p: &dyn Program, l: &Let, f: &Func) -> Option<(FuncId, Vec<Row>)> {
+    let Op::Handle(h, rows) = &l.op else {
+        return None;
+    };
+    let h = *h;
     let decl = p.handler(h)?;
     let Some(Atom::Var(c)) = l.args.last() else {
         return None;
@@ -111,7 +117,7 @@ fn unused(p: &dyn Program, l: &Let, f: &Func) -> Option<FuncId> {
     let Ty::Fn(sig, _) = f.var_ty(*c) else {
         return None;
     };
-    sig.row.is_nothing().then_some(decl.ret)
+    sig.row.is_nothing().then(|| (decl.ret, rows.clone()))
 }
 
 fn var(a: &Atom) -> conduit_ir::Var {

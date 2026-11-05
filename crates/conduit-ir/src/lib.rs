@@ -65,6 +65,12 @@ pub trait Program {
         Some(self.func(id)?.mut_params.clone())
     }
 
+    /// How many effect parameters a function has, which its signature's
+    /// rows can use.
+    fn func_effect_params(&self, id: FuncId) -> Option<u32> {
+        Some(self.func(id)?.effect_params)
+    }
+
     fn data(&self, id: DataId) -> Option<&DataDecl>;
     fn extern_fn(&self, id: ExternId) -> Option<&Extern>;
     fn effect(&self, id: EffectId) -> Option<&EffectDecl>;

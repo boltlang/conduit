@@ -1,4 +1,5 @@
 use crate::id::{ConstId, CtorId, EffectId, ExternId, FuncId, HandlerId};
+use crate::row::Row;
 use crate::ty::{Mutability, Ty};
 
 /// Everything that isn't control flow. Passes that move code around don't
@@ -10,14 +11,15 @@ pub enum Op {
     /// Arithmetic, comparisons and conversions on scalars.
     Prim(Prim),
     /// A direct call, with an argument for each of the function's
-    /// mutability parameters.
-    Call(FuncId, Vec<Mutability>),
+    /// mutability parameters, and a row for each of its effect parameters.
+    Call(FuncId, Vec<Mutability>, Vec<Row>),
     /// A call of a host function.
     CallExtern(ExternId),
     /// A closure of a lifted function, with an argument for each of its
-    /// mutability parameters. Args: the captured values, which come first
-    /// among the function's parameters.
-    Closure(FuncId, Vec<Mutability>),
+    /// mutability parameters and a row for each of its effect parameters.
+    /// Args: the captured values, which come first among the function's
+    /// parameters.
+    Closure(FuncId, Vec<Mutability>, Vec<Row>),
     /// Calls a closure. Args: the closure, then the arguments.
     Apply,
     /// Allocates an ADT value. Args: its fields.
@@ -70,9 +72,9 @@ pub enum Op {
     Box(Ty),
     /// An `Any` as a value of this type. Args: the `Any`.
     Unbox(Ty),
-    /// Runs a closure under a handler. Args: the handler's environment,
-    /// then the closure.
-    Handle(HandlerId),
+    /// Runs a closure under a handler, with a row for each of its effect
+    /// parameters. Args: the handler's environment, then the closure.
+    Handle(HandlerId, Vec<Row>),
     /// Runs operation `i` of the nearest enclosing handler of the effect.
     Perform(EffectId, u32),
     /// Continues a captured computation. Args: the continuation, then the
@@ -143,7 +145,7 @@ impl Op {
             Op::Set(..) | Op::RefSet => (Writes, false),
             Op::ArraySet | Op::ArrayCopy => (Writes, true),
             Op::Call(..) | Op::CallExtern(_) | Op::Apply => (Unknown, true),
-            Op::Handle(_) | Op::Perform(..) | Op::Resume | Op::Discontinue(..) => (Unknown, true),
+            Op::Handle(..) | Op::Perform(..) | Op::Resume | Op::Discontinue(..) => (Unknown, true),
         };
         Effects::new(memory, may_trap)
     }
