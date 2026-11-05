@@ -1147,12 +1147,18 @@ rewritten by "Known closures" skip the wrapper.
 
 ## Operations per target
 
-Only Wasm is a target for now. Since open question 1 (GC) isn't decided, the
-table gives both ways to compile to it:
+Only Wasm is a target for now, in two ways, which both backends of
+`conduit-wasm` implement:
 
-- **Linear memory:** Wasm 2.0, with values in memory from a Conduit
-  allocator.
-- **Wasm GC:** Wasm 3.0, with values as GC'd `struct`s and `array`s.
+- **Linear memory** (`conduit_wasm::linear`): values in memory from a
+  Conduit allocator, which needs no GC, exceptions or stack switching from
+  the engine. Effect handlers are lowered by evidence passing first. Memory
+  is never freed yet: every object comes from one `alloc` function, and has
+  a header word kept for a reference count or mark, so that freeing can
+  come later without changing layouts. This is the way forward.
+- **Wasm GC** (`conduit_wasm::emit_module`): Wasm 3.0, with values as GC'd
+  `struct`s and `array`s, and handlers lowered directly. It stays until the
+  linear memory backend has replaced it.
 
 Status:
 
@@ -1385,9 +1391,11 @@ doesn't need a deep stack.
 
 ## Open questions
 
-1. GC: target Wasm GC (`struct.new`, `ref`) directly, or keep linear memory
-   with a Conduit runtime? This decides how `Data` and `Array` lower, not
-   what the IR looks like.
+1. How to free memory in the linear memory backend: reference counting
+   with reuse, like Koka's Perceus, or a tracing collector, and what to do
+   about cycles of `Mut` objects. Linear memory was chosen over Wasm GC for
+   host and WASI access, engines without GC, and one runtime with the
+   native backend to come.
 2. Should `Case` allow several tags per arm (or-patterns like `0 | 1`)? It's cheap
    when an arm binds nothing, but join points already cover it.
 3. Multi-shot continuations (backtracking, nondeterminism): allow them

@@ -38,6 +38,7 @@
 
 mod consts;
 mod func;
+pub mod linear;
 mod switch;
 mod types;
 

@@ -7,10 +7,10 @@ publish.workspace = true
 
 [dependencies]
 conduit-ir = { path = "../conduit-ir" }
+conduit-opt = { path = "../conduit-opt" }
 wasm-encoder = "0.263.0"
 
 [dev-dependencies]
-conduit-opt = { path = "../conduit-opt" }
 conduit-test = { path = "../conduit-test" }
 wasmparser = "0.263.0"
 wasmprinter = "0.263.0"
@@ -22,4 +22,8 @@ harness = false
 
 [[test]]
 name = "effects"
+harness = false
+
+[[test]]
+name = "linear"
 harness = false
