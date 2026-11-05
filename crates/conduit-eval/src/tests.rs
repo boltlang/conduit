@@ -981,3 +981,28 @@ fn fn1(%0: ro [i32]) -> () {
         "invalid IR: a mutability argument is imm or mut, not ro"
     );
 }
+
+/// What `undefined` gives can be passed on, but using it is undefined.
+#[test]
+fn using_undefined() {
+    let m = conduit_ir::text::parse(
+        "fn fn0(%0: i32) -> (i32) {
+  let %1: i32 = undefined()
+  case %0 {
+    0 => jump ret(%1)
+    _ =>
+      let %2: i32 = add(%1, 1i32)
+      jump ret(%2)
+  }
+}",
+    )
+    .unwrap();
+    verify_module(&m).unwrap();
+    let mut machine = Machine::new(&m, NoHost);
+    let error = machine.call(FuncId(0), vec![Value::I32(1)]).unwrap_err();
+    assert_eq!(
+        error.kind,
+        ErrorKind::Undefined("use of an undefined value".into())
+    );
+    assert!(machine.call(FuncId(0), vec![Value::I32(0)]).is_ok());
+}

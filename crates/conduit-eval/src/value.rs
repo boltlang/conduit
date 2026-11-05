@@ -12,9 +12,10 @@ pub enum Value {
     F32(f32),
     F64(f64),
     Obj(ObjId),
-    /// An element of an array that `ArrayAlloc` made and nothing has set
-    /// yet. It's only ever in an array: reading one is undefined behavior,
-    /// so `ArrayGet` stops there.
+    /// What `Undefined` gives, or an element of an array that
+    /// `ArrayAlloc` made and nothing has set yet. Passing it on is fine,
+    /// but using it is undefined behavior, which stops the machine. An
+    /// unset element stops `ArrayGet` already.
     Unset,
 }
 

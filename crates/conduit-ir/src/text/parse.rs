@@ -992,6 +992,7 @@ impl Parser {
             "apply" => Op::Apply,
             "new" => Op::New(self.ctor()?),
             "const" => Op::Const(ConstId(self.item("const")?)),
+            "undefined" => Op::Undefined,
             "get" | "set" => {
                 let c = self.ctor()?;
                 self.punct(".")?;

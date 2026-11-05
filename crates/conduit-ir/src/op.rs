@@ -27,6 +27,11 @@ pub enum Op {
     /// A constant's value, which is the same object every time. Args:
     /// none. It binds a variable of the constant's type, or a supertype.
     Const(ConstId),
+    /// A value of the type it binds that must not be used, like LLVM's
+    /// `poison`: passing it on is fine, but using it, as an operand of an
+    /// op that looks at it or a `case`, is undefined behavior. For code
+    /// that has to give a value it knows won't be looked at. Args: none.
+    Undefined,
     /// Reads a field. Args: the object.
     Get(CtorId, u32),
     /// Writes a field of a `Mut` object; binds nothing. Args: the object,
@@ -134,7 +139,7 @@ impl Op {
         let (memory, may_trap) = match self {
             Op::Prim(p) => (None, p.may_trap()),
             Op::Closure(..) | Op::Box(_) | Op::New(_) | Op::ArrayNew | Op::RefNew => (None, false),
-            Op::Const(_) => (None, false),
+            Op::Const(_) | Op::Undefined => (None, false),
             // Its length may be negative or too big.
             Op::ArrayFill | Op::ArrayAlloc => (None, true),
             Op::Get(..) | Op::ArrayLen | Op::ArrayClone | Op::RefGet => (Reads, false),

@@ -553,6 +553,11 @@ impl<'m> FuncCx<'_, 'm> {
                 let global = self.cx.const_global(*id)?;
                 self.emit(I::GlobalGet(global));
             }
+            // Every type has a default: 0, or null.
+            Op::Undefined => {
+                let ty = self.cx.types.val(self.var_ty(binds[0]))?;
+                self.emit(zero(ty));
+            }
             Op::Get(c, i) => {
                 let (idx, first) = self.object(*c, &args[0])?;
                 // An `i8` or `i16` field is packed, as array elements are.

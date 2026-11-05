@@ -86,6 +86,7 @@ pub enum Op {
     Apply,                 // args[0] = closure, rest = arguments
     New(CtorId),           // allocate an ADT value; args = its fields
     Const(ConstId),        // a constant's object, the same every time; no args
+    Undefined,             // a value of the type it binds that must not be used; no args
     Get(CtorId, u32),      // read field i
     Set(CtorId, u32),      // write field i of a Mut object; binds nothing
     ArrayNew,              // args = the elements
@@ -1295,7 +1296,7 @@ fn fn1(%0: i32) -> (i32) {
 - **Ops** are a name, what the op takes in its name, and the arguments:
   `add`, `div.s`, `lt.u`, `convert.s[i64]`, `reinterpret[f32]`,
   `call fn2(..)`, `call_extern extern1(..)`, `closure fn2(..)`, `apply(..)`,
-  `new data10.0(..)`, `const const40()`, `get data10.0.1(..)`,
+  `new data10.0(..)`, `const const40()`, `undefined()`, `get data10.0.1(..)`,
   `set data10.0.1(..)`,
   `array_new`, `array_fill`, `array_alloc`, `array_get`, `array_set`,
   `array_len`, `array_copy`,

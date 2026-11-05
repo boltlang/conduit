@@ -267,6 +267,7 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                         Object::Data { ctor, .. } => Tag::Ctor(*ctor),
                         _ => return Err(unverified("case on an object that isn't data")),
                     },
+                    Value::Unset => return Err(undefined_use()),
                     _ => return Err(unverified("case on a float")),
                 };
                 let arm = arms.iter().find(|arm| arm.tag == tag).map(|arm| &arm.body);
@@ -509,6 +510,7 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                 })]
             }
             Op::Const(id) => vec![self.constant(*id)?],
+            Op::Undefined => vec![Value::Unset],
             Op::Get(c, i) => match self.object_ref(obj(arg(&args, 0)?)?)? {
                 Object::Data { ctor, fields, .. } if ctor == c => {
                     vec![
@@ -872,6 +874,7 @@ fn arg(args: &[Value], i: usize) -> Step<Value> {
 fn obj(value: Value) -> Step<ObjId> {
     match value {
         Value::Obj(id) => Ok(id),
+        Value::Unset => Err(undefined_use()),
         _ => Err(unverified("a scalar where an object is expected")),
     }
 }
@@ -933,4 +936,10 @@ fn erase_rows(ty: &Ty) -> Ty {
         Ty::Ref(inner) => Ty::Ref(Box::new(erase_rows(inner))),
         other => other.clone(),
     }
+}
+
+/// Using a value that `undefined` made, or an array element that
+/// `array_alloc` made and nothing set.
+pub(crate) fn undefined_use() -> ErrorKind {
+    ErrorKind::Undefined("use of an undefined value".into())
 }

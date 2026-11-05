@@ -6,6 +6,9 @@ use crate::error::{ErrorKind, unverified};
 use crate::value::Value;
 
 pub(crate) fn eval(prim: &Prim, args: &[Value]) -> Result<Value, ErrorKind> {
+    if args.contains(&Value::Unset) {
+        return Err(crate::machine::undefined_use());
+    }
     match *args {
         [a] => unary(prim, a),
         [a, b] => binary(prim, a, b),

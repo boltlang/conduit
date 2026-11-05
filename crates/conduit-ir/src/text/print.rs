@@ -721,6 +721,7 @@ pub(crate) fn op_name(op: &Op) -> String {
         Op::Apply => "apply".into(),
         Op::New(c) => format!("new {c}"),
         Op::Const(id) => format!("const {id}"),
+        Op::Undefined => "undefined".into(),
         Op::Get(c, i) => format!("get {c}.{i}"),
         Op::Set(c, i) => format!("set {c}.{i}"),
         Op::ArrayNew => "array_new".into(),

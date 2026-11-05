@@ -679,6 +679,11 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
         self.emit1(Op::New(c), fields.atoms(), Some(ty))
     }
 
+    /// A value of type `ty` that must not be used: see [`Op::Undefined`].
+    pub fn undefined(&mut self, ty: Ty) -> Var {
+        self.emit1(Op::Undefined, Vec::new(), Some(ty))
+    }
+
     /// The value of constant `c`, of its declared type.
     pub fn constant(&mut self, c: ConstId) -> Var {
         self.emit1(Op::Const(c), Vec::new(), None)

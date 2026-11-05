@@ -111,6 +111,13 @@ pub(crate) fn op_results<P: Program + ?Sized>(
             }
             Ok(vec![decl.ty.clone()])
         }
+        Op::Undefined => match (tys, out) {
+            ([], [ty]) => {
+                ty_ok(p, ty, Allowed::func(mp.count, effects))?;
+                Ok(out.to_vec())
+            }
+            _ => Err("undefined takes nothing and binds one value".into()),
+        },
         Op::Get(c, i) => {
             let [Ty::Data(d, m, margs, rows)] = tys else {
                 return Err(format!("get of {c} needs one object"));

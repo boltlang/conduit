@@ -30,6 +30,8 @@ has already proven them, and breaking one is **undefined behavior**:
 - `Unbox(ty)` of a value that wasn't boxed at a subtype of `ty`.
 - `ArrayFreeze` of an array that something else can still reach.
 - `array_get` of an element that `array_alloc` made and nothing has set.
+- Using what `undefined` gives: as the operand of an op that looks at it,
+  or in a `case`. Passing it on, storing it or returning it is fine.
 
 Others are checked at run time:
 
@@ -130,6 +132,7 @@ an array, and `ref_new`.
 | `apply` | a closure, then what it takes | what it gives |
 | `new C` | a value per field of `C` | the data type it binds, of `C`'s type |
 | `const c` | nothing | `c`'s type |
+| `undefined` | nothing | the type it binds |
 | `get C.i` | an object of `C`'s type | field `i` |
 | `set C.i` | a `mut` object of `C`'s type, then a value for field `i` | nothing |
 | `array_new` | elements | the array it binds |
