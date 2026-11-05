@@ -84,6 +84,14 @@ trap can be shared too: the second can't trap if the first didn't. An op
 that makes an object is shared only when nothing can tell the two apart:
 an `imm` object or array, a closure, a box.
 
+A read of what was just written gives what was written: `get C.i(x)`
+after `set C.i(x, v)` is `v`, and likewise for `array_set` and `ref_set`,
+and for a field of a `mut` object right after its `new`, an element of a
+`mut` array right after its `array_new`, and a ref right after its
+`ref_new`. Like any read of what can change, this lasts until something
+may write. A continuation is never reused, since the verifier counts its
+uses along each path.
+
 ## Dead code (`dce`)
 
 Drops each `let` whose results are unused and whose op neither writes nor
@@ -105,8 +113,6 @@ so code only dead code uses goes too.
 
 - `imm` closures with no effects don't write, so `cse` could reuse reads
   across an `apply` of one.
-- Reading back a write: a `get` after a `set`, or of a `mut` object right
-  after its `new`, is the value written.
 - Scalar replacement: a `mut` object or small array that doesn't escape
   becomes its fields, as `promote` does for refs.
 - Calls of functions known to only read, which `cse` could share.

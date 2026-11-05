@@ -13,6 +13,18 @@
 //! can tell the two apart: an `Imm` object or array, a closure, or a box.
 //! Never a ref, a `Mut` object, or the result of an op that runs code.
 //!
+//! A read of what was just written gives what was written: `get C.i(x)`
+//! after `set C.i(x, v)` is `v`, and so are `ref_get(r)` after
+//! `ref_set(r, v)` and `array_get(a, i)` after `array_set(a, i, v)` (if the
+//! `set` didn't trap, the index is in bounds). So is a field of a `mut`
+//! object right after its `new`, an element of a `mut` array right after
+//! its `array_new`, or what a ref holds right after its `ref_new`. This
+//! lasts, like a read, until something may write.
+//!
+//! A continuation is never reused: the verifier counts its uses along each
+//! path, so reading one twice, or reading one back, would look like using
+//! it twice, as `promote` keeps refs of them too.
+//!
 //! The first `let` must come before the second on every path to it: in the
 //! same block, or in one the second is nested in. A join definition can be
 //! jumped to after anything, so reads of what can change aren't carried
@@ -23,7 +35,9 @@
 
 use std::collections::HashMap;
 
-use conduit_ir::{Atom, Block, Func, FuncId, Let, Memory, Mutability, Op, Program, Tail, Ty, Var};
+use conduit_ir::{
+    Atom, Block, Func, FuncId, Let, Lit, Memory, Mutability, Op, Program, Tail, Ty, Var,
+};
 
 use crate::Pass;
 
@@ -58,11 +72,12 @@ type Key = (Op, Vec<Atom>);
 struct Cx<'f> {
     vars: &'f [Ty],
     /// The variables of `let`s that were replaced, and what they are.
-    subst: HashMap<Var, Var>,
+    subst: HashMap<Var, Atom>,
     /// Ops whose result can't change, and the variable that holds it.
     fixed: HashMap<Key, Var>,
-    /// Reads of what can change, until something may write.
-    changing: HashMap<Key, Var>,
+    /// Reads of what can change, and what they give, until something may
+    /// write: an earlier read's variable, or what was written.
+    changing: HashMap<Key, Atom>,
     changed: bool,
 }
 
@@ -153,36 +168,85 @@ impl Cx<'_> {
     }
 
     /// Records what `l` gives, or replaces it with an earlier `let`'s
-    /// variable. Returns whether it was replaced.
+    /// variable or what was written. Returns whether it was replaced.
     fn let_(&mut self, l: &Let) -> bool {
         if l.op.effects().memory >= Memory::Writes {
             self.changing.clear();
         }
-        let table = match self.kind(l) {
+        self.written(l);
+        let bind = match self.kind(l) {
             Kind::Never => return false,
-            Kind::Fixed => &mut self.fixed,
-            Kind::Changing => &mut self.changing,
+            Kind::Fixed | Kind::Changing => l.binds[0],
         };
-        let bind = l.binds[0];
+        // The verifier counts the uses of a continuation along each path,
+        // so one read twice, or read back, would look like it's used
+        // twice.
+        if matches!(self.ty(bind), Ty::Cont(_)) {
+            return false;
+        }
         let key = (l.op.clone(), l.args.clone());
-        match table.get(&key) {
-            Some(&earlier) if self.vars[earlier.0 as usize] == self.vars[bind.0 as usize] => {
+        let known = match self.kind(l) {
+            Kind::Fixed => self.fixed.get(&key).map(|&v| Atom::Var(v)),
+            _ => self.changing.get(&key).cloned(),
+        };
+        match known {
+            Some(earlier) if self.atom_ty(&earlier) == *self.ty(bind) => {
                 self.subst.insert(bind, earlier);
                 true
             }
             Some(_) => false,
             None => {
-                table.insert(key, bind);
+                match self.kind(l) {
+                    Kind::Fixed => self.fixed.insert(key, bind),
+                    _ => self.changing.insert(key, Atom::Var(bind)).map(|_| bind),
+                };
                 false
             }
         }
     }
 
+    /// Records what reading back what `l` writes, or what a `mut` object
+    /// it makes holds, gives.
+    fn written(&mut self, l: &Let) {
+        let fresh_mut = match &l.binds[..] {
+            [x] => self.can_change(&Atom::Var(*x)),
+            _ => false,
+        };
+        let mut put = |op: Op, args: Vec<Atom>, value: &Atom| {
+            self.changing.insert((op, args), value.clone());
+        };
+        match (&l.op, &l.args[..], &l.binds[..]) {
+            (Op::Set(c, i), [x, v], []) => put(Op::Get(*c, *i), vec![x.clone()], v),
+            (Op::RefSet, [r, v], []) => put(Op::RefGet, vec![r.clone()], v),
+            (Op::ArraySet, [a, i, v], []) => put(Op::ArrayGet, vec![a.clone(), i.clone()], v),
+            (Op::RefNew, [v], [r]) => put(Op::RefGet, vec![Atom::Var(*r)], v),
+            (Op::New(c), fields, [x]) if fresh_mut => {
+                for (i, v) in fields.iter().enumerate() {
+                    put(Op::Get(*c, i as u32), vec![Atom::Var(*x)], v);
+                }
+            }
+            (Op::ArrayNew, elems, [a]) if fresh_mut => {
+                for (i, v) in elems.iter().enumerate() {
+                    let index = Atom::Lit(Lit::I32(i as i32));
+                    put(Op::ArrayGet, vec![Atom::Var(*a), index], v);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn atom_ty(&self, a: &Atom) -> Ty {
+        match a {
+            Atom::Var(v) => self.ty(*v).clone(),
+            Atom::Lit(lit) => lit.ty(),
+        }
+    }
+
     fn atom(&self, a: &mut Atom) {
         if let Atom::Var(v) = a
-            && let Some(&to) = self.subst.get(v)
+            && let Some(to) = self.subst.get(v)
         {
-            *a = Atom::Var(to);
+            *a = to.clone();
         }
     }
 

@@ -1,7 +1,8 @@
 // A read of what can change is shared only while nothing may write: a
-// `set`, an array write or a call stops it. A read of what can't change
-// is shared across those. Nor is a read carried into a join point, which
-// anything may have run before a jump to.
+// `set`, an array write or a call stops it, though a read of what the
+// write wrote gives that. A read of what can't change is shared across
+// those. Nor is a read carried into a join point, which anything may have
+// run before a jump to.
 
 data Pair {
   (i32, i32)
