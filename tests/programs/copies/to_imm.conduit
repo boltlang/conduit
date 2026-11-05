@@ -2,9 +2,9 @@
 // v.len }`, with a mutability parameter for the `Vec` it's given. For an
 // `imm` `Vec`, inlining it, dropping the clone of its `imm` buffer and
 // then the rebuild leaves the `Vec` itself, with no copy. For a fresh
-// `mut` one, both copies stay for now: the buffer isn't frozen in place,
-// since `v.len` is read after the clone, and the `Vec` is built again
-// (see #9).
+// `mut` one whose copy is only read, inlining the join point that holds
+// the rest of the caller lets `simplify` read the length from the rebuilt
+// `Vec`'s `new`, which is the original's, and then neither copy is used.
 data Vec {
   (inherit [i32], i32)
 }

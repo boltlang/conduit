@@ -1,0 +1,89 @@
+// What the `joins` pass inlines on its own: a join definition only one
+// jump goes to is moved there, and one that `case`s on a parameter is
+// copied into each jump that gives it a literal, or an object built by
+// `new` or `const`. A recursive one stays.
+
+data Pair {
+  ()
+  (i32, i32)
+}
+
+const origin: imm Pair = Pair.1(0i32, 0i32)
+
+// Used once: moved, with its parameter replaced by the argument.
+fn once(%x: i32) -> (i32) {
+  join j(%y: i32) =
+    let %z: i32 = mul(%y, 2i32)
+    jump ret(%z)
+  in
+  let %x1: i32 = add(%x, 1i32)
+  jump j(%x1)
+}
+
+// Two jumps with literals, so both get a copy, which picks its arm.
+fn literals(%c: i32) -> (i32) {
+  join pick(%n: i32) =
+    case %n {
+      0 => jump ret(10i32)
+      _ =>
+        let %m: i32 = mul(%n, %c)
+        jump ret(%m)
+    }
+  in
+  case %c {
+    0 => jump pick(0i32)
+    _ => jump pick(3i32)
+  }
+}
+
+// An object built by `new` in one jump, and a constant in another, which
+// get copies. The third jump gives nothing known, so it gets none, but
+// once it's the only jump left, the definition is moved there.
+fn objects(%c: i32, %p: imm Pair) -> (i32) {
+  join first(%q: imm Pair) =
+    case %q {
+      Pair.0 => jump ret(-1i32)
+      Pair.1 =>
+        let %a: i32 = get Pair.1.0(%q)
+        jump ret(%a)
+    }
+  in
+  case %c {
+    0 =>
+      let %made: imm Pair = new Pair.1(5i32, 6i32)
+      jump first(%made)
+    1 =>
+      let %o: imm Pair = const origin()
+      jump first(%o)
+    _ => jump first(%p)
+  }
+}
+
+// A loop stays a loop.
+fn sum_to(%n: i32) -> (i32) {
+  join rec go(%i: i32, %acc: i32) =
+    case %i {
+      0 => jump ret(%acc)
+      _ =>
+        let %acc1: i32 = add(%acc, %i)
+        let %i1: i32 = sub(%i, 1i32)
+        jump go(%i1, %acc1)
+    }
+  in jump go(%n, 0i32)
+}
+
+fn objects_of(%c: i32) -> (i32) {
+  let %p: imm Pair = new Pair.0()
+  let %r: i32 = call objects(%c, %p)
+  jump ret(%r)
+}
+
+//# run once(4i32) == 10i32
+//# run literals(0i32) == 10i32
+//# run literals(2i32) == 6i32
+//# run objects_of(0i32) == 5i32
+//# run objects_of(1i32) == 0i32
+//# run objects_of(2i32) == -1i32
+//# run sum_to(4i32) == 10i32
+//# opt: joins
+//# opt: joins, simplify, dce

@@ -1,0 +1,35 @@
+data Option {
+  ()
+  (i32)
+}
+
+fn safe_div(%x: i32, %y: i32) -> (imm Option) {
+  case %y {
+    0 =>
+      let %none: imm Option = new Option.0()
+      jump ret(%none)
+    _ =>
+      let %q: i32 = div.s(%x, %y)
+      let %some: imm Option = new Option.1(%q)
+      jump ret(%some)
+  }
+}
+
+fn div_or(%x: i32, %y: i32) -> (i32) {
+  case %y {
+    0 => jump ret(0i32)
+    _ =>
+      let %q: i32 = div.s(%x, %y)
+      let %v1: i32 = add(%q, 1i32)
+      jump ret(%v1)
+  }
+}
+
+fn unwrap_or(%o: imm Option, %default: i32) -> (i32) {
+  case %o {
+    Option.0 => jump ret(%default)
+    Option.1 =>
+      let %x: i32 = get Option.1.0(%o)
+      jump ret(%x)
+  }
+}

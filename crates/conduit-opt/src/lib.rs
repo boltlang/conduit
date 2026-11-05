@@ -17,6 +17,7 @@ pub mod copies;
 pub mod cse;
 pub mod dce;
 pub mod inline;
+pub mod joins;
 pub mod promote;
 pub mod simplify;
 
@@ -38,7 +39,8 @@ pub trait Pass {
 /// callee's body in its caller shows them more. Promoting refs comes next, since a ref holding an
 /// array ties it to the ref's region, which keeps `copies` from freezing
 /// it, and since it turns what refs hold into values that `simplify` can
-/// see. `simplify` leaves code behind for dead code to remove, and so does
+/// see. Join points are inlined right before `simplify`, which picks the
+/// arm of a `case` on a value a jump gave. `simplify` leaves code behind for dead code to remove, and so does
 /// `cse`, which goes after it since folding makes more ops look alike. Dead code
 /// goes before `copies`, since a dead use of a value can keep it from
 /// freezing.
@@ -46,6 +48,7 @@ pub const PASSES: &[&dyn Pass] = &[
     &closures::KnownClosures,
     &inline::Inline,
     &promote::Promote,
+    &joins::Joins,
     &simplify::Simplify,
     &cse::Cse,
     &dce::Dce,

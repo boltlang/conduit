@@ -970,6 +970,16 @@ Because the IR is so small, the classic simplifications are local rewrites:
   body at that jump, substituting the arguments, and the case inside it
   becomes a case of a known value. Case-of-case falls out of inlining join
   points plus the previous rule.
+
+  The `joins` pass does this, right before `simplify`. A join definition
+  that only one jump goes to is moved there. A small one (at most 20
+  `let`s and tails) is copied into a jump that gives a literal, or an
+  object made by `new` or `const`, for a parameter it `case`s on. This is
+  what inlining a function that returns a `new` object needs: the rest of
+  the caller is the join point the result is jumped to. A copy gets fresh
+  variables and labels for what it binds. Recursive definitions stay,
+  since a copy would unroll the loop, and so do definitions that mention a
+  continuation, whose uses the verifier counts along each path.
 - **Inlining functions.** Substitute the body and rename `ret` to a fresh
   join point that holds the rest of the caller. This is the same shape as
   any other join point.

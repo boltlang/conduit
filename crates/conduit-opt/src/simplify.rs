@@ -12,7 +12,8 @@
 //! - **Fields of a known object.** A `get` of an `Imm` object made by
 //!   `new` in this function is the `new`'s argument. A `Mut` object's
 //!   field may have been set in between.
-//! - **Parts of a constant.** A `case` on a constant takes its arm, as for
+//! - **Parts of a constant.** A constant that's a literal is the literal.
+//!   A `case` on a constant takes its arm, as for
 //!   `new`. A field of a constant, its length and an element at a literal
 //!   index in bounds are known: a literal, or `const` of the constant that
 //!   part is. A part that's neither, like a nested array, has no name, so
@@ -158,6 +159,10 @@ impl<'f> Cx<'f> {
         let known = match &l.op {
             Op::Prim(p) => fold(p, &l.args),
             Op::Get(c, i) => self.new_field(*c, *i, l.args.first()),
+            Op::Const(id) => match const_value(self.p, *id)? {
+                ConstValue::Lit(lit) => Some(Atom::Lit(*lit)),
+                _ => None,
+            },
             Op::ArrayLen => match self.constant(l.args.first()) {
                 Some(ConstValue::Array(elems)) => Some(Atom::Lit(Lit::I32(elems.len() as i32))),
                 _ => None,
