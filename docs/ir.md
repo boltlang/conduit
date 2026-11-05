@@ -970,7 +970,10 @@ three ops.
   call that may yield, which rows tell, becomes a function that the
   continuation calls (Koka's "yield bubbling"). Each continuation carries
   a "used" flag, so a second resume traps, as with stack switching. The
-  output is ordinary Conduit IR, so every backend runs it, including Wasm
+  handler that's yielded to takes the continuation and the arguments out
+  of the yield state, which then holds nothing for that yield, so the
+  runtime's own objects never form a cycle; a test checks this on the
+  evaluator's heap after every run. The output is ordinary Conduit IR, so every backend runs it, including Wasm
   without stack switching and native ones. See "Evidence passing" in
   [Optimizations](optimisations.md).
 

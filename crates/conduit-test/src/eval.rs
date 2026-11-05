@@ -12,6 +12,16 @@ const FUEL: u64 = 100_000_000;
 /// Runs every `run` check of `p` on `m` with the evaluator. `m` is usually
 /// `p`'s module, but can be one derived from it, like after optimization.
 pub fn check_runs(p: &Program, m: &Module) -> Result<(), String> {
+    check_runs_then(p, m, |_| Ok(()))
+}
+
+/// [`check_runs`], then `after` on the machine of each run, whose heap
+/// holds everything the run made.
+pub fn check_runs_then(
+    p: &Program,
+    m: &Module,
+    after: impl Fn(&Machine<'_, Module, TestHost>) -> Result<(), String>,
+) -> Result<(), String> {
     for run in p.runs(m)? {
         let mut machine = Machine::new(m, TestHost);
         machine.fuel = Some(FUEL);
@@ -26,6 +36,7 @@ pub fn check_runs(p: &Program, m: &Module) -> Result<(), String> {
             Err(e) => Err(e.to_string()),
         };
         run.check(p, got)?;
+        after(&machine)?;
     }
     Ok(())
 }

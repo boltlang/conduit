@@ -65,6 +65,19 @@ pub enum Object<'p> {
     Cont(Continuation<'p>),
 }
 
+impl Object<'_> {
+    /// The values the object holds, other than a continuation's frames.
+    pub fn values(&self) -> &[Value] {
+        match self {
+            Object::Data { fields, .. } => fields,
+            Object::Array { elems, .. } => elems,
+            Object::Ref(v) | Object::Any { value: v, .. } => std::slice::from_ref(v),
+            Object::Closure { captures, .. } => captures,
+            Object::Cont(_) => &[],
+        }
+    }
+}
+
 /// A captured computation: the frames from a handler up to a `perform`.
 #[derive(Debug)]
 pub struct Continuation<'p> {

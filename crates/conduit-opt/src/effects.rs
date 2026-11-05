@@ -1484,6 +1484,20 @@ impl Lower {
             vec![v(st)],
         );
         let0(&mut mine, Op::Set(yc, 0), vec![v(st), int(0)]);
+        // The state lets go of what it held for this yield. Otherwise it
+        // keeps the continuation, whose closures hold evidence that points
+        // back at the state: a cycle, which reference counting can't free,
+        // and which keeps everything the continuation holds alive.
+        let no_args = let1(&mut f, &mut mine, any(), Op::Undefined, Vec::new());
+        let0(&mut mine, Op::Set(yc, 2), vec![v(st), v(no_args)]);
+        let no_cont = let1(
+            &mut f,
+            &mut mine,
+            self.rt.piece_ty(),
+            Op::Undefined,
+            Vec::new(),
+        );
+        let0(&mut mine, Op::Set(yc, 3), vec![v(st), v(no_cont)]);
         let used = let1(
             &mut f,
             &mut mine,

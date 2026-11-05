@@ -145,6 +145,15 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
         self.heap.get(id.0 as usize)
     }
 
+    /// Every object made so far. Nothing is ever freed, so after a run
+    /// this is everything the run made, which tests can inspect.
+    pub fn objects(&self) -> impl Iterator<Item = (ObjId, &Object<'p>)> {
+        self.heap
+            .iter()
+            .enumerate()
+            .map(|(i, o)| (ObjId(i as u32), o))
+    }
+
     /// Adds an object to the heap, for example to pass one to a function.
     pub fn alloc(&mut self, object: Object<'p>) -> Value {
         Value::Obj(self.alloc_id(object))
