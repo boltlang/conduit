@@ -1154,8 +1154,10 @@ Only Wasm is a target for now, in two ways, which both backends of
   Conduit allocator, which needs no GC or stack switching from the engine.
   Handlers whose clauses are all tail-resumptive or aborting are lowered
   directly, as in the GC backend, with frames in memory and exception
-  handling for aborts; a module with any other clause is lowered by
-  evidence passing first. Memory
+  handling for aborts. For a module with any other clause, the consumer
+  chooses (`Options::stack_switching`): stack switching, which isn't
+  standard yet, with Wasm continuations in tables since memory can't hold
+  references, or else evidence passing first, which runs anywhere. Memory
   is never freed yet: every object comes from one `alloc` function, and has
   a header word kept for a reference count or mark, so that freeing can
   come later without changing layouts. This is the way forward.

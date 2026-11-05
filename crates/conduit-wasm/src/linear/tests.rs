@@ -31,3 +31,20 @@ fn general_handlers() {
     ));
     assert!(wat.contains("$lookup"), "{wat}");
 }
+
+/// With stack switching, a general handler suspends instead.
+#[test]
+fn general_handlers_switching() {
+    let m = text::parse(include_str!(
+        "../../../../tests/programs/handlers/not_tail_resumptive.conduit"
+    ))
+    .unwrap();
+    let options = super::Options {
+        stack_switching: true,
+    };
+    let bytes = super::emit_module_with(&m, &[], &options).unwrap();
+    let wat = wasmprinter::print_bytes(&bytes).unwrap();
+    assert!(!wat.contains("$lookup"), "{wat}");
+    assert!(wat.contains("suspend"), "{wat}");
+    assert!(wat.contains("cont.new"), "{wat}");
+}

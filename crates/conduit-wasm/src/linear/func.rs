@@ -54,7 +54,7 @@ fn mem(offset: u32, s: Storage) -> MemArg {
     }
 }
 
-fn load(s: Storage, offset: u32) -> I<'static> {
+pub(crate) fn load(s: Storage, offset: u32) -> I<'static> {
     let m = mem(offset, s);
     match s {
         Storage::I8 => I::I32Load8S(m),
@@ -66,7 +66,7 @@ fn load(s: Storage, offset: u32) -> I<'static> {
     }
 }
 
-fn store(s: Storage, offset: u32) -> I<'static> {
+pub(crate) fn store(s: Storage, offset: u32) -> I<'static> {
     let m = mem(offset, s);
     match s {
         Storage::I8 => I::I32Store8(m),
@@ -782,6 +782,71 @@ impl<'m> FuncCx<'_, 'm> {
                 return Ok(self.bind(binds, tail));
             }
             Op::Perform(e, i) => self.perform(*e, *i, args)?,
+            // A continuation is a closure: resuming it calls it.
+            Op::Resume => {
+                let Some((k, rest)) = args.split_first() else {
+                    return Err("resume without a continuation".into());
+                };
+                let Ty::Cont(sig) = self.atom_ty(k) else {
+                    return Err("resume of something that isn't a continuation".into());
+                };
+                let ty = self.cx.entry_sig(&sig);
+                self.atom(k);
+                self.atoms(rest);
+                self.atom(k);
+                self.emit(load(Storage::I32, 4));
+                self.emit(if tail {
+                    I::ReturnCallIndirect {
+                        type_index: ty,
+                        table_index: 0,
+                    }
+                } else {
+                    I::CallIndirect {
+                        type_index: ty,
+                        table_index: 0,
+                    }
+                });
+                return Ok(self.bind(binds, tail));
+            }
+            // A continuation's: throws a closure that performs the
+            // operation into it.
+            Op::Discontinue(e, i)
+                if args
+                    .first()
+                    .is_some_and(|k| matches!(self.atom_ty(k), Ty::Cont(_))) =>
+            {
+                let (k, rest) = args.split_first().unwrap();
+                let Ty::Cont(sig) = self.atom_ty(k) else {
+                    unreachable!()
+                };
+                let thunk = self.cx.thunk(*e, *i)?;
+                let slot = self.cx.entry(thunk, rest.len());
+                let tys: Vec<Ty> = rest.iter().map(|a| self.atom_ty(a)).collect();
+                let (offsets, size) = layout(&tys);
+                let t = self.alloc_const(size);
+                self.emit(I::LocalGet(t));
+                self.emit(I::I32Const(slot as i32));
+                self.emit(store(Storage::I32, 4));
+                self.store_all(t, &offsets, rest);
+                let results = sig.results.iter().map(val).collect();
+                let ty = self.cx.disc_sig(results);
+                self.atom(k);
+                self.emit(I::LocalGet(t));
+                self.atom(k);
+                self.emit(load(Storage::I32, 8));
+                self.emit(if tail {
+                    I::ReturnCallIndirect {
+                        type_index: ty,
+                        table_index: 0,
+                    }
+                } else {
+                    I::CallIndirect {
+                        type_index: ty,
+                        table_index: 0,
+                    }
+                });
+                return Ok(self.bind(binds, tail));
+            }
             // In a tail-resumptive clause, without its continuation: the
             // `perform` it handles performs this instead, under its
             // handlers.
@@ -789,9 +854,6 @@ impl<'m> FuncCx<'_, 'm> {
                 self.emit(I::GlobalGet(SITE));
                 self.emit(I::GlobalSet(HANDLERS));
                 self.perform(*e, *i, args)?;
-            }
-            Op::Resume => {
-                return Err("a continuation, which only evidence passing can lower here".into());
             }
         }
         Ok(self.bind(binds, false))
@@ -835,6 +897,32 @@ impl<'m> FuncCx<'_, 'm> {
         };
         let results: Vec<u32> = sig.results.iter().map(|t| self.new_local(val(t))).collect();
         let n_ops = decl.ops.len();
+        if self.cx.is_switching(h) {
+            // A frame with -1 in every clause slot, which `start` links in
+            // before it runs the body.
+            let start = self.cx.switch(h)?.start;
+            let frame = self.alloc_const(size);
+            self.emit(I::LocalGet(frame));
+            self.emit(I::I32Const(number));
+            self.emit(store(Storage::I32, fields[0].0));
+            for i in 0..n_ops {
+                self.emit(I::LocalGet(frame));
+                self.emit(I::I32Const(-1));
+                self.emit(store(Storage::I32, fields[2 + i].0));
+            }
+            let env_fields = fields[2 + n_ops..2 + n_ops + env.len()].to_vec();
+            self.store_all(frame, &env_fields, env);
+            self.emit(I::LocalGet(frame));
+            self.atoms(env);
+            self.atom(&body[0]);
+            self.emit(if tail {
+                I::ReturnCall(start)
+            } else {
+                I::Call(start)
+            });
+            let _ = results;
+            return Ok(tail);
+        }
         let aborting = self.cx.is_aborting(h);
         let site = (aborting && self.cx.discontinues).then(|| {
             let site = self.new_local(ValType::I32);
@@ -975,6 +1063,16 @@ impl<'m> FuncCx<'_, 'm> {
         self.close();
         self.close();
 
+        if let Some(tag) = self.cx.tag(e, i) {
+            return self.perform_or_suspend(e, i, args, saved, found, tag, clause);
+        }
+        self.call_clause(i, args, saved, found, clause);
+        Ok(())
+    }
+
+    /// Calls clause `i` of the frame in local `found` with `args`, under
+    /// the frames below it, and puts the handler stack in `saved` back.
+    fn call_clause(&mut self, i: u32, args: &[Atom], saved: u32, found: u32, clause: u32) {
         self.emit(I::LocalGet(found));
         self.emit(load(Storage::I32, 12));
         self.emit(I::GlobalSet(HANDLERS));
@@ -1000,6 +1098,89 @@ impl<'m> FuncCx<'_, 'm> {
         if let Some(old) = site {
             self.emit(I::LocalGet(old));
             self.emit(I::GlobalSet(SITE));
+        }
+    }
+
+    /// `perform` of an effect some handler of which switches stacks: the
+    /// frame found may be one, with -1 in its clause slots, which is
+    /// suspended to, or else one whose clause is called. The results go
+    /// through locals, as both ways give them.
+    #[allow(clippy::too_many_arguments)]
+    fn perform_or_suspend(
+        &mut self,
+        e: conduit_ir::EffectId,
+        i: u32,
+        args: &[Atom],
+        saved: u32,
+        found: u32,
+        tag: u32,
+        clause: u32,
+    ) -> Result<(), String> {
+        let m = self.cx.m;
+        let op = &m.effects[&e].ops[i as usize];
+        let results: Vec<u32> = op.results.iter().map(|t| self.new_local(val(t))).collect();
+        self.emit(I::LocalGet(found));
+        self.emit(load(Storage::I32, 16 + 4 * i));
+        self.emit(I::I32Const(-1));
+        self.emit(I::I32Eq);
+        self.open(I::If(BlockType::Empty));
+        match self.cx.disc_tag {
+            None => {
+                self.atoms(args);
+                self.emit(I::Suspend(tag));
+                for &r in results.iter().rev() {
+                    self.emit(I::LocalSet(r));
+                }
+            }
+            Some(disc) => {
+                // A continuation discontinued here gets a closure thrown
+                // at it, which performs what gives this instead.
+                let thunk_sig = conduit_ir::Sig::new(Vec::new(), op.results.clone());
+                let entry = self.cx.entry_sig(&thunk_sig);
+                let t = self.new_local(ValType::I32);
+                self.open(I::Block(BlockType::Empty));
+                self.open(I::Block(BlockType::Result(ValType::I32)));
+                let catches = vec![wasm_encoder::Catch::One {
+                    tag: disc,
+                    label: 0,
+                }];
+                self.open(I::TryTable(BlockType::Empty, Cow::Owned(catches)));
+                self.atoms(args);
+                self.emit(I::Suspend(tag));
+                for &r in results.iter().rev() {
+                    self.emit(I::LocalSet(r));
+                }
+                self.emit(I::Br(2));
+                self.close();
+                self.emit(I::Unreachable);
+                self.close();
+                self.emit(I::LocalSet(t));
+                self.emit(I::LocalGet(saved));
+                self.emit(I::GlobalSet(HANDLERS));
+                self.emit(I::LocalGet(t));
+                self.emit(I::LocalGet(t));
+                self.emit(load(Storage::I32, 4));
+                self.emit(I::CallIndirect {
+                    type_index: entry,
+                    table_index: 0,
+                });
+                for &r in results.iter().rev() {
+                    self.emit(I::LocalSet(r));
+                }
+                self.close();
+            }
+        }
+        // Resumed: this stack's handlers again.
+        self.emit(I::LocalGet(saved));
+        self.emit(I::GlobalSet(HANDLERS));
+        self.emit(I::Else);
+        self.call_clause(i, args, saved, found, clause);
+        for &r in results.iter().rev() {
+            self.emit(I::LocalSet(r));
+        }
+        self.close();
+        for &r in &results {
+            self.emit(I::LocalGet(r));
         }
         Ok(())
     }
