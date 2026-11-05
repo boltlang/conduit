@@ -4,8 +4,19 @@
 //! `alloc`, a bump allocator, so that freeing can come later by replacing
 //! it.
 //!
-//! Effect handlers are lowered first by evidence passing
-//! ([`conduit_opt::effects`]), so this backend never sees one.
+//! Effect handlers whose clauses are all tail-resumptive or aborting (see
+//! [`conduit_ir::clause`]) are lowered directly, as the GC backend does: a
+//! global holds a stack of handler frames in memory, `perform` finds the
+//! nearest frame of its effect and calls its clause through the table, and
+//! an aborting clause throws an exception, from exception handling, part
+//! of Wasm 3.0. A module with any other clause is lowered by evidence
+//! passing first ([`conduit_opt::effects`]), so that it needs no stack
+//! switching.
+//!
+//! A handler frame is the header, its effect's number at 8, the next frame
+//! at 12, a table slot for each clause's wrapper from 16, then the
+//! handler's environment, then, for a handler with an aborting clause, its
+//! results, which that clause sets before it throws.
 //!
 //! The layouts, with every offset in bytes and every object 8-aligned:
 //!
@@ -27,15 +38,17 @@
 
 mod func;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use conduit_ir::verify::Item;
-use conduit_ir::{ConstId, ConstValue, CtorId, ExternId, FuncId, Lit, Module, Ty};
+use conduit_ir::{
+    ConstId, ConstValue, CtorId, EffectId, ExternId, Func, FuncId, HandlerId, Lit, Module, Ty,
+};
 use wasm_encoder::{
     CodeSection, ConstExpr, DataSection, ElementSection, Elements, EntityType, ExportKind,
     ExportSection, Function, FunctionSection, GlobalSection, GlobalType, ImportSection,
-    MemorySection, MemoryType, NameMap, NameSection, RefType, TableSection, TableType, TypeSection,
-    ValType,
+    MemorySection, MemoryType, NameMap, NameSection, RefType, TableSection, TableType, TagKind,
+    TagSection, TagType, TypeSection, ValType,
 };
 
 use crate::Error;
@@ -46,6 +59,16 @@ const CONST_BASE: u32 = 16;
 
 /// The global holding the next free address.
 const HEAP: u32 = 0;
+
+/// The global holding the innermost handler frame, or 0.
+const HANDLERS: u32 = 1;
+
+/// The global holding the handler stack of the `perform` whose clause is
+/// running, under which a `discontinue` in that clause performs.
+const SITE: u32 = 2;
+
+/// The exception an aborting clause throws, holding its handler's frame.
+const ABORT: u32 = 0;
 
 /// How a value is stored in memory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,6 +151,16 @@ pub(crate) struct Cx<'m> {
     sig_keys: HashMap<FnSig, u32>,
     /// The address of each constant that's an object.
     consts: BTreeMap<ConstId, u32>,
+    /// For each handler, the table slot of its first clause's wrapper. The
+    /// wrappers come first in the table.
+    wrappers: BTreeMap<HandlerId, u32>,
+    /// How many table slots the wrappers take, before the closures'.
+    wrapper_slots: u32,
+    /// The handlers with an aborting clause, and those clauses.
+    aborting: BTreeSet<HandlerId>,
+    aborts: BTreeSet<FuncId>,
+    /// Whether some clause discontinues, which needs [`SITE`].
+    pub discontinues: bool,
 }
 
 impl Cx<'_> {
@@ -168,12 +201,76 @@ impl Cx<'_> {
     /// The table slot of the wrapper of `f`'s closures with `n` captures.
     pub fn entry(&mut self, f: FuncId, n: usize) -> u32 {
         if let Some(&k) = self.entry_keys.get(&(f, n)) {
-            return k;
+            return self.wrapper_slots + k;
         }
         let k = self.entries.len() as u32;
         self.entries.push((f, n));
         self.entry_keys.insert((f, n), k);
-        k
+        self.wrapper_slots + k
+    }
+
+    /// The number of an effect, which its frames hold.
+    pub fn effect_number(&self, e: EffectId) -> Result<i32, String> {
+        self.m
+            .effects
+            .keys()
+            .position(|&k| k == e)
+            .map(|i| i as i32 + 1)
+            .ok_or_else(|| format!("unknown effect {e}"))
+    }
+
+    /// The table slot of the wrapper of clause `i` of `h`.
+    pub fn wrapper(&self, h: HandlerId, i: u32) -> Result<u32, String> {
+        self.wrappers
+            .get(&h)
+            .map(|first| first + i)
+            .ok_or_else(|| format!("{h} has a clause that isn't tail-resumptive or aborting"))
+    }
+
+    pub fn is_aborting(&self, h: HandlerId) -> bool {
+        self.aborting.contains(&h)
+    }
+
+    pub fn is_abort(&self, clause: FuncId) -> bool {
+        self.aborts.contains(&clause)
+    }
+
+    /// The type of the wrappers of clauses for operation `i` of `e`:
+    /// `(frame, params..) -> results`.
+    pub fn clause_sig(&mut self, e: EffectId, i: u32) -> Result<u32, String> {
+        let op = self
+            .m
+            .effects
+            .get(&e)
+            .and_then(|d| d.ops.get(i as usize))
+            .ok_or_else(|| format!("{e} has no operation {i}"))?;
+        let mut params = vec![ValType::I32];
+        params.extend(op.params.iter().map(val));
+        let results = op.results.iter().map(val).collect();
+        Ok(self.sig(FnSig { params, results }))
+    }
+
+    /// The layout of a frame of `h`: its fields' offsets and its size. The
+    /// fields are the effect's number, the next frame, a slot per clause,
+    /// the environment, and the results if `h` has an aborting clause.
+    pub fn frame(&self, h: HandlerId) -> Result<(Vec<(u32, Storage)>, u32), String> {
+        let decl = self
+            .m
+            .handlers
+            .get(&h)
+            .ok_or_else(|| format!("unknown handler {h}"))?;
+        let mut tys = vec![Ty::I32, Ty::I32];
+        tys.extend(std::iter::repeat_n(Ty::I32, decl.ops.len()));
+        tys.extend(decl.env.iter().cloned());
+        if self.aborting.contains(&h) {
+            let ret = self
+                .m
+                .funcs
+                .get(&decl.ret)
+                .ok_or_else(|| format!("unknown return clause {}", decl.ret))?;
+            tys.extend(ret.results.iter().cloned());
+        }
+        Ok(layout(&tys))
     }
 
     /// The fields of constructor `c`.
@@ -205,7 +302,7 @@ impl Cx<'_> {
 /// function's ID.
 pub fn emit_module(m: &Module, exports: &[(FuncId, &str)]) -> Result<Vec<u8>, Error> {
     let lowered;
-    let m = if needs_effects_lowered(m) {
+    let m = if !direct_handlers(m) {
         let mut copy = m.clone();
         conduit_opt::effects::lower_effects(&mut copy).map_err(|message| Error {
             item: Item::Func(FuncId(0)),
@@ -216,6 +313,34 @@ pub fn emit_module(m: &Module, exports: &[(FuncId, &str)]) -> Result<Vec<u8>, Er
     } else {
         m
     };
+
+    // Tail-resumptive and aborting clauses are lowered as plain functions,
+    // without their continuation.
+    let mut plain_clauses: BTreeMap<FuncId, Func> = BTreeMap::new();
+    let mut aborts = BTreeSet::new();
+    let mut aborting = BTreeSet::new();
+    let mut discontinues = false;
+    for (&h, decl) in &m.handlers {
+        for &clause in &decl.ops {
+            let Some(f) = m.funcs.get(&clause) else {
+                continue;
+            };
+            if let Some(plain) = conduit_ir::clause::plain_call(f) {
+                discontinues |= conduit_ir::clause::discontinues(&plain);
+                plain_clauses.insert(clause, plain);
+            } else if let Some(plain) = conduit_ir::clause::aborting(f) {
+                plain_clauses.insert(clause, plain);
+                aborts.insert(clause);
+                aborting.insert(h);
+            }
+        }
+    }
+    let mut wrappers = BTreeMap::new();
+    let mut wrapper_slots = 0;
+    for (&h, decl) in &m.handlers {
+        wrappers.insert(h, wrapper_slots);
+        wrapper_slots += decl.ops.len() as u32;
+    }
 
     let first = m.externs.len() as u32;
     let mut cx = Cx {
@@ -228,6 +353,11 @@ pub fn emit_module(m: &Module, exports: &[(FuncId, &str)]) -> Result<Vec<u8>, Er
         sigs: Vec::new(),
         sig_keys: HashMap::new(),
         consts: BTreeMap::new(),
+        wrappers,
+        wrapper_slots,
+        aborting,
+        aborts,
+        discontinues,
     };
 
     // Constants, laid out from CONST_BASE.
@@ -260,6 +390,7 @@ pub fn emit_module(m: &Module, exports: &[(FuncId, &str)]) -> Result<Vec<u8>, Er
             item: Item::Func(id),
             message,
         };
+        let f = plain_clauses.get(&id).unwrap_or(f);
         let sig = FnSig {
             params: f.params.iter().map(|&p| val(f.var_ty(p))).collect(),
             results: f.results.iter().map(val).collect(),
@@ -274,6 +405,30 @@ pub fn emit_module(m: &Module, exports: &[(FuncId, &str)]) -> Result<Vec<u8>, Er
         results: vec![ValType::I32],
     });
     let alloc = func::lower_alloc();
+
+    // The wrappers of clauses, which `perform` calls through the table.
+    let mut clause_wrappers = Vec::new();
+    for (&h, decl) in &m.handlers {
+        for i in 0..decl.ops.len() as u32 {
+            let err = |message| Error {
+                item: Item::Handler(h),
+                message,
+            };
+            let ty = cx.clause_sig(decl.effect, i).map_err(err)?;
+            let clause = decl.ops[i as usize];
+            let plain = plain_clauses
+                .get(&clause)
+                .ok_or_else(|| err(format!("clause {clause} isn't tail-resumptive or aborting")))?;
+            let body = func::lower_wrapper(&mut cx, h, i, plain).map_err(err)?;
+            clause_wrappers.push((ty, body));
+        }
+    }
+    let abort_ty = (!cx.aborts.is_empty()).then(|| {
+        cx.sig(FnSig {
+            params: vec![ValType::I32],
+            results: Vec::new(),
+        })
+    });
 
     let mut entries = Vec::new();
     let mut k = 0;
@@ -308,6 +463,7 @@ pub fn emit_module(m: &Module, exports: &[(FuncId, &str)]) -> Result<Vec<u8>, Er
         .iter()
         .map(|(ty, b)| (*ty, b))
         .chain(std::iter::once((alloc_ty, &alloc)))
+        .chain(clause_wrappers.iter().map(|(ty, b)| (*ty, b)))
         .chain(entries.iter().map(|(ty, b)| (*ty, b)));
     for (ty, body) in bodies {
         functions.function(ty);
@@ -322,8 +478,10 @@ pub fn emit_module(m: &Module, exports: &[(FuncId, &str)]) -> Result<Vec<u8>, Er
     module.section(&types);
     module.section(&import_section);
     module.section(&functions);
-    let n_entries = cx.entries.len() as u64;
-    if n_entries > 0 {
+    // Always a table, even an empty one, since a `perform` with no handler
+    // in the module still calls through it, after trapping.
+    let n_entries = u64::from(cx.wrapper_slots) + cx.entries.len() as u64;
+    {
         let mut tables = TableSection::new();
         tables.table(TableType {
             element_type: RefType::FUNCREF,
@@ -344,15 +502,27 @@ pub fn emit_module(m: &Module, exports: &[(FuncId, &str)]) -> Result<Vec<u8>, Er
         page_size_log2: None,
     });
     module.section(&memories);
+    if let Some(ty) = abort_ty {
+        let mut tags = TagSection::new();
+        tags.tag(TagType {
+            kind: TagKind::Exception,
+            func_type_idx: ty,
+        });
+        module.section(&tags);
+    }
     let mut globals = GlobalSection::new();
-    globals.global(
-        GlobalType {
-            val_type: ValType::I32,
-            mutable: true,
-            shared: false,
-        },
-        &ConstExpr::i32_const(heap_base as i32),
-    );
+    // The heap pointer, the handler stack, and the stack of the `perform`
+    // whose clause runs.
+    for init in [heap_base as i32, 0, 0] {
+        globals.global(
+            GlobalType {
+                val_type: ValType::I32,
+                mutable: true,
+                shared: false,
+            },
+            &ConstExpr::i32_const(init),
+        );
+    }
     module.section(&globals);
     let mut export_section = ExportSection::new();
     for &(f, name) in exports {
@@ -387,9 +557,17 @@ pub fn emit_module(m: &Module, exports: &[(FuncId, &str)]) -> Result<Vec<u8>, Er
     Ok(module.finish())
 }
 
-/// Whether `m` has effects for evidence passing to lower.
-fn needs_effects_lowered(m: &Module) -> bool {
-    !m.handlers.is_empty() || m.funcs.values().any(|f| !f.row.is_nothing())
+/// Whether every clause of every handler of `m` is tail-resumptive or
+/// aborting, so that its handlers can be lowered directly.
+fn direct_handlers(m: &Module) -> bool {
+    m.handlers.values().all(|decl| {
+        decl.ops.iter().all(|c| {
+            m.funcs.get(c).is_some_and(|f| {
+                conduit_ir::clause::plain_call(f).is_some()
+                    || conduit_ir::clause::aborting(f).is_some()
+            })
+        })
+    })
 }
 
 /// Lays out constant `c` in `data`, after what's there, and gives its
@@ -511,3 +689,6 @@ fn name_section(m: &Module, cx: &Cx<'_>) -> Option<NameSection> {
     section.functions(&functions);
     Some(section)
 }
+
+#[cfg(test)]
+mod tests;

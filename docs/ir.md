@@ -1151,8 +1151,11 @@ Only Wasm is a target for now, in two ways, which both backends of
 `conduit-wasm` implement:
 
 - **Linear memory** (`conduit_wasm::linear`): values in memory from a
-  Conduit allocator, which needs no GC, exceptions or stack switching from
-  the engine. Effect handlers are lowered by evidence passing first. Memory
+  Conduit allocator, which needs no GC or stack switching from the engine.
+  Handlers whose clauses are all tail-resumptive or aborting are lowered
+  directly, as in the GC backend, with frames in memory and exception
+  handling for aborts; a module with any other clause is lowered by
+  evidence passing first. Memory
   is never freed yet: every object comes from one `alloc` function, and has
   a header word kept for a reference count or mark, so that freeing can
   come later without changing layouts. This is the way forward.

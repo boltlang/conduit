@@ -10,7 +10,7 @@ use conduit_ir::{
 };
 use wasm_encoder::{BlockType, Ieee32, Ieee64, Instruction as I, MemArg, MemArgTarget, ValType};
 
-use super::{Cx, HEAP, Storage, layout, val};
+use super::{ABORT, Cx, HANDLERS, HEAP, SITE, Storage, layout, val};
 
 /// A lowered function: the locals after its parameters, and its code.
 pub(crate) struct Body {
@@ -131,6 +131,57 @@ pub(crate) fn lower_entry(cx: &mut Cx<'_>, f: FuncId, n: usize) -> Result<Body, 
         locals: Vec::new(),
         code,
     })
+}
+
+/// The wrapper of clause `i` of `h`, which `perform` calls with the frame
+/// and the operation's parameters: it reads the environment out of the
+/// frame and calls the clause, as a plain function. For an aborting
+/// clause, it stores what the clause gives in the frame, and throws.
+pub(crate) fn lower_wrapper(
+    cx: &mut Cx<'_>,
+    h: conduit_ir::HandlerId,
+    i: u32,
+    plain: &Func,
+) -> Result<Body, String> {
+    let decl = &cx.m.handlers[&h];
+    let clause = decl.ops[i as usize];
+    let op = &cx.m.effects[&decl.effect].ops[i as usize];
+    let params = op.params.len() as u32;
+    let (fields, _) = cx.frame(h)?;
+    let n_ops = decl.ops.len();
+    let env = &fields[2 + n_ops..2 + n_ops + decl.env.len()];
+    let mut code = Vec::new();
+    for &(at, s) in env {
+        code.push(I::LocalGet(0));
+        code.push(load(s, at));
+    }
+    for p in 0..params {
+        code.push(I::LocalGet(1 + p));
+    }
+    let idx = cx.func_index(clause)?;
+    let mut locals = Vec::new();
+    if cx.is_abort(clause) {
+        code.push(I::Call(idx));
+        let results: Vec<ValType> = plain.results.iter().map(val).collect();
+        let first = 1 + params;
+        for (j, &ty) in results.iter().enumerate().rev() {
+            let _ = ty;
+            code.push(I::LocalSet(first + j as u32));
+        }
+        let outs = &fields[2 + n_ops + decl.env.len()..];
+        for (j, &(at, s)) in outs.iter().enumerate() {
+            code.push(I::LocalGet(0));
+            code.push(I::LocalGet(first + j as u32));
+            code.push(store(s, at));
+        }
+        locals = results;
+        code.push(I::LocalGet(0));
+        code.push(I::Throw(ABORT));
+    } else {
+        code.push(I::ReturnCall(idx));
+    }
+    code.push(I::End);
+    Ok(Body { locals, code })
 }
 
 /// `alloc(size) -> address`: bumps the heap pointer by `size`, rounded up
@@ -726,11 +777,231 @@ impl<'m> FuncCx<'_, 'm> {
                     self.emit(load(Storage::of(ty), 8));
                 }
             }
-            Op::Handle(..) | Op::Perform(..) | Op::Resume | Op::Discontinue(..) => {
-                return Err("effects must be lowered by evidence passing first".into());
+            Op::Handle(h, _) => {
+                let tail = self.handle(*h, args, tail)?;
+                return Ok(self.bind(binds, tail));
+            }
+            Op::Perform(e, i) => self.perform(*e, *i, args)?,
+            // In a tail-resumptive clause, without its continuation: the
+            // `perform` it handles performs this instead, under its
+            // handlers.
+            Op::Discontinue(e, i) => {
+                self.emit(I::GlobalGet(SITE));
+                self.emit(I::GlobalSet(HANDLERS));
+                self.perform(*e, *i, args)?;
+            }
+            Op::Resume => {
+                return Err("a continuation, which only evidence passing can lower here".into());
             }
         }
         Ok(self.bind(binds, false))
+    }
+
+    /// Calls the closure `body` with no arguments, leaving its results.
+    fn apply_body(&mut self, body: &Atom) -> Result<(), String> {
+        let Ty::Fn(sig, _) = self.atom_ty(body) else {
+            return Err("the body of a handle isn't a closure".into());
+        };
+        let ty = self.cx.entry_sig(&sig);
+        self.atom(body);
+        self.atom(body);
+        self.emit(load(Storage::I32, 4));
+        self.emit(I::CallIndirect {
+            type_index: ty,
+            table_index: 0,
+        });
+        Ok(())
+    }
+
+    /// `handle h(env.., body)`: pushes a frame of `h`, runs the body, pops
+    /// the frame and calls the return clause. If `h` has an aborting
+    /// clause, the body runs in a `try_table` that catches the exception
+    /// holding this frame, and the results are then the frame's. Returns
+    /// whether it was a tail call.
+    fn handle(
+        &mut self,
+        h: conduit_ir::HandlerId,
+        args: &[Atom],
+        tail: bool,
+    ) -> Result<bool, String> {
+        let m = self.cx.m;
+        let decl = &m.handlers[&h];
+        let (env, body) = args.split_at(args.len() - 1);
+        let (fields, size) = self.cx.frame(h)?;
+        let number = self.cx.effect_number(decl.effect)?;
+        let ret = self.cx.func_index(decl.ret)?;
+        let Ty::Fn(sig, _) = self.atom_ty(&body[0]) else {
+            return Err(format!("the body of handle {h} isn't a closure"));
+        };
+        let results: Vec<u32> = sig.results.iter().map(|t| self.new_local(val(t))).collect();
+        let n_ops = decl.ops.len();
+        let aborting = self.cx.is_aborting(h);
+        let site = (aborting && self.cx.discontinues).then(|| {
+            let site = self.new_local(ValType::I32);
+            self.emit(I::GlobalGet(SITE));
+            self.emit(I::LocalSet(site));
+            site
+        });
+
+        let saved = self.new_local(ValType::I32);
+        self.emit(I::GlobalGet(HANDLERS));
+        self.emit(I::LocalSet(saved));
+        let frame = self.alloc_const(size);
+        self.emit(I::LocalGet(frame));
+        self.emit(I::I32Const(number));
+        self.emit(store(Storage::I32, fields[0].0));
+        self.emit(I::LocalGet(frame));
+        self.emit(I::LocalGet(saved));
+        self.emit(store(Storage::I32, fields[1].0));
+        for i in 0..n_ops {
+            let slot = self.cx.wrapper(h, i as u32)?;
+            self.emit(I::LocalGet(frame));
+            self.emit(I::I32Const(slot as i32));
+            self.emit(store(Storage::I32, fields[2 + i].0));
+        }
+        let env_fields = fields[2 + n_ops..2 + n_ops + env.len()].to_vec();
+        self.store_all(frame, &env_fields, env);
+        self.emit(I::LocalGet(frame));
+        self.emit(I::GlobalSet(HANDLERS));
+
+        if !aborting {
+            self.apply_body(&body[0])?;
+            for &r in results.iter().rev() {
+                self.emit(I::LocalSet(r));
+            }
+            self.emit(I::LocalGet(saved));
+            self.emit(I::GlobalSet(HANDLERS));
+            self.atoms(env);
+            for &r in &results {
+                self.emit(I::LocalGet(r));
+            }
+            self.emit(if tail {
+                I::ReturnCall(ret)
+            } else {
+                I::Call(ret)
+            });
+            return Ok(tail);
+        }
+
+        let ret_func = m
+            .funcs
+            .get(&decl.ret)
+            .ok_or_else(|| format!("unknown return clause {}", decl.ret))?;
+        let outs: Vec<u32> = ret_func
+            .results
+            .iter()
+            .map(|t| self.new_local(val(t)))
+            .collect();
+        let thrown = self.new_local(ValType::I32);
+        self.open(I::Block(BlockType::Empty));
+        self.open(I::Block(BlockType::Result(ValType::I32)));
+        // A catch's label is counted from outside the `try_table`.
+        let catches = vec![wasm_encoder::Catch::One {
+            tag: ABORT,
+            label: 0,
+        }];
+        self.open(I::TryTable(BlockType::Empty, Cow::Owned(catches)));
+        self.apply_body(&body[0])?;
+        for &r in results.iter().rev() {
+            self.emit(I::LocalSet(r));
+        }
+        self.close();
+        // The body returned: run the return clause outside the handler.
+        self.emit(I::LocalGet(saved));
+        self.emit(I::GlobalSet(HANDLERS));
+        self.atoms(env);
+        for &r in &results {
+            self.emit(I::LocalGet(r));
+        }
+        self.emit(I::Call(ret));
+        for &o in outs.iter().rev() {
+            self.emit(I::LocalSet(o));
+        }
+        self.emit(I::Br(1));
+        self.close();
+        // A clause aborted: to this handler, or else to one further out.
+        self.emit(I::LocalTee(thrown));
+        self.emit(I::LocalGet(frame));
+        self.emit(I::I32Ne);
+        self.open(I::If(BlockType::Empty));
+        self.emit(I::LocalGet(thrown));
+        self.emit(I::Throw(ABORT));
+        self.close();
+        self.emit(I::LocalGet(saved));
+        self.emit(I::GlobalSet(HANDLERS));
+        if let Some(site) = site {
+            self.emit(I::LocalGet(site));
+            self.emit(I::GlobalSet(SITE));
+        }
+        let out_fields = fields[2 + n_ops + env.len()..].to_vec();
+        for (&o, &(at, s)) in outs.iter().zip(&out_fields) {
+            self.emit(I::LocalGet(frame));
+            self.emit(load(s, at));
+            self.emit(I::LocalSet(o));
+        }
+        self.close();
+        for &o in &outs {
+            self.emit(I::LocalGet(o));
+        }
+        Ok(false)
+    }
+
+    /// `perform e.i(args)`: finds the nearest frame of `e`, trapping if
+    /// there's none, and calls its clause with the handler stack below the
+    /// frame, so that a `perform` in the clause goes to an outer handler.
+    fn perform(&mut self, e: conduit_ir::EffectId, i: u32, args: &[Atom]) -> Result<(), String> {
+        let number = self.cx.effect_number(e)?;
+        let clause = self.cx.clause_sig(e, i)?;
+        let saved = self.new_local(ValType::I32);
+        let found = self.new_local(ValType::I32);
+        self.emit(I::GlobalGet(HANDLERS));
+        self.emit(I::LocalTee(saved));
+        self.emit(I::LocalSet(found));
+        self.open(I::Block(BlockType::Empty));
+        self.open(I::Loop(BlockType::Empty));
+        // No frame left: the effect isn't handled.
+        self.emit(I::LocalGet(found));
+        self.emit(I::I32Eqz);
+        self.trap_if();
+        self.emit(I::LocalGet(found));
+        self.emit(load(Storage::I32, 8));
+        self.emit(I::I32Const(number));
+        self.emit(I::I32Eq);
+        self.emit(I::BrIf(1));
+        self.emit(I::LocalGet(found));
+        self.emit(load(Storage::I32, 12));
+        self.emit(I::LocalSet(found));
+        self.emit(I::Br(0));
+        self.close();
+        self.close();
+
+        self.emit(I::LocalGet(found));
+        self.emit(load(Storage::I32, 12));
+        self.emit(I::GlobalSet(HANDLERS));
+        // The clause can discontinue under this `perform`'s handlers.
+        let site = self.cx.discontinues.then(|| {
+            let old = self.new_local(ValType::I32);
+            self.emit(I::GlobalGet(SITE));
+            self.emit(I::LocalSet(old));
+            self.emit(I::LocalGet(saved));
+            self.emit(I::GlobalSet(SITE));
+            old
+        });
+        self.emit(I::LocalGet(found));
+        self.atoms(args);
+        self.emit(I::LocalGet(found));
+        self.emit(load(Storage::I32, 16 + 4 * i));
+        self.emit(I::CallIndirect {
+            type_index: clause,
+            table_index: 0,
+        });
+        self.emit(I::LocalGet(saved));
+        self.emit(I::GlobalSet(HANDLERS));
+        if let Some(old) = site {
+            self.emit(I::LocalGet(old));
+            self.emit(I::GlobalSet(SITE));
+        }
+        Ok(())
     }
 
     /// The offset and storage of field `i` of `c`.

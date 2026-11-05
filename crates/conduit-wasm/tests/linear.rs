@@ -1,7 +1,6 @@
 //! Lowers every test program with `run` checks with the linear memory
-//! backend, which lowers its effects first, validates the Wasm without
-//! the GC, exception handling and stack switching proposals, and runs its
-//! `run` checks with Wasmtime.
+//! backend, validates the Wasm without the GC and stack switching
+//! proposals, and runs its `run` checks with Wasmtime.
 
 mod support;
 
@@ -24,13 +23,12 @@ fn test(p: &Program) -> Result<(), String> {
     let exports: Vec<(FuncId, &str)> = names.iter().map(|(f, n)| (*f, n.as_str())).collect();
     let bytes = conduit_wasm::linear::emit_module(&m, &exports)
         .map_err(|e| format!("lowering fails: {e}"))?;
-    let features = WasmFeatures::default()
-        - WasmFeatures::GC
-        - WasmFeatures::EXCEPTIONS
-        - WasmFeatures::STACK_SWITCHING;
+    let features = WasmFeatures::default() - WasmFeatures::GC - WasmFeatures::STACK_SWITCHING;
     if let Err(e) = wasmparser::Validator::new_with_features(features).validate_all(&bytes) {
         let wat = wasmprinter::print_bytes(&bytes).unwrap_or_default();
-        return Err(format!("the Wasm doesn't validate without GC: {e}\n{wat}"));
+        return Err(format!(
+            "the Wasm doesn't validate without GC or stack switching: {e}\n{wat}"
+        ));
     }
     let (mut store, instance) = instantiate(&bytes, false)?;
     for run in p.runs(&m)? {
