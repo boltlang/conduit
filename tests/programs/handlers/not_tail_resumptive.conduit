@@ -1,5 +1,5 @@
 // A clause that does something after resuming needs its continuation
-// captured, which the Wasm backend can't do yet.
+// captured, which the Wasm backend does with stack switching.
 effect Ask {
   () -> (i32)
 }
@@ -30,4 +30,4 @@ fn main() -> (i32) {
 }
 
 //# run main() == 22i32
-//# wasm-error: isn't tail-resumptive
+//# wat

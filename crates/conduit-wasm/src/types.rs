@@ -27,6 +27,13 @@
 //!   clause, a mutable field for each result of the `handle`, which that
 //!   clause sets before it unwinds. A clause is called with the frame, then
 //!   the operation's parameters.
+//! - A handler that switches stacks pushes a frame of its own type, which
+//!   adds nothing to the base. Its `next` is then mutable, in every frame,
+//!   since it's the handlers around wherever its continuation was last
+//!   resumed. A continuation is a closure of its signature, whose concrete
+//!   type holds the frame, the handler's environment and the Wasm
+//!   continuation. If some clause discontinues one, its base also holds
+//!   the function that does that.
 //!
 //! Mutability doesn't exist at run time, and every reference is nullable,
 //! so locals of any type have a default value and join point parameters
@@ -36,7 +43,7 @@ use std::collections::{BTreeSet, HashMap};
 
 use conduit_ir::{CtorId, DataId, EffectId, FuncId, HandlerId, Module, Sig, Ty};
 use wasm_encoder::{
-    ArrayType, CompositeInnerType, CompositeType, FieldType, FuncType, HeapType, RefType,
+    ArrayType, CompositeInnerType, CompositeType, ContType, FieldType, FuncType, HeapType, RefType,
     StorageType, StructType, SubType, ValType,
 };
 
@@ -70,12 +77,35 @@ enum Key {
     Clause(EffectId, u32),
     /// The frames of a handler.
     HandlerFrame(HandlerId),
+    /// A function type, as a block type or a continuation's.
+    Func(FnSig),
+    /// A Wasm continuation of a function type.
+    Cont(FnSig),
+    /// A Wasm continuation of the wrapper of closures with this signature.
+    ContEntry(FnSig),
+    /// The base type of Conduit continuations with this signature.
+    ContBase(FnSig),
+    /// The type of the function that discontinues a continuation with
+    /// this signature: `func (k, thunk) -> results`.
+    Discontinue(FnSig),
+    /// The frames of handlers that switch stacks.
+    SwitchFrame,
+    /// The continuation a handler's clause for operation `i` gets.
+    ContOf(HandlerId, u32),
+    /// What `discontinue E.i(k, args)` throws into `k`: a closure that
+    /// performs `E.i(args)`.
+    Thunk(EffectId, u32),
 }
 
 pub(crate) struct Types<'m> {
     m: &'m Module,
     /// The handlers with an aborting clause.
     pub aborting: BTreeSet<HandlerId>,
+    /// The handlers that switch stacks, since a clause of theirs is
+    /// neither tail-resumptive nor aborting.
+    pub switching: BTreeSet<HandlerId>,
+    /// Whether some clause discontinues a continuation it was given.
+    pub discontinues: bool,
     group: Vec<Option<SubType>>,
     keys: HashMap<Key, u32>,
 }
@@ -137,6 +167,8 @@ impl<'m> Types<'m> {
         Types {
             m,
             aborting: BTreeSet::new(),
+            switching: BTreeSet::new(),
+            discontinues: false,
             group: Vec::new(),
             keys: HashMap::new(),
         }
@@ -181,7 +213,10 @@ impl<'m> Types<'m> {
             }
             Ty::Ref(inner) => nullable(self.cell(inner)?),
             Ty::Any(_) => ValType::Ref(RefType::ANYREF),
-            Ty::Cont(_) => return Err("continuations aren't supported yet".into()),
+            Ty::Cont(sig) => {
+                let sig = self.sig(sig)?;
+                nullable(self.cont_base(&sig)?)
+            }
         })
     }
 
@@ -331,10 +366,11 @@ impl<'m> Types<'m> {
     pub fn frame(&mut self) -> Result<u32, String> {
         self.get_or(Key::Frame, |t| {
             let next = nullable(t.keys[&Key::Frame]);
+            let mutable = !t.switching.is_empty();
             Ok(subtype(
                 false,
                 None,
-                struct_(vec![field(ValType::I32, false), field(next, false)]),
+                struct_(vec![field(ValType::I32, false), field(next, mutable)]),
             ))
         })
     }
@@ -344,7 +380,8 @@ impl<'m> Types<'m> {
     fn effect_fields(&mut self, e: EffectId) -> Result<Vec<FieldType>, String> {
         let next = nullable(self.frame()?);
         let ops = self.ops(e)?;
-        let mut fields = vec![field(ValType::I32, false), field(next, false)];
+        let mutable = !self.switching.is_empty();
+        let mut fields = vec![field(ValType::I32, false), field(next, mutable)];
         for i in 0..ops {
             fields.push(field(nullable(self.clause(e, i)?), false));
         }
@@ -408,5 +445,189 @@ impl<'m> Types<'m> {
             Ok(subtype(true, Some(base), struct_(fields)))
         })?;
         Ok((idx, first))
+    }
+
+    /// A function type in the group.
+    pub fn func(&mut self, sig: &FnSig) -> Result<u32, String> {
+        self.get_or(Key::Func(sig.clone()), |_| {
+            let ty = FuncType::new(sig.params.iter().copied(), sig.results.iter().copied());
+            Ok(subtype(true, None, CompositeInnerType::Func(ty)))
+        })
+    }
+
+    /// A Wasm continuation that's resumed with `sig.params` and gives
+    /// `sig.results`.
+    pub fn cont(&mut self, sig: &FnSig) -> Result<u32, String> {
+        self.get_or(Key::Cont(sig.clone()), |t| {
+            let f = t.func(sig)?;
+            Ok(subtype(true, None, CompositeInnerType::Cont(ContType(f))))
+        })
+    }
+
+    /// A Wasm continuation of a closure's wrapper, which is resumed with
+    /// the closure.
+    pub fn cont_of_entry(&mut self, sig: &FnSig) -> Result<u32, String> {
+        let entry = self.entry(sig)?;
+        self.get_or(Key::ContEntry(sig.clone()), |_| {
+            Ok(subtype(
+                true,
+                None,
+                CompositeInnerType::Cont(ContType(entry)),
+            ))
+        })
+    }
+
+    /// The base type of Conduit continuations with signature `sig`: a
+    /// closure's, and if some clause discontinues one, the function that
+    /// does it.
+    pub fn cont_base(&mut self, sig: &FnSig) -> Result<u32, String> {
+        let closure = self.closure(sig)?;
+        if !self.discontinues {
+            return Ok(closure);
+        }
+        let entry = self.entry(sig)?;
+        self.get_or(Key::ContBase(sig.clone()), |t| {
+            let disc = t.discontinue(sig)?;
+            Ok(subtype(
+                false,
+                Some(closure),
+                struct_(vec![
+                    field(nullable(entry), false),
+                    field(nullable(disc), false),
+                ]),
+            ))
+        })
+    }
+
+    /// `func (k, thunk) -> sig.results`, which discontinues `k` by
+    /// throwing the closure `thunk` into it.
+    pub fn discontinue(&mut self, sig: &FnSig) -> Result<u32, String> {
+        self.get_or(Key::Discontinue(sig.clone()), |t| {
+            let k = nullable(t.cont_base(sig)?);
+            let ty = FuncType::new(
+                [k, ValType::Ref(RefType::ANYREF)],
+                sig.results.iter().copied(),
+            );
+            Ok(subtype(true, None, CompositeInnerType::Func(ty)))
+        })
+    }
+
+    /// The frames of handlers that switch stacks.
+    pub fn switch_frame(&mut self) -> Result<u32, String> {
+        let base = self.frame()?;
+        self.get_or(Key::SwitchFrame, |t| {
+            let next = nullable(t.frame()?);
+            Ok(subtype(
+                true,
+                Some(base),
+                struct_(vec![field(ValType::I32, false), field(next, true)]),
+            ))
+        })
+    }
+
+    /// The results of the body of a `handle` of `h`: what its return
+    /// clause takes after the environment.
+    pub fn body_results(&mut self, h: HandlerId) -> Result<Vec<ValType>, String> {
+        let m: &'m Module = self.m;
+        let decl = &m.handlers[&h];
+        let Some(ret) = m.funcs.get(&decl.ret) else {
+            return Err(format!("unknown return clause {}", decl.ret));
+        };
+        let sig = ret.sig();
+        let Some(body) = sig.params.get(decl.env.len()..) else {
+            return Err(format!(
+                "return clause {} doesn't take the environment",
+                decl.ret
+            ));
+        };
+        self.vals(body)
+    }
+
+    /// The Wasm continuation captured by operation `i` under `h`: resumed
+    /// with the operation's results, it gives the body's.
+    pub fn op_cont(&mut self, h: HandlerId, i: u32) -> Result<u32, String> {
+        let m: &'m Module = self.m;
+        let decl = &m.handlers[&h];
+        let Some(op) = m
+            .effects
+            .get(&decl.effect)
+            .and_then(|e| e.ops.get(i as usize))
+        else {
+            return Err(format!("{} has no operation {i}", decl.effect));
+        };
+        let sig = FnSig {
+            params: self.vals(&op.results)?,
+            results: self.body_results(h)?,
+        };
+        self.cont(&sig)
+    }
+
+    /// The signature of the continuation clause `i` of `h` gets: the
+    /// operation's results to what the `handle` gives.
+    pub fn clause_cont_sig(&mut self, h: HandlerId, i: u32) -> Result<FnSig, String> {
+        let m: &'m Module = self.m;
+        let decl = &m.handlers[&h];
+        let Some(op) = m
+            .effects
+            .get(&decl.effect)
+            .and_then(|e| e.ops.get(i as usize))
+        else {
+            return Err(format!("{} has no operation {i}", decl.effect));
+        };
+        let Some(ret) = m.funcs.get(&decl.ret) else {
+            return Err(format!("unknown return clause {}", decl.ret));
+        };
+        Ok(FnSig {
+            params: self.vals(&op.results)?,
+            results: self.vals(&ret.results)?,
+        })
+    }
+
+    /// The continuation clause `i` of `h` gets, and the index of its
+    /// first field after the base's: the frame, then the environment, then
+    /// the Wasm continuation.
+    pub fn cont_of(&mut self, h: HandlerId, i: u32) -> Result<(u32, u32), String> {
+        let m: &'m Module = self.m;
+        let decl = &m.handlers[&h];
+        let sig = self.clause_cont_sig(h, i)?;
+        let base = self.cont_base(&sig)?;
+        let first = if self.discontinues { 2 } else { 1 };
+        let idx = self.get_or(Key::ContOf(h, i), |t| {
+            let entry = t.entry(&sig)?;
+            let mut fields = vec![field(nullable(entry), false)];
+            if t.discontinues {
+                fields.push(field(nullable(t.discontinue(&sig)?), false));
+            }
+            fields.push(field(nullable(t.switch_frame()?), false));
+            for ty in t.vals(&decl.env)? {
+                fields.push(field(ty, false));
+            }
+            fields.push(field(nullable(t.op_cont(h, i)?), false));
+            Ok(subtype(true, Some(base), struct_(fields)))
+        })?;
+        Ok((idx, first))
+    }
+
+    /// What `discontinue E.i(k, args)` throws into `k`: a closure of no
+    /// parameters that performs `E.i(args)`, holding `args`. Also gives
+    /// the signature it's called with.
+    pub fn thunk(&mut self, e: EffectId, i: u32) -> Result<(u32, FnSig), String> {
+        let m: &'m Module = self.m;
+        let Some(op) = m.effects.get(&e).and_then(|d| d.ops.get(i as usize)) else {
+            return Err(format!("{e} has no operation {i}"));
+        };
+        let sig = FnSig {
+            params: Vec::new(),
+            results: self.vals(&op.results)?,
+        };
+        let base = self.closure(&sig)?;
+        let entry = self.entry(&sig)?;
+        let args = self.vals(&op.params)?;
+        let idx = self.get_or(Key::Thunk(e, i), |_| {
+            let mut fields = vec![field(nullable(entry), false)];
+            fields.extend(args.into_iter().map(|a| field(a, false)));
+            Ok(subtype(true, Some(base), struct_(fields)))
+        })?;
+        Ok((idx, sig))
     }
 }

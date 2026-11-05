@@ -1,0 +1,212 @@
+// Handlers whose clauses do something after resuming, or keep their
+// continuation, which the Wasm backend lowers by switching stacks.
+
+effect Gen {
+  (i32) -> ()
+  (i32, i32) -> (i32, i32)
+  () -> (i64)
+}
+
+effect Log {
+  (i32) -> ()
+}
+
+effect Wait {
+  () -> (i32)
+}
+
+effect Cancel {
+  () -> (i32)
+}
+
+// Sums what's yielded, after resuming: not tail-resumptive.
+handler summing for Gen env() ops(sum_yield, sum_swap, sum_ask) ret sum_done
+
+// Keeps the continuation in a ref instead of resuming it.
+handler parking for Wait does Log env(ref ro any) ops(park) ret parked_done
+
+handler logging for Log env(ref i32) ops(log) ret log_done
+
+// Resumes with 5 and doubles, or discontinues with Cancel.
+handler scheduler for Wait does Cancel env(i32) ops(schedule) ret scheduled_done
+
+handler catch_cancel for Cancel env() ops(cancelled) ret id
+
+// The same, for a body that also waits.
+handler catch_cancel_waiting for Cancel does Wait env() ops(cancelled_waiting) ret id
+
+fn sum_yield(%x: i32, %k: cont() -> (i32)) -> (i32) {
+  let %rest: i32 = resume(%k)
+  let %r: i32 = add(%x, %rest)
+  jump ret(%r)
+}
+
+// Swaps two values, and adds 1000 to what the body gives.
+fn sum_swap(%a: i32, %b: i32, %k: cont(i32, i32) -> (i32)) -> (i32) {
+  let %r: i32 = resume(%k, %b, %a)
+  let %r1: i32 = add(%r, 1000i32)
+  jump ret(%r1)
+}
+
+fn sum_ask(%k: cont(i64) -> (i32)) -> (i32) {
+  let %r: i32 = resume(%k, 7i64)
+  jump ret(%r)
+}
+
+fn sum_done(%r: i32) -> (i32) {
+  jump ret(%r)
+}
+
+// 1 + 2 + 3, then the swap of (10, 20) gives 20 - 10, then 7.
+fn gen_body() -> (i32) does Gen {
+  let = perform Gen.0(1i32)
+  let = perform Gen.0(2i32)
+  let = perform Gen.0(3i32)
+  let %b: i32, %a: i32 = perform Gen.1(10i32, 20i32)
+  let %d: i32 = sub(%b, %a)
+  let %s: i64 = perform Gen.2()
+  let %s32: i32 = convert.s[i32](%s)
+  let %r: i32 = add(%d, %s32)
+  jump ret(%r)
+}
+
+// 1 + 2 + 3 + 1000 + (20 - 10 + 7) = 1023
+fn generator() -> (i32) {
+  let %body: imm fn() -> (i32) does Gen = closure gen_body()
+  let %r: i32 = handle summing(%body)
+  jump ret(%r)
+}
+
+fn park(%cell: ref ro any, %k: cont(i32) -> (i32) does Log) -> (i32) does Log {
+  let %boxed: mut any = box[cont(i32) -> (i32) does Log](%k)
+  let = ref_set(%cell, %boxed)
+  jump ret(-1i32)
+}
+
+fn parked_done(%cell: ref ro any, %r: i32) -> (i32) {
+  jump ret(%r)
+}
+
+fn log(%total: ref i32, %x: i32, %k: cont() -> (i32)) -> (i32) {
+  let %t: i32 = ref_get(%total)
+  let %t1: i32 = add(%t, %x)
+  let = ref_set(%total, %t1)
+  let %r: i32 = resume(%k)
+  jump ret(%r)
+}
+
+fn log_done(%total: ref i32, %r: i32) -> (i32) {
+  jump ret(%r)
+}
+
+// Waits, then logs what it was given, under whatever logs then.
+fn wait_and_log() -> (i32) does Wait + Log {
+  let %x: i32 = perform Wait.0()
+  let = perform Log.0(%x)
+  let %r: i32 = mul(%x, 2i32)
+  jump ret(%r)
+}
+
+fn park_body(%cell: ref ro any) -> (i32) does Log {
+  let %body: imm fn() -> (i32) does Wait + Log = closure wait_and_log()
+  let %r: i32 = handle parking(%cell, %body)
+  jump ret(%r)
+}
+
+fn resume_parked(%cell: ref ro any, %x: i32) -> (i32) does Log {
+  let %boxed: ro any = ref_get(%cell)
+  let %k: cont(i32) -> (i32) does Log = unbox[cont(i32) -> (i32) does Log](%boxed)
+  let %r: i32 = resume(%k, %x)
+  jump ret(%r)
+}
+
+// Parks under one Log handler, which then sees nothing, and resumes the
+// parked continuation under another, which sees the log: the body runs
+// under the handlers around where it's resumed. The parking handler gave
+// -1, and resuming gives x * 2.
+fn resumed_elsewhere(%x: i32) -> (i32, i32, i32) {
+  let %empty: imm any = box[i32](0i32)
+  let %cell: ref ro any = ref_new(%empty)
+  let %first: ref i32 = ref_new(0i32)
+  let %parked: mut fn() -> (i32) does Log = closure park_body(%cell)
+  let %p: i32 = handle logging(%first, %parked)
+  let %second: ref i32 = ref_new(0i32)
+  let %resumer: mut fn() -> (i32) does Log = closure resume_parked(%cell, %x)
+  let %r: i32 = handle logging(%second, %resumer)
+  let %f: i32 = ref_get(%first)
+  let %s: i32 = ref_get(%second)
+  let %pr: i32 = add(%p, %r)
+  jump ret(%pr, %f, %s)
+}
+
+fn schedule(%mode: i32, %k: cont(i32) -> (i32) does Cancel) -> (i32) does Cancel {
+  case %mode {
+    0 =>
+      let %r: i32 = resume(%k, 5i32)
+      let %r2: i32 = mul(%r, 2i32)
+      jump ret(%r2)
+    _ =>
+      let %c: i32 = discontinue Cancel.0(%k)
+      let %c2: i32 = add(%c, 100i32)
+      jump ret(%c2)
+  }
+}
+
+fn cancelled(%k: cont(i32) -> (i32)) -> (i32) {
+  jump ret(-1i32)
+}
+
+fn cancelled_waiting(%k: cont(i32) -> (i32) does Wait) -> (i32) does Wait {
+  jump ret(-1i32)
+}
+
+fn scheduled_done(%mode: i32, %r: i32) -> (i32) {
+  jump ret(%r)
+}
+
+fn id(%r: i32) -> (i32) {
+  jump ret(%r)
+}
+
+fn wait_plus_1() -> (i32) does Wait {
+  let %x: i32 = perform Wait.0()
+  let %r: i32 = add(%x, 1i32)
+  jump ret(%r)
+}
+
+// The Cancel handler is inside the scheduled body: a discontinued Wait
+// gives -1 there, and the body goes on from it.
+fn caught_inside() -> (i32) does Wait {
+  let %task: imm fn() -> (i32) does Wait + Cancel = closure wait_plus_1()
+  let %r: i32 = handle catch_cancel_waiting(%task)
+  let %r10: i32 = mul(%r, 10i32)
+  jump ret(%r10)
+}
+
+// The scheduler's row says Cancel may get out, though here it never does.
+fn cancel_inside(%mode: i32) -> (i32) does Cancel {
+  let %body: imm fn() -> (i32) does Wait = closure caught_inside()
+  let %r: i32 = handle scheduler(%mode, %body)
+  jump ret(%r)
+}
+
+// The Cancel handler is outside the scheduler, so the discontinued Wait
+// aborts all the way out, through the scheduler's stack.
+fn schedule_outside(%mode: i32) -> (i32) does Cancel {
+  let %body: imm fn() -> (i32) does Wait = closure wait_plus_1()
+  let %r: i32 = handle scheduler(%mode, %body)
+  jump ret(%r)
+}
+
+fn cancel_outside(%mode: i32) -> (i32) {
+  let %task: imm fn() -> (i32) does Cancel = closure schedule_outside(%mode)
+  let %r: i32 = handle catch_cancel(%task)
+  jump ret(%r)
+}
+
+//# run generator() == 1023i32
+//# run resumed_elsewhere(4i32) == (7i32, 0i32, 4i32)
+//# run cancel_inside(0i32) == 120i32
+//# run cancel_inside(1i32) == 90i32
+//# run cancel_outside(0i32) == 12i32
+//# run cancel_outside(1i32) == -1i32

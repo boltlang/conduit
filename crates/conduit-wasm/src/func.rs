@@ -709,9 +709,14 @@ impl<'m> FuncCx<'_, 'm> {
                 return Ok(self.bind(binds, tail));
             }
             Op::Perform(e, i) => self.perform(*e, *i, args)?,
-            // A tail-resumptive clause's `resume` is gone by now, and no
-            // other code can have a continuation.
-            Op::Resume => return Err("continuations aren't supported yet".into()),
+            // A continuation is a closure: resuming it calls it.
+            Op::Resume => {
+                let Some((k, rest)) = args.split_first() else {
+                    return Err("resume without a continuation".into());
+                };
+                self.call_closure(k, rest, tail)?;
+                return Ok(self.bind(binds, tail));
+            }
             // In a tail-resumptive clause, without its continuation: the
             // `perform` it handles performs this instead, so it runs under
             // that `perform`'s handlers.
@@ -720,8 +725,9 @@ impl<'m> FuncCx<'_, 'm> {
                 self.emit(I::GlobalSet(HANDLERS));
                 self.perform(*e, *i, args)?;
             }
-            Op::Discontinue(..) => {
-                return Err("continuations aren't supported yet".into());
+            Op::Discontinue(e, i) => {
+                self.discontinue(*e, *i, args, tail)?;
+                return Ok(self.bind(binds, tail));
             }
         }
         Ok(self.bind(binds, false))
@@ -729,8 +735,16 @@ impl<'m> FuncCx<'_, 'm> {
 
     /// Calls closure `c` with `args`.
     fn apply(&mut self, c: &Atom, args: &[Atom], tail: bool) -> Result<(), String> {
-        let Ty::Fn(sig, _) = self.atom_ty(c) else {
+        if !matches!(self.atom_ty(c), Ty::Fn(..)) {
             return Err("apply of a value that isn't a closure".into());
+        }
+        self.call_closure(c, args, tail)
+    }
+
+    /// Calls `c`, a closure or a continuation, with `args`.
+    fn call_closure(&mut self, c: &Atom, args: &[Atom], tail: bool) -> Result<(), String> {
+        let (Ty::Fn(sig, _) | Ty::Cont(sig)) = self.atom_ty(c) else {
+            return Err("a call of a value that isn't a closure".into());
         };
         let sig = self.cx.types.sig(&sig)?;
         let base = self.cx.types.closure(&sig)?;
@@ -756,6 +770,23 @@ impl<'m> FuncCx<'_, 'm> {
     /// `try_table` that catches the exception holding this frame, and the
     /// results are then the frame's. Returns whether it was a tail call.
     fn handle(&mut self, h: HandlerId, args: &[Atom], tail: bool) -> Result<bool, String> {
+        if let Some(switch) = self.cx.switch(h) {
+            // A frame of its own, linked in by `start`, which runs the body.
+            let start = switch.start;
+            let number = self.cx.effect_number(self.cx.m.handlers[&h].effect)?;
+            let frame = self.cx.types.switch_frame()?;
+            let base = self.cx.types.frame()?;
+            self.emit(I::I32Const(number));
+            self.emit(I::RefNull(HeapType::Concrete(base)));
+            self.emit(I::StructNew(frame));
+            self.atoms(args);
+            self.emit(if tail {
+                I::ReturnCall(start)
+            } else {
+                I::Call(start)
+            });
+            return Ok(tail);
+        }
         if self.cx.types.aborting.contains(&h) {
             self.handle_aborting(h, args)?;
             return Ok(false);
@@ -913,6 +944,163 @@ impl<'m> FuncCx<'_, 'm> {
     /// there's none, and calls its clause with the handler stack below the
     /// frame, so that a `perform` in the clause goes to an outer handler.
     fn perform(&mut self, e: EffectId, i: u32, args: &[Atom]) -> Result<(), String> {
+        let Some(tag) = self.cx.tag(e, i) else {
+            return self.perform_call(e, i, args);
+        };
+        // The nearest frame may be of a handler that switches stacks, or
+        // not: which one is only known when it runs. The results go
+        // through locals, as both ways give them.
+        let m = self.cx.m;
+        let op = &m.effects[&e].ops[i as usize];
+        let tys = self.cx.types.vals(&op.results)?;
+        let results: Vec<u32> = tys.iter().map(|&t| self.new_local(t)).collect();
+        let base = self.cx.types.frame()?;
+        let switch_frame = self.cx.types.switch_frame()?;
+        let saved = self.new_local(nullable(base));
+        self.emit(I::GlobalGet(HANDLERS));
+        self.emit(I::LocalSet(saved));
+        let found = self.find_frame(e)?;
+        self.emit(I::LocalGet(found));
+        self.emit(I::RefTestNonNull(HeapType::Concrete(switch_frame)));
+        self.open(I::If(BlockType::Empty));
+        match self.cx.disc_tag {
+            None => {
+                self.atoms(args);
+                self.emit(I::Suspend(tag));
+                for &r in results.iter().rev() {
+                    self.emit(I::LocalSet(r));
+                }
+            }
+            Some(disc) => {
+                // A continuation discontinued here gets a closure thrown
+                // at it, which performs what it gives instead.
+                let (_, thunk_sig) = self.cx.types.thunk(e, i)?;
+                let thunk = self.cx.types.closure(&thunk_sig)?;
+                let entry = self.cx.types.entry(&thunk_sig)?;
+                let t = self.new_local(nullable(thunk));
+                self.open(I::Block(BlockType::Empty));
+                self.open(I::Block(BlockType::Result(ValType::Ref(RefType::ANYREF))));
+                let catches = vec![Catch::One {
+                    tag: disc,
+                    label: 0,
+                }];
+                self.open(I::TryTable(BlockType::Empty, Cow::Owned(catches)));
+                self.atoms(args);
+                self.emit(I::Suspend(tag));
+                for &r in results.iter().rev() {
+                    self.emit(I::LocalSet(r));
+                }
+                self.emit(I::Br(2));
+                self.close();
+                self.emit(I::Unreachable);
+                self.close();
+                self.emit(I::RefCastNullable(HeapType::Concrete(thunk)));
+                self.emit(I::LocalSet(t));
+                self.emit(I::LocalGet(saved));
+                self.emit(I::GlobalSet(HANDLERS));
+                self.emit(I::LocalGet(t));
+                self.emit(I::LocalGet(t));
+                self.emit(I::StructGet {
+                    struct_type_index: thunk,
+                    field_index: 0,
+                });
+                self.emit(I::CallRef(entry));
+                for &r in results.iter().rev() {
+                    self.emit(I::LocalSet(r));
+                }
+                self.close();
+            }
+        }
+        // Resumed: this stack's handlers again.
+        self.emit(I::LocalGet(saved));
+        self.emit(I::GlobalSet(HANDLERS));
+        self.emit(I::Else);
+        self.perform_call(e, i, args)?;
+        for &r in results.iter().rev() {
+            self.emit(I::LocalSet(r));
+        }
+        self.close();
+        for &r in &results {
+            self.emit(I::LocalGet(r));
+        }
+        Ok(())
+    }
+
+    /// The local holding the nearest frame of `e` on the handler stack,
+    /// trapping if there's none.
+    fn find_frame(&mut self, e: EffectId) -> Result<u32, String> {
+        let base = self.cx.types.frame()?;
+        let number = self.cx.effect_number(e)?;
+        let found = self.new_local(nullable(base));
+        self.emit(I::GlobalGet(HANDLERS));
+        self.emit(I::LocalSet(found));
+        self.open(I::Block(BlockType::Empty));
+        self.open(I::Loop(BlockType::Empty));
+        // Reading the effect of a null frame traps.
+        self.emit(I::LocalGet(found));
+        self.emit(I::StructGet {
+            struct_type_index: base,
+            field_index: 0,
+        });
+        self.emit(I::I32Const(number));
+        self.emit(I::I32Eq);
+        self.emit(I::BrIf(1));
+        self.emit(I::LocalGet(found));
+        self.emit(I::StructGet {
+            struct_type_index: base,
+            field_index: 1,
+        });
+        self.emit(I::LocalSet(found));
+        self.emit(I::Br(0));
+        self.close();
+        self.close();
+        Ok(found)
+    }
+
+    /// `discontinue F.j(k, args)` of a continuation: throws a closure that
+    /// performs `F.j(args)` into it.
+    fn discontinue(
+        &mut self,
+        e: EffectId,
+        i: u32,
+        args: &[Atom],
+        tail: bool,
+    ) -> Result<(), String> {
+        let Some((k, rest)) = args.split_first() else {
+            return Err("discontinue without a continuation".into());
+        };
+        let Ty::Cont(sig) = self.atom_ty(k) else {
+            return Err("discontinue of something that isn't a continuation".into());
+        };
+        let sig = self.cx.types.sig(&sig)?;
+        let base = self.cx.types.cont_base(&sig)?;
+        let disc = self.cx.types.discontinue(&sig)?;
+        let (thunk, _) = self.cx.types.thunk(e, i)?;
+        let (_, entry) = self
+            .cx
+            .thunks
+            .get(&(e, i))
+            .copied()
+            .ok_or_else(|| format!("no thunk for {e}.{i}"))?;
+        self.atom(k);
+        self.emit(I::RefFunc(entry));
+        self.atoms(rest);
+        self.emit(I::StructNew(thunk));
+        self.atom(k);
+        self.emit(I::StructGet {
+            struct_type_index: base,
+            field_index: 1,
+        });
+        self.emit(if tail {
+            I::ReturnCallRef(disc)
+        } else {
+            I::CallRef(disc)
+        });
+        Ok(())
+    }
+
+    /// `perform e.i(args)` of a handler that doesn't switch stacks.
+    fn perform_call(&mut self, e: EffectId, i: u32, args: &[Atom]) -> Result<(), String> {
         let base = self.cx.types.frame()?;
         let frame = self.cx.types.effect_frame(e)?;
         let clause = self.cx.types.clause(e, i)?;

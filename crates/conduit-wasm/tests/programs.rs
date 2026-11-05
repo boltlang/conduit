@@ -21,7 +21,8 @@ fn test(p: &Program) -> Result<(), String> {
     let Some(bytes) = lower(p, &m)? else {
         return Ok(());
     };
-    if let Err(e) = wasmparser::Validator::new().validate_all(&bytes) {
+    let features = wasmparser::WasmFeatures::default() | wasmparser::WasmFeatures::STACK_SWITCHING;
+    if let Err(e) = wasmparser::Validator::new_with_features(features).validate_all(&bytes) {
         let wat = wasmprinter::print_bytes(&bytes).unwrap_or_default();
         return Err(format!("the Wasm doesn't validate: {e}\n{wat}"));
     }
@@ -72,7 +73,8 @@ fn instantiate(bytes: &[u8]) -> Result<(Store<()>, Instance), String> {
         .wasm_gc(true)
         .wasm_function_references(true)
         .wasm_tail_call(true)
-        .wasm_exceptions(true);
+        .wasm_exceptions(true)
+        .wasm_stack_switching(true);
     let engine = Engine::new(&config).map_err(|e| e.to_string())?;
     let module = wasmtime::Module::new(&engine, bytes).map_err(|e| e.to_string())?;
     let mut linker = Linker::new(&engine);

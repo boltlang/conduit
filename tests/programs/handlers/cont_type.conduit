@@ -1,7 +1,7 @@
-// A continuation type has no Wasm type yet.
+// A continuation is a closure of its signature in Wasm.
 
 fn main(%k: cont() -> ()) -> () {
   jump ret()
 }
 
-//# wasm-error: continuations aren't supported yet
+//# wat

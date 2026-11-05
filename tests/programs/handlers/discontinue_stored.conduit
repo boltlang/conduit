@@ -1,7 +1,8 @@
 // A clause that keeps its continuation in a ref, then resumes it and
 // discontinues it through the ref. The verifier only counts direct uses,
-// so it's the evaluator that finds the second use and traps. The clause
-// isn't tail-resumptive, so the Wasm backend can't lower it.
+// so it's the evaluator that finds the second use and traps, and in Wasm,
+// the second use of a continuation traps too. The clause isn't
+// tail-resumptive, so the Wasm backend switches stacks.
 effect Wait {
   () -> (i32)
 }
@@ -59,4 +60,3 @@ fn scheduled(%mode: i32, %wait: imm fn() -> (i32) does Wait) -> (i32) does Cance
 
 //# run main(0i32) == 1i32
 //# run main(1i32) traps
-//# wasm-error: isn't tail-resumptive or aborting

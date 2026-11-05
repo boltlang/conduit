@@ -903,8 +903,8 @@ What would take more:
 
 ### Lowering
 
-The Wasm backend already lowers handlers whose clauses are all
-tail-resumptive or aborting, with no continuation:
+The Wasm backend lowers handlers whose clauses are all tail-resumptive or
+aborting without capturing a continuation:
 
 - A global holds a stack of handler frames. A frame holds its effect's
   number, the next frame, a reference to each clause, and the handler's
@@ -927,14 +927,29 @@ tail-resumptive or aborting, with no continuation:
   and a `handle` that catches an abort puts it back too, since the
   `perform`s the exception left couldn't.
 
-Any other clause is an error. The general case has two ways to be lowered,
-both possible because handlers are confined to three ops.
+A handler with any other clause needs its continuations captured. There
+are two ways to do that, both possible because handlers are confined to
+three ops.
 
-- **Wasm stack switching** (the typed-continuations proposal): `handle` is
-  `cont.new` + `resume` with an `(on $op ..)` clause per operation,
-  `perform` is `suspend`, and `Resume` is `resume`. One-shot continuations
-  match the proposal exactly. Browser support is still uncertain, so this
-  backend should be optional.
+- **Wasm stack switching** (the typed-continuations proposal), which the
+  Wasm backend does. Each operation of an effect such a handler handles
+  has a control tag. `handle` makes a frame of the handler's own kind and
+  calls a function that links it onto the handler stack and runs the body
+  as a Wasm continuation, with a `resume` that has a label per operation.
+  `perform` finds the nearest frame of its effect as for any handler, and
+  if it's of this kind, `suspend`s with the operation's tag, putting its
+  handler stack back once it's resumed. The `resume` then calls the clause,
+  under the handlers outside, with a Conduit continuation: a closure that
+  resumes the Wasm continuation under the handler again, which makes the
+  handler deep. The frame's link to the handlers outside is set each time,
+  so a continuation resumed somewhere else sees the handlers there. A
+  Wasm continuation can only be resumed once, so a second `resume` traps,
+  as rule 7 says. `discontinue F.op(k, args)` throws a closure that
+  performs `F.op(args)` into `k` with `resume_throw`, and the `perform`
+  that `k` was captured at catches it and calls it. Handlers whose clauses
+  are all tail-resumptive or aborting keep the lowering above, and only a
+  module with a handler of this kind needs the proposal, which isn't
+  standard yet: Wasmtime has it on Linux and macOS on x86-64.
 - **Evidence passing** (Xie & Leijen, "Generalized evidence passing for
   effect handlers", and Xie et al., "Effect handlers, evidently"): a
   Conduit-to-Conduit pass that removes the three ops. It
@@ -1169,10 +1184,10 @@ Status:
 | `Handle`, `Perform` with tail-resumptive clauses | — | a handler stack in a global, and a direct call of the clause | ✅ |
 | `Handle`, `Perform` with aborting clauses | — | the same, then `throw`, caught by `try_table` | ✅ (exception handling, Wasm 3.0) |
 | `Discontinue` in a tail-resumptive clause | — | a `perform` under the handler stack of the `perform` the clause handles, kept in a second global | ✅ |
-| `Handle` | `cont.new` + `resume` with `(on $op ..)` | same | ⚠️ stack switching |
-| `Perform` | `suspend` | same | ⚠️ stack switching |
-| `Resume` | `resume` | same | ⚠️ stack switching |
-| `Discontinue` | `resume` with a flag, then the `perform` after the `suspend` | same | ⚠️ stack switching |
+| `Handle` | `cont.new` + `resume` with `(on $op ..)` | same | ✅ (stack switching, not standard yet) |
+| `Perform` | `suspend` | same | ✅ (stack switching, not standard yet) |
+| `Resume` | `resume` | same | ✅ (stack switching, not standard yet) |
+| `Discontinue` | `resume_throw` of a closure that performs the operation, which the `suspend` catches and calls | same | ✅ (stack switching, not standard yet) |
 | `Handle`, `Perform`, `Resume`, `Discontinue` | evidence passing, then the rows above | same | 🔧 |
 
 Notes:

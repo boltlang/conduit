@@ -21,8 +21,12 @@
 //! handler stack of the `perform` it handles, which a second global holds
 //! while the clause runs, and gives what that gives.
 //!
-//! Other clauses, and continuation types, need stack switching or evidence
-//! passing, which aren't supported yet.
+//! A handler with any other clause switches stacks, with the stack
+//! switching proposal, which isn't standard yet: see `switch.rs`. Its body
+//! runs as a Wasm continuation, `perform` suspends to it when its frame is
+//! the nearest of the effect, and a Conduit continuation is a closure that
+//! resumes the Wasm one under the handler again. Only modules with such a
+//! handler need the proposal.
 //!
 //! Each constant is an immutable global, made before the program runs by
 //! the global's initializer. A constant's arrays are made with
@@ -34,13 +38,17 @@
 
 mod consts;
 mod func;
+mod switch;
 mod types;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 
 use conduit_ir::verify::Item;
-use conduit_ir::{ConstId, EffectId, ExternId, Func, FuncId, HandlerId, Module};
+use conduit_ir::{
+    Atom, Block, ConstId, EffectId, ExternId, Func, FuncId, HandlerId, Label, Let, Module, Op, Row,
+    Tail, Ty,
+};
 use wasm_encoder::{
     CodeSection, ConstExpr, ElementSection, Elements, EntityType, ExportKind, ExportSection,
     Function, FunctionSection, GlobalSection, GlobalType, HeapType, ImportSection, IndirectNameMap,
@@ -48,6 +56,7 @@ use wasm_encoder::{
 };
 
 use crate::types::{FnSig, Types, nullable};
+use wasm_encoder::{RefType, ValType};
 
 /// Why a module couldn't be lowered.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -85,6 +94,38 @@ pub(crate) struct Cx<'m> {
     discontinues: bool,
     /// The global of each constant. They come after the handler stack's.
     consts: BTreeMap<ConstId, u32>,
+    /// The functions of each handler that switches stacks.
+    switches: BTreeMap<HandlerId, Switch>,
+    /// The control tag of each operation of an effect that a handler that
+    /// switches stacks handles.
+    tags: BTreeMap<(EffectId, u32), u32>,
+    /// The exception that `discontinue` throws into a continuation, which
+    /// holds a closure that performs the operation.
+    disc_tag: Option<u32>,
+    /// For each operation discontinued with a continuation: the function
+    /// that performs it, and the wrapper of the closure that calls that.
+    thunks: BTreeMap<(EffectId, u32), (u32, u32)>,
+    /// How many functions [`Cx::switches`] and [`Cx::thunks`] hold.
+    switch_count: u32,
+}
+
+/// The functions of a handler that switches stacks. See `switch.rs`.
+pub(crate) struct Switch {
+    /// Runs a body under the handler: `(frame, env.., body) -> R`.
+    pub start: u32,
+    /// For each operation, resumes its continuation under the handler:
+    /// `(frame, env.., k, results..) -> R`.
+    pub drive: Vec<u32>,
+    /// For each operation, the wrapper of the Conduit continuation its
+    /// clause gets, which calls `drive`.
+    pub entry: Vec<u32>,
+    /// For each operation, if some clause discontinues: throws a closure
+    /// into its continuation under the handler: `(frame, env.., k, thunk)
+    /// -> R`.
+    pub throw: Vec<u32>,
+    /// For each operation, if some clause discontinues: what the Conduit
+    /// continuation calls to discontinue, which calls `throw`.
+    pub disc: Vec<u32>,
 }
 
 /// The exception an aborting clause throws, holding its handler's frame.
@@ -111,6 +152,16 @@ impl Cx<'_> {
             .get(&c)
             .copied()
             .ok_or_else(|| format!("unknown constant {c}"))
+    }
+
+    /// The control tag of operation `i` of `e`, if a handler of `e`
+    /// switches stacks.
+    fn tag(&self, e: EffectId, i: u32) -> Option<u32> {
+        self.tags.get(&(e, i)).copied()
+    }
+
+    fn switch(&self, h: HandlerId) -> Option<&Switch> {
+        self.switches.get(&h)
     }
 
     fn extern_index(&self, e: ExternId) -> Result<u32, String> {
@@ -161,7 +212,9 @@ impl Cx<'_> {
                 k
             }
         };
-        let first = (self.externs.len() + self.funcs.len()) as u32 + self.wrapper_count();
+        let first = (self.externs.len() + self.funcs.len()) as u32
+            + self.wrapper_count()
+            + self.switch_count;
         Ok((first + k, captures))
     }
 }
@@ -170,30 +223,62 @@ impl Cx<'_> {
 /// to a Wasm binary, exporting each function in `exports` under its name.
 pub fn emit_module(m: &Module, exports: &[(FuncId, &str)]) -> Result<Vec<u8>, Error> {
     // Tail-resumptive and aborting clauses are lowered as plain functions,
-    // without their continuation. Any other clause keeps its continuation
-    // parameter, which has no Wasm type.
+    // without their continuation, when every clause of their handler is
+    // one. A handler with any other clause switches stacks, and its
+    // clauses keep their continuation.
     let mut plain_clauses: BTreeMap<FuncId, Func> = BTreeMap::new();
-    let mut not_plain = BTreeMap::new();
     let mut aborts = BTreeSet::new();
     let mut aborting = BTreeSet::new();
+    let mut switching = BTreeSet::new();
     let mut discontinues = false;
     for (&h, decl) in &m.handlers {
+        let mut plain = Vec::new();
         for &clause in &decl.ops {
             let Some(f) = m.funcs.get(&clause) else {
                 continue;
             };
-            if let Some(plain) = conduit_ir::clause::plain_call(f) {
-                discontinues |= conduit_ir::clause::discontinues(&plain);
-                plain_clauses.insert(clause, plain);
-            } else if let Some(plain) = conduit_ir::clause::aborting(f) {
-                plain_clauses.insert(clause, plain);
+            if let Some(p) = conduit_ir::clause::plain_call(f) {
+                plain.push((clause, p, false));
+            } else if let Some(p) = conduit_ir::clause::aborting(f) {
+                plain.push((clause, p, true));
+            } else {
+                switching.insert(h);
+            }
+        }
+        if switching.contains(&h) {
+            continue;
+        }
+        for (clause, p, abort) in plain {
+            if abort {
                 aborts.insert(clause);
                 aborting.insert(h);
             } else {
-                not_plain.insert(clause, h);
+                discontinues |= conduit_ir::clause::discontinues(&p);
             }
+            plain_clauses.insert(clause, p);
         }
     }
+    for &h in &switching {
+        if let Some(&c) = m.handlers[&h]
+            .ops
+            .iter()
+            .find(|c| plain_clauses.contains_key(c))
+        {
+            return Err(Error {
+                item: Item::Func(c),
+                message: format!(
+                    "a clause of {h}, which switches stacks, and of a handler that doesn't"
+                ),
+            });
+        }
+    }
+    // The operations discontinued with a continuation, which needs each
+    // continuation to be able to throw into its Wasm continuation.
+    let thunk_ops = cont_discontinues(m, &plain_clauses);
+    let thunk_funcs: Vec<((EffectId, u32), Func)> = thunk_ops
+        .iter()
+        .map(|&(e, i)| ((e, i), thunk_func(m, e, i)))
+        .collect();
 
     let mut cx = Cx {
         m,
@@ -206,8 +291,15 @@ pub fn emit_module(m: &Module, exports: &[(FuncId, &str)]) -> Result<Vec<u8>, Er
         aborts,
         discontinues,
         consts: BTreeMap::new(),
+        switches: BTreeMap::new(),
+        tags: BTreeMap::new(),
+        disc_tag: None,
+        thunks: BTreeMap::new(),
+        switch_count: 0,
     };
     cx.types.aborting = aborting;
+    cx.types.switching = switching.clone();
+    cx.types.discontinues = !thunk_ops.is_empty();
     let handler_globals = match (m.effects.is_empty(), discontinues) {
         (true, _) => 0,
         (false, false) => 1,
@@ -226,9 +318,69 @@ pub fn emit_module(m: &Module, exports: &[(FuncId, &str)]) -> Result<Vec<u8>, Er
 
     let mut next_wrapper = first + m.funcs.len() as u32;
     for (&h, decl) in &m.handlers {
-        if decl.ops.iter().all(|c| plain_clauses.contains_key(c)) {
+        if !switching.contains(&h) && decl.ops.iter().all(|c| plain_clauses.contains_key(c)) {
             cx.wrappers.insert(h, next_wrapper);
             next_wrapper += decl.ops.len() as u32;
+        }
+    }
+
+    // The functions of handlers that switch stacks, then those of the
+    // closures `discontinue` throws, come after the wrappers.
+    let mut next = next_wrapper;
+    let mut take = |k: u32| {
+        let range: Vec<u32> = (next..next + k).collect();
+        next += k;
+        range
+    };
+    for &h in &switching {
+        let n = m
+            .effects
+            .get(&m.handlers[&h].effect)
+            .map_or(0, |e| e.ops.len()) as u32;
+        let start = take(1)[0];
+        let drive = take(n);
+        let entry = take(n);
+        let (throw, disc) = if thunk_ops.is_empty() {
+            (Vec::new(), Vec::new())
+        } else {
+            (take(n), take(n))
+        };
+        cx.switches.insert(
+            h,
+            Switch {
+                start,
+                drive,
+                entry,
+                throw,
+                disc,
+            },
+        );
+    }
+    for &op in &thunk_ops {
+        let fs = take(2);
+        cx.thunks.insert(op, (fs[0], fs[1]));
+    }
+    cx.switch_count = next - next_wrapper;
+
+    // Tags: the exception of aborting clauses, the one `discontinue`
+    // throws into a continuation, then a control tag for each operation
+    // of an effect a handler that switches stacks handles.
+    let mut next_tag = u32::from(!cx.aborts.is_empty());
+    if !thunk_ops.is_empty() {
+        cx.disc_tag = Some(next_tag);
+        next_tag += 1;
+    }
+    let switch_effects: BTreeSet<EffectId> =
+        switching.iter().map(|h| m.handlers[h].effect).collect();
+    let mut control_tags = Vec::new();
+    for &e in &switch_effects {
+        let Some(decl) = m.effects.get(&e) else {
+            continue;
+        };
+        for i in 0..decl.ops.len() as u32 {
+            cx.tags.insert((e, i), next_tag);
+            control_tags.push((e, i));
+            next_tag += 1;
         }
     }
 
@@ -258,12 +410,6 @@ pub fn emit_module(m: &Module, exports: &[(FuncId, &str)]) -> Result<Vec<u8>, Er
             item: Item::Func(id),
             message,
         };
-        if let Some(h) = not_plain.get(&id) {
-            return Err(err(format!(
-                "a clause of {h} that isn't tail-resumptive or aborting, which needs \
-                 stack switching or evidence passing"
-            )));
-        }
         let f = plain_clauses.get(&id).unwrap_or(f);
         let sig = cx.types.sig(&f.sig()).map_err(err)?;
         let body = func::lower_func(&mut cx, f).map_err(err)?;
@@ -282,6 +428,74 @@ pub fn emit_module(m: &Module, exports: &[(FuncId, &str)]) -> Result<Vec<u8>, Er
             let body = func::lower_wrapper(&mut cx, h, i).map_err(err)?;
             wrappers.push((ty, body));
         }
+    }
+
+    // Each is a plain type, after the group, or one in the group.
+    let mut switched: Vec<(bool, u32, func::Body)> = Vec::new();
+    for &h in &switching {
+        let err = |message| Error {
+            item: Item::Handler(h),
+            message,
+        };
+        let n = cx.switches[&h].drive.len() as u32;
+        let disc = !cx.switches[&h].disc.is_empty();
+        let mut starts = vec![switch::Start::Body];
+        starts.extend((0..n).map(switch::Start::Resume));
+        for start in starts {
+            let sig = switch::drive_sig(&mut cx, h, start).map_err(err)?;
+            let body = switch::lower_drive(&mut cx, h, start).map_err(err)?;
+            switched.push((true, plain(sig), body));
+        }
+        for i in 0..n {
+            let sig = cx.types.clause_cont_sig(h, i).map_err(err)?;
+            let ty = cx.types.entry(&sig).map_err(err)?;
+            let body = switch::lower_cont_entry(&mut cx, h, i, false).map_err(err)?;
+            switched.push((false, ty, body));
+        }
+        if disc {
+            for i in 0..n {
+                let start = switch::Start::Throw(i);
+                let sig = switch::drive_sig(&mut cx, h, start).map_err(err)?;
+                let body = switch::lower_drive(&mut cx, h, start).map_err(err)?;
+                switched.push((true, plain(sig), body));
+            }
+            for i in 0..n {
+                let sig = cx.types.clause_cont_sig(h, i).map_err(err)?;
+                let ty = cx.types.discontinue(&sig).map_err(err)?;
+                let body = switch::lower_cont_entry(&mut cx, h, i, true).map_err(err)?;
+                switched.push((false, ty, body));
+            }
+        }
+    }
+    for ((e, i), f) in &thunk_funcs {
+        let err = |message| Error {
+            item: Item::Effect(*e),
+            message,
+        };
+        let sig = cx.types.sig(&f.sig()).map_err(err)?;
+        let body = func::lower_func(&mut cx, f).map_err(err)?;
+        switched.push((true, plain(sig), body));
+        let (_, thunk_sig) = cx.types.thunk(*e, *i).map_err(err)?;
+        let ty = cx.types.entry(&thunk_sig).map_err(err)?;
+        let body = switch::lower_thunk_entry(&mut cx, *e, *i).map_err(err)?;
+        switched.push((false, ty, body));
+    }
+    // Tag types: plain function types.
+    let disc_tag_ty = cx.disc_tag.map(|_| {
+        plain(FnSig {
+            params: vec![ValType::Ref(RefType::ANYREF)],
+            results: Vec::new(),
+        })
+    });
+    let mut control_tag_tys = Vec::new();
+    for &(e, i) in &control_tags {
+        let err = |message| Error {
+            item: Item::Effect(e),
+            message,
+        };
+        let op = &m.effects[&e].ops[i as usize];
+        let sig = cx.types.sig(op).map_err(err)?;
+        control_tag_tys.push(plain(sig));
     }
 
     let mut entries = Vec::new();
@@ -362,6 +576,11 @@ pub fn emit_module(m: &Module, exports: &[(FuncId, &str)]) -> Result<Vec<u8>, Er
         .iter()
         .map(|(sig, body)| (group_len + sig, body))
         .chain(wrappers.iter().map(|(ty, body)| (*ty, body)))
+        .chain(
+            switched
+                .iter()
+                .map(|(is_plain, ty, body)| (if *is_plain { group_len + ty } else { *ty }, body)),
+        )
         .chain(entries.iter().map(|(ty, body)| (*ty, body)));
     for (ty, body) in bodies {
         function_section.function(ty);
@@ -376,12 +595,19 @@ pub fn emit_module(m: &Module, exports: &[(FuncId, &str)]) -> Result<Vec<u8>, Er
     module.section(&type_section);
     module.section(&import_section);
     module.section(&function_section);
-    if let Some(sig) = abort {
+    let tag_tys: Vec<u32> = abort
+        .into_iter()
+        .chain(disc_tag_ty)
+        .chain(control_tag_tys)
+        .collect();
+    if !tag_tys.is_empty() {
         let mut tags = TagSection::new();
-        tags.tag(TagType {
-            kind: TagKind::Exception,
-            func_type_idx: group_len + sig,
-        });
+        for sig in tag_tys {
+            tags.tag(TagType {
+                kind: TagKind::Exception,
+                func_type_idx: group_len + sig,
+            });
+        }
         module.section(&tags);
     }
     if handlers.is_some() || !const_globals.is_empty() {
@@ -409,7 +635,7 @@ pub fn emit_module(m: &Module, exports: &[(FuncId, &str)]) -> Result<Vec<u8>, Er
         module.section(&globals);
     }
     module.section(&export_section);
-    let referenced = wrappers.len() + entry_count;
+    let referenced = wrappers.len() + switched.len() + entry_count;
     if referenced > 0 {
         // `ref.func` may only name functions declared in an element segment.
         let first = first + m.funcs.len() as u32;
@@ -419,7 +645,30 @@ pub fn emit_module(m: &Module, exports: &[(FuncId, &str)]) -> Result<Vec<u8>, Er
         module.section(&elements);
     }
     module.section(&code_section);
-    if let Some(names) = name_section(m, &funcs) {
+    // The functions of handlers that switch stacks are named after them.
+    let mut extra_names = Vec::new();
+    for (h, switch) in &cx.switches {
+        let decl = &m.handlers[h];
+        let name = decl.debug_name.as_deref().map_or(h.to_string(), str::to_string);
+        extra_names.push((switch.start, format!("{name}.start")));
+        for (kind, fs) in [
+            ("drive", &switch.drive),
+            ("k", &switch.entry),
+            ("throw", &switch.throw),
+            ("discontinue", &switch.disc),
+        ] {
+            for (i, &f) in fs.iter().enumerate() {
+                extra_names.push((f, format!("{name}.{kind}{i}")));
+            }
+        }
+    }
+    for (&(e, i), &(body, entry)) in &cx.thunks {
+        let name = m.effects[&e].debug_name.as_deref().map_or(e.to_string(), str::to_string);
+        extra_names.push((body, format!("{name}.{i}.thunk")));
+        extra_names.push((entry, format!("{name}.{i}.thunk_entry")));
+    }
+    extra_names.sort();
+    if let Some(names) = name_section(m, &funcs, &extra_names) {
         module.section(&names);
     }
     Ok(module.finish())
@@ -428,7 +677,11 @@ pub fn emit_module(m: &Module, exports: &[(FuncId, &str)]) -> Result<Vec<u8>, Er
 /// The names of the module's externs, functions and their variables, for
 /// tools and stack traces, or `None` if nothing has one. `funcs` are the
 /// lowered functions, in the order of the module's.
-fn name_section(m: &Module, funcs: &[(u32, func::Body)]) -> Option<NameSection> {
+fn name_section(
+    m: &Module,
+    funcs: &[(u32, func::Body)],
+    extra: &[(u32, String)],
+) -> Option<NameSection> {
     let mut functions = NameMap::new();
     let mut locals = IndirectNameMap::new();
     let mut any = false;
@@ -454,6 +707,10 @@ fn name_section(m: &Module, funcs: &[(u32, func::Body)]) -> Option<NameSection> 
             any = true;
         }
     }
+    for (index, name) in extra {
+        functions.append(*index, name);
+        any = true;
+    }
     any.then(|| {
         let mut section = NameSection::new();
         section.functions(&functions);
@@ -464,3 +721,60 @@ fn name_section(m: &Module, funcs: &[(u32, func::Body)]) -> Option<NameSection> 
 
 #[cfg(test)]
 mod tests;
+
+/// The operations that some function discontinues a continuation with,
+/// other than the plain clauses, whose continuation is gone.
+fn cont_discontinues(m: &Module, plain: &BTreeMap<FuncId, Func>) -> BTreeSet<(EffectId, u32)> {
+    let mut ops = BTreeSet::new();
+    for (id, f) in &m.funcs {
+        if plain.contains_key(id) {
+            continue;
+        }
+        let mut todo = vec![&f.body];
+        while let Some(b) = todo.pop() {
+            for l in &b.lets {
+                if let (Op::Discontinue(e, i), Some(Atom::Var(k))) = (&l.op, l.args.first())
+                    && matches!(f.vars.get(k.0 as usize), Some(Ty::Cont(_)))
+                {
+                    ops.insert((*e, *i));
+                }
+            }
+            match &b.tail {
+                Tail::Join { defs, body, .. } => {
+                    todo.extend(defs.iter().map(|d| &d.body));
+                    todo.push(body);
+                }
+                Tail::Case { arms, default, .. } => {
+                    todo.extend(arms.iter().map(|a| &a.body));
+                    todo.extend(default.as_deref());
+                }
+                Tail::Jump { .. } | Tail::Unreachable => {}
+            }
+        }
+    }
+    ops
+}
+
+/// The function that the closure `discontinue E.i` throws calls: it takes
+/// the operation's arguments and performs it.
+fn thunk_func(m: &Module, e: EffectId, i: u32) -> Func {
+    let op = &m.effects[&e].ops[i as usize];
+    let mut f = Func::new(op.params.clone(), op.results.clone());
+    f.row = Row::one(e);
+    let results: Vec<_> = op.results.iter().map(|t| f.new_var(t.clone())).collect();
+    let args = f.params.iter().map(|&p| Atom::Var(p)).collect();
+    f.body = Block {
+        lets: vec![Let {
+            binds: results.clone(),
+            op: Op::Perform(e, i),
+            args,
+            source: None,
+        }],
+        tail: Tail::Jump {
+            target: Label::RET,
+            args: results.into_iter().map(Atom::Var).collect(),
+            source: None,
+        },
+    };
+    f
+}
