@@ -301,7 +301,7 @@ fn parse_errors() {
         ),
         (
             "frob",
-            "1:1: expected `data`, `extern`, `effect`, `handler` or `fn`, found `frob`",
+            "1:1: expected `data`, `extern`, `const`, `effect`, `handler` or `fn`, found `frob`",
         ),
         (
             "fn",

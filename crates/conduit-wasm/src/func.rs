@@ -549,6 +549,10 @@ impl<'m> FuncCx<'_, 'm> {
                 self.atoms(args);
                 self.emit(I::StructNew(idx));
             }
+            Op::Const(id) => {
+                let global = self.cx.const_global(*id)?;
+                self.emit(I::GlobalGet(global));
+            }
             Op::Get(c, i) => {
                 let (idx, first) = self.object(*c, &args[0])?;
                 self.emit(I::StructGet {

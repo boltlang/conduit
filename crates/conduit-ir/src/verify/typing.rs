@@ -100,6 +100,15 @@ pub(crate) fn op_results<P: Program + ?Sized>(
             }
             Ok(out.to_vec())
         }
+        Op::Const(id) => {
+            let decl = p
+                .constant(*id)
+                .ok_or_else(|| format!("unknown constant {id}"))?;
+            if !tys.is_empty() {
+                return Err(format!("const {id} takes no arguments"));
+            }
+            Ok(vec![decl.ty.clone()])
+        }
         Op::Get(c, i) => {
             let [Ty::Data(d, m, margs)] = tys else {
                 return Err(format!("get of {c} needs one object"));

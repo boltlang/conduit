@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
-use crate::id::{DataId, EffectId, ExternId, FuncId, HandlerId, Label, Var};
+use crate::id::{ConstId, CtorId, DataId, EffectId, ExternId, FuncId, HandlerId, Label, Var};
 use crate::row::Row;
-use crate::term::{Block, Tail};
+use crate::term::{Block, Lit, Tail};
 use crate::ty::{CtorDecl, Mutability, Sig, Ty};
 
 /// A whole program, before linking.
@@ -15,6 +15,7 @@ pub struct Module {
     pub externs: BTreeMap<ExternId, Extern>,
     pub effects: BTreeMap<EffectId, EffectDecl>,
     pub handlers: BTreeMap<HandlerId, HandlerDecl>,
+    pub consts: BTreeMap<ConstId, ConstDecl>,
 }
 
 /// A top-level function. Nested functions don't exist: frontends lift them,
@@ -155,4 +156,36 @@ pub struct HandlerDecl {
     pub row: Row,
     /// A name to show it by. See [`FuncDebug`].
     pub debug_name: Option<Box<str>>,
+}
+
+/// A constant: an `Imm` value that exists before the program runs, which
+/// [`Op::Const`](crate::Op::Const) gives. Every use gets the same object,
+/// as an LLVM global constant would be. Since it's `Imm` all the way down,
+/// nothing can tell that it's shared.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ConstDecl {
+    /// Its type, which must be `Imm` all the way down.
+    pub ty: Ty,
+    pub value: ConstValue,
+    /// A name to show it by. See [`FuncDebug`].
+    pub debug_name: Option<Box<str>>,
+}
+
+/// What a constant is made of. The types come from the [`ConstDecl`]'s:
+/// an array's elements have its element type, and a constructor's fields
+/// the types of the fields.
+///
+/// Values nest through `New` without a limit, so a long list written as
+/// one value is deep, and dropping or walking it recurses. A frontend can
+/// cut one up into several constants with [`ConstValue::Const`].
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ConstValue {
+    Lit(Lit),
+    /// An `Imm` array of these elements.
+    Array(Vec<ConstValue>),
+    /// An `Imm` object of this constructor, with these fields.
+    New(CtorId, Vec<ConstValue>),
+    /// The same object as another constant. Constants can't refer to each
+    /// other in a cycle.
+    Const(ConstId),
 }

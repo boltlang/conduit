@@ -2,6 +2,8 @@ data Pair {
   (i32, i32)
 }
 
+const pair: imm Pair = Pair.0(2i32, 3i32)
+
 fn arith(%x: i32, %y: i32) -> (i32) {
   let %sum: i32 = add(%x, %y)
   let %q: i32 = div.s(%x, %y)
@@ -42,4 +44,12 @@ fn arms(%x: i32, %y: i32) -> (i32) {
 fn adder(%n: i32, %x: i32) -> (i32) {
   let %sum: i32 = add(%n, %x)
   jump ret(%sum)
+}
+
+fn consts() -> (i32) {
+  let %p1: imm Pair = const pair()
+  let %a: i32 = get Pair.0.0(%p1)
+  let %b: i32 = get Pair.0.1(%p1)
+  let %r: i32 = add(%a, %b)
+  jump ret(%r)
 }

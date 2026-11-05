@@ -3,8 +3,8 @@
 //! that one's, when:
 //!
 //! - the op only computes its result, like `add`, or reads something that
-//!   never changes: a field of an `Imm` object, an element of an `Imm`
-//!   array, the length of any array, or what a box holds;
+//!   never changes: a constant, a field of an `Imm` object, an element of
+//!   an `Imm` array, the length of any array, or what a box holds;
 //! - or it reads something that can change, a `Mut` or `ReadOnly` object
 //!   or a ref, and nothing between the two may write.
 //!
@@ -100,7 +100,7 @@ impl Cx<'_> {
             _ => Kind::Fixed,
         };
         match &l.op {
-            Op::Prim(_) | Op::Closure(..) | Op::Box(_) => Kind::Fixed,
+            Op::Prim(_) | Op::Closure(..) | Op::Box(_) | Op::Const(_) => Kind::Fixed,
             // An array's length never changes, and neither does a box.
             Op::ArrayLen | Op::Unbox(_) => Kind::Fixed,
             Op::New(_) | Op::ArrayNew | Op::ArrayFill if imm => Kind::Fixed,

@@ -1,9 +1,9 @@
 //! Identifiers.
 //!
-//! Items of a module (functions, data types, externs, effects, handlers) have
-//! opaque `u64` IDs that the frontend chooses. They must stay the same for
-//! the same item across compilations, so that an unchanged function has
-//! unchanged IR. Positions only exist after linking.
+//! Items of a module (functions, data types, externs, effects, handlers,
+//! constants) have opaque `u64` IDs that the frontend chooses. They must
+//! stay the same for the same item across compilations, so that an
+//! unchanged function has unchanged IR. Positions only exist after linking.
 //!
 //! Variables and labels are local to a function: indices into its tables.
 
@@ -26,6 +26,8 @@ opaque_id! {
     EffectId,
     /// A handler of an effect.
     HandlerId,
+    /// A constant: an `Imm` value made once, before the program runs.
+    ConstId,
     /// Where code comes from, for errors. Conduit never looks inside it.
     SourceId,
 }
@@ -68,6 +70,7 @@ display! {
     ExternId => "extern{}",
     EffectId => "effect{}",
     HandlerId => "handler{}",
+    ConstId => "const{}",
     SourceId => "src{}",
     Var => "%{}",
 }

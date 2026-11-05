@@ -24,10 +24,15 @@
 //! Other clauses, and continuation types, need stack switching or evidence
 //! passing, which aren't supported yet.
 //!
+//! Each constant is an immutable global, made before the program runs by
+//! the global's initializer. A constant's arrays are made with
+//! `array.new_fixed`, which engines limit: V8 to 10,000 elements.
+//!
 //! [`emit_module`] lowers a whole module at once. Each extern becomes an
 //! import of its `module` and `name`, and functions are exported under the
 //! names given.
 
+mod consts;
 mod func;
 mod types;
 
@@ -35,7 +40,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 
 use conduit_ir::verify::Item;
-use conduit_ir::{EffectId, ExternId, Func, FuncId, HandlerId, Module};
+use conduit_ir::{ConstId, EffectId, ExternId, Func, FuncId, HandlerId, Module};
 use wasm_encoder::{
     CodeSection, ConstExpr, ElementSection, Elements, EntityType, ExportKind, ExportSection,
     Function, FunctionSection, GlobalSection, GlobalType, HeapType, ImportSection, IndirectNameMap,
@@ -78,6 +83,8 @@ pub(crate) struct Cx<'m> {
     aborts: BTreeSet<FuncId>,
     /// Whether some clause discontinues, which needs [`SITE`].
     discontinues: bool,
+    /// The global of each constant. They come after the handler stack's.
+    consts: BTreeMap<ConstId, u32>,
 }
 
 /// The exception an aborting clause throws, holding its handler's frame.
@@ -97,6 +104,13 @@ impl Cx<'_> {
             .get(&f)
             .copied()
             .ok_or_else(|| format!("unknown function {f}"))
+    }
+
+    fn const_global(&self, c: ConstId) -> Result<u32, String> {
+        self.consts
+            .get(&c)
+            .copied()
+            .ok_or_else(|| format!("unknown constant {c}"))
     }
 
     fn extern_index(&self, e: ExternId) -> Result<u32, String> {
@@ -191,8 +205,22 @@ pub fn emit_module(m: &Module, exports: &[(FuncId, &str)]) -> Result<Vec<u8>, Er
         wrappers: BTreeMap::new(),
         aborts,
         discontinues,
+        consts: BTreeMap::new(),
     };
     cx.types.aborting = aborting;
+    let handler_globals = match (m.effects.is_empty(), discontinues) {
+        (true, _) => 0,
+        (false, false) => 1,
+        (false, true) => 2,
+    };
+    // A global's initializer can only read the globals before it, so a
+    // constant comes after those it's made of.
+    let const_order = consts::order(m);
+    cx.consts = const_order
+        .iter()
+        .zip(handler_globals..)
+        .map(|(&c, i)| (c, i))
+        .collect();
     let first = m.externs.len() as u32;
     cx.funcs = m.funcs.keys().zip(first..).map(|(&f, i)| (f, i)).collect();
 
@@ -278,6 +306,18 @@ pub fn emit_module(m: &Module, exports: &[(FuncId, &str)]) -> Result<Vec<u8>, Er
         export_section.export(name, ExportKind::Func, idx);
     }
 
+    let mut const_globals = Vec::new();
+    for &id in &const_order {
+        let err = |message| Error {
+            item: Item::Const(id),
+            message,
+        };
+        let decl = &m.consts[&id];
+        let ty = cx.types.val(&decl.ty).map_err(err)?;
+        let init = consts::init(&mut cx, &decl.value, &decl.ty).map_err(err)?;
+        const_globals.push((ty, init));
+    }
+
     let entry_count = cx.entries.len();
     let handlers = if m.effects.is_empty() {
         None
@@ -344,18 +384,27 @@ pub fn emit_module(m: &Module, exports: &[(FuncId, &str)]) -> Result<Vec<u8>, Er
         });
         module.section(&tags);
     }
-    if let Some(frame) = handlers {
+    if handlers.is_some() || !const_globals.is_empty() {
         let mut globals = GlobalSection::new();
-        let count = if cx.discontinues { 2 } else { 1 };
-        for _ in 0..count {
-            globals.global(
-                GlobalType {
-                    val_type: nullable(frame),
-                    mutable: true,
-                    shared: false,
-                },
-                &ConstExpr::ref_null(HeapType::Concrete(frame)),
-            );
+        if let Some(frame) = handlers {
+            for _ in 0..handler_globals {
+                globals.global(
+                    GlobalType {
+                        val_type: nullable(frame),
+                        mutable: true,
+                        shared: false,
+                    },
+                    &ConstExpr::ref_null(HeapType::Concrete(frame)),
+                );
+            }
+        }
+        for (ty, init) in &const_globals {
+            let global = GlobalType {
+                val_type: *ty,
+                mutable: false,
+                shared: false,
+            };
+            globals.global(global, init);
         }
         module.section(&globals);
     }

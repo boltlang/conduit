@@ -85,6 +85,7 @@ pub enum Op {
     Closure(FuncId, Vec<Mutability>),  // args = captured values; result has type Fn(sig)
     Apply,                 // args[0] = closure, rest = arguments
     New(CtorId),           // allocate an ADT value; args = its fields
+    Const(ConstId),        // a constant's object, the same every time; no args
     Get(CtorId, u32),      // read field i
     Set(CtorId, u32),      // write field i of a Mut object; binds nothing
     ArrayNew,              // args = the elements
@@ -184,6 +185,7 @@ pub struct Module {
     externs: Vec<Extern>,  // signature + host name
     effects: Vec<EffectDecl>,
     handlers: Vec<HandlerDecl>,
+    consts: Vec<ConstDecl>,
 }
 
 pub struct Func {
@@ -200,6 +202,35 @@ pub struct MutParams {
 ```
 
 Functions exist only at the top level.
+
+### Constants
+
+```rust
+pub struct ConstDecl { ty: Ty, value: ConstValue }
+
+pub enum ConstValue {
+    Lit(Lit),
+    Array(Vec<ConstValue>),          // an imm array
+    New(CtorId, Vec<ConstValue>),    // an imm object
+    Const(ConstId),                  // the same object as another constant
+}
+```
+
+A constant is a value that exists before the program runs, like a global
+constant in LLVM. `Const(c)` gives its object, and every use gets the same
+one. Its type must be `Imm` all the way down, so that nothing can tell
+that it's shared, and so that an optimization may treat it as any other
+`Imm` value. A string is a constant of type `imm [i8]`; a table, a
+constant array; a list, nested `New`s.
+
+The value is a tree of literals, arrays and constructors, whose types
+come from the constant's type, as an array's elements come from its
+element type. `Const` lets constants share parts, and cut a value too deep
+to be one tree into several. They can't refer to each other in a cycle.
+
+A frontend needing a `Mut` value with the same contents builds one from a
+constant, as C copies a string literal into an array: `ArrayClone` for an
+array, `New` for an object.
 
 ### Closures
 
@@ -1101,7 +1132,7 @@ Status:
 | `Box` of a reference | nothing (it's already a pointer) | nothing (upcast to `anyref`) | ✅ |
 | `Unbox` to a scalar | `*.load` | `i31.get_s`, or `ref.cast` + `struct.get` | ✅ |
 | `Unbox` to a reference | nothing | `ref.cast` | ✅ |
-| String literal (`Lit`) | data segment | `array.new_data` | ✅ |
+| `Const` | a pointer into a data segment | `global.get` of an immutable global, made by `struct.new` and `array.new_fixed` in its initializer | ✅ |
 | `ArrayFreeze` | nothing | nothing | ✅ |
 | `Handle`, `Perform` with tail-resumptive clauses | — | a handler stack in a global, and a direct call of the clause | ✅ |
 | `Handle`, `Perform` with aborting clauses | — | the same, then `throw`, caught by `try_table` | ✅ (exception handling, Wasm 3.0) |
@@ -1116,6 +1147,11 @@ Notes:
 
 - `case` on an ADT reads the tag: an `i32.load` with linear memory, and
   `br_on_cast` or a tag field with Wasm GC.
+- A constant's global is made when the module is instantiated. Its
+  arrays are made with `array.new_fixed`, which engines limit: V8 to
+  10,000 elements. Longer arrays will need `array.new_data` from a data
+  segment, which a global's initializer can't use, so they'd be made at
+  startup instead.
 - Integer division and remainder trap on zero in Wasm, so `div` and `rem`
   check the divisor first and give 0 or the dividend, unless it's a
   literal.
@@ -1133,12 +1169,12 @@ Notes:
 module. Printing then parsing gives back the same module, and text that
 `print` wrote parses and prints back unchanged. Without names, things are
 written by number, as the verifier's messages write them: `fn1`, `data10`,
-`data10.1` (constructor 1), `extern1`, `effect20`, `handler30`, `%3`, `j1`
-and `ret`.
+`data10.1` (constructor 1), `extern1`, `effect20`, `handler30`, `const40`,
+`%3`, `j1` and `ret`.
 
-**Names.** A function, data type, extern, effect or handler can have a
-name instead (`debug.name` of a `Func`, `debug_name` of the others), and
-so can a function's variables and labels (`debug.vars`, `debug.labels`):
+**Names.** A function, data type, extern, effect, handler or constant can
+have a name instead (`debug.name` of a `Func`, `debug_name` of the
+others), and so can a function's variables and labels (`debug.vars`, `debug.labels`):
 `fn sum`, `imm List`, `List.1`, `perform Yield.0`, `%acc`, `jump loop`.
 They're for showing code. Passes don't look at them, but keep them, and
 what a pass makes has none.
@@ -1168,6 +1204,9 @@ effect effect20 {
 }
 
 handler handler30 for effect20 env(ref i32) ops(fn4) ret fn5
+
+const const40: imm [i8] = [104i8, 105i8]
+const const41: imm data11 = data11.1(1i32, data11.0())
 
 fn fn1(%0: i32) -> (i32) {
   join rec j1(%1: i32, %2: i32) =
@@ -1208,7 +1247,8 @@ fn fn1(%0: i32) -> (i32) {
 - **Ops** are a name, what the op takes in its name, and the arguments:
   `add`, `div.s`, `lt.u`, `convert.s[i64]`, `reinterpret[f32]`,
   `call fn2(..)`, `call_extern extern1(..)`, `closure fn2(..)`, `apply(..)`,
-  `new data10.0(..)`, `get data10.0.1(..)`, `set data10.0.1(..)`,
+  `new data10.0(..)`, `const const40()`, `get data10.0.1(..)`,
+  `set data10.0.1(..)`,
   `array_new`, `array_fill`, `array_get`, `array_set`, `array_len`,
   `array_clone`, `array_freeze`,
   `ref_new`, `ref_get`, `ref_set`, `box[i32](..)`, `unbox[i32](..)`,
@@ -1217,6 +1257,9 @@ fn fn1(%0: i32) -> (i32) {
 - **Literals** carry their type: `5i32`, `-1i64`, `1.5f32`, `1e300f64`.
   Finite floats are printed in the shortest form that reads back exactly.
   NaNs and infinities are written by their bits: `f32_bits(2143289344)`.
+- **Constants** give their type, then their value: a literal, an array
+  `[1i32, 2i32]`, a constructor with its fields `data11.1(1i32, data11.0())`,
+  or another constant by its ID or name.
 - **Sources** follow a `let` or a `jump`: `@src7`.
 - `case` arms are `1 =>`, `data10.1 =>` or `_ =>` for the default.
   `join` definitions are separated by `and`, and the body follows `in`.
@@ -1260,6 +1303,8 @@ doesn't need a deep stack.
   errors, where Wasm traps. The test
   programs in `tests/programs/prims` check that the two agree.
 - **Undefined behavior is an error,** like `Unbox` at the wrong type.
+- **Constants are made when first used,** and kept, so every use gets the
+  same object.
 - **Objects are never freed** yet.
 
 ## Left out on purpose
@@ -1318,8 +1363,9 @@ yet:
 - **Sources.** Frontends need to map code back to source, for errors and
   for limits on how long an interpreter runs. `Let` and `Jump` carry a
   `source`, which is opaque to Conduit and carried through inlining.
-- **Strings and chars.** `Lit` needs string literals (lowered to data
-  segments or GC arrays). Chars are `i32`.
+- **Strings and chars.** A string literal is a constant of type
+  `imm [i8]` (see "Constants"), which a `Mut` string copies with
+  `ArrayClone`. Chars are `i32`.
 - **Incremental compilation.** A query-based frontend (Salsa, for example)
   caches Conduit IR and wants unchanged functions not to be recompiled.
   Conduit doesn't depend on any such framework. Instead:
@@ -1336,6 +1382,7 @@ yet:
         fn extern_fn(&self, id: ExternId) -> Option<&Extern>;
         fn effect(&self, id: EffectId) -> Option<&EffectDecl>;
         fn handler(&self, id: HandlerId) -> Option<&HandlerDecl>;
+        fn constant(&self, id: ConstId) -> Option<&ConstDecl>;
     }
     ```
 

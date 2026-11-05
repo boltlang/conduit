@@ -12,6 +12,7 @@ struct Items {
     effects: BTreeMap<u64, String>,
     handlers: BTreeMap<u64, String>,
     funcs: BTreeMap<u64, String>,
+    consts: BTreeMap<u64, String>,
 }
 
 fn named<'a, K: Copy, V>(
@@ -37,6 +38,7 @@ impl Items {
                 &named(&m.handlers, |h| h.0, |h| &h.debug_name),
             ),
             funcs: spellings("fn", 0, &named(&m.funcs, |f| f.0, |f| &f.debug.name)),
+            consts: spellings("const", 0, &named(&m.consts, |c| c.0, |c| &c.debug_name)),
         }
     }
 
@@ -68,6 +70,27 @@ impl Items {
 
     fn func(&self, f: FuncId) -> String {
         Self::get(&self.funcs, "fn", f.0)
+    }
+
+    fn constant(&self, c: ConstId) -> String {
+        Self::get(&self.consts, "const", c.0)
+    }
+
+    /// A constant's value: `5i32`, `[1i32, 2i32]`, `List.1(1i32, nil)`.
+    fn const_value(&self, value: &ConstValue) -> String {
+        let all = |parts: &[ConstValue]| {
+            parts
+                .iter()
+                .map(|v| self.const_value(v))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        match value {
+            ConstValue::Lit(lit) => lit_text(lit),
+            ConstValue::Array(elems) => format!("[{}]", all(elems)),
+            ConstValue::New(c, fields) => format!("{}({})", self.ctor(*c), all(fields)),
+            ConstValue::Const(id) => self.constant(*id),
+        }
     }
 
     fn ty(&self, ty: &Ty) -> String {
@@ -119,6 +142,7 @@ impl Items {
             Op::CallExtern(e) => format!("call_extern {}", self.extern_(*e)),
             Op::Closure(f, margs) => format!("closure {}{}", self.func(*f), margs_text(margs)),
             Op::New(c) => format!("new {}", self.ctor(*c)),
+            Op::Const(id) => format!("const {}", self.constant(*id)),
             Op::Get(c, i) => format!("get {}.{i}", self.ctor(*c)),
             Op::Set(c, i) => format!("set {}.{i}", self.ctor(*c)),
             Op::Box(ty) => format!("box[{}]", self.ty(ty)),
@@ -157,6 +181,14 @@ pub(super) fn module(m: &Module) -> String {
             string(&ext.module),
             string(&ext.name),
             names.sig(&ext.sig)
+        ));
+    }
+    for (id, decl) in &m.consts {
+        items.push(format!(
+            "const {}: {} = {}",
+            names.constant(*id),
+            names.ty(&decl.ty),
+            names.const_value(&decl.value)
         ));
     }
     for (id, effect) in &m.effects {
@@ -605,6 +637,7 @@ pub(crate) fn op_name(op: &Op) -> String {
         Op::Closure(f, margs) => format!("closure {f}{}", margs_text(margs)),
         Op::Apply => "apply".into(),
         Op::New(c) => format!("new {c}"),
+        Op::Const(id) => format!("const {id}"),
         Op::Get(c, i) => format!("get {c}.{i}"),
         Op::Set(c, i) => format!("set {c}.{i}"),
         Op::ArrayNew => "array_new".into(),

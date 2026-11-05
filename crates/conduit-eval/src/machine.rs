@@ -3,8 +3,8 @@ use std::rc::Rc;
 
 use conduit_ir::verify::subst_params;
 use conduit_ir::{
-    Atom, Block, EffectId, Extern, ExternId, Func, FuncId, HandlerId, JoinDef, Label, Mutability,
-    Op, Program, SourceId, Tag, Tail, Ty, Var,
+    Atom, Block, ConstId, ConstValue, EffectId, Extern, ExternId, Func, FuncId, HandlerId, JoinDef,
+    Label, Mutability, Op, Program, SourceId, Tag, Tail, Ty, Var,
 };
 
 use crate::error::{Error, ErrorKind, unverified};
@@ -83,6 +83,9 @@ pub struct Machine<'p, P: ?Sized, H> {
     heap: Vec<Object<'p>>,
     stack: Vec<Frame<'p>>,
     labels: HashMap<FuncId, Labels<'p>>,
+    /// The constants made so far, made the first time they're used, or
+    /// `None` while one is being made.
+    consts: HashMap<ConstId, Option<Value>>,
     /// The most frames the stack can have, handler frames included.
     pub max_frames: usize,
     /// How many more steps the program can run, or `None` for no limit.
@@ -98,6 +101,7 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
             heap: Vec::new(),
             stack: Vec::new(),
             labels: HashMap::new(),
+            consts: HashMap::new(),
             max_frames: 100_000,
             fuel: None,
             source: None,
@@ -149,6 +153,49 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
     fn alloc_id(&mut self, object: Object<'p>) -> ObjId {
         self.heap.push(object);
         ObjId(self.heap.len() as u32 - 1)
+    }
+
+    /// The object of a constant, made the first time it's asked for, so
+    /// that every use gets the same one.
+    fn constant(&mut self, id: ConstId) -> Step<Value> {
+        match self.consts.get(&id) {
+            Some(Some(value)) => return Ok(*value),
+            Some(None) => return Err(unverified(format!("{id} refers to itself"))),
+            None => {}
+        }
+        let decl = self
+            .p
+            .constant(id)
+            .ok_or_else(|| unverified(format!("unknown constant {id}")))?;
+        self.consts.insert(id, None);
+        let value = self.const_value(&decl.value)?;
+        self.consts.insert(id, Some(value));
+        Ok(value)
+    }
+
+    fn const_value(&mut self, value: &'p ConstValue) -> Step<Value> {
+        let all = |m: &mut Self, parts: &'p [ConstValue]| -> Step<Vec<Value>> {
+            parts.iter().map(|v| m.const_value(v)).collect()
+        };
+        Ok(match value {
+            ConstValue::Lit(lit) => (*lit).into(),
+            ConstValue::Array(elems) => {
+                let elems = all(self, elems)?;
+                self.alloc(Object::Array {
+                    elems,
+                    is_mut: false,
+                })
+            }
+            ConstValue::New(c, fields) => {
+                let fields = all(self, fields)?;
+                self.alloc(Object::Data {
+                    ctor: *c,
+                    fields,
+                    is_mut: false,
+                })
+            }
+            ConstValue::Const(id) => self.constant(*id)?,
+        })
     }
 
     fn error(&self, kind: ErrorKind) -> Error {
@@ -461,6 +508,7 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                     is_mut,
                 })]
             }
+            Op::Const(id) => vec![self.constant(*id)?],
             Op::Get(c, i) => match self.object_ref(obj(arg(&args, 0)?)?)? {
                 Object::Data { ctor, fields, .. } if ctor == c => {
                     vec![

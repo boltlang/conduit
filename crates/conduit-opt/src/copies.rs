@@ -18,9 +18,10 @@
 //! object, reads one out, captures one or boxes one puts its arguments and
 //! results in the same region. A region *escapes* if code outside this
 //! function may hold one of its objects: parameters, values passed to or
-//! returned from calls, and returned values. Variables whose type is `Imm`
-//! all the way down only reach objects that never change, so they are left
-//! out: this is what keeps the clone's result out of the original's region.
+//! returned from calls, returned values, and constants. Variables whose
+//! type is `Imm` all the way down only reach objects that never change, so
+//! they are left out: this is what keeps the clone's result out of the
+//! original's region.
 //!
 //! An `ArrayClone` of `x` to `Imm` is frozen in place if `x`'s region
 //! doesn't escape and no variable of the region is live after the clone.
@@ -323,7 +324,9 @@ impl RegionCx<'_> {
         let all = vars(&l.args).chain(l.binds.iter().copied());
         match &l.op {
             // Code we don't see gets the arguments and gives the results.
-            Op::Call(..)
+            // A constant's object is a global's too.
+            Op::Const(_)
+            | Op::Call(..)
             | Op::CallExtern(_)
             | Op::Apply
             | Op::Handle(_)

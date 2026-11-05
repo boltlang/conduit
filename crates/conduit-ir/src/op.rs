@@ -1,4 +1,4 @@
-use crate::id::{CtorId, EffectId, ExternId, FuncId, HandlerId};
+use crate::id::{ConstId, CtorId, EffectId, ExternId, FuncId, HandlerId};
 use crate::ty::{Mutability, Ty};
 
 /// Everything that isn't control flow. Passes that move code around don't
@@ -22,6 +22,9 @@ pub enum Op {
     Apply,
     /// Allocates an ADT value. Args: its fields.
     New(CtorId),
+    /// A constant's value, which is the same object every time. Args:
+    /// none. It binds a variable of the constant's type, or a supertype.
+    Const(ConstId),
     /// Reads a field. Args: the object.
     Get(CtorId, u32),
     /// Writes a field of a `Mut` object; binds nothing. Args: the object,
@@ -121,6 +124,7 @@ impl Op {
         let (memory, may_trap) = match self {
             Op::Prim(p) => (None, p.may_trap()),
             Op::Closure(..) | Op::Box(_) | Op::New(_) | Op::ArrayNew | Op::RefNew => (None, false),
+            Op::Const(_) => (None, false),
             // Its length may be negative or too big.
             Op::ArrayFill => (None, true),
             Op::Get(..) | Op::ArrayLen | Op::ArrayClone | Op::RefGet => (Reads, false),

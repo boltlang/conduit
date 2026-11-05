@@ -22,7 +22,7 @@ pub fn parse(src: &str) -> Result<Module, Error> {
 
 /// The kinds of item, by the keyword that defines one and the prefix of
 /// their numbered form.
-const KINDS: [&str; 5] = ["data", "extern", "effect", "handler", "fn"];
+const KINDS: [&str; 6] = ["data", "extern", "effect", "handler", "fn", "const"];
 
 fn kind(prefix: &str) -> usize {
     KINDS
@@ -266,7 +266,10 @@ impl Parser {
             let name = match self.peek() {
                 Tok::Eof => return Ok(m),
                 Tok::Ident(s) => s.clone(),
-                _ => return self.unexpected("`data`, `extern`, `effect`, `handler` or `fn`"),
+                _ => {
+                    return self
+                        .unexpected("`data`, `extern`, `const`, `effect`, `handler` or `fn`");
+                }
             };
             self.next();
             let duplicate =
@@ -292,6 +295,20 @@ impl Parser {
                             debug_name,
                         };
                         m.externs.insert(id, ext).map(|_| id.to_string())
+                    }
+                    "const" => {
+                        let (id, debug_name) = self.def("const")?;
+                        let id = ConstId(id);
+                        self.punct(":")?;
+                        let ty = self.ty()?;
+                        self.punct("=")?;
+                        let value = self.const_value()?;
+                        let decl = ConstDecl {
+                            ty,
+                            value,
+                            debug_name,
+                        };
+                        m.consts.insert(id, decl).map(|_| id.to_string())
                     }
                     "effect" => {
                         let (id, debug_name) = self.def("effect")?;
@@ -341,7 +358,7 @@ impl Parser {
                     _ => return self.error_at(
                         pos,
                         format!(
-                            "expected `data`, `extern`, `effect`, `handler` or `fn`, found `{name}`"
+                            "expected `data`, `extern`, `const`, `effect`, `handler` or `fn`, found `{name}`"
                         ),
                     ),
                 };
@@ -815,16 +832,29 @@ impl Parser {
         if let Tok::Var(_) = self.peek() {
             return self.var(info).map(Atom::Var);
         }
+        if let Tok::Ident(name) = self.peek()
+            && name != "f32_bits"
+            && name != "f64_bits"
+        {
+            let name = name.clone();
+            return self.error_at(
+                pos,
+                format!("expected a variable or a literal, found `{name}`"),
+            );
+        }
+        self.lit().map(Atom::Lit)
+    }
+
+    /// A literal: `5i32`, `1.5f64` or `f32_bits(2143289344)`.
+    fn lit(&mut self) -> Res<Lit> {
+        let pos = self.pos();
         match self.next() {
-            Tok::Num(s) => {
-                let lit = parse_lit(&s).ok_or(());
-                lit.map(Atom::Lit).or_else(|()| {
-                    self.error_at(
-                        pos,
-                        format!("`{s}` isn't a literal: it needs a type, like `{s}i32`"),
-                    )
-                })
-            }
+            Tok::Num(s) => parse_lit(&s).ok_or(()).or_else(|()| {
+                self.error_at(
+                    pos,
+                    format!("`{s}` isn't a literal: it needs a type, like `{s}i32`"),
+                )
+            }),
             Tok::Ident(name) if name == "f32_bits" || name == "f64_bits" => {
                 self.punct("(")?;
                 let bits = match self.next() {
@@ -833,18 +863,44 @@ impl Parser {
                 };
                 self.punct(")")?;
                 match (name.as_str(), bits) {
-                    ("f32_bits", Some(b)) if b <= u32::MAX.into() => {
-                        Ok(Atom::Lit(Lit::F32(b as u32)))
-                    }
-                    ("f64_bits", Some(b)) => Ok(Atom::Lit(Lit::F64(b))),
+                    ("f32_bits", Some(b)) if b <= u32::MAX.into() => Ok(Lit::F32(b as u32)),
+                    ("f64_bits", Some(b)) => Ok(Lit::F64(b)),
                     _ => self.error_at(pos, format!("bad bits for `{name}`")),
                 }
             }
-            Tok::Ident(name) => self.error_at(
-                pos,
-                format!("expected a variable or a literal, found `{name}`"),
-            ),
-            _ => self.error_at(pos, "expected a variable or a literal"),
+            _ => self.error_at(pos, "expected a literal"),
+        }
+    }
+
+    /// A constant's value: a literal, an array `[v, ..]`, an object
+    /// `List.1(v, ..)`, or another constant.
+    fn const_value(&mut self) -> Res<ConstValue> {
+        match self.peek() {
+            Tok::Num(_) => self.lit().map(ConstValue::Lit),
+            Tok::Ident(s) if s == "f32_bits" || s == "f64_bits" => self.lit().map(ConstValue::Lit),
+            Tok::Punct("[") => {
+                self.next();
+                let mut elems = Vec::new();
+                if self.eat_punct("]") {
+                    return Ok(ConstValue::Array(elems));
+                }
+                loop {
+                    elems.push(self.const_value()?);
+                    if self.eat_punct("]") {
+                        return Ok(ConstValue::Array(elems));
+                    }
+                    if !self.eat_punct(",") {
+                        return self.unexpected("`,` or `]`");
+                    }
+                }
+            }
+            Tok::Ident(_) if matches!(self.toks.get(self.i + 1), Some((Tok::Punct("."), _))) => {
+                let c = self.ctor()?;
+                let fields = self.list(Self::const_value)?;
+                Ok(ConstValue::New(c, fields))
+            }
+            Tok::Ident(_) => Ok(ConstValue::Const(ConstId(self.item("const")?))),
+            _ => self.unexpected("a literal, an array, a constructor or a constant"),
         }
     }
 
@@ -863,6 +919,7 @@ impl Parser {
             "closure" => Op::Closure(FuncId(self.item("fn")?), self.margs()?),
             "apply" => Op::Apply,
             "new" => Op::New(self.ctor()?),
+            "const" => Op::Const(ConstId(self.item("const")?)),
             "get" | "set" => {
                 let c = self.ctor()?;
                 self.punct(".")?;

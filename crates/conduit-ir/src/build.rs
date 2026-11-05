@@ -632,6 +632,11 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
         self.emit1(Op::New(c), fields.atoms(), Some(Ty::Data(c.data, m, args)))
     }
 
+    /// The value of constant `c`, of its declared type.
+    pub fn constant(&mut self, c: ConstId) -> Var {
+        self.emit1(Op::Const(c), Vec::new(), None)
+    }
+
     /// Field `i` of `obj`, which must be known to be built by `c`.
     pub fn get(&mut self, c: CtorId, i: u32, obj: impl Into<Atom>) -> Var {
         self.emit1(Op::Get(c, i), vec![obj.into()], None)

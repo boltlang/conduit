@@ -22,6 +22,7 @@ pub enum Item {
     Extern(ExternId),
     Effect(EffectId),
     Handler(HandlerId),
+    Const(ConstId),
 }
 
 impl fmt::Display for Item {
@@ -32,6 +33,7 @@ impl fmt::Display for Item {
             Item::Extern(id) => write!(f, "{id}"),
             Item::Effect(id) => write!(f, "{id}"),
             Item::Handler(id) => write!(f, "{id}"),
+            Item::Const(id) => write!(f, "{id}"),
         }
     }
 }
@@ -69,6 +71,7 @@ impl Error {
             Item::Extern(id) => p.extern_fn(id).and_then(|e| e.debug_name.clone()),
             Item::Effect(id) => p.effect(id).and_then(|e| e.debug_name.clone()),
             Item::Handler(id) => p.handler(id).and_then(|h| h.debug_name.clone()),
+            Item::Const(id) => p.constant(id).and_then(|c| c.debug_name.clone()),
         };
         let Some(name) = name else {
             return self.to_string();
@@ -101,6 +104,17 @@ pub fn verify_module(m: &Module) -> Result<(), Vec<Error>> {
     }
     for (&id, handler) in &m.handlers {
         check_handler(m, id, handler, &mut errors);
+    }
+    for (&id, decl) in &m.consts {
+        if let Err(message) = check_const(m, decl) {
+            errors.push(decl_error(Item::Const(id), message));
+        }
+    }
+    if let Some(id) = const_cycle(m) {
+        errors.push(decl_error(
+            Item::Const(id),
+            format!("{id} refers to itself, through the constants it's made of"),
+        ));
     }
     for (&id, f) in &m.funcs {
         if let Err(e) = verify_func(m, id, f) {
@@ -236,6 +250,119 @@ fn check_handler<P: Program + ?Sized>(
             ));
         }
     }
+}
+
+/// Checks a constant's type, and that its value is one of that type.
+fn check_const<P: Program + ?Sized>(p: &P, decl: &ConstDecl) -> Result<(), String> {
+    ty_ok(p, &decl.ty, Allowed::PLAIN)?;
+    if !deep_imm(p, &decl.ty) {
+        return Err(format!(
+            "a constant is imm all the way down, but {} isn't",
+            decl.ty
+        ));
+    }
+    const_value_ok(p, &decl.value, &decl.ty)
+}
+
+/// Checks that a constant's value, or part of one, is of type `ty`, which
+/// is `Imm` all the way down.
+fn const_value_ok<P: Program + ?Sized>(p: &P, value: &ConstValue, ty: &Ty) -> Result<(), String> {
+    match (value, ty) {
+        (ConstValue::Lit(lit), _) if lit.ty() == *ty => Ok(()),
+        (ConstValue::Lit(lit), _) => Err(format!(
+            "{} is a {}, not a {ty}",
+            text::atom_text(&Atom::Lit(*lit)),
+            lit.ty()
+        )),
+        (ConstValue::Array(elems), Ty::Array(..)) => {
+            let elem = elem_ty(ty).unwrap();
+            elems.iter().enumerate().try_for_each(|(i, e)| {
+                const_value_ok(p, e, &elem).map_err(|m| format!("element {i}: {m}"))
+            })
+        }
+        (ConstValue::Array(_), _) => Err(format!("an array isn't a {ty}")),
+        (ConstValue::New(c, fields), Ty::Data(d, m, args)) if c.data == *d => {
+            let decl = p.data(*d).ok_or_else(|| format!("unknown data type {d}"))?;
+            let ctor = decl
+                .ctors
+                .get(c.index as usize)
+                .ok_or_else(|| format!("unknown constructor {c}"))?;
+            if ctor.fields.len() != fields.len() {
+                return Err(format!(
+                    "{c} has {} fields, but gets {}",
+                    ctor.fields.len(),
+                    fields.len()
+                ));
+            }
+            ctor.fields
+                .iter()
+                .zip(fields)
+                .enumerate()
+                .try_for_each(|(i, (field, value))| {
+                    let field = resolve(field, *m, args);
+                    const_value_ok(p, value, &field).map_err(|m| format!("field {i} of {c}: {m}"))
+                })
+        }
+        (ConstValue::New(c, _), _) => Err(format!("{c} doesn't build a {ty}")),
+        (ConstValue::Const(id), _) => {
+            let decl = p
+                .constant(*id)
+                .ok_or_else(|| format!("unknown constant {id}"))?;
+            if sub(&decl.ty, ty) {
+                Ok(())
+            } else {
+                Err(format!("{id} is a {}, not a {ty}", decl.ty))
+            }
+        }
+    }
+}
+
+/// A constant that refers to itself through others, if there's one.
+fn const_cycle(m: &Module) -> Option<ConstId> {
+    // 0: not visited, 1: being visited, 2: done.
+    let mut state: BTreeMap<ConstId, u8> = BTreeMap::new();
+    for &start in m.consts.keys() {
+        if state.contains_key(&start) {
+            continue;
+        }
+        // A depth-first walk, with the constants each one still has to
+        // visit.
+        let mut stack = vec![(start, const_refs(&m.consts[&start].value))];
+        state.insert(start, 1);
+        while let Some((id, refs)) = stack.last_mut() {
+            let Some(next) = refs.pop() else {
+                state.insert(*id, 2);
+                stack.pop();
+                continue;
+            };
+            match state.get(&next) {
+                Some(1) => return Some(next),
+                Some(_) => {}
+                None => {
+                    let Some(decl) = m.consts.get(&next) else {
+                        continue;
+                    };
+                    state.insert(next, 1);
+                    stack.push((next, const_refs(&decl.value)));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// The constants a value refers to.
+pub fn const_refs(value: &ConstValue) -> Vec<ConstId> {
+    let mut refs = Vec::new();
+    let mut todo = vec![value];
+    while let Some(v) = todo.pop() {
+        match v {
+            ConstValue::Lit(_) => {}
+            ConstValue::Array(parts) | ConstValue::New(_, parts) => todo.extend(parts),
+            ConstValue::Const(id) => refs.push(*id),
+        }
+    }
+    refs
 }
 
 fn sub(a: &Ty, b: &Ty) -> bool {

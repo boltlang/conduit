@@ -10,7 +10,7 @@ result.
   every function.
 - **`verify_func(p, id, f)`** checks one function, asking the `Program` `p`
   only for the signatures and declarations it uses (`func_sig`, `data`,
-  `extern_fn`, `effect`, `handler`). So a frontend can verify each
+  `extern_fn`, `effect`, `handler`, `constant`). So a frontend can verify each
   function on its own, and a Salsa frontend only recompiles a function's
   check when what it uses changes. The declarations are assumed to be well
   formed.
@@ -56,6 +56,14 @@ Others are checked at run time:
     where `R` is what the return clause gives.
   - No clause has mutability parameters, since nothing would give them
     arguments.
+- **Constants:**
+  - The type is well formed, with no `inherit` and no parameters, and
+    `imm` all the way down, since every use shares the one object.
+  - The value is of that type: a literal of a number type, an array of
+    values of its element type, `C(..)` with a value per field of `C`, as
+    the type's mutability arguments make them, or another constant whose
+    type is a subtype.
+  - No constant refers to itself, through the constants it's made of.
 
 ## Types
 
@@ -120,6 +128,7 @@ an array, and `ref_new`.
 | `closure f[margs]` | the first values `f` takes, as captures | the `fn` it binds, which takes and gives the rest of `f`'s signature |
 | `apply` | a closure, then what it takes | what it gives |
 | `new C` | a value per field of `C` | the data type it binds, of `C`'s type |
+| `const c` | nothing | `c`'s type |
 | `get C.i` | an object of `C`'s type | field `i` |
 | `set C.i` | a `mut` object of `C`'s type, then a value for field `i` | nothing |
 | `array_new` | elements | the array it binds |

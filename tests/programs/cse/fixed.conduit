@@ -1,11 +1,13 @@
 // Ops whose results can't change are shared with an earlier one on every
-// path to them: arithmetic, a division that may trap, an `imm` object and
-// a closure. A `mut` object and a ref are new each time, and an arm can't
+// path to them: arithmetic, a division that may trap, an `imm` object, a
+// closure and a constant. A `mut` object and a ref are new each time, and an arm can't
 // share with its sibling.
 
 data Pair {
   (i32, i32)
 }
+
+const pair: imm Pair = Pair.0(2i32, 3i32)
 
 fn arith(%x: i32, %y: i32) -> (i32) {
   let %sum: i32 = add(%x, %y)
@@ -56,9 +58,19 @@ fn adder(%n: i32, %x: i32) -> (i32) {
   jump ret(%sum)
 }
 
+fn consts() -> (i32) {
+  let %p1: imm Pair = const pair()
+  let %p2: imm Pair = const pair()
+  let %a: i32 = get Pair.0.0(%p1)
+  let %b: i32 = get Pair.0.1(%p2)
+  let %r: i32 = add(%a, %b)
+  jump ret(%r)
+}
+
 //# run arith(6i32, 3i32) == 4i32
 //# run arith(-2147483648i32, -1i32) traps
 //# run objects(4i32) == 9i32
 //# run arms(0i32, 3i32) == 2i32
 //# run arms(2i32, 3i32) == 8i32
+//# run consts() == 5i32
 //# opt: cse

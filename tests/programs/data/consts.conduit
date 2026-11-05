@@ -1,0 +1,129 @@
+// Constants: `imm` values made once, before the program runs, which
+// `const` gives. Every use gets the same object.
+
+data List {
+  ()
+  (i32, inherit List)
+}
+
+data Named {
+  (imm [i8], f64)
+}
+
+data Cell['m1] {
+  ('m1 [i32])
+}
+
+const hello: imm [i8] = [104i8, 101i8, 108i8, 108i8, 111i8]
+const nil: imm List = List.0()
+const list: imm List = List.1(1i32, List.1(2i32, List.1(3i32, nil)))
+const named: imm Named = Named.0(hello, 2.5f64)
+const cell: imm Cell[imm] = Cell.0([7i32, 8i32])
+const answer: i64 = 42i64
+const grid: imm [imm [i32]] = [[1i32, 2i32], [3i32], []]
+const nan: f32 = f32_bits(2143289344)
+
+// A byte string: its length, and its last byte read unsigned.
+fn hello_len() -> (i32) {
+  let %s: imm [i8] = const hello()
+  let %n: i32 = array_len(%s)
+  let %last: i8 = array_get(%s, 4i32)
+  let %b: i32 = convert.u[i32](%last)
+  let %n1000: i32 = mul(%n, 1000i32)
+  let %r: i32 = add(%n1000, %b)
+  jump ret(%r)
+}
+
+fn sum(%l: imm List) -> (i32) {
+  case %l {
+    List.0 => jump ret(0i32)
+    List.1 =>
+      let %head: i32 = get List.1.0(%l)
+      let %tail: imm List = get List.1.1(%l)
+      let %rest: i32 = call sum(%tail)
+      let %r: i32 = add(%head, %rest)
+      jump ret(%r)
+  }
+}
+
+// Constants nest, and refer to other constants.
+fn sum_list() -> (i32) {
+  let %l: imm List = const list()
+  let %r: i32 = call sum(%l)
+  jump ret(%r)
+}
+
+// A field that is another constant, and a float field.
+fn named_parts() -> (f64) {
+  let %n: imm Named = const named()
+  let %s: imm [i8] = get Named.0.0(%n)
+  let %first: i8 = array_get(%s, 0i32)
+  let %f: f64 = get Named.0.1(%n)
+  let %b: f64 = convert.u[f64](%first)
+  let %r: f64 = add(%b, %f)
+  jump ret(%r)
+}
+
+// A data type with a mutability parameter, given `imm`.
+fn cell_second() -> (i32) {
+  let %c: imm Cell[imm] = const cell()
+  let %xs: imm [i32] = get Cell.0.0(%c)
+  let %x: i32 = array_get(%xs, 1i32)
+  jump ret(%x)
+}
+
+fn the_answer() -> (i64) {
+  let %x: i64 = const answer()
+  jump ret(%x)
+}
+
+fn the_nan() -> (f32) {
+  let %x: f32 = const nan()
+  jump ret(%x)
+}
+
+// Arrays of arrays, the last one empty.
+fn grid_parts() -> (i32) {
+  let %g: imm [imm [i32]] = const grid()
+  let %row0: imm [i32] = array_get(%g, 0i32)
+  let %x: i32 = array_get(%row0, 1i32)
+  let %row2: imm [i32] = array_get(%g, 2i32)
+  let %empty: i32 = array_len(%row2)
+  let %rows: i32 = array_len(%g)
+  let %x100: i32 = mul(%x, 100i32)
+  let %rows10: i32 = mul(%rows, 10i32)
+  let %a: i32 = add(%x100, %rows10)
+  let %r: i32 = add(%a, %empty)
+  jump ret(%r)
+}
+
+// A `mut` clone of a constant can be written, and the constant stays.
+fn clone_and_write() -> (i32) {
+  let %s: imm [i8] = const hello()
+  let %m: mut [i8] = array_clone(%s)
+  let = array_set(%m, 0i32, 0i8)
+  let %again: imm [i8] = const hello()
+  let %b: i8 = array_get(%again, 0i32)
+  let %r: i32 = convert.u[i32](%b)
+  jump ret(%r)
+}
+
+// A constant can be bound as a supertype of its type.
+fn as_ro() -> (i32) {
+  let %s: ro [i8] = const hello()
+  let %frozen: imm [i8] = array_clone(%s)
+  let %b: i8 = array_get(%frozen, 1i32)
+  let %r: i32 = convert.u[i32](%b)
+  jump ret(%r)
+}
+
+//# run hello_len() == 5111i32
+//# run sum_list() == 6i32
+//# run named_parts() == 106.5f64
+//# run cell_second() == 8i32
+//# run the_answer() == 42i64
+//# run the_nan() == f32_bits(2143289344)
+//# run grid_parts() == 230i32
+//# run clone_and_write() == 104i32
+//# run as_ro() == 101i32
+//# wat

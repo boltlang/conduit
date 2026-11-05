@@ -23,8 +23,13 @@ pub mod text;
 mod ty;
 pub mod verify;
 
-pub use id::{CtorId, DataId, EffectId, ExternId, FuncId, HandlerId, Label, SourceId, Var};
-pub use module::{DataDecl, EffectDecl, Extern, Func, FuncDebug, HandlerDecl, Module, MutParams};
+pub use id::{
+    ConstId, CtorId, DataId, EffectId, ExternId, FuncId, HandlerId, Label, SourceId, Var,
+};
+pub use module::{
+    ConstDecl, ConstValue, DataDecl, EffectDecl, Extern, Func, FuncDebug, HandlerDecl, Module,
+    MutParams,
+};
 pub use op::{Effects, Memory, Op, Prim, Sign};
 pub use row::Row;
 pub use term::{Arm, Atom, Block, JoinDef, Let, Lit, Tag, Tail};
@@ -64,6 +69,7 @@ pub trait Program {
     fn extern_fn(&self, id: ExternId) -> Option<&Extern>;
     fn effect(&self, id: EffectId) -> Option<&EffectDecl>;
     fn handler(&self, id: HandlerId) -> Option<&HandlerDecl>;
+    fn constant(&self, id: ConstId) -> Option<&ConstDecl>;
 }
 
 impl Program for Module {
@@ -85,6 +91,10 @@ impl Program for Module {
 
     fn handler(&self, id: HandlerId) -> Option<&HandlerDecl> {
         self.handlers.get(&id)
+    }
+
+    fn constant(&self, id: ConstId) -> Option<&ConstDecl> {
+        self.consts.get(&id)
     }
 }
 

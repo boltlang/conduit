@@ -1,0 +1,39 @@
+// Constants that aren't `imm` all the way down, whose value doesn't fit
+// their type, that refer to unknown constants or to themselves, and uses
+// of them at the wrong type.
+
+data data0 {
+  ()
+  (i32, inherit data0)
+}
+
+data data1 {
+  (mut [i32])
+}
+
+const const0: mut [i32] = [1i32]
+const const1: imm [i32] = [1i64]
+const const2: imm data0 = data0.1(1i32)
+const const3: imm [i32] = const99
+const const4: imm data0 = const5
+const const5: imm data0 = data0.1(1i32, const4)
+const const6: i32 = [1i32]
+const const7: imm data1 = data1.0([1i32])
+const const8: imm data0 = data1.0([1i32])
+
+fn fn1() -> () {
+  let %0: imm [i64] = const const1()
+  let %1: i32 = const const99()
+  jump ret()
+}
+
+//# verify-error: const0: a constant is imm all the way down, but mut [i32] isn't
+//# verify-error: const1: element 0: 1i64 is a i64, not a i32
+//# verify-error: const2: data0.1 has 2 fields, but gets 1
+//# verify-error: const3: unknown constant const99
+//# verify-error: const4: const4 refers to itself, through the constants it's made of
+//# verify-error: const6: an array isn't a i32
+//# verify-error: const7: a constant is imm all the way down, but imm data1 isn't
+//# verify-error: const8: data1.0 doesn't build a imm data0
+//# verify-error: fn1: the op gives a imm [i32], but %0 has type imm [i64]
+//# verify-error: fn1: unknown constant const99
