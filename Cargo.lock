@@ -231,6 +231,7 @@ name = "conduit-wasm"
 version = "0.1.0"
 dependencies = [
  "conduit-ir",
+ "conduit-opt",
  "conduit-test",
  "wasm-encoder 0.263.0",
  "wasmparser 0.263.0",

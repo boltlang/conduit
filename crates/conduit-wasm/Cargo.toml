@@ -10,6 +10,7 @@ conduit-ir = { path = "../conduit-ir" }
 wasm-encoder = "0.263.0"
 
 [dev-dependencies]
+conduit-opt = { path = "../conduit-opt" }
 conduit-test = { path = "../conduit-test" }
 wasmparser = "0.263.0"
 wasmprinter = "0.263.0"
@@ -17,4 +18,8 @@ wasmtime = "50.0.1"
 
 [[test]]
 name = "programs"
+harness = false
+
+[[test]]
+name = "effects"
 harness = false

@@ -136,6 +136,51 @@ so code only dead code uses goes too.
   shows this: the original's region doesn't escape the function, and none
   of its variables is live after the clone.
 
+## Evidence passing (`effects::lower_effects`)
+
+Not one of the passes above, and not run by `optimize_func`: a module-level
+pass that frontends and backends run when they want effect handlers
+removed, so that a backend without them can run the program. It follows
+Koka (Xie and Leijen, "Generalized evidence passing for effect
+handlers"). Afterwards the module has no `handle`, `perform`, `resume` or
+`discontinue`, no continuation types and no rows, and the passes above
+can run on it.
+
+- **Evidence.** A function that may perform, or that applies a closure,
+  handles, resumes, or calls such a function, takes an evidence value as
+  its last parameter: the active handlers, innermost first, and a shared
+  state saying whether code is yielding, and to which handler. Every
+  closure takes it too, so that a pure closure can go where an effectful
+  one is expected. Each such function keeps its ID as a wrapper with its
+  old signature, which makes the evidence and calls the new version.
+- **`handle`** makes a node for its handler: the effect, a fresh marker,
+  whether each clause is tail-resumptive, a closure for each that is, and
+  the evidence outside. It then calls the handler's `drive` function,
+  which runs the body and then calls the return clause, or the clause the
+  body yielded to, with a continuation, or wraps the continuation of a
+  yield to a handler further out so that resuming it re-enters this one.
+- **`perform`** finds the nearest node of its effect. A tail-resumptive
+  clause is called directly, under the handlers outside it. Any other is
+  yielded to: `perform` records the operation, its arguments and the rest
+  of its function, and returns `undefined` results.
+- **Yielding.** After each call that may yield, the code checks the state
+  and, if it's yielding, adds the rest of its function to the
+  continuation, as a new function, and returns. Join points in scope
+  there become functions first, since the rest jumps to them. An effect
+  may yield if one of its handlers has a clause that isn't
+  tail-resumptive, or performs an effect that may: rows say which calls
+  can, so code that only performs effects that don't yield pays nothing
+  for it.
+- **Continuations** are closures given a closure that gives what the
+  `perform` gives: `resume` gives one returning the values, and
+  `discontinue` one that performs its operation at the `perform`, under
+  the handlers there. A flag makes a second use trap. A node's link to the
+  evidence outside is set each time it runs, so a continuation resumed
+  somewhere else runs under the handlers there.
+
+The test programs run after it in the evaluator, after the optimizer, and
+in Wasm without stack switching.
+
 ## Not done yet
 
 - Handlers whose clauses are called directly. The body of a `handle` is

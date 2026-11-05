@@ -15,3 +15,7 @@ conduit-test = { path = "../conduit-test" }
 [[test]]
 name = "programs"
 harness = false
+
+[[test]]
+name = "effects"
+harness = false

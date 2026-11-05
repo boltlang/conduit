@@ -953,17 +953,18 @@ three ops.
   module with a handler of this kind needs the proposal, which isn't
   standard yet: Wasmtime has it on Linux and macOS on x86-64.
 - **Evidence passing** (Xie & Leijen, "Generalized evidence passing for
-  effect handlers", and Xie et al., "Effect handlers, evidently"): a
-  Conduit-to-Conduit pass that removes the three ops. It
-  passes a handler vector to functions that may perform (which effect
-  types would tell it: see above), calls
-  tail-resumptive clauses directly, and turns code after a non-tail
-  `perform` into a closure (selective CPS). Each continuation it makes
-  carries a "used" flag that `resume` checks and sets, so a second resume
-  traps, as with stack switching. The output is ordinary Conduit
-  IR, so every backend works with it, including native ones without stack
-  switching. Known-handler optimizations come from inlining after this
-  pass.
+  effect handlers"), which `conduit_opt::effects::lower_effects` does: a
+  Conduit-to-Conduit pass over the whole module that removes the four
+  ops, rows and continuation types. Functions that may perform, or that
+  apply closures, handle or call such functions, take evidence: the
+  active handlers and a shared yield state. Tail-resumptive clauses are
+  called directly; any other clause is yielded to, and the code after each
+  call that may yield, which rows tell, becomes a function that the
+  continuation calls (Koka's "yield bubbling"). Each continuation carries
+  a "used" flag, so a second resume traps, as with stack switching. The
+  output is ordinary Conduit IR, so every backend runs it, including Wasm
+  without stack switching and native ones. See "Evidence passing" in
+  [Optimizations](optimisations.md).
 
 ## Optimizations come down to a few rewrites
 
