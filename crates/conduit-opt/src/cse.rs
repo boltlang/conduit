@@ -26,6 +26,13 @@
 //! `imm` objects and the ones it makes, so it writes nothing that existed
 //! before.
 //!
+//! A call of a function that only reads, with no effects and nothing
+//! that writes in it or the functions it calls, doesn't stop sharing reads
+//! either, and two of them with the same arguments give the same, if it
+//! gives something that's `imm` all the way down. It may still trap or
+//! not come back, so it's never removed. This looks at callees' bodies
+//! through [`Program::func`], so a Salsa frontend records the dependency.
+//!
 //! A continuation is never reused: the verifier counts its uses along each
 //! path, so reading one twice, or reading one back, would look like using
 //! it twice, as `promote` keeps refs of them too.
@@ -38,7 +45,8 @@
 //! It works forward in one pass, as variables are SSA. A `let` that's
 //! replaced leaves its variable unbound.
 
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{BTreeSet, HashMap};
 
 use conduit_ir::verify::deep_imm;
 use conduit_ir::{
@@ -68,6 +76,7 @@ pub fn cse(p: &dyn Program, f: &mut Func) -> bool {
         subst: HashMap::new(),
         fixed: HashMap::new(),
         changing: HashMap::new(),
+        read_only: RefCell::new(HashMap::new()),
         changed: false,
     };
     cx.block(&mut f.body);
@@ -86,6 +95,8 @@ struct Cx<'f> {
     /// Reads of what can change, and what they give, until something may
     /// write: an earlier read's variable, or what was written.
     changing: HashMap<Key, Atom>,
+    /// The functions known to only read, or not to.
+    read_only: RefCell<HashMap<FuncId, bool>>,
     changed: bool,
 }
 
@@ -129,6 +140,15 @@ impl Cx<'_> {
             Op::New(_) | Op::ArrayNew | Op::ArrayFill if imm => Kind::Fixed,
             Op::ArrayClone if imm => reads(self),
             Op::Get(..) | Op::ArrayGet | Op::RefGet => reads(self),
+            // A call that only reads gives the same again, unless it makes
+            // something that can change, which two calls make two of.
+            Op::Call(g, _) if self.reads_only(*g) && deep_imm(self.p, self.ty(bind)) => {
+                if l.args.iter().any(|a| self.can_change(a)) {
+                    Kind::Changing
+                } else {
+                    Kind::Fixed
+                }
+            }
             _ => Kind::Never,
         }
     }
@@ -178,7 +198,8 @@ impl Cx<'_> {
     /// Records what `l` gives, or replaces it with an earlier `let`'s
     /// variable or what was written. Returns whether it was replaced.
     fn let_(&mut self, l: &Let) -> bool {
-        if l.op.effects().memory >= Memory::Writes && !self.imm_apply(l) {
+        let reads_only_call = matches!(&l.op, Op::Call(g, _) if self.reads_only(*g));
+        if l.op.effects().memory >= Memory::Writes && !self.imm_apply(l) && !reads_only_call {
             self.changing.clear();
         }
         self.written(l);
@@ -211,6 +232,47 @@ impl Cx<'_> {
                 false
             }
         }
+    }
+
+    /// Whether `g` only reads: it has no effects, its ops at most read,
+    /// and so do the functions it calls. It may still trap or not come
+    /// back.
+    fn reads_only(&self, g: FuncId) -> bool {
+        if let Some(&known) = self.read_only.borrow().get(&g) {
+            return known;
+        }
+        // Every function `g` reaches through calls, each looked at once,
+        // so that recursion ends. Only if none writes is any of them known
+        // to only read: until then, one of them might reach a write.
+        let mut seen = BTreeSet::from([g]);
+        let mut todo = vec![g];
+        let mut ok = true;
+        while let Some(h) = todo.pop() {
+            let Some(f) = self.p.func(h) else {
+                ok = false;
+                break;
+            };
+            ok = f.row.is_nothing()
+                && lets_all(&f.body, &mut |l| match &l.op {
+                    Op::Call(next, _) => {
+                        if seen.insert(*next) {
+                            todo.push(*next);
+                        }
+                        true
+                    }
+                    op => op.effects().memory <= Memory::Reads,
+                });
+            if !ok {
+                break;
+            }
+        }
+        let mut known = self.read_only.borrow_mut();
+        if ok {
+            known.extend(seen.into_iter().map(|h| (h, true)));
+        } else {
+            known.insert(g, false);
+        }
+        ok
     }
 
     /// Whether `l` applies an `imm` closure without effects to arguments
@@ -276,4 +338,26 @@ impl Cx<'_> {
     fn atoms(&self, atoms: &mut [Atom]) {
         atoms.iter_mut().for_each(|a| self.atom(a));
     }
+}
+
+/// Whether `test` holds for every `let` in `b`, nested ones included.
+fn lets_all(b: &Block, test: &mut impl FnMut(&Let) -> bool) -> bool {
+    let mut todo = vec![b];
+    while let Some(b) = todo.pop() {
+        if !b.lets.iter().all(&mut *test) {
+            return false;
+        }
+        match &b.tail {
+            Tail::Join { defs, body, .. } => {
+                todo.extend(defs.iter().map(|d| &d.body));
+                todo.push(body);
+            }
+            Tail::Case { arms, default, .. } => {
+                todo.extend(arms.iter().map(|a| &a.body));
+                todo.extend(default.as_deref());
+            }
+            Tail::Jump { .. } | Tail::Unreachable => {}
+        }
+    }
+    true
 }

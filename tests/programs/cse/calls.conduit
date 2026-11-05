@@ -1,0 +1,81 @@
+// A call of a function that only reads, and calls only functions that
+// only read, is shared with an earlier one with the same arguments, and
+// doesn't stop reads before it from being shared after it. One that
+// writes, even through a function it calls, does, and one that makes a
+// `mut` object is never shared, since two calls make two.
+
+data Cell {
+  (i32)
+}
+
+fn get(%c: mut Cell) -> (i32) {
+  let %x: i32 = get Cell.0.0(%c)
+  jump ret(%x)
+}
+
+// Recursive, and only reads.
+fn sum_to(%n: i32) -> (i32) {
+  case %n {
+    0 => jump ret(0i32)
+    _ =>
+      let %n1: i32 = sub(%n, 1i32)
+      let %rest: i32 = call sum_to(%n1)
+      let %r: i32 = add(%rest, %n)
+      jump ret(%r)
+  }
+}
+
+// Writes, through a function it calls, which calls it back.
+fn ping(%c: mut Cell, %n: i32) -> (i32) {
+  case %n {
+    0 => jump ret(0i32)
+    _ =>
+      let %r: i32 = call pong(%c, %n)
+      jump ret(%r)
+  }
+}
+
+fn pong(%c: mut Cell, %n: i32) -> (i32) {
+  let = set Cell.0.0(%c, %n)
+  let %n1: i32 = sub(%n, 1i32)
+  let %r: i32 = call ping(%c, %n1)
+  jump ret(%r)
+}
+
+fn fresh(%x: i32) -> (mut Cell) {
+  let %c: mut Cell = new Cell.0(%x)
+  jump ret(%c)
+}
+
+fn calls(%c: mut Cell, %n: i32) -> (i32) {
+  let %a: i32 = get Cell.0.0(%c)
+  let %s1: i32 = call sum_to(%n)
+  let %s2: i32 = call sum_to(%n)
+  let %g1: i32 = call get(%c)
+  let %b: i32 = get Cell.0.0(%c)
+  let %g2: i32 = call get(%c)
+  let %p: i32 = call ping(%c, 2i32)
+  let %d: i32 = get Cell.0.0(%c)
+  let %f1: mut Cell = call fresh(1i32)
+  let %f2: mut Cell = call fresh(1i32)
+  let = set Cell.0.0(%f1, 5i32)
+  let %e: i32 = get Cell.0.0(%f2)
+  let %t1: i32 = add(%a, %s1)
+  let %t2: i32 = add(%t1, %s2)
+  let %t3: i32 = add(%t2, %g1)
+  let %t4: i32 = add(%t3, %b)
+  let %t5: i32 = add(%t4, %g2)
+  let %t6: i32 = add(%t5, %p)
+  let %t7: i32 = add(%t6, %d)
+  let %t8: i32 = add(%t7, %e)
+  jump ret(%t8)
+}
+
+fn main(%x: i32) -> (i32) {
+  let %c: mut Cell = new Cell.0(%x)
+  let %r: i32 = call calls(%c, 3i32)
+  jump ret(%r)
+}
+
+//# run main(10i32) == 54i32
+//# opt: cse

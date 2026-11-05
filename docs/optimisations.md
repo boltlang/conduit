@@ -102,7 +102,12 @@ and for a field of a `mut` object right after its `new`, an element of a
 `ref_new`. Like any read of what can change, this lasts until something
 may write. An `apply` of an `imm` closure without effects, to arguments
 that are `imm` all the way down, doesn't count as a write: it can only
-reach `imm` objects and the ones it makes. A continuation is never reused,
+reach `imm` objects and the ones it makes. Nor does a call of a function
+that only reads: one with no effects, whose ops and callees at most read.
+Two such calls with the same arguments are one, if what they give is
+`imm` all the way down; two calls that make a `mut` object make two. The
+call is still never removed, since it may not come back. A continuation
+is never reused,
 since the verifier counts its uses along each path.
 
 ## Dead code (`dce`)
@@ -124,6 +129,5 @@ so code only dead code uses goes too.
 
 ## Not done yet
 
-- Calls of functions known to only read, which `cse` could share.
 - Handlers: a `perform` whose `handle` is in the same function could call
   the clause directly.
