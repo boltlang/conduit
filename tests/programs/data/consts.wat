@@ -15,13 +15,14 @@
   (type (;11;) (func (result i64)))
   (type (;12;) (func (result f32)))
   (global (;0;) (ref null 0) i32.const 104 i32.const 101 i32.const 108 i32.const 108 i32.const 111 array.new_fixed 0 5)
-  (global (;1;) (ref null 1) i32.const 0 struct.new 7)
-  (global (;2;) (ref null 1) i32.const 1 i32.const 1 i32.const 1 i32.const 2 i32.const 1 i32.const 3 global.get 1 struct.new 2 struct.new 2 struct.new 2)
-  (global (;3;) (ref null 3) global.get 0 f64.const 0x1.4p+1 (;=2.5;) struct.new 3)
-  (global (;4;) (ref null 4) i32.const 7 i32.const 8 array.new_fixed 5 2 struct.new 4)
-  (global (;5;) i64 i64.const 42)
-  (global (;6;) (ref null 6) i32.const 1 i32.const 2 array.new_fixed 5 2 i32.const 3 array.new_fixed 5 1 array.new_fixed 5 0 array.new_fixed 6 3)
-  (global (;7;) f32 f32.const nan (;=NaN;))
+  (global (;1;) (ref null 0) i32.const 34 i32.const -1 i32.const 0 i32.const -61 i32.const -87 array.new_fixed 0 5)
+  (global (;2;) (ref null 1) i32.const 0 struct.new 7)
+  (global (;3;) (ref null 1) i32.const 1 i32.const 1 i32.const 1 i32.const 2 i32.const 1 i32.const 3 global.get 2 struct.new 2 struct.new 2 struct.new 2)
+  (global (;4;) (ref null 3) global.get 0 f64.const 0x1.4p+1 (;=2.5;) struct.new 3)
+  (global (;5;) (ref null 4) i32.const 7 i32.const 8 array.new_fixed 5 2 struct.new 4)
+  (global (;6;) i64 i64.const 42)
+  (global (;7;) (ref null 6) i32.const 1 i32.const 2 array.new_fixed 5 2 i32.const 3 array.new_fixed 5 1 array.new_fixed 5 0 array.new_fixed 6 3)
+  (global (;8;) f32 f32.const nan (;=NaN;))
   (export "fn0" (func $hello_len))
   (export "fn1" (func $sum))
   (export "fn2" (func $sum_list))
@@ -31,7 +32,8 @@
   (export "fn6" (func $the_nan))
   (export "fn7" (func $grid_parts))
   (export "fn8" (func $clone_and_write))
-  (export "fn9" (func $as_ro))
+  (export "fn9" (func $bytes_sum))
+  (export "fn10" (func $as_ro))
   (func $hello_len (;0;) (type 8) (result i32)
     (local $s (ref null 0)) (local $n i32) (local $last i32) (local $b i32) (local $n1000 i32) (local $r i32)
     global.get 0
@@ -89,14 +91,14 @@
   )
   (func $sum_list (;2;) (type 8) (result i32)
     (local $l (ref null 1)) (local $r i32)
-    global.get 2
+    global.get 3
     local.set $l
     local.get $l
     return_call $sum
   )
   (func $named_parts (;3;) (type 10) (result f64)
     (local $n (ref null 3)) (local $s (ref null 0)) (local $first i32) (local $f f64) (local $b f64) (local $r f64)
-    global.get 3
+    global.get 4
     local.set $n
     local.get $n
     struct.get 3 0
@@ -122,7 +124,7 @@
   )
   (func $cell_second (;4;) (type 8) (result i32)
     (local $c (ref null 4)) (local $xs (ref null 5)) (local $x i32)
-    global.get 4
+    global.get 5
     local.set $c
     local.get $c
     struct.get 4 0
@@ -136,21 +138,21 @@
   )
   (func $the_answer (;5;) (type 11) (result i64)
     (local $x i64)
-    global.get 5
+    global.get 6
     local.set $x
     local.get $x
     return
   )
   (func $the_nan (;6;) (type 12) (result f32)
     (local $x f32)
-    global.get 7
+    global.get 8
     local.set $x
     local.get $x
     return
   )
   (func $grid_parts (;7;) (type 8) (result i32)
     (local $g (ref null 6)) (local $row0 (ref null 5)) (local $x i32) (local $row2 (ref null 5)) (local $empty i32) (local $rows i32) (local $x100 i32) (local $rows10 i32) (local $a i32) (local $r i32)
-    global.get 6
+    global.get 7
     local.set $g
     local.get $g
     i32.const 0
@@ -222,7 +224,69 @@
     local.get $r
     return
   )
-  (func $as_ro (;9;) (type 8) (result i32)
+  (func $bytes_sum (;9;) (type 8) (result i32)
+    (local $s (ref null 0)) (local $n i32) (local $b0 i32) (local $b1 i32) (local $b2 i32) (local $b4 i32) (local $x0 i32) (local $x1 i32) (local $x2 i32) (local $x4 i32) (local $a i32) (local $b i32) (local $c i32) (local $n1000 i32) (local $r i32)
+    global.get 1
+    local.set $s
+    local.get $s
+    array.len
+    local.set $n
+    local.get $s
+    i32.const 0
+    array.get_s 0
+    local.set $b0
+    local.get $s
+    i32.const 1
+    array.get_s 0
+    local.set $b1
+    local.get $s
+    i32.const 2
+    array.get_s 0
+    local.set $b2
+    local.get $s
+    i32.const 4
+    array.get_s 0
+    local.set $b4
+    local.get $b0
+    i32.const 255
+    i32.and
+    local.set $x0
+    local.get $b1
+    i32.const 255
+    i32.and
+    local.set $x1
+    local.get $b2
+    i32.const 255
+    i32.and
+    local.set $x2
+    local.get $b4
+    i32.const 255
+    i32.and
+    local.set $x4
+    local.get $x0
+    local.get $x1
+    i32.add
+    local.set $a
+    local.get $a
+    local.get $x2
+    i32.add
+    local.set $b
+    local.get $b
+    local.get $x4
+    i32.add
+    local.set $c
+    local.get $n
+    i32.const 1000
+    i32.mul
+    local.set $n1000
+    local.get $n1000
+    local.get $c
+    i32.add
+    local.set $r
+    local.get $r
+    return
+  )
+  (func $as_ro (;10;) (type 8) (result i32)
     (local $s (ref null 0)) (local $frozen (ref null 0)) (local $b i32) (local $r i32) (local (ref null 0))
     global.get 0
     local.set $s

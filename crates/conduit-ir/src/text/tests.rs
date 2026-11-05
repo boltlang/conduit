@@ -21,6 +21,16 @@ data data13['m1, 'm2] {
 
 extern extern1 "env" "print \"it\"" (i32) -> ()
 
+const const40: imm [i8] = b"hi \"\\\n\t\r\0\x01\xff é"
+
+const const41: imm data11 = data11.1(1i32, data11.0())
+
+const const42: imm [imm data11] = [const41, data11.0()]
+
+const const43: imm [f64] = []
+
+const const44: imm [i16] = [1i16, -1i16]
+
 effect effect20 {
   (i32) -> ()
 }
@@ -101,6 +111,7 @@ fn fn8(%0: mut data10) -> (imm data10) {
   let %12: mut data10 = new data10.0(%11, %3)
   let %13: imm [i64] = array_clone(%5)
   let %14: imm [f64] = array_freeze(%4)
+  let %15: ro [i8] = const const40()
   jump ret(%1)
 }
 
@@ -437,6 +448,41 @@ fn parse_errors() {
     ];
     for (src, expected) in cases {
         assert_eq!(error(src), *expected, "for {src:?}");
+    }
+}
+
+/// A byte string is an array of `i8` literals, and an array of them
+/// prints as a byte string.
+#[test]
+fn byte_strings() {
+    let m = parse("const c: imm [i8] = b\"a\\xff\\n\"").unwrap();
+    let lits =
+        |ns: &[i8]| ConstValue::Array(ns.iter().map(|&n| ConstValue::Lit(Lit::I8(n))).collect());
+    assert_eq!(m.consts[&ConstId(0)].value, lits(&[97, -1, 10]));
+    let m = parse("const c: imm [i8] = [104i8, 105i8, 255i8]").unwrap();
+    assert_eq!(print(&m), "const c: imm [i8] = b\"hi\\xff\"\n");
+    // Valid UTF-8 prints as its characters, but not control characters.
+    let m = parse("const c: imm [i8] = b\"\\xc3\\xa9\\xc2\\x85\"").unwrap();
+    assert_eq!(print(&m), "const c: imm [i8] = b\"é\\xc2\\x85\"\n");
+    for (src, message) in [
+        (
+            "const c: imm [i8] = b\"ab",
+            "1:21: unterminated byte string",
+        ),
+        (
+            "const c: imm [i8] = b\"\\q\"",
+            "1:21: unknown escape in a byte string",
+        ),
+        (
+            "const c: imm [i8] = b\"\\x+f\"",
+            "1:21: `\\x` needs two hex digits, like `\\x7f`",
+        ),
+        (
+            "const c: imm [i8] = b\"\\x4\"",
+            "1:21: `\\x` needs two hex digits, like `\\x7f`",
+        ),
+    ] {
+        assert_eq!(error(src), message, "for {src:?}");
     }
 }
 

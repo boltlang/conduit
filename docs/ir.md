@@ -1205,7 +1205,7 @@ effect effect20 {
 
 handler handler30 for effect20 env(ref i32) ops(fn4) ret fn5
 
-const const40: imm [i8] = [104i8, 105i8]
+const const40: imm [i8] = b"hi\n"
 const const41: imm data11 = data11.1(1i32, data11.0())
 
 fn fn1(%0: i32) -> (i32) {
@@ -1259,7 +1259,13 @@ fn fn1(%0: i32) -> (i32) {
   NaNs and infinities are written by their bits: `f32_bits(2143289344)`.
 - **Constants** give their type, then their value: a literal, an array
   `[1i32, 2i32]`, a constructor with its fields `data11.1(1i32, data11.0())`,
-  or another constant by its ID or name.
+  or another constant by its ID or name. A byte string `b"hi\n"` is an
+  array of `i8` literals, and `print` writes every non-empty one that way.
+  Its escapes are `\"`, `\\`, `\n`, `\t`, `\r`, `\0` and `\xff`, and other
+  characters are their UTF-8 bytes. `print` writes valid UTF-8 as its
+  characters, except control characters, and every other byte as `\xff`.
+  It's only a way of writing: a constant holds a byte string as an array
+  of literals, so passes see one form.
 - **Sources** follow a `let` or a `jump`: `@src7`.
 - `case` arms are `1 =>`, `data10.1 =>` or `_ =>` for the default.
   `join` definitions are separated by `and`, and the body follows `in`.
@@ -1364,7 +1370,7 @@ yet:
   for limits on how long an interpreter runs. `Let` and `Jump` carry a
   `source`, which is opaque to Conduit and carried through inlining.
 - **Strings and chars.** A string literal is a constant of type
-  `imm [i8]` (see "Constants"), which a `Mut` string copies with
+  `imm [i8]` (see "Constants"), written `b"hi"` in the text, which a `Mut` string copies with
   `ArrayClone`. Chars are `i32`.
 - **Incremental compilation.** A query-based frontend (Salsa, for example)
   caches Conduit IR and wants unchanged functions not to be recompiled.

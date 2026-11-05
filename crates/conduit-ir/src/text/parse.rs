@@ -120,6 +120,7 @@ impl Parser {
             Tok::Var(s) => format!("`%{s}`"),
             Tok::Num(s) => format!("`{s}`"),
             Tok::Str(s) => format!("{s:?}"),
+            Tok::Bytes(_) => "a byte string".to_string(),
             Tok::Punct(p) => format!("`{p}`"),
             Tok::Eof => "the end of the text".to_string(),
         };
@@ -872,11 +873,19 @@ impl Parser {
         }
     }
 
-    /// A constant's value: a literal, an array `[v, ..]`, an object
-    /// `List.1(v, ..)`, or another constant.
+    /// A constant's value: a literal, an array `[v, ..]` or `b"hi"`, an
+    /// object `List.1(v, ..)`, or another constant.
     fn const_value(&mut self) -> Res<ConstValue> {
         match self.peek() {
             Tok::Num(_) => self.lit().map(ConstValue::Lit),
+            Tok::Bytes(bytes) => {
+                let elems = bytes
+                    .iter()
+                    .map(|&b| ConstValue::Lit(Lit::I8(b as i8)))
+                    .collect();
+                self.next();
+                Ok(ConstValue::Array(elems))
+            }
             Tok::Ident(s) if s == "f32_bits" || s == "f64_bits" => self.lit().map(ConstValue::Lit),
             Tok::Punct("[") => {
                 self.next();

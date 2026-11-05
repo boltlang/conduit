@@ -76,7 +76,8 @@ impl Items {
         Self::get(&self.consts, "const", c.0)
     }
 
-    /// A constant's value: `5i32`, `[1i32, 2i32]`, `List.1(1i32, nil)`.
+    /// A constant's value: `5i32`, `[1i32, 2i32]`, `b"hi"`,
+    /// `List.1(1i32, nil)`.
     fn const_value(&self, value: &ConstValue) -> String {
         let all = |parts: &[ConstValue]| {
             parts
@@ -87,7 +88,10 @@ impl Items {
         };
         match value {
             ConstValue::Lit(lit) => lit_text(lit),
-            ConstValue::Array(elems) => format!("[{}]", all(elems)),
+            ConstValue::Array(elems) => match bytes(elems) {
+                Some(bytes) => byte_string(&bytes),
+                None => format!("[{}]", all(elems)),
+            },
             ConstValue::New(c, fields) => format!("{}({})", self.ctor(*c), all(fields)),
             ConstValue::Const(id) => self.constant(*id),
         }
@@ -576,6 +580,52 @@ fn string(s: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\t' => out.push_str("\\t"),
             c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// The bytes of an array that's only `i8` literals, if it has any: an
+/// empty one is written `[]`, as for any element type.
+fn bytes(elems: &[ConstValue]) -> Option<Vec<u8>> {
+    if elems.is_empty() {
+        return None;
+    }
+    elems
+        .iter()
+        .map(|e| match e {
+            ConstValue::Lit(Lit::I8(n)) => Some(*n as u8),
+            _ => None,
+        })
+        .collect()
+}
+
+/// `b"hi\n"`. What's valid UTF-8 is written as its characters, other than
+/// quotes, backslashes and control characters, and every other byte as an
+/// escape.
+fn byte_string(bytes: &[u8]) -> String {
+    let mut out = String::from("b\"");
+    for chunk in bytes.utf8_chunks() {
+        for c in chunk.valid().chars() {
+            match c {
+                '"' => out.push_str("\\\""),
+                '\\' => out.push_str("\\\\"),
+                '\n' => out.push_str("\\n"),
+                '\t' => out.push_str("\\t"),
+                '\r' => out.push_str("\\r"),
+                '\0' => out.push_str("\\0"),
+                c if c.is_control() => {
+                    let mut buf = [0; 4];
+                    for b in c.encode_utf8(&mut buf).bytes() {
+                        let _ = write!(out, "\\x{b:02x}");
+                    }
+                }
+                c => out.push(c),
+            }
+        }
+        for b in chunk.invalid() {
+            let _ = write!(out, "\\x{b:02x}");
         }
     }
     out.push('"');

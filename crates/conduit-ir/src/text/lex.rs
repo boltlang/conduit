@@ -12,6 +12,8 @@ pub(super) enum Tok {
     /// A number, with its suffix if it has one: `5`, `-3i64`, `1.5e-3f32`.
     Num(String),
     Str(String),
+    /// A byte string, `b"hi\n"`, as its bytes.
+    Bytes(Vec<u8>),
     /// One of `( ) { } [ ] , : = . @`, or `=>` or `->`.
     Punct(&'static str),
     Eof,
@@ -55,7 +57,10 @@ pub(super) fn lex(src: &str) -> Result<Vec<(Tok, Pos)>, Error> {
             continue;
         }
 
-        let tok = if c.is_ascii_alphabetic()
+        let tok = if c == 'b' && chars.get(i + 1) == Some(&'"') {
+            i += 2;
+            Tok::Bytes(byte_string(&chars, &mut i, pos)?)
+        } else if c.is_ascii_alphabetic()
             || c == '_'
             || (c == '\'' && chars.get(i + 1).is_some_and(|c| c.is_ascii_alphabetic()))
         {
@@ -186,4 +191,52 @@ fn number_suffix(chars: &[char], i: usize) -> usize {
     } else {
         i
     }
+}
+
+/// The bytes of a byte string, from just after its `b"` to its closing
+/// `"`, which `i` is left after. Characters other than escapes are their
+/// UTF-8 bytes.
+fn byte_string(chars: &[char], i: &mut usize, pos: Pos) -> Result<Vec<u8>, Error> {
+    let err = |message: &str| Error {
+        line: pos.line,
+        col: pos.col,
+        message: message.into(),
+    };
+    let mut bytes = Vec::new();
+    loop {
+        match chars.get(*i) {
+            None | Some('\n') => return Err(err("unterminated byte string")),
+            Some('"') => break,
+            Some('\\') => {
+                let escaped = match chars.get(*i + 1) {
+                    Some('"') => b'"',
+                    Some('\\') => b'\\',
+                    Some('n') => b'\n',
+                    Some('t') => b'\t',
+                    Some('r') => b'\r',
+                    Some('0') => 0,
+                    Some('x') => {
+                        let digits = chars.get(*i + 2..*i + 4).unwrap_or_default();
+                        if digits.len() != 2 || !digits.iter().all(char::is_ascii_hexdigit) {
+                            return Err(err("`\\x` needs two hex digits, like `\\x7f`"));
+                        }
+                        let hex: String = digits.iter().collect();
+                        *i += 2;
+                        u8::from_str_radix(&hex, 16).unwrap()
+                    }
+                    None | Some('\n') => return Err(err("unterminated byte string")),
+                    _ => return Err(err("unknown escape in a byte string")),
+                };
+                bytes.push(escaped);
+                *i += 2;
+            }
+            Some(&c) => {
+                let mut buf = [0; 4];
+                bytes.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+                *i += 1;
+            }
+        }
+    }
+    *i += 1;
+    Ok(bytes)
 }
