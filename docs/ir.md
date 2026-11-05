@@ -950,7 +950,8 @@ both possible because handlers are confined to three ops.
 
 ## Optimizations come down to a few rewrites
 
-Because the IR is so small, the classic simplifications are local rewrites:
+[Optimizations](optimisations.md) lists the passes one by one. Because the
+IR is so small, the classic simplifications are local rewrites:
 
 - **Case of known constructor or literal.** If `case x` has a scrutinee
   bound by `New(C)` or a literal, replace the case with the matching arm.
