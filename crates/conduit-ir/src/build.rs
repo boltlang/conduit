@@ -37,6 +37,14 @@
 //!   them, with the source that was current when each happened.
 //! - **Sources:** [`set_source`](FuncBuilder::set_source) sets the source
 //!   of every `let` and `jump` that follows.
+//! - **Names:** [`set_name`](FuncBuilder::set_name),
+//!   [`name_var`](FuncBuilder::name_var) and
+//!   [`name_label`](FuncBuilder::name_label) give the function, its
+//!   variables and its join points names, which the text format, errors
+//!   and backends show instead of numbers.
+//! - **Known constructors:** a field of a variable can be read in an arm
+//!   of a `case` on it, or when it was bound by `new` or by a constant
+//!   built by a constructor, as the verifier allows.
 //!
 //! A function that calls itself, or functions that call each other, must be
 //! declared in the [`Program`] first, for example with a placeholder
@@ -248,6 +256,11 @@ pub struct FuncBuilder<'p, P: ?Sized> {
     current: BlockRef,
     source: Option<SourceId>,
     errors: Vec<Error>,
+    /// The variables bound by `new`, or by `const` of a constant built by
+    /// a constructor, which the verifier knows the constructor of for as
+    /// long as they're in scope: a variable is only used where it's in
+    /// scope, so they hold everywhere.
+    made: Vec<(Var, CtorId)>,
 }
 
 /// Emits a binary or unary scalar op.
@@ -280,7 +293,24 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
             current: BlockRef(0),
             source: None,
             errors: Vec::new(),
+            made: Vec::new(),
         }
+    }
+
+    /// Names the function, which the text format, errors and backends
+    /// show instead of its number.
+    pub fn set_name(&mut self, name: impl Into<Box<str>>) {
+        self.func.debug.name = Some(name.into());
+    }
+
+    /// Names a variable, such as a parameter or what an op binds.
+    pub fn name_var(&mut self, v: Var, name: impl Into<Box<str>>) {
+        self.func.debug.vars.insert(v, name.into());
+    }
+
+    /// Names a join point.
+    pub fn name_label(&mut self, j: &JoinPoint, name: impl Into<Box<str>>) {
+        self.func.debug.labels.insert(j.label(), name.into());
     }
 
     /// Gives the function mutability parameters, which its types can use
@@ -397,9 +427,10 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
         tys
     }
 
-    /// What the enclosing `case` arms say about variables.
+    /// What the enclosing `case` arms, and the `new`s and constants, say
+    /// about variables.
     fn known(&self) -> Vec<(Var, CtorId)> {
-        let mut known = Vec::new();
+        let mut known = self.made.clone();
         let mut b = Some(self.current);
         while let Some(at) = b {
             let block = &self.blocks[at.0 as usize];
@@ -463,6 +494,20 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
             .into_iter()
             .map(|ty| self.func.new_var(ty))
             .collect();
+        // What `new` and a constant build is known, as the verifier knows.
+        if let [v] = binds[..] {
+            let made = match &op {
+                Op::New(c) => Some(*c),
+                Op::Const(id) => match crate::verify::const_value(self.p, *id) {
+                    Some(ConstValue::New(c, _)) => Some(*c),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(c) = made {
+                self.made.push((v, c));
+            }
+        }
         if self.open("a let") {
             let source = self.source;
             self.blocks[self.current.0 as usize].lets.push(Let {
@@ -577,6 +622,17 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
         args: impl Atoms,
     ) -> Vec<Var> {
         self.emit(Op::Call(f, margs, rows), args.atoms(), None)
+    }
+
+    /// [`call_with`](Self::call_with) of a function with one result.
+    pub fn call1_with(
+        &mut self,
+        f: FuncId,
+        margs: Vec<Mutability>,
+        rows: Vec<Row>,
+        args: impl Atoms,
+    ) -> Var {
+        self.emit1(Op::Call(f, margs, rows), args.atoms(), None)
     }
 
     pub fn call_extern(&mut self, e: ExternId, args: impl Atoms) -> Vec<Var> {
@@ -843,10 +899,22 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
         self.emit(Op::Perform(e, op), args.atoms(), None)
     }
 
+    /// A `perform` of an operation with one result.
+    pub fn perform1(&mut self, e: EffectId, op: u32, args: impl Atoms) -> Var {
+        self.emit1(Op::Perform(e, op), args.atoms(), None)
+    }
+
     pub fn resume(&mut self, k: impl Into<Atom>, args: impl Atoms) -> Vec<Var> {
         let mut all = vec![k.into()];
         all.extend(args.atoms());
         self.emit(Op::Resume, all, None)
+    }
+
+    /// A `resume` of a continuation with one result.
+    pub fn resume1(&mut self, k: impl Into<Atom>, args: impl Atoms) -> Var {
+        let mut all = vec![k.into()];
+        all.extend(args.atoms());
+        self.emit1(Op::Resume, all, None)
     }
 
     /// Continues `k` by performing operation `op` of `e` where it was
@@ -861,6 +929,19 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
         let mut all = vec![k.into()];
         all.extend(args.atoms());
         self.emit(Op::Discontinue(e, op), all, None)
+    }
+
+    /// A `discontinue` of a continuation with one result.
+    pub fn discontinue1(
+        &mut self,
+        k: impl Into<Atom>,
+        e: EffectId,
+        op: u32,
+        args: impl Atoms,
+    ) -> Var {
+        let mut all = vec![k.into()];
+        all.extend(args.atoms());
+        self.emit1(Op::Discontinue(e, op), all, None)
     }
 
     /// Ends the current block by returning `values`.

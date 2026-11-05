@@ -680,3 +680,108 @@ fn mutability_arguments_are_checked() {
         ]
     );
 }
+
+/// A field of what `new` builds can be read without a `case`, as the
+/// verifier allows, even of a type with several constructors.
+#[test]
+fn fields_of_new() {
+    let m = module(LIST, vec![I32], vec![I32]);
+    let mut f = FuncBuilder::new(&m, vec![I32], vec![I32]);
+    let [x] = f.params();
+    let nil = f.new_object(NIL, Mutability::Imm, ());
+    let cons = f.new_object(CONS, Mutability::Imm, [x, nil]);
+    let head = f.get(CONS, 0, cons);
+    f.ret([head]);
+    assert_eq!(
+        text(f),
+        "fn fn0(%0: i32) -> (i32) {
+  let %1: imm data0 = new data0.0()
+  let %2: imm data0 = new data0.1(%0, %1)
+  let %3: i32 = get data0.1.0(%2)
+  jump ret(%3)
+}"
+    );
+}
+
+/// So can a field of a constant built by a constructor.
+#[test]
+fn fields_of_const() {
+    let decls = format!("{LIST}\nconst const0: imm data0 = data0.1(7i32, data0.0())");
+    let m = module(&decls, vec![], vec![I32]);
+    let mut f = FuncBuilder::new(&m, vec![], vec![I32]);
+    let c = f.constant(ConstId(0));
+    let head = f.get(CONS, 0, c);
+    f.ret([head]);
+    assert_eq!(
+        text(f),
+        "fn fn0() -> (i32) {
+  let %0: imm data0 = const const0()
+  let %1: i32 = get data0.1.0(%0)
+  jump ret(%1)
+}"
+    );
+}
+
+/// Names for the function, its variables and its join points, which the
+/// text format writes instead of numbers.
+#[test]
+fn names() {
+    let m = module("", vec![I32], vec![I32]);
+    let mut f = FuncBuilder::new(&m, vec![I32], vec![I32]);
+    f.set_name("inc");
+    let [x] = f.params();
+    f.name_var(x, "x");
+    let k = f.join(&[I32]);
+    f.name_label(&k, "done");
+    f.name_var(k.param(0), "r");
+    let y = f.add(x, 1i32);
+    f.name_var(y, "y");
+    f.jump(&k, [y]);
+    f.switch_to(k.block());
+    f.ret([k.param(0)]);
+    let func = f.finish_verified(F).unwrap();
+    assert_eq!(
+        print_func(F, &func),
+        "fn inc(%x: i32) -> (i32) {
+  join done(%r: i32) = jump ret(%r)
+  in
+  let %y: i32 = add(%x, 1i32)
+  jump done(%y)
+}"
+    );
+}
+
+/// The one-result forms of `perform`, `resume` and a call with rows.
+#[test]
+fn one_result_effects() {
+    let m = module("effect effect0 {\n  () -> (i32)\n}", vec![I32], vec![I32]);
+    let mut f = FuncBuilder::new(&m, vec![I32], vec![I32]);
+    f.set_row(Row::one(EffectId(0)));
+    let [x] = f.params();
+    let y = f.perform1(EffectId(0), 0, ());
+    let z = f.call1_with(F, vec![], vec![], [y]);
+    let s = f.add(x, z);
+    f.ret([s]);
+    assert_eq!(
+        text(f),
+        "fn fn0(%0: i32) -> (i32) does effect0 {
+  let %1: i32 = perform effect0.0()
+  let %2: i32 = call fn0(%1)
+  let %3: i32 = add(%0, %2)
+  jump ret(%3)
+}"
+    );
+
+    let k_ty = Ty::Cont(Box::new(Sig::new(vec![I32], vec![I32])));
+    let mut f = FuncBuilder::new(&m, vec![k_ty], vec![I32]);
+    let [k] = f.params();
+    let r = f.resume1(k, [1i32]);
+    f.ret([r]);
+    assert_eq!(
+        text(f),
+        "fn fn0(%0: cont(i32) -> (i32)) -> (i32) {
+  let %1: i32 = resume(%0, 1i32)
+  jump ret(%1)
+}"
+    );
+}
