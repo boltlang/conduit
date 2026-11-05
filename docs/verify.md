@@ -153,8 +153,9 @@ an array, and `ref_new`.
 
 Field accesses also follow rule 5: `get C.i` and `set C.i` on `x` need `x`
 to be known to be built by `C`: because `C`'s type has only one
-constructor, because `x` is bound by `new C`, or because the access is in
-an arm `C` of a `case` on `x`. A constructor never changes, so this holds
+constructor, because `x` is bound by `new C` or by `const c` of a
+constant built by `C`, or because the access is in an arm `C` of a `case`
+on `x`. A constructor never changes, so this holds
 for `mut` objects too.
 
 ## Subtyping

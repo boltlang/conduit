@@ -1,0 +1,50 @@
+data List {
+  ()
+  (i32, inherit List)
+}
+
+data Named {
+  (imm [i8], imm [i32])
+}
+
+const nil: imm List = List.0()
+
+const list: imm List = List.1(1i32, List.1(2i32, nil))
+
+const hello: imm [i8] = b"hello"
+
+const named: imm Named = Named.0(hello, [7i32, 8i32])
+
+const table: imm [imm List] = [list, nil]
+
+fn heads() -> (i32) {
+  let %l: imm List = const list()
+  let %rest: imm List = get List.1.1(%l)
+  case %rest {
+    List.0 => jump ret(1i32)
+    List.1 =>
+      let %second: i32 = get List.1.0(%rest)
+      let %r: i32 = add(10i32, %second)
+      jump ret(%r)
+  }
+}
+
+fn hello_bytes() -> (i32) {
+  let %n: imm Named = const named()
+  let %s: imm [i8] = const hello()
+  jump ret(5101i32)
+}
+
+fn others(%i: i32) -> (i32) {
+  let %n: imm Named = const named()
+  let %xs: imm [i32] = get Named.0.1(%n)
+  let %x: i32 = array_get(%xs, %i)
+  let %t: imm [imm List] = const table()
+  let %first: imm List = const list()
+  let %s: imm [i8] = const hello()
+  let %out: i8 = array_get(%s, 5i32)
+  let %o: i32 = convert.u[i32](%out)
+  let %a: i32 = add(%x, 1i32)
+  let %r: i32 = add(%a, %o)
+  jump ret(%r)
+}

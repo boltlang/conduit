@@ -351,6 +351,21 @@ fn const_cycle(m: &Module) -> Option<ConstId> {
     None
 }
 
+/// What constant `id` is, past the constants that are only another name
+/// for one: `None` if one of them is unknown, or they refer to each other
+/// in a cycle.
+pub fn const_value<P: Program + ?Sized>(p: &P, id: ConstId) -> Option<&ConstValue> {
+    let mut seen = BTreeSet::new();
+    let mut value = &p.constant(id)?.value;
+    while let ConstValue::Const(next) = value {
+        if !seen.insert(*next) {
+            return None;
+        }
+        value = &p.constant(*next)?.value;
+    }
+    Some(value)
+}
+
 /// The constants a value refers to.
 pub fn const_refs(value: &ConstValue) -> Vec<ConstId> {
     let mut refs = Vec::new();
@@ -759,9 +774,16 @@ impl<P: Program + ?Sized> Cx<'_, P> {
             for &v in &l.binds {
                 self.bind(v);
             }
-            // What `new` builds is known for as long as it's in scope.
-            if let (Op::New(c), [v]) = (&l.op, &l.binds[..]) {
-                self.known.push((*v, *c));
+            // What `new` builds is known for as long as it's in scope,
+            // and so is what a constant is.
+            match (&l.op, &l.binds[..]) {
+                (Op::New(c), [v]) => self.known.push((*v, *c)),
+                (Op::Const(id), [v]) => {
+                    if let Some(ConstValue::New(c, _)) = const_value(self.p, *id) {
+                        self.known.push((*v, *c));
+                    }
+                }
+                _ => {}
             }
         }
         match &b.tail {

@@ -12,6 +12,11 @@
 //! - **Fields of a known object.** A `get` of an `Imm` object made by
 //!   `new` in this function is the `new`'s argument. A `Mut` object's
 //!   field may have been set in between.
+//! - **Parts of a constant.** A `case` on a constant takes its arm, as for
+//!   `new`. A field of a constant, its length and an element at a literal
+//!   index in bounds are known: a literal, or `const` of the constant that
+//!   part is. A part that's neither, like a nested array, has no name, so
+//!   reading it stays.
 //!
 //! These go together since each gives the others more to do: a folded
 //! comparison picks a `case` arm, whose ops may then fold, and a field
@@ -23,9 +28,10 @@
 
 use std::collections::HashMap;
 
+use conduit_ir::verify::const_value;
 use conduit_ir::{
-    Arm, Atom, Block, CtorId, Func, FuncId, JoinDef, Let, Lit, Mutability, Op, Prim, Program, Tag,
-    Tail, Ty, Var,
+    Arm, Atom, Block, ConstId, ConstValue, CtorId, Func, FuncId, JoinDef, Let, Lit, Mutability, Op,
+    Prim, Program, Tag, Tail, Ty, Var,
 };
 
 use crate::Pass;
@@ -38,15 +44,17 @@ impl Pass for Simplify {
         "simplify"
     }
 
-    fn run(&self, _: &dyn Program, _: FuncId, f: &mut Func) -> bool {
-        simplify(f)
+    fn run(&self, p: &dyn Program, _: FuncId, f: &mut Func) -> bool {
+        simplify(p, f)
     }
 }
 
-/// Simplifies `f`. Returns whether anything changed.
-pub fn simplify(f: &mut Func) -> bool {
+/// Simplifies `f`, a function of `p`. Returns whether anything changed.
+pub fn simplify(p: &dyn Program, f: &mut Func) -> bool {
     let body = std::mem::replace(&mut f.body, Tail::Unreachable.into());
     let mut cx = Cx {
+        p,
+        consts: HashMap::new(),
         vars: &f.vars,
         subst: HashMap::new(),
         news: HashMap::new(),
@@ -59,6 +67,9 @@ pub fn simplify(f: &mut Func) -> bool {
 }
 
 struct Cx<'f> {
+    p: &'f dyn Program,
+    /// The variables bound by `const`, and the constant.
+    consts: HashMap<Var, ConstId>,
     vars: &'f [Ty],
     /// Variables whose `let` was simplified away, and what they are.
     subst: HashMap<Var, Atom>,
@@ -67,7 +78,7 @@ struct Cx<'f> {
     changed: bool,
 }
 
-impl Cx<'_> {
+impl<'f> Cx<'f> {
     fn atom(&self, a: &mut Atom) {
         if let Atom::Var(v) = a
             && let Some(to) = self.subst.get(v)
@@ -104,26 +115,69 @@ impl Cx<'_> {
             self.changed = true;
             return;
         }
-        if let (Op::New(c), [v]) = (&l.op, &l.binds[..]) {
-            self.news.insert(*v, (*c, l.args.clone()));
+        if let [_] = l.binds[..]
+            && let Some(ConstValue::Const(id)) = self.const_part(&l)
+        {
+            l.op = Op::Const(*id);
+            l.args.clear();
+            self.changed = true;
+        }
+        match (&l.op, &l.binds[..]) {
+            (Op::New(c), [v]) => {
+                self.news.insert(*v, (*c, l.args.clone()));
+            }
+            (Op::Const(id), [v]) => {
+                self.consts.insert(*v, *id);
+            }
+            _ => {}
         }
         lets.push(l);
     }
 
-    /// What the single result of `l` is, if it's known without running it.
-    fn value(&self, l: &Let) -> Option<Atom> {
-        match &l.op {
-            Op::Prim(p) => fold(p, &l.args),
-            Op::Get(c, i) => {
-                let Some(Atom::Var(x)) = l.args.first() else {
-                    return None;
-                };
-                let (made, args) = self.news.get(x)?;
-                let imm = matches!(self.vars[x.0 as usize], Ty::Data(_, Mutability::Imm, _));
-                (imm && made == c).then(|| args[*i as usize].clone())
-            }
+    /// What constant `a` is, if it's a variable bound by `const`.
+    fn constant(&self, a: Option<&Atom>) -> Option<&'f ConstValue> {
+        let Some(Atom::Var(x)) = a else { return None };
+        const_value(self.p, *self.consts.get(x)?)
+    }
+
+    /// The part of a constant that `l` reads, if it's known: a field, or
+    /// an element at a literal index in bounds.
+    fn const_part(&self, l: &Let) -> Option<&'f ConstValue> {
+        match (&l.op, self.constant(l.args.first())?) {
+            (Op::Get(c, i), ConstValue::New(made, fields)) if made == c => fields.get(*i as usize),
+            (Op::ArrayGet, ConstValue::Array(elems)) => match l.args.get(1) {
+                Some(Atom::Lit(Lit::I32(i))) => elems.get(usize::try_from(*i).ok()?),
+                _ => None,
+            },
             _ => None,
         }
+    }
+
+    /// What the single result of `l` is, if it's known without running it.
+    fn value(&self, l: &Let) -> Option<Atom> {
+        let known = match &l.op {
+            Op::Prim(p) => fold(p, &l.args),
+            Op::Get(c, i) => self.new_field(*c, *i, l.args.first()),
+            Op::ArrayLen => match self.constant(l.args.first()) {
+                Some(ConstValue::Array(elems)) => Some(Atom::Lit(Lit::I32(elems.len() as i32))),
+                _ => None,
+            },
+            _ => None,
+        };
+        known.or_else(|| match self.const_part(l)? {
+            ConstValue::Lit(lit) => Some(Atom::Lit(*lit)),
+            _ => None,
+        })
+    }
+
+    /// Field `i` of `obj`, if it's an `Imm` object `new c` made.
+    fn new_field(&self, c: CtorId, i: u32, obj: Option<&Atom>) -> Option<Atom> {
+        let Some(Atom::Var(x)) = obj else {
+            return None;
+        };
+        let (made, args) = self.news.get(x)?;
+        let imm = matches!(self.vars[x.0 as usize], Ty::Data(_, Mutability::Imm, _));
+        (imm && *made == c).then(|| args[i as usize].clone())
     }
 
     /// `t` simplified, or `Err` with the arm it takes if it's a `case` of
@@ -194,7 +248,13 @@ impl Cx<'_> {
             Atom::Lit(Lit::I32(n)) => Some(Tag::Int((*n).into())),
             Atom::Lit(Lit::I64(n)) => Some(Tag::Int(*n)),
             Atom::Lit(Lit::F32(_) | Lit::F64(_)) => None,
-            Atom::Var(v) => self.news.get(v).map(|(c, _)| Tag::Ctor(*c)),
+            Atom::Var(v) => match self.news.get(v) {
+                Some((c, _)) => Some(Tag::Ctor(*c)),
+                None => match self.constant(Some(scrut))? {
+                    ConstValue::New(c, _) => Some(Tag::Ctor(*c)),
+                    _ => None,
+                },
+            },
         }
     }
 }

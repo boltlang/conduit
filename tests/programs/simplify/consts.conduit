@@ -1,0 +1,78 @@
+// A `case` on a constant takes its arm, and its fields, its length and
+// its elements at literal indices in bounds are known: a literal, or
+// `const` of the constant they are. A nested array has no name, so reading
+// it stays, and so does an index out of bounds, which traps.
+
+data List {
+  ()
+  (i32, inherit List)
+}
+
+data Named {
+  (imm [i8], imm [i32])
+}
+
+const nil: imm List = List.0()
+const list: imm List = List.1(1i32, List.1(2i32, nil))
+const hello: imm [i8] = b"hello"
+const named: imm Named = Named.0(hello, [7i32, 8i32])
+const table: imm [imm List] = [list, nil]
+
+// The head of the list, then the head of the rest, which is a nested
+// value without a name, so it's read as it is.
+fn heads() -> (i32) {
+  let %l: imm List = const list()
+  case %l {
+    List.0 => jump ret(0i32)
+    List.1 =>
+      let %head: i32 = get List.1.0(%l)
+      let %rest: imm List = get List.1.1(%l)
+      case %rest {
+        List.0 => jump ret(%head)
+        List.1 =>
+          let %second: i32 = get List.1.0(%rest)
+          let %ten: i32 = mul(%head, 10i32)
+          let %r: i32 = add(%ten, %second)
+          jump ret(%r)
+      }
+  }
+}
+
+// A field that's another constant becomes `const` of it, which is known
+// too.
+fn hello_bytes() -> (i32) {
+  let %n: imm Named = const named()
+  let %s: imm [i8] = get Named.0.0(%n)
+  let %len: i32 = array_len(%s)
+  let %e: i8 = array_get(%s, 1i32)
+  let %b: i32 = convert.u[i32](%e)
+  let %len1000: i32 = mul(%len, 1000i32)
+  let %r: i32 = add(%len1000, %b)
+  jump ret(%r)
+}
+
+// A nested array stays, an element at an index that isn't a literal
+// stays, and one out of bounds stays to trap.
+fn others(%i: i32) -> (i32) {
+  let %n: imm Named = const named()
+  let %xs: imm [i32] = get Named.0.1(%n)
+  let %x: i32 = array_get(%xs, %i)
+  let %t: imm [imm List] = const table()
+  let %first: imm List = array_get(%t, 0i32)
+  case %first {
+    List.0 => jump ret(0i32)
+    List.1 =>
+      let %h: i32 = get List.1.0(%first)
+      let %s: imm [i8] = const hello()
+      let %out: i8 = array_get(%s, 5i32)
+      let %o: i32 = convert.u[i32](%out)
+      let %a: i32 = add(%x, %h)
+      let %r: i32 = add(%a, %o)
+      jump ret(%r)
+  }
+}
+
+//# run heads() == 12i32
+//# run hello_bytes() == 5101i32
+//# run others(1i32) traps
+//# opt: simplify
