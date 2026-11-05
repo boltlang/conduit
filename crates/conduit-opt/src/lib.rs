@@ -17,6 +17,7 @@ mod compact;
 pub mod copies;
 pub mod cse;
 pub mod dce;
+pub mod handlers;
 pub mod inline;
 pub mod joins;
 pub mod promote;
@@ -35,7 +36,9 @@ pub trait Pass {
     fn run(&self, p: &dyn Program, id: FuncId, f: &mut Func) -> bool;
 }
 
-/// The passes [`optimize_func`] runs, in order. Known closures go first,
+/// The passes [`optimize_func`] runs, in order. Handlers their body can't
+/// use go first, since what's left of one applies a closure. Known
+/// closures go next,
 /// since the calls they make can then be inlined in the same round.
 /// Inlining is next, since the others only see one function, and a
 /// callee's body in its caller shows them more. Scalar replacement turns
@@ -49,6 +52,7 @@ pub trait Pass {
 /// goes before `copies`, since a dead use of a value can keep it from
 /// freezing.
 pub const PASSES: &[&dyn Pass] = &[
+    &handlers::Handlers,
     &closures::KnownClosures,
     &inline::Inline,
     &sroa::Sroa,

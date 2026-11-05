@@ -1,0 +1,132 @@
+// after handlers
+
+effect Fail {
+  (i32) -> (i32)
+}
+
+effect Log {
+  (i32) -> ()
+}
+
+handler catch for Fail env(i32) ops(on_fail) ret add_base
+
+handler catch_logging for Fail does Log env(i32) ops(on_fail_logging) ret add_base
+
+handler logs for Log env() ops(log) ret id
+
+fn on_fail(%base: i32, %code: i32, %k: cont(i32) -> (i32)) -> (i32) {
+  jump ret(%code)
+}
+
+fn on_fail_logging(%base: i32, %code: i32, %k: cont(i32) -> (i32) does Log) -> (i32) does Log {
+  jump ret(%code)
+}
+
+fn add_base(%base: i32, %r: i32) -> (i32) {
+  let %s: i32 = add(%base, %r)
+  jump ret(%s)
+}
+
+fn log(%x: i32, %k: cont() -> (i32)) -> (i32) {
+  let %r: i32 = resume(%k)
+  jump ret(%r)
+}
+
+fn id(%r: i32) -> (i32) {
+  jump ret(%r)
+}
+
+fn pure_body(%x: i32) -> (i32) {
+  let %y: i32 = mul(%x, 3i32)
+  jump ret(%y)
+}
+
+fn logging_body(%x: i32) -> (i32) does Log {
+  let = perform Log.0(%x)
+  jump ret(%x)
+}
+
+fn unused(%x: i32) -> (i32) {
+  let %body: imm fn() -> (i32) = closure pure_body(%x)
+  let %2: i32 = apply(%body)
+  let %r: i32 = call add_base(100i32, %2)
+  jump ret(%r)
+}
+
+fn other_effect(%x: i32) -> (i32) {
+  let %body: imm fn() -> (i32) does Log = closure logging_body(%x)
+  let %inner: imm fn() -> (i32) does Log = closure caught(%body)
+  let %r: i32 = handle logs(%inner)
+  jump ret(%r)
+}
+
+fn caught(%body: imm fn() -> (i32) does Log) -> (i32) does Log {
+  let %r: i32 = handle catch_logging(100i32, %body)
+  jump ret(%r)
+}
+
+// after all passes
+
+effect Fail {
+  (i32) -> (i32)
+}
+
+effect Log {
+  (i32) -> ()
+}
+
+handler catch for Fail env(i32) ops(on_fail) ret add_base
+
+handler catch_logging for Fail does Log env(i32) ops(on_fail_logging) ret add_base
+
+handler logs for Log env() ops(log) ret id
+
+fn on_fail(%base: i32, %code: i32, %k: cont(i32) -> (i32)) -> (i32) {
+  jump ret(%code)
+}
+
+fn on_fail_logging(%base: i32, %code: i32, %k: cont(i32) -> (i32) does Log) -> (i32) does Log {
+  jump ret(%code)
+}
+
+fn add_base(%base: i32, %r: i32) -> (i32) {
+  let %s: i32 = add(%base, %r)
+  jump ret(%s)
+}
+
+fn log(%x: i32, %k: cont() -> (i32)) -> (i32) {
+  let %r: i32 = resume(%k)
+  jump ret(%r)
+}
+
+fn id(%r: i32) -> (i32) {
+  jump ret(%r)
+}
+
+fn pure_body(%x: i32) -> (i32) {
+  let %y: i32 = mul(%x, 3i32)
+  jump ret(%y)
+}
+
+fn logging_body(%x: i32) -> (i32) does Log {
+  let = perform Log.0(%x)
+  jump ret(%x)
+}
+
+fn unused(%x: i32) -> (i32) {
+  let %y: i32 = mul(%x, 3i32)
+  let %s: i32 = add(100i32, %y)
+  jump ret(%s)
+}
+
+fn other_effect(%x: i32) -> (i32) {
+  let %body: imm fn() -> (i32) does Log = closure logging_body(%x)
+  let %inner: imm fn() -> (i32) does Log = closure caught(%body)
+  let %r: i32 = handle logs(%inner)
+  jump ret(%r)
+}
+
+fn caught(%body: imm fn() -> (i32) does Log) -> (i32) does Log {
+  let %r: i32 = handle catch_logging(100i32, %body)
+  jump ret(%r)
+}

@@ -14,6 +14,15 @@ The design behind them is in "Optimizations come down to a few rewrites"
 in [the IR](ir.md). The test programs in `tests/programs/<pass>` show
 each one, with the code before and after.
 
+## Handlers their body can't use (`handlers`)
+
+A `handle H(env.., c)` whose body `c` performs nothing, by its row, never
+runs a clause, so it's `apply(c)` and then a call of `H`'s return clause.
+Known closures and inlining then make it direct. A body that performs
+some other effect keeps its handler, even when its row lacks `H`'s effect:
+an outer clause for that other effect may `discontinue` with `H`'s effect,
+which then performs it inside the body, under `H`.
+
 ## Known closures (`closures`)
 
 `apply(c, args..)` where `c` is `closure f(captures..)` in the same
@@ -129,5 +138,9 @@ so code only dead code uses goes too.
 
 ## Not done yet
 
-- Handlers: a `perform` whose `handle` is in the same function could call
-  the clause directly.
+- Handlers whose clauses are called directly. The body of a `handle` is
+  always a closure, so a `perform` is never in the same function as its
+  `handle`: calling the clause directly needs a copy of the body's
+  function, and of what it calls, specialized to the handler. The passes
+  rewrite one function at a time and can't add functions, so this needs a
+  pass over the whole module.
