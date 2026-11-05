@@ -19,11 +19,3 @@ wasmtime = "50.0.1"
 [[test]]
 name = "programs"
 harness = false
-
-[[test]]
-name = "effects"
-harness = false
-
-[[test]]
-name = "linear"
-harness = false

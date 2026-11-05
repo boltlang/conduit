@@ -137,10 +137,9 @@ too big, `Unbox` (a failed cast), and every op that runs code.
 array of `n` elements that aren't set, for code that keeps track of which
 ones it has set, like a growable array's spare room. Reading one before
 it's set is undefined behavior, as reading uninitialized memory is in
-LLVM. That's the rule every backend can follow for free: Wasm GC's
-`array.new_default` gives null or 0, a native backend's collector needs
-zeroed memory anyway, and a data type has no value Conduit could give
-instead. The evaluator stops at such a read. `ArrayCopy` copies a range
+LLVM. That's the rule every backend can follow for free: fresh memory
+is zero in Wasm, a native backend's collector needs zeroed memory anyway,
+and a data type has no value Conduit could give instead. The evaluator stops at such a read. `ArrayCopy` copies a range
 of one array into a `Mut` one, as `memmove` does: as through a
 temporary, so the ranges can overlap. Unset elements stay unset, so a
 growable array can move its elements to a bigger array with `ArrayAlloc`
@@ -346,7 +345,7 @@ The frontend uses them like this:
 `Unbox(ty)` on a value that wasn't boxed at a subtype of `ty` is
 **undefined behavior**. The verifier can't check it: the frontend's type
 checker has already proven it can't happen. Backends may do anything:
-Wasm GC traps, and linear memory doesn't check. The evaluator reports it
+the Wasm backend doesn't check. The evaluator reports it
 as an error.
 `Any` also covers existential types and dynamically typed values, which
 a monomorphic IR can't express otherwise.
@@ -940,16 +939,19 @@ are two ways to do that, both possible because handlers are confined to
 three ops.
 
 - **Wasm stack switching** (the typed-continuations proposal), which the
-  Wasm backend does. Each operation of an effect such a handler handles
-  has a control tag. `handle` makes a frame of the handler's own kind and
-  calls a function that links it onto the handler stack and runs the body
-  as a Wasm continuation, with a `resume` that has a label per operation.
-  `perform` finds the nearest frame of its effect as for any handler, and
-  if it's of this kind, `suspend`s with the operation's tag, putting its
-  handler stack back once it's resumed. The `resume` then calls the clause,
+  Wasm backend does when `Options::stack_switching` asks for it. Each
+  operation of an effect such a handler handles has a control tag.
+  `handle` makes a frame with -1 in its clause slots and calls a function
+  that links it onto the handler stack and runs the body as a Wasm
+  continuation, with a `resume` that has a label per operation. `perform`
+  finds the nearest frame of its effect as for any handler, and if its
+  slot is -1, `suspend`s with the operation's tag, putting its handler
+  stack back once it's resumed. The `resume` then calls the clause,
   under the handlers outside, with a Conduit continuation: a closure that
   resumes the Wasm continuation under the handler again, which makes the
-  handler deep. The frame's link to the handlers outside is set each time,
+  handler deep. Memory can't hold a Wasm continuation, which is a
+  reference, so it goes in a table of its type, and the Conduit
+  continuation holds its slot. The frame's link to the handlers outside is set each time,
   so a continuation resumed somewhere else sees the handlers there. A
   Wasm continuation can only be resumed once, so a second `resume` traps,
   as rule 7 says. `discontinue F.op(k, args)` throws a closure that
@@ -1123,9 +1125,8 @@ The others extend their operands first, with `i32.extend8_s`/`extend16_s`
 or an `i32.and` with a mask: `div`, `rem`, `shr`, comparisons, `convert`
 to a wider type, and `case`. A signed `div` traps when the result doesn't
 fit, as `i32.div_s` does, and so does `convert` from a float out of range.
-Arrays of them are packed, `(array (mut i8))` and `(array (mut i16))`,
-and so are fields of data types, `(field (mut i8))`, which store only the
-low bits. A host sees an `i8` or `i16` as an `i32`,
+Arrays of them are packed, one or two bytes per element, and so are
+fields of data types, which store only the low bits. A host sees an `i8` or `i16` as an `i32`,
 and should only read its low bits.
 
 **To a flat CFG (Cranelift, LLVM).** Each join definition becomes a block
@@ -1139,31 +1140,27 @@ The code calling an unknown closure only has the closure and the
 arguments: it doesn't know what was captured. So for each `Func` used in
 a `Closure`, the backend generates a wrapper `f_entry(env, args..)`. It
 reads the captures out of the closure object `env` and calls
-`f(captures.., args..)`. A closure object holds a reference to its
-wrapper (a table index with linear memory, a `ref.func` with Wasm GC),
-followed by the captured values ("flat" closures). `apply(c, args..)`
+`f(captures.., args..)`. A closure object holds its wrapper's slot in
+the function table, followed by the captured values ("flat"
+closures). `apply(c, args..)`
 loads the wrapper from `c` and calls it with `c` and `args`. Calls
 rewritten by "Known closures" skip the wrapper.
 
 ## Operations per target
 
-Only Wasm is a target for now, in two ways, which both backends of
-`conduit-wasm` implement:
+Only Wasm is a target for now. `conduit-wasm` lowers to Wasm with values
+in linear memory, from a Conduit allocator, so the output needs no GC
+from the engine: Wasm 2.0, with tail calls and, for aborting handlers,
+exception handling, both part of Wasm 3.0.
 
-- **Linear memory** (`conduit_wasm::linear`): values in memory from a
-  Conduit allocator, which needs no GC or stack switching from the engine.
-  Handlers whose clauses are all tail-resumptive or aborting are lowered
-  directly, as in the GC backend, with frames in memory and exception
-  handling for aborts. For a module with any other clause, the consumer
-  chooses (`Options::stack_switching`): stack switching, which isn't
-  standard yet, with Wasm continuations in tables since memory can't hold
-  references, or else evidence passing first, which runs anywhere. Memory
-  is never freed yet: every object comes from one `alloc` function, and has
-  a header word kept for a reference count or mark, so that freeing can
-  come later without changing layouts. This is the way forward.
-- **Wasm GC** (`conduit_wasm::emit_module`): Wasm 3.0, with values as GC'd
-  `struct`s and `array`s, and handlers lowered directly. It stays until the
-  linear memory backend has replaced it.
+- Every object starts with a header word, kept for a reference count or
+  a mark, and every allocation goes through one `alloc` function, a bump
+  allocator for now. Memory is never freed yet; freeing can come later by
+  replacing `alloc` and using the header, without changing layouts.
+- Handlers whose clauses are all tail-resumptive or aborting are lowered
+  directly. For a module with any other clause, the consumer chooses with
+  `Options::stack_switching`: stack switching, which isn't standard yet,
+  or evidence passing first, which runs on any engine.
 
 Status:
 
@@ -1171,64 +1168,56 @@ Status:
 - 🔧 supported through a Conduit pass
 - ⚠️ needs a Wasm proposal that isn't standard yet
 
-| Operation | Linear memory | Wasm GC | Status |
-|---|---|---|---|
-| `Prim`: integer arithmetic, bitwise ops | `i32.add`, `i64.and`, ... | same | ✅ |
-| `Prim`: float arithmetic | `f64.add`, `f32.sqrt`, ... | same | ✅ |
-| `Prim`: comparisons | `i32.lt_s`, `f64.eq`, ... | same | ✅ |
-| `Prim`: conversions | `i64.extend_i32_s`, `f64.convert_i32_s`, ... | same | ✅ |
-| `Call` | `call` | `call` | ✅ |
-| `Call` in tail position | `return_call` | `return_call` | ✅ (tail calls, Wasm 3.0) |
-| `CallExtern` | `call` of an import | same | ✅ |
-| `Closure` | allocate env, store a table index + captures | `struct.new` with `ref.func` + captures | ✅ |
-| `Apply` | `call_indirect` | `call_ref` | ✅ |
-| `New` | allocate, store tag + fields | `struct.new` (one struct type per constructor) | ✅ |
-| `Get` | `*.load` | `struct.get`, or `struct.get_s` for `i8` and `i16` | ✅ |
-| `Set` | `*.store` | `struct.set` | ✅ |
-| `ArrayNew` | allocate length + elements | `array.new` | ✅ |
-| `ArrayGet` | bounds check + `*.load` | `array.get`, or `array.get_s` for `i8` and `i16` | ✅ |
-| `ArraySet` | bounds check + `*.store` | `array.set` | ✅ |
-| `ArrayLen` | `i32.load` of the length | `array.len` | ✅ |
-| `ArrayAlloc` | allocate | `array.new_default` | ✅ |
-| `ArrayCopy` | bounds checks + `memory.copy` | `array.copy` | ✅ |
-| `ArrayClone` | allocate + `memory.copy` | `array.new_default` + `array.copy` | ✅ |
-| `RefNew` | allocate one slot + store, or a local if promoted | `struct.new` of a one-field mutable struct, or a local if promoted | ✅ |
-| `RefGet` | `*.load` | `struct.get` | ✅ |
-| `RefSet` | `*.store` | `struct.set` | ✅ |
-| `Box` of a scalar | allocate + store | `ref.i31` for small integers, else `struct.new` | ✅ |
-| `Box` of a reference | nothing (it's already a pointer) | nothing (upcast to `anyref`) | ✅ |
-| `Unbox` to a scalar | `*.load` | `i31.get_s`, or `ref.cast` + `struct.get` | ✅ |
-| `Unbox` to a reference | nothing | `ref.cast` | ✅ |
-| `Const` | a pointer into a data segment | `global.get` of an immutable global, made by `struct.new` and `array.new_fixed` in its initializer | ✅ |
-| `ArrayFreeze` | nothing | nothing | ✅ |
-| `Handle`, `Perform` with tail-resumptive clauses | — | a handler stack in a global, and a direct call of the clause | ✅ |
-| `Handle`, `Perform` with aborting clauses | — | the same, then `throw`, caught by `try_table` | ✅ (exception handling, Wasm 3.0) |
-| `Discontinue` in a tail-resumptive clause | — | a `perform` under the handler stack of the `perform` the clause handles, kept in a second global | ✅ |
-| `Handle` | `cont.new` + `resume` with `(on $op ..)` | same | ✅ (stack switching, not standard yet) |
-| `Perform` | `suspend` | same | ✅ (stack switching, not standard yet) |
-| `Resume` | `resume` | same | ✅ (stack switching, not standard yet) |
-| `Discontinue` | `resume_throw` of a closure that performs the operation, which the `suspend` catches and calls | same | ✅ (stack switching, not standard yet) |
-| `Handle`, `Perform`, `Resume`, `Discontinue` | evidence passing, then the rows above | same | 🔧 |
+| Operation | Wasm | Status |
+|---|---|---|
+| `Prim`: integer arithmetic, bitwise ops | `i32.add`, `i64.and`, ... | ✅ |
+| `Prim`: float arithmetic | `f64.add`, `f32.sqrt`, ... | ✅ |
+| `Prim`: comparisons | `i32.lt_s`, `f64.eq`, ... | ✅ |
+| `Prim`: conversions | `i64.extend_i32_s`, `f64.convert_i32_s`, ... | ✅ |
+| `Call` | `call` | ✅ |
+| `Call` in tail position | `return_call` | ✅ (tail calls, Wasm 3.0) |
+| `CallExtern` | `call` of an import | ✅ |
+| `Closure` | allocate, store the wrapper's table slot and the captures | ✅ |
+| `Apply` | `call_indirect` | ✅ |
+| `New` | allocate, store the constructor's index and the fields | ✅ |
+| `Get` | `*.load`, or `load8_s`/`load16_s` for `i8` and `i16` | ✅ |
+| `Set` | `*.store` | ✅ |
+| `ArrayNew` | allocate, store the length and the elements | ✅ |
+| `ArrayGet` | bounds check, then `*.load` | ✅ |
+| `ArraySet` | bounds check, then `*.store` | ✅ |
+| `ArrayLen` | `i32.load` of the length | ✅ |
+| `ArrayAlloc` | allocate, which is zeroed | ✅ |
+| `ArrayCopy` | bounds checks, then `memory.copy` | ✅ |
+| `ArrayClone` | allocate, then `memory.copy` | ✅ |
+| `ArrayFreeze` | nothing | ✅ |
+| `RefNew` | allocate one slot and store, or a local if promoted | ✅ |
+| `RefGet`, `RefSet` | `*.load`, `*.store` | ✅ |
+| `Box` of a scalar | allocate and store | ✅ |
+| `Box` of a reference | nothing: it's already an address | ✅ |
+| `Unbox` to a scalar | `*.load` | ✅ |
+| `Unbox` to a reference | nothing | ✅ |
+| `Const` | the address of its object in a data segment, or its literal | ✅ |
+| `Undefined` | 0 | ✅ |
+| `Handle`, `Perform` with tail-resumptive clauses | a handler stack in a global, and a `call_indirect` of the clause | ✅ |
+| `Handle`, `Perform` with aborting clauses | the same, then `throw`, caught by `try_table` | ✅ (exception handling, Wasm 3.0) |
+| `Discontinue` in a tail-resumptive clause | a `perform` under the handler stack of the `perform` the clause handles, kept in a second global | ✅ |
+| `Handle` with other clauses | `cont.new` + `resume` with `(on $op ..)` | ⚠️ stack switching, with `Options::stack_switching` |
+| `Perform` to such a handler | `suspend` | ⚠️ stack switching |
+| `Resume` | a `call_indirect` of the continuation, which `resume`s | ⚠️ stack switching |
+| `Discontinue` | `resume_throw` of a closure that performs the operation, which the `suspend` catches and calls | ⚠️ stack switching |
+| `Handle`, `Perform`, `Resume`, `Discontinue` | evidence passing, then the rows above | 🔧 without `Options::stack_switching` |
 
 Notes:
 
-- `case` on an ADT reads the tag: an `i32.load` with linear memory, and
-  `br_on_cast` or a tag field with Wasm GC.
-- A constant's global is made when the module is instantiated. Its
-  arrays are made with `array.new_fixed`, which engines limit: V8 to
-  10,000 elements. Longer arrays will need `array.new_data` from a data
-  segment, which a global's initializer can't use, so they'd be made at
-  startup instead.
+- `case` on an ADT loads the constructor's index, at offset 4.
+- A constant is laid out when the module is built, in a data segment
+  from address 16, and the heap starts after the constants. 0 is never an
+  object, so `undefined` is 0.
 - Integer division and remainder trap on zero in Wasm, so `div` and `rem`
   check the divisor first and give 0 or the dividend, unless it's a
   literal.
-- Linear memory has no collector yet: memory is never freed for
-  now. With Wasm GC, the host collects.
 - Mutability doesn't exist at run time: `Imm` and `Mut` objects and
-  closures have the same layout. With Wasm GC, every struct and array field
-  is declared mutable, even for `Imm` objects, so that freezing in place
-  doesn't change an object's Wasm type. Engines barely optimize immutable
-  fields, so little is lost.
+  closures have the same layout.
 
 ## Text format
 

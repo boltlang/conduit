@@ -1,63 +1,59 @@
-//! Lowers Conduit IR directly to WebAssembly, using Wasm GC for objects
-//! and tail calls for `jump ret` after a call. See "Lowering" and
-//! "Operations per target" in `docs/ir.md`.
+//! Lowers Conduit IR to WebAssembly, with objects in linear memory, so
+//! the output needs no GC: only tail calls and bulk memory, and exception
+//! handling for aborting handlers, all part of Wasm 3.0. See "Lowering"
+//! and "Operations per target" in `docs/ir.md`. Memory is never freed yet: every object comes from
+//! `alloc`, a bump allocator, so that freeing can come later by replacing
+//! it.
 //!
-//! The output needs the GC, function references and tail call proposals,
-//! all part of Wasm 3.0.
+//! Effect handlers whose clauses are all tail-resumptive or aborting (see
+//! [`conduit_ir::clause`]) are lowered directly: a
+//! global holds a stack of handler frames in memory, `perform` finds the
+//! nearest frame of its effect and calls its clause through the table, and
+//! an aborting clause throws an exception, from exception handling, part
+//! of Wasm 3.0. A module with any other clause is lowered by evidence
+//! passing first ([`conduit_opt::effects`]), so that it needs no stack
+//! switching.
 //!
-//! Effect handlers are supported when every clause of the handlers used is
-//! tail-resumptive or aborting (see [`conduit_ir::clause`]): then no
-//! continuation is ever captured. A global holds a stack of handler frames.
-//! `handle` pushes one, runs the body and pops it, and `perform` finds the
-//! nearest frame of its effect and calls the clause, with the stack below
-//! that frame while the clause runs. A `perform` with no handler traps.
+//! A handler frame is the header, its effect's number at 8, the next frame
+//! at 12, a table slot for each clause's wrapper from 16, then the
+//! handler's environment, then, for a handler with an aborting clause, its
+//! results, which that clause sets before it throws.
 //!
-//! An aborting clause stores what it gives in its frame and throws an
-//! exception holding the frame, which the `handle` that pushed it catches:
-//! the output then also needs exception handling, also part of Wasm 3.0.
+//! The layouts, with every offset in bytes and every object 8-aligned:
 //!
-//! A tail-resumptive clause may also end in `discontinue E.i(k, xs)`
-//! instead of `resume`. It then performs `E.i(xs)` itself, under the
-//! handler stack of the `perform` it handles, which a second global holds
-//! while the clause runs, and gives what that gives.
+//! - **A data object** is a header word, kept for a reference count or a
+//!   mark, the index of its constructor at 4, and its fields from 8, each
+//!   at its natural alignment.
+//! - **An array** is the header, its length at 4, and its elements from 8,
+//!   `i8` and `i16` packed.
+//! - **A closure** is the header, the table index of its wrapper at 4, and
+//!   what it captured from 8, laid out like fields. The wrapper takes the
+//!   closure, then the arguments.
+//! - **A ref** and **a boxed scalar** are the header, then the value at 8.
+//!   A boxed reference is the reference itself.
 //!
-//! A handler with any other clause switches stacks, with the stack
-//! switching proposal, which isn't standard yet: see `switch.rs`. Its body
-//! runs as a Wasm continuation, `perform` suspends to it when its frame is
-//! the nearest of the effect, and a Conduit continuation is a closure that
-//! resumes the Wasm one under the handler again. Only modules with such a
-//! handler need the proposal.
-//!
-//! Each constant is an immutable global, made before the program runs by
-//! the global's initializer. A constant's arrays are made with
-//! `array.new_fixed`, which engines limit: V8 to 10,000 elements.
-//!
-//! [`emit_module`] lowers a whole module at once. Each extern becomes an
-//! import of its `module` and `name`, and functions are exported under the
-//! names given.
+//! A reference is an `i32` address, and 0 is never one, so `undefined` is 0.
+//! Fresh memory is zero, which is what unset array elements are.
+//! Constants are laid out when the module is built, in a data segment
+//! starting at 16, and the heap starts after them.
 
-mod consts;
 mod func;
-pub mod linear;
 mod switch;
-mod types;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::fmt;
 
 use conduit_ir::verify::Item;
 use conduit_ir::{
-    Atom, Block, ConstId, EffectId, ExternId, Func, FuncId, HandlerId, Label, Let, Module, Op, Row,
-    Tail, Ty,
+    ConstId, ConstValue, CtorId, EffectId, ExternId, Func, FuncId, HandlerId, Lit, Module, Ty,
 };
 use wasm_encoder::{
-    CodeSection, ConstExpr, ElementSection, Elements, EntityType, ExportKind, ExportSection,
-    Function, FunctionSection, GlobalSection, GlobalType, HeapType, ImportSection, IndirectNameMap,
-    NameMap, NameSection, TagKind, TagSection, TagType, TypeSection,
+    CodeSection, ConstExpr, DataSection, ElementSection, Elements, EntityType, ExportKind,
+    ExportSection, Function, FunctionSection, GlobalSection, GlobalType, ImportSection,
+    MemorySection, MemoryType, NameMap, NameSection, RefType, TableSection, TableType, TagKind,
+    TagSection, TagType, TypeSection, ValType,
 };
 
-use crate::types::{FnSig, Types, nullable};
-use wasm_encoder::{RefType, ValType};
+use std::fmt;
 
 /// Why a module couldn't be lowered.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -74,335 +70,459 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+/// Where constants start: 0 is never an object, and the rest of the first
+/// bytes are kept free.
+const CONST_BASE: u32 = 16;
+
+/// The global holding the next free address.
+const HEAP: u32 = 0;
+
+/// The global holding the innermost handler frame, or 0.
+const HANDLERS: u32 = 1;
+
+/// The global holding the handler stack of the `perform` whose clause is
+/// running, under which a `discontinue` in that clause performs.
+const SITE: u32 = 2;
+
+/// The exception an aborting clause throws, holding its handler's frame.
+const ABORT: u32 = 0;
+
+/// How a value is stored in memory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Storage {
+    I8,
+    I16,
+    I32,
+    I64,
+    F32,
+    F64,
+}
+
+impl Storage {
+    fn of(ty: &Ty) -> Storage {
+        match ty {
+            Ty::I8 => Storage::I8,
+            Ty::I16 => Storage::I16,
+            Ty::I64 => Storage::I64,
+            Ty::F32 => Storage::F32,
+            Ty::F64 => Storage::F64,
+            // An `i32`, or a reference.
+            _ => Storage::I32,
+        }
+    }
+
+    fn size(self) -> u32 {
+        match self {
+            Storage::I8 => 1,
+            Storage::I16 => 2,
+            Storage::I32 | Storage::F32 => 4,
+            Storage::I64 | Storage::F64 => 8,
+        }
+    }
+}
+
+/// The value type of a Conduit type: a reference is an `i32` address.
+pub(crate) fn val(ty: &Ty) -> ValType {
+    match ty {
+        Ty::I64 => ValType::I64,
+        Ty::F32 => ValType::F32,
+        Ty::F64 => ValType::F64,
+        _ => ValType::I32,
+    }
+}
+
+/// The offsets of values of these types laid out from 8, and the size of
+/// the whole object.
+pub(crate) fn layout(tys: &[Ty]) -> (Vec<(u32, Storage)>, u32) {
+    let mut at: u32 = 8;
+    let mut fields = Vec::with_capacity(tys.len());
+    for ty in tys {
+        let s = Storage::of(ty);
+        at = at.next_multiple_of(s.size());
+        fields.push((at, s));
+        at += s.size();
+    }
+    (fields, at.next_multiple_of(8))
+}
+
+/// A function signature after lowering.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct FnSig {
+    pub params: Vec<ValType>,
+    pub results: Vec<ValType>,
+}
+
+/// A type of the type section: a function type, or a continuation of one.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) enum TypeDef {
+    Func(FnSig),
+    /// A continuation of the function type at this index.
+    Cont(u32),
+}
+
 /// State shared by the functions of a module.
 pub(crate) struct Cx<'m> {
-    m: &'m Module,
-    types: Types<'m>,
+    pub m: &'m Module,
     funcs: BTreeMap<FuncId, u32>,
     externs: BTreeMap<ExternId, u32>,
-    /// The wrappers closures call: a function and how many of its
-    /// parameters are captured. They come after the module's functions.
+    /// The index of `alloc`.
+    pub alloc: u32,
+    /// The wrappers closures call, by function and number of captures,
+    /// in the order of their table slots.
     entries: Vec<(FuncId, usize)>,
     entry_keys: HashMap<(FuncId, usize), u32>,
-    /// The handlers whose clauses are all tail-resumptive or aborting, and
-    /// the index of the wrapper of their first clause: a function of the
-    /// clause type that reads the environment out of the frame and calls
-    /// the clause. They come after the module's functions.
+    /// The types, by what they are. A continuation type comes after its
+    /// function type, which it refers to.
+    types: Vec<TypeDef>,
+    type_keys: HashMap<TypeDef, u32>,
+    /// The address of each constant that's an object.
+    consts: BTreeMap<ConstId, u32>,
+    /// For each handler, the table slot of its first clause's wrapper. The
+    /// wrappers come first in the table.
     wrappers: BTreeMap<HandlerId, u32>,
-    /// The aborting clauses.
+    /// How many table slots the wrappers take, before the closures'.
+    wrapper_slots: u32,
+    /// The handlers with an aborting clause, and those clauses.
+    aborting: BTreeSet<HandlerId>,
     aborts: BTreeSet<FuncId>,
     /// Whether some clause discontinues, which needs [`SITE`].
-    discontinues: bool,
-    /// The global of each constant. They come after the handler stack's.
-    consts: BTreeMap<ConstId, u32>,
+    pub discontinues: bool,
     /// The functions of each handler that switches stacks.
     switches: BTreeMap<HandlerId, Switch>,
     /// The control tag of each operation of an effect that a handler that
     /// switches stacks handles.
     tags: BTreeMap<(EffectId, u32), u32>,
-    /// The exception that `discontinue` throws into a continuation, which
-    /// holds a closure that performs the operation.
-    disc_tag: Option<u32>,
-    /// For each operation discontinued with a continuation: the function
-    /// that performs it, and the wrapper of the closure that calls that.
-    thunks: BTreeMap<(EffectId, u32), (u32, u32)>,
-    /// How many functions [`Cx::switches`] and [`Cx::thunks`] hold.
-    switch_count: u32,
+    /// The exception `discontinue` throws into a continuation: the address
+    /// of a closure that performs the operation.
+    pub disc_tag: Option<u32>,
+    /// The function `discontinue E.i` performs with.
+    thunks: BTreeMap<(EffectId, u32), FuncId>,
 }
 
-/// The functions of a handler that switches stacks. See `switch.rs`.
+/// The functions, table slots and tables of a handler that switches
+/// stacks. See `switch.rs`.
+#[derive(Clone)]
 pub(crate) struct Switch {
-    /// Runs a body under the handler: `(frame, env.., body) -> R`.
     pub start: u32,
-    /// For each operation, resumes its continuation under the handler:
-    /// `(frame, env.., k, results..) -> R`.
+    pub tramp: u32,
+    /// For each operation: resumes its continuation, throws into it, the
+    /// table slots of its continuation's wrapper and discontinue function,
+    /// and the table of its Wasm continuations.
     pub drive: Vec<u32>,
-    /// For each operation, the wrapper of the Conduit continuation its
-    /// clause gets, which calls `drive`.
-    pub entry: Vec<u32>,
-    /// For each operation, if some clause discontinues: throws a closure
-    /// into its continuation under the handler: `(frame, env.., k, thunk)
-    /// -> R`.
     pub throw: Vec<u32>,
-    /// For each operation, if some clause discontinues: what the Conduit
-    /// continuation calls to discontinue, which calls `throw`.
-    pub disc: Vec<u32>,
+    pub kont_slots: Vec<u32>,
+    pub disc_slots: Vec<u32>,
+    pub conts: Vec<u32>,
+    kont_funcs: Vec<u32>,
+    disc_funcs: Vec<u32>,
 }
 
-/// The exception an aborting clause throws, holding its handler's frame.
-pub(crate) const ABORT: u32 = 0;
-
-/// The global holding the top of the handler stack.
-pub(crate) const HANDLERS: u32 = 0;
-
-/// The global holding the handler stack of the `perform` whose clause is
-/// running, under which a `discontinue` in that clause performs. Only there
-/// when some clause discontinues.
-pub(crate) const SITE: u32 = 1;
+/// How [`emit_module_with`] lowers a module.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Options {
+    /// Whether to lower handlers with a clause that's neither
+    /// tail-resumptive nor aborting with the stack switching proposal,
+    /// which isn't standard yet and only some engines run, such as
+    /// Wasmtime on x86-64 Linux and macOS. Otherwise, a module with such a
+    /// handler is lowered by evidence passing, which runs anywhere but
+    /// costs more.
+    pub stack_switching: bool,
+}
 
 impl Cx<'_> {
-    fn func_index(&self, f: FuncId) -> Result<u32, String> {
+    pub fn func_index(&self, f: FuncId) -> Result<u32, String> {
         self.funcs
             .get(&f)
             .copied()
             .ok_or_else(|| format!("unknown function {f}"))
     }
 
-    fn const_global(&self, c: ConstId) -> Result<u32, String> {
-        self.consts
-            .get(&c)
-            .copied()
-            .ok_or_else(|| format!("unknown constant {c}"))
-    }
-
-    /// The control tag of operation `i` of `e`, if a handler of `e`
-    /// switches stacks.
-    fn tag(&self, e: EffectId, i: u32) -> Option<u32> {
-        self.tags.get(&(e, i)).copied()
-    }
-
-    fn switch(&self, h: HandlerId) -> Option<&Switch> {
-        self.switches.get(&h)
-    }
-
-    fn extern_index(&self, e: ExternId) -> Result<u32, String> {
+    pub fn extern_index(&self, e: ExternId) -> Result<u32, String> {
         self.externs
             .get(&e)
             .copied()
             .ok_or_else(|| format!("unknown extern {e}"))
     }
 
+    /// The type index of a signature.
+    pub fn sig(&mut self, sig: FnSig) -> u32 {
+        self.type_def(TypeDef::Func(sig))
+    }
+
+    /// The type index of a continuation resumed with `sig.params` that
+    /// gives `sig.results`.
+    pub fn cont(&mut self, sig: FnSig) -> u32 {
+        let f = self.sig(sig);
+        self.type_def(TypeDef::Cont(f))
+    }
+
+    fn type_def(&mut self, t: TypeDef) -> u32 {
+        if let Some(&i) = self.type_keys.get(&t) {
+            return i;
+        }
+        self.types.push(t.clone());
+        let i = self.types.len() as u32 - 1;
+        self.type_keys.insert(t, i);
+        i
+    }
+
+    /// The type of the wrappers of closures of signature `sig`:
+    /// `(closure, params..) -> results`.
+    pub fn entry_sig(&mut self, sig: &conduit_ir::Sig) -> u32 {
+        let mut params = vec![ValType::I32];
+        params.extend(sig.params.iter().map(val));
+        let results = sig.results.iter().map(val).collect();
+        self.sig(FnSig { params, results })
+    }
+
+    /// The table slot of the wrapper of `f`'s closures with `n` captures.
+    pub fn entry(&mut self, f: FuncId, n: usize) -> u32 {
+        if let Some(&k) = self.entry_keys.get(&(f, n)) {
+            return self.wrapper_slots + k;
+        }
+        let k = self.entries.len() as u32;
+        self.entries.push((f, n));
+        self.entry_keys.insert((f, n), k);
+        self.wrapper_slots + k
+    }
+
     /// The number of an effect, which its frames hold.
-    fn effect_number(&self, e: EffectId) -> Result<i32, String> {
+    pub fn effect_number(&self, e: EffectId) -> Result<i32, String> {
         self.m
             .effects
             .keys()
             .position(|&k| k == e)
-            .map(|i| i as i32)
+            .map(|i| i as i32 + 1)
             .ok_or_else(|| format!("unknown effect {e}"))
     }
 
-    /// The wrapper of clause `i` of `h`.
-    fn wrapper(&self, h: HandlerId, i: u32) -> Result<u32, String> {
-        match self.wrappers.get(&h) {
-            Some(first) => Ok(first + i),
-            None => Err(format!(
-                "{h} has a clause that isn't tail-resumptive or aborting, which needs \
-                 stack switching or evidence passing"
-            )),
-        }
-    }
-
-    fn wrapper_count(&self) -> u32 {
+    /// The table slot of the wrapper of clause `i` of `h`.
+    pub fn wrapper(&self, h: HandlerId, i: u32) -> Result<u32, String> {
         self.wrappers
-            .keys()
-            .map(|h| self.m.handlers[h].ops.len() as u32)
-            .sum()
+            .get(&h)
+            .map(|first| first + i)
+            .ok_or_else(|| format!("{h} has a clause that isn't tail-resumptive or aborting"))
     }
 
-    /// The wrapper of `f`'s closures with `n` captured values, and the type
-    /// of those closures.
-    fn entry(&mut self, f: FuncId, n: usize) -> Result<(u32, u32), String> {
-        let (captures, _) = self.types.captures(f, n)?;
-        let k = match self.entry_keys.get(&(f, n)) {
-            Some(&k) => k,
-            None => {
-                let k = self.entries.len() as u32;
-                self.entries.push((f, n));
-                self.entry_keys.insert((f, n), k);
-                k
-            }
-        };
-        let first = (self.externs.len() + self.funcs.len()) as u32
-            + self.wrapper_count()
-            + self.switch_count;
-        Ok((first + k, captures))
+    pub fn switch(&self, h: HandlerId) -> Result<&Switch, String> {
+        self.switches
+            .get(&h)
+            .ok_or_else(|| format!("{h} doesn't switch stacks"))
+    }
+
+    pub fn is_switching(&self, h: HandlerId) -> bool {
+        self.switches.contains_key(&h)
+    }
+
+    /// The control tag of operation `i` of `e`, if a handler of `e`
+    /// switches stacks.
+    pub fn tag(&self, e: EffectId, i: u32) -> Option<u32> {
+        self.tags.get(&(e, i)).copied()
+    }
+
+    /// The function `discontinue e.i` performs with.
+    pub fn thunk(&self, e: EffectId, i: u32) -> Result<FuncId, String> {
+        self.thunks
+            .get(&(e, i))
+            .copied()
+            .ok_or_else(|| format!("no function to discontinue with {e}.{i}"))
+    }
+
+    pub fn is_aborting(&self, h: HandlerId) -> bool {
+        self.aborting.contains(&h)
+    }
+
+    pub fn is_abort(&self, clause: FuncId) -> bool {
+        self.aborts.contains(&clause)
+    }
+
+    /// The type of the wrappers of clauses for operation `i` of `e`:
+    /// `(frame, params..) -> results`.
+    pub fn clause_sig(&mut self, e: EffectId, i: u32) -> Result<u32, String> {
+        let op = self
+            .m
+            .effects
+            .get(&e)
+            .and_then(|d| d.ops.get(i as usize))
+            .ok_or_else(|| format!("{e} has no operation {i}"))?;
+        let mut params = vec![ValType::I32];
+        params.extend(op.params.iter().map(val));
+        let results = op.results.iter().map(val).collect();
+        Ok(self.sig(FnSig { params, results }))
+    }
+
+    /// The layout of a frame of `h`: its fields' offsets and its size. The
+    /// fields are the effect's number, the next frame, a slot per clause,
+    /// the environment, and the results if `h` has an aborting clause.
+    pub fn frame(&self, h: HandlerId) -> Result<(Vec<(u32, Storage)>, u32), String> {
+        let decl = self
+            .m
+            .handlers
+            .get(&h)
+            .ok_or_else(|| format!("unknown handler {h}"))?;
+        let mut tys = vec![Ty::I32, Ty::I32];
+        tys.extend(std::iter::repeat_n(Ty::I32, decl.ops.len()));
+        tys.extend(decl.env.iter().cloned());
+        if self.aborting.contains(&h) {
+            let ret = self
+                .m
+                .funcs
+                .get(&decl.ret)
+                .ok_or_else(|| format!("unknown return clause {}", decl.ret))?;
+            tys.extend(ret.results.iter().cloned());
+        }
+        Ok(layout(&tys))
+    }
+
+    /// The fields of constructor `c`.
+    pub fn fields(&self, c: CtorId) -> Result<&[Ty], String> {
+        self.m
+            .data
+            .get(&c.data)
+            .and_then(|d| d.ctors.get(c.index as usize))
+            .map(|ctor| &ctor.fields[..])
+            .ok_or_else(|| format!("unknown constructor {c}"))
+    }
+
+    /// The address of constant `c`, if it's an object, or else its value.
+    pub fn constant(&self, c: ConstId) -> Result<Result<u32, Lit>, String> {
+        if let Some(&a) = self.consts.get(&c) {
+            return Ok(Ok(a));
+        }
+        match conduit_ir::verify::const_value(self.m, c) {
+            Some(ConstValue::Lit(l)) => Ok(Err(*l)),
+            _ => Err(format!("unknown constant {c}")),
+        }
     }
 }
 
 /// Lowers a module that has passed [`conduit_ir::verify::verify_module`]
-/// to a Wasm binary, exporting each function in `exports` under its name.
+/// to a Wasm binary with objects in linear memory, exporting each function
+/// in `exports` under its name, and the memory as `memory`, with the
+/// default [`Options`]: without stack switching.
 pub fn emit_module(m: &Module, exports: &[(FuncId, &str)]) -> Result<Vec<u8>, Error> {
+    emit_module_with(m, exports, &Options::default())
+}
+
+/// [`emit_module`] with `options`. A module with a handler whose clauses
+/// aren't all tail-resumptive or aborting is lowered with stack switching
+/// if the options ask for it, and by evidence passing first otherwise,
+/// which keeps every function's ID.
+pub fn emit_module_with(
+    m: &Module,
+    exports: &[(FuncId, &str)],
+    options: &Options,
+) -> Result<Vec<u8>, Error> {
+    let lowered;
+    let mut thunks = BTreeMap::new();
+    let m = if !options.stack_switching && !direct_handlers(m) {
+        let mut copy = m.clone();
+        conduit_opt::effects::lower_effects(&mut copy).map_err(|message| Error {
+            item: Item::Func(FuncId(0)),
+            message: format!("lowering effects: {message}"),
+        })?;
+        lowered = copy;
+        &lowered
+    } else if options.stack_switching && !direct_handlers(m) {
+        let (copy, map) = with_thunks(m);
+        lowered = copy;
+        thunks = map;
+        &lowered
+    } else {
+        m
+    };
+    let switching: BTreeSet<HandlerId> = m
+        .handlers
+        .keys()
+        .copied()
+        .filter(|&h| !direct_handler(m, h))
+        .collect();
+
     // Tail-resumptive and aborting clauses are lowered as plain functions,
-    // without their continuation, when every clause of their handler is
-    // one. A handler with any other clause switches stacks, and its
-    // clauses keep their continuation.
+    // without their continuation.
     let mut plain_clauses: BTreeMap<FuncId, Func> = BTreeMap::new();
     let mut aborts = BTreeSet::new();
     let mut aborting = BTreeSet::new();
-    let mut switching = BTreeSet::new();
     let mut discontinues = false;
     for (&h, decl) in &m.handlers {
-        let mut plain = Vec::new();
+        if switching.contains(&h) {
+            continue;
+        }
         for &clause in &decl.ops {
             let Some(f) = m.funcs.get(&clause) else {
                 continue;
             };
-            if let Some(p) = conduit_ir::clause::plain_call(f) {
-                plain.push((clause, p, false));
-            } else if let Some(p) = conduit_ir::clause::aborting(f) {
-                plain.push((clause, p, true));
-            } else {
-                switching.insert(h);
-            }
-        }
-        if switching.contains(&h) {
-            continue;
-        }
-        for (clause, p, abort) in plain {
-            if abort {
+            if let Some(plain) = conduit_ir::clause::plain_call(f) {
+                discontinues |= conduit_ir::clause::discontinues(&plain);
+                plain_clauses.insert(clause, plain);
+            } else if let Some(plain) = conduit_ir::clause::aborting(f) {
+                plain_clauses.insert(clause, plain);
                 aborts.insert(clause);
                 aborting.insert(h);
-            } else {
-                discontinues |= conduit_ir::clause::discontinues(&p);
             }
-            plain_clauses.insert(clause, p);
         }
     }
-    for &h in &switching {
-        if let Some(&c) = m.handlers[&h]
-            .ops
-            .iter()
-            .find(|c| plain_clauses.contains_key(c))
-        {
-            return Err(Error {
-                item: Item::Func(c),
-                message: format!(
-                    "a clause of {h}, which switches stacks, and of a handler that doesn't"
-                ),
-            });
+    let mut wrappers = BTreeMap::new();
+    let mut wrapper_slots = 0;
+    for (&h, decl) in &m.handlers {
+        if !switching.contains(&h) {
+            wrappers.insert(h, wrapper_slots);
+            wrapper_slots += decl.ops.len() as u32;
         }
     }
-    // The operations discontinued with a continuation, which needs each
-    // continuation to be able to throw into its Wasm continuation.
-    let thunk_ops = cont_discontinues(m, &plain_clauses);
-    let thunk_funcs: Vec<((EffectId, u32), Func)> = thunk_ops
-        .iter()
-        .map(|&(e, i)| ((e, i), thunk_func(m, e, i)))
-        .collect();
+    let clause_slots = wrapper_slots;
 
+    let first = m.externs.len() as u32;
     let mut cx = Cx {
         m,
-        types: Types::new(m),
         externs: m.externs.keys().zip(0..).map(|(&e, i)| (e, i)).collect(),
-        funcs: BTreeMap::new(),
+        funcs: m.funcs.keys().zip(first..).map(|(&f, i)| (f, i)).collect(),
+        alloc: first + m.funcs.len() as u32,
         entries: Vec::new(),
         entry_keys: HashMap::new(),
-        wrappers: BTreeMap::new(),
+        types: Vec::new(),
+        type_keys: HashMap::new(),
+        consts: BTreeMap::new(),
+        wrappers,
+        wrapper_slots,
+        aborting,
         aborts,
         discontinues,
-        consts: BTreeMap::new(),
         switches: BTreeMap::new(),
         tags: BTreeMap::new(),
         disc_tag: None,
-        thunks: BTreeMap::new(),
-        switch_count: 0,
+        thunks,
     };
-    cx.types.aborting = aborting;
-    cx.types.switching = switching.clone();
-    cx.types.discontinues = !thunk_ops.is_empty();
-    let handler_globals = match (m.effects.is_empty(), discontinues) {
-        (true, _) => 0,
-        (false, false) => 1,
-        (false, true) => 2,
-    };
-    // A global's initializer can only read the globals before it, so a
-    // constant comes after those it's made of.
-    let const_order = consts::order(m);
-    cx.consts = const_order
-        .iter()
-        .zip(handler_globals..)
-        .map(|(&c, i)| (c, i))
-        .collect();
-    let first = m.externs.len() as u32;
-    cx.funcs = m.funcs.keys().zip(first..).map(|(&f, i)| (f, i)).collect();
+    let mut switch_funcs = 0;
+    if !switching.is_empty() {
+        switch_funcs = plan_switching(&mut cx, &switching).map_err(|message| Error {
+            item: Item::Handler(*switching.first().unwrap()),
+            message,
+        })?;
+    }
 
-    let mut next_wrapper = first + m.funcs.len() as u32;
-    for (&h, decl) in &m.handlers {
-        if !switching.contains(&h) && decl.ops.iter().all(|c| plain_clauses.contains_key(c)) {
-            cx.wrappers.insert(h, next_wrapper);
-            next_wrapper += decl.ops.len() as u32;
+    // Constants, laid out from CONST_BASE.
+    let mut data = vec![0u8; CONST_BASE as usize];
+    for &c in m.consts.keys() {
+        let err = |message| Error {
+            item: Item::Const(c),
+            message,
+        };
+        if let Some(addr) = lay_out_const(&mut cx, &mut data, c).map_err(err)? {
+            cx.consts.insert(c, addr);
         }
     }
-
-    // The functions of handlers that switch stacks, then those of the
-    // closures `discontinue` throws, come after the wrappers.
-    let mut next = next_wrapper;
-    let mut take = |k: u32| {
-        let range: Vec<u32> = (next..next + k).collect();
-        next += k;
-        range
-    };
-    for &h in &switching {
-        let n = m
-            .effects
-            .get(&m.handlers[&h].effect)
-            .map_or(0, |e| e.ops.len()) as u32;
-        let start = take(1)[0];
-        let drive = take(n);
-        let entry = take(n);
-        let (throw, disc) = if thunk_ops.is_empty() {
-            (Vec::new(), Vec::new())
-        } else {
-            (take(n), take(n))
-        };
-        cx.switches.insert(
-            h,
-            Switch {
-                start,
-                drive,
-                entry,
-                throw,
-                disc,
-            },
-        );
-    }
-    for &op in &thunk_ops {
-        let fs = take(2);
-        cx.thunks.insert(op, (fs[0], fs[1]));
-    }
-    cx.switch_count = next - next_wrapper;
-
-    // Tags: the exception of aborting clauses, the one `discontinue`
-    // throws into a continuation, then a control tag for each operation
-    // of an effect a handler that switches stacks handles.
-    let mut next_tag = u32::from(!cx.aborts.is_empty());
-    if !thunk_ops.is_empty() {
-        cx.disc_tag = Some(next_tag);
-        next_tag += 1;
-    }
-    let switch_effects: BTreeSet<EffectId> =
-        switching.iter().map(|h| m.handlers[h].effect).collect();
-    let mut control_tags = Vec::new();
-    for &e in &switch_effects {
-        let Some(decl) = m.effects.get(&e) else {
-            continue;
-        };
-        for i in 0..decl.ops.len() as u32 {
-            cx.tags.insert((e, i), next_tag);
-            control_tags.push((e, i));
-            next_tag += 1;
-        }
-    }
-
-    // Function types of imports and functions are outside the group, so
-    // that the host sees ordinary types like `(func (param i32))`.
-    let mut sigs: Vec<FnSig> = Vec::new();
-    let mut sig_keys: HashMap<FnSig, u32> = HashMap::new();
-    let mut plain = |sig: FnSig| -> u32 {
-        *sig_keys.entry(sig.clone()).or_insert_with(|| {
-            sigs.push(sig);
-            sigs.len() as u32 - 1
-        })
-    };
+    let heap_base = (data.len() as u32).next_multiple_of(8);
+    let data = data[CONST_BASE as usize..].to_vec();
 
     let mut imports = Vec::new();
     for (&id, ext) in &m.externs {
-        let sig = cx.types.sig(&ext.sig).map_err(|message| Error {
-            item: Item::Extern(id),
-            message,
-        })?;
-        imports.push((ext, plain(sig)));
+        let sig = FnSig {
+            params: ext.sig.params.iter().map(val).collect(),
+            results: ext.sig.results.iter().map(val).collect(),
+        };
+        let _ = id;
+        imports.push((ext, cx.sig(sig)));
     }
 
     let mut funcs = Vec::new();
@@ -412,106 +532,258 @@ pub fn emit_module(m: &Module, exports: &[(FuncId, &str)]) -> Result<Vec<u8>, Er
             message,
         };
         let f = plain_clauses.get(&id).unwrap_or(f);
-        let sig = cx.types.sig(&f.sig()).map_err(err)?;
+        let sig = FnSig {
+            params: f.params.iter().map(|&p| val(f.var_ty(p))).collect(),
+            results: f.results.iter().map(val).collect(),
+        };
+        let ty = cx.sig(sig);
         let body = func::lower_func(&mut cx, f).map_err(err)?;
-        funcs.push((plain(sig), body));
+        funcs.push((ty, body));
     }
 
-    let mut wrappers = Vec::new();
-    for h in cx.wrappers.keys().copied().collect::<Vec<_>>() {
-        let decl = &m.handlers[&h];
+    let alloc_ty = cx.sig(FnSig {
+        params: vec![ValType::I32],
+        results: vec![ValType::I32],
+    });
+    let alloc = func::lower_alloc();
+
+    // The wrappers of clauses, which `perform` calls through the table.
+    let mut clause_wrappers = Vec::new();
+    for (&h, decl) in &m.handlers {
+        if switching.contains(&h) {
+            continue;
+        }
         for i in 0..decl.ops.len() as u32 {
             let err = |message| Error {
                 item: Item::Handler(h),
                 message,
             };
-            let ty = cx.types.clause(decl.effect, i).map_err(err)?;
-            let body = func::lower_wrapper(&mut cx, h, i).map_err(err)?;
-            wrappers.push((ty, body));
+            let ty = cx.clause_sig(decl.effect, i).map_err(err)?;
+            let clause = decl.ops[i as usize];
+            let plain = plain_clauses
+                .get(&clause)
+                .ok_or_else(|| err(format!("clause {clause} isn't tail-resumptive or aborting")))?;
+            let body = func::lower_wrapper(&mut cx, h, i, plain).map_err(err)?;
+            clause_wrappers.push((ty, body));
         }
     }
-
-    // Each is a plain type, after the group, or one in the group.
-    let mut switched: Vec<(bool, u32, func::Body)> = Vec::new();
+    // The functions of handlers that switch stacks, in the order
+    // `plan_switching` numbered them.
+    let mut switched = Vec::new();
     for &h in &switching {
         let err = |message| Error {
             item: Item::Handler(h),
             message,
         };
-        let n = cx.switches[&h].drive.len() as u32;
-        let disc = !cx.switches[&h].disc.is_empty();
-        let mut starts = vec![switch::Start::Body];
-        starts.extend((0..n).map(switch::Start::Resume));
-        for start in starts {
-            let sig = switch::drive_sig(&mut cx, h, start).map_err(err)?;
-            let body = switch::lower_drive(&mut cx, h, start).map_err(err)?;
-            switched.push((true, plain(sig), body));
-        }
+        let n = m.effects[&m.handlers[&h].effect].ops.len() as u32;
+        let disc = cx.disc_tag.is_some();
+        let sig = cx.drive_sig(h, switch::Start::Body).map_err(err)?;
+        let body = switch::lower_drive(&mut cx, h, switch::Start::Body).map_err(err)?;
+        switched.push((cx.sig(sig), body));
+        let tramp_sig = FnSig {
+            params: vec![ValType::I32],
+            results: cx.body_results(h).map_err(err)?,
+        };
+        let body = switch::lower_tramp(&mut cx, h).map_err(err)?;
+        switched.push((cx.sig(tramp_sig), body));
         for i in 0..n {
-            let sig = cx.types.clause_cont_sig(h, i).map_err(err)?;
-            let ty = cx.types.entry(&sig).map_err(err)?;
-            let body = switch::lower_cont_entry(&mut cx, h, i, false).map_err(err)?;
-            switched.push((false, ty, body));
+            let start = switch::Start::Resume(i);
+            let sig = cx.drive_sig(h, start).map_err(err)?;
+            let body = switch::lower_drive(&mut cx, h, start).map_err(err)?;
+            switched.push((cx.sig(sig), body));
+        }
+        let results = cx.handle_results(h).map_err(err)?;
+        for i in 0..n {
+            let op = &m.effects[&m.handlers[&h].effect].ops[i as usize];
+            let ksig = conduit_ir::Sig::new(
+                op.results.clone(),
+                m.funcs[&m.handlers[&h].ret].results.clone(),
+            );
+            let ty = cx.entry_sig(&ksig);
+            let body = switch::lower_kont(&mut cx, h, i, false).map_err(err)?;
+            switched.push((ty, body));
         }
         if disc {
             for i in 0..n {
                 let start = switch::Start::Throw(i);
-                let sig = switch::drive_sig(&mut cx, h, start).map_err(err)?;
+                let sig = cx.drive_sig(h, start).map_err(err)?;
                 let body = switch::lower_drive(&mut cx, h, start).map_err(err)?;
-                switched.push((true, plain(sig), body));
+                switched.push((cx.sig(sig), body));
             }
             for i in 0..n {
-                let sig = cx.types.clause_cont_sig(h, i).map_err(err)?;
-                let ty = cx.types.discontinue(&sig).map_err(err)?;
-                let body = switch::lower_cont_entry(&mut cx, h, i, true).map_err(err)?;
-                switched.push((false, ty, body));
+                let ty = cx.disc_sig(results.clone());
+                let body = switch::lower_kont(&mut cx, h, i, true).map_err(err)?;
+                switched.push((ty, body));
             }
         }
     }
-    for ((e, i), f) in &thunk_funcs {
-        let err = |message| Error {
-            item: Item::Effect(*e),
-            message,
-        };
-        let sig = cx.types.sig(&f.sig()).map_err(err)?;
-        let body = func::lower_func(&mut cx, f).map_err(err)?;
-        switched.push((true, plain(sig), body));
-        let (_, thunk_sig) = cx.types.thunk(*e, *i).map_err(err)?;
-        let ty = cx.types.entry(&thunk_sig).map_err(err)?;
-        let body = switch::lower_thunk_entry(&mut cx, *e, *i).map_err(err)?;
-        switched.push((false, ty, body));
-    }
-    // Tag types: plain function types.
+    // Tag types, after the abort's.
     let disc_tag_ty = cx.disc_tag.map(|_| {
-        plain(FnSig {
-            params: vec![ValType::Ref(RefType::ANYREF)],
+        cx.sig(FnSig {
+            params: vec![ValType::I32],
             results: Vec::new(),
         })
     });
     let mut control_tag_tys = Vec::new();
-    for &(e, i) in &control_tags {
-        let err = |message| Error {
-            item: Item::Effect(e),
-            message,
-        };
+    for &(e, i) in cx.tags.clone().keys() {
         let op = &m.effects[&e].ops[i as usize];
-        let sig = cx.types.sig(op).map_err(err)?;
-        control_tag_tys.push(plain(sig));
+        control_tag_tys.push(cx.sig(FnSig {
+            params: op.params.iter().map(val).collect(),
+            results: op.results.iter().map(val).collect(),
+        }));
+    }
+    // The tables of Wasm continuations, after the function table.
+    let mut cont_tables = Vec::new();
+    for &h in &switching {
+        let n = m.effects[&m.handlers[&h].effect].ops.len() as u32;
+        for i in 0..n {
+            let err = |message| Error {
+                item: Item::Handler(h),
+                message,
+            };
+            cont_tables.push(cx.op_cont(h, i).map_err(err)?);
+        }
     }
 
+    let abort_ty = (!cx.aborts.is_empty()).then(|| {
+        cx.sig(FnSig {
+            params: vec![ValType::I32],
+            results: Vec::new(),
+        })
+    });
+
     let mut entries = Vec::new();
-    for k in 0..cx.entries.len() {
+    let mut k = 0;
+    while k < cx.entries.len() {
         let (f, n) = cx.entries[k];
         let err = |message| Error {
             item: Item::Func(f),
             message,
         };
-        let (_, sig) = cx.types.captures(f, n).map_err(err)?;
-        let ty = cx.types.entry(&sig).map_err(err)?;
+        let func = &m.funcs[&f];
+        let sig = func.sig();
+        let rest = conduit_ir::Sig::new(sig.params[n..].to_vec(), sig.results.clone());
+        let ty = cx.entry_sig(&rest);
         let body = func::lower_entry(&mut cx, f, n).map_err(err)?;
         entries.push((ty, body));
+        k += 1;
     }
 
+    let mut types = TypeSection::new();
+    for t in &cx.types {
+        match t {
+            TypeDef::Func(sig) => {
+                types
+                    .ty()
+                    .function(sig.params.iter().copied(), sig.results.iter().copied());
+            }
+            TypeDef::Cont(f) => {
+                types.ty().subtype(&wasm_encoder::SubType {
+                    is_final: true,
+                    supertype_idxs: Vec::new(),
+                    composite_type: wasm_encoder::CompositeType {
+                        inner: wasm_encoder::CompositeInnerType::Cont(wasm_encoder::ContType(*f)),
+                        shared: false,
+                        descriptor: None,
+                        describes: None,
+                    },
+                });
+            }
+        }
+    }
+    let mut import_section = ImportSection::new();
+    for (ext, sig) in &imports {
+        import_section.import(&ext.module, &ext.name, EntityType::Function(*sig));
+    }
+    let mut functions = FunctionSection::new();
+    let mut code = CodeSection::new();
+    let bodies = funcs
+        .iter()
+        .map(|(ty, b)| (*ty, b))
+        .chain(std::iter::once((alloc_ty, &alloc)))
+        .chain(clause_wrappers.iter().map(|(ty, b)| (*ty, b)))
+        .chain(switched.iter().map(|(ty, b)| (*ty, b)))
+        .chain(entries.iter().map(|(ty, b)| (*ty, b)));
+    for (ty, body) in bodies {
+        functions.function(ty);
+        let mut f = Function::new_with_locals_types(body.locals.iter().copied());
+        for i in &body.code {
+            f.instruction(i);
+        }
+        code.function(&f);
+    }
+
+    let mut module = wasm_encoder::Module::new();
+    module.section(&types);
+    module.section(&import_section);
+    module.section(&functions);
+    // Always a table, even an empty one, since a `perform` with no handler
+    // in the module still calls through it, after trapping.
+    let n_entries = u64::from(cx.wrapper_slots) + cx.entries.len() as u64;
+    {
+        let mut tables = TableSection::new();
+        tables.table(TableType {
+            element_type: RefType::FUNCREF,
+            table64: false,
+            minimum: n_entries,
+            maximum: Some(n_entries),
+            shared: false,
+        });
+        for &ct in &cont_tables {
+            tables.table(TableType {
+                element_type: RefType {
+                    nullable: true,
+                    heap_type: wasm_encoder::HeapType::Concrete(ct),
+                },
+                table64: false,
+                minimum: 0,
+                maximum: None,
+                shared: false,
+            });
+        }
+        module.section(&tables);
+    }
+    let pages = u64::from(heap_base.div_ceil(65536)).max(1);
+    let mut memories = MemorySection::new();
+    memories.memory(MemoryType {
+        minimum: pages,
+        maximum: None,
+        memory64: false,
+        shared: false,
+        page_size_log2: None,
+    });
+    module.section(&memories);
+    // The abort's tag first, then the one `discontinue` throws, then the
+    // control tags.
+    let tag_tys: Vec<u32> = abort_ty
+        .into_iter()
+        .chain(disc_tag_ty)
+        .chain(control_tag_tys)
+        .collect();
+    if !tag_tys.is_empty() {
+        let mut tags = TagSection::new();
+        for ty in tag_tys {
+            tags.tag(TagType {
+                kind: TagKind::Exception,
+                func_type_idx: ty,
+            });
+        }
+        module.section(&tags);
+    }
+    let mut globals = GlobalSection::new();
+    // The heap pointer, the handler stack, and the stack of the `perform`
+    // whose clause runs.
+    for init in [heap_base as i32, 0, 0] {
+        globals.global(
+            GlobalType {
+                val_type: ValType::I32,
+                mutable: true,
+                shared: false,
+            },
+            &ConstExpr::i32_const(init),
+        );
+    }
+    module.section(&globals);
     let mut export_section = ExportSection::new();
     for &(f, name) in exports {
         let idx = cx.func_index(f).map_err(|message| Error {
@@ -520,268 +792,296 @@ pub fn emit_module(m: &Module, exports: &[(FuncId, &str)]) -> Result<Vec<u8>, Er
         })?;
         export_section.export(name, ExportKind::Func, idx);
     }
-
-    let mut const_globals = Vec::new();
-    for &id in &const_order {
-        let err = |message| Error {
-            item: Item::Const(id),
-            message,
-        };
-        let decl = &m.consts[&id];
-        let ty = cx.types.val(&decl.ty).map_err(err)?;
-        let init = consts::init(&mut cx, &decl.value, &decl.ty).map_err(err)?;
-        const_globals.push((ty, init));
+    export_section.export("memory", ExportKind::Memory, 0);
+    module.section(&export_section);
+    // The function of each table slot: the clauses' wrappers, the
+    // continuations' wrappers and discontinue functions, then the
+    // closures' wrappers, which come after every other function.
+    let mut refs: Vec<u32> = (0..clause_slots).map(|s| cx.alloc + 1 + s).collect();
+    for sw in cx.switches.values() {
+        refs.extend(sw.kont_funcs.iter().copied());
+        refs.extend(sw.disc_funcs.iter().copied());
     }
-
-    let entry_count = cx.entries.len();
-    let handlers = if m.effects.is_empty() {
-        None
-    } else {
-        Some(cx.types.frame().map_err(|message| Error {
-            item: Item::Effect(*m.effects.keys().next().unwrap()),
-            message,
-        })?)
-    };
-    let abort = match handlers {
-        Some(frame) if !cx.aborts.is_empty() => Some(plain(FnSig {
-            params: vec![nullable(frame)],
-            results: vec![],
-        })),
-        _ => None,
-    };
-    let group = cx.types.finish();
-    let group_len = group.len() as u32;
-
-    let mut type_section = TypeSection::new();
-    if !group.is_empty() {
-        type_section.ty().rec(group);
-    }
-    for sig in &sigs {
-        type_section
-            .ty()
-            .function(sig.params.iter().copied(), sig.results.iter().copied());
-    }
-
-    let mut import_section = ImportSection::new();
-    for (ext, sig) in &imports {
-        import_section.import(
-            &ext.module,
-            &ext.name,
-            EntityType::Function(group_len + sig),
+    let first_entry = cx.alloc + 1 + clause_slots + switch_funcs;
+    refs.extend((0..cx.entries.len() as u32).map(|k| first_entry + k));
+    let mut elements = ElementSection::new();
+    if !refs.is_empty() {
+        elements.active(
+            Some(0),
+            &ConstExpr::i32_const(0),
+            Elements::Functions(refs.into()),
         );
     }
-
-    let mut function_section = FunctionSection::new();
-    let mut code_section = CodeSection::new();
-    let bodies = funcs
-        .iter()
-        .map(|(sig, body)| (group_len + sig, body))
-        .chain(wrappers.iter().map(|(ty, body)| (*ty, body)))
-        .chain(
-            switched
-                .iter()
-                .map(|(is_plain, ty, body)| (if *is_plain { group_len + ty } else { *ty }, body)),
-        )
-        .chain(entries.iter().map(|(ty, body)| (*ty, body)));
-    for (ty, body) in bodies {
-        function_section.function(ty);
-        let mut f = Function::new_with_locals_types(body.locals.iter().copied());
-        for i in &body.code {
-            f.instruction(i);
-        }
-        code_section.function(&f);
+    // The trampolines, which `ref.func` names.
+    let tramps: Vec<u32> = cx.switches.values().map(|sw| sw.tramp).collect();
+    if !tramps.is_empty() {
+        elements.declared(Elements::Functions(tramps.into()));
     }
-
-    let mut module = wasm_encoder::Module::new();
-    module.section(&type_section);
-    module.section(&import_section);
-    module.section(&function_section);
-    let tag_tys: Vec<u32> = abort
-        .into_iter()
-        .chain(disc_tag_ty)
-        .chain(control_tag_tys)
-        .collect();
-    if !tag_tys.is_empty() {
-        let mut tags = TagSection::new();
-        for sig in tag_tys {
-            tags.tag(TagType {
-                kind: TagKind::Exception,
-                func_type_idx: group_len + sig,
-            });
-        }
-        module.section(&tags);
-    }
-    if handlers.is_some() || !const_globals.is_empty() {
-        let mut globals = GlobalSection::new();
-        if let Some(frame) = handlers {
-            for _ in 0..handler_globals {
-                globals.global(
-                    GlobalType {
-                        val_type: nullable(frame),
-                        mutable: true,
-                        shared: false,
-                    },
-                    &ConstExpr::ref_null(HeapType::Concrete(frame)),
-                );
-            }
-        }
-        for (ty, init) in &const_globals {
-            let global = GlobalType {
-                val_type: *ty,
-                mutable: false,
-                shared: false,
-            };
-            globals.global(global, init);
-        }
-        module.section(&globals);
-    }
-    module.section(&export_section);
-    let referenced = wrappers.len() + switched.len() + entry_count;
-    if referenced > 0 {
-        // `ref.func` may only name functions declared in an element segment.
-        let first = first + m.funcs.len() as u32;
-        let refs: Vec<u32> = (first..first + referenced as u32).collect();
-        let mut elements = ElementSection::new();
-        elements.declared(Elements::Functions(refs.into()));
+    if !elements.is_empty() {
         module.section(&elements);
     }
-    module.section(&code_section);
-    // The functions of handlers that switch stacks are named after them.
-    let mut extra_names = Vec::new();
-    for (h, switch) in &cx.switches {
-        let decl = &m.handlers[h];
-        let name = decl
-            .debug_name
-            .as_deref()
-            .map_or(h.to_string(), str::to_string);
-        extra_names.push((switch.start, format!("{name}.start")));
-        for (kind, fs) in [
-            ("drive", &switch.drive),
-            ("k", &switch.entry),
-            ("throw", &switch.throw),
-            ("discontinue", &switch.disc),
-        ] {
-            for (i, &f) in fs.iter().enumerate() {
-                extra_names.push((f, format!("{name}.{kind}{i}")));
-            }
-        }
+    module.section(&code);
+    if !data.is_empty() {
+        let mut segments = DataSection::new();
+        segments.active(0, &ConstExpr::i32_const(CONST_BASE as i32), data);
+        module.section(&segments);
     }
-    for (&(e, i), &(body, entry)) in &cx.thunks {
-        let name = m.effects[&e]
-            .debug_name
-            .as_deref()
-            .map_or(e.to_string(), str::to_string);
-        extra_names.push((body, format!("{name}.{i}.thunk")));
-        extra_names.push((entry, format!("{name}.{i}.thunk_entry")));
-    }
-    extra_names.sort();
-    if let Some(names) = name_section(m, &funcs, &extra_names) {
+    if let Some(names) = name_section(m, &cx) {
         module.section(&names);
     }
     Ok(module.finish())
 }
 
-/// The names of the module's externs, functions and their variables, for
-/// tools and stack traces, or `None` if nothing has one. `funcs` are the
-/// lowered functions, in the order of the module's.
-fn name_section(
-    m: &Module,
-    funcs: &[(u32, func::Body)],
-    extra: &[(u32, String)],
-) -> Option<NameSection> {
-    let mut functions = NameMap::new();
-    let mut locals = IndirectNameMap::new();
-    let mut any = false;
-    for (i, ext) in m.externs.values().enumerate() {
-        if let Some(name) = &ext.debug_name {
-            functions.append(i as u32, name);
-            any = true;
-        }
-    }
-    let first = m.externs.len() as u32;
-    for (i, (f, (_, body))) in m.funcs.values().zip(funcs).enumerate() {
-        let index = first + i as u32;
-        if let Some(name) = &f.debug.name {
-            functions.append(index, name);
-            any = true;
-        }
-        if !body.local_names.is_empty() {
-            let mut names = NameMap::new();
-            for (local, name) in &body.local_names {
-                names.append(*local, name);
-            }
-            locals.append(index, &names);
-            any = true;
-        }
-    }
-    for (index, name) in extra {
-        functions.append(*index, name);
-        any = true;
-    }
-    any.then(|| {
-        let mut section = NameSection::new();
-        section.functions(&functions);
-        section.locals(&locals);
-        section
+/// Whether every clause of every handler of `m` is tail-resumptive or
+/// aborting, so that its handlers can be lowered directly.
+fn direct_handlers(m: &Module) -> bool {
+    m.handlers.keys().all(|&h| direct_handler(m, h))
+}
+
+/// Whether every clause of `h` is tail-resumptive or aborting.
+fn direct_handler(m: &Module, h: HandlerId) -> bool {
+    m.handlers[&h].ops.iter().all(|c| {
+        m.funcs.get(c).is_some_and(|f| {
+            conduit_ir::clause::plain_call(f).is_some() || conduit_ir::clause::aborting(f).is_some()
+        })
     })
 }
 
-#[cfg(test)]
-mod tests;
-
-/// The operations that some function discontinues a continuation with,
-/// other than the plain clauses, whose continuation is gone.
-fn cont_discontinues(m: &Module, plain: &BTreeMap<FuncId, Func>) -> BTreeSet<(EffectId, u32)> {
+/// `m` with a function for each operation some function discontinues a
+/// continuation with: it takes the operation's arguments and performs it.
+fn with_thunks(m: &Module) -> (Module, BTreeMap<(EffectId, u32), FuncId>) {
     let mut ops = BTreeSet::new();
-    for (id, f) in &m.funcs {
-        if plain.contains_key(id) {
-            continue;
-        }
+    for f in m.funcs.values() {
         let mut todo = vec![&f.body];
         while let Some(b) = todo.pop() {
             for l in &b.lets {
-                if let (Op::Discontinue(e, i), Some(Atom::Var(k))) = (&l.op, l.args.first())
+                if let (conduit_ir::Op::Discontinue(e, i), Some(conduit_ir::Atom::Var(k))) =
+                    (&l.op, l.args.first())
                     && matches!(f.vars.get(k.0 as usize), Some(Ty::Cont(_)))
                 {
                     ops.insert((*e, *i));
                 }
             }
             match &b.tail {
-                Tail::Join { defs, body, .. } => {
+                conduit_ir::Tail::Join { defs, body, .. } => {
                     todo.extend(defs.iter().map(|d| &d.body));
                     todo.push(body);
                 }
-                Tail::Case { arms, default, .. } => {
+                conduit_ir::Tail::Case { arms, default, .. } => {
                     todo.extend(arms.iter().map(|a| &a.body));
                     todo.extend(default.as_deref());
                 }
-                Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
+                _ => {}
             }
         }
     }
-    ops
+    let mut out = m.clone();
+    let mut map = BTreeMap::new();
+    let first = m.funcs.keys().map(|f| f.0 + 1).max().unwrap_or(0);
+    for (next, (e, i)) in (first..).zip(ops) {
+        let op = &m.effects[&e].ops[i as usize];
+        let mut f = Func::new(op.params.clone(), op.results.clone());
+        f.row = conduit_ir::Row::one(e);
+        let results: Vec<_> = op.results.iter().map(|t| f.new_var(t.clone())).collect();
+        let args = f.params.iter().map(|&p| conduit_ir::Atom::Var(p)).collect();
+        f.body = conduit_ir::Block {
+            lets: vec![conduit_ir::Let {
+                binds: results.clone(),
+                op: conduit_ir::Op::Perform(e, i),
+                args,
+                source: None,
+            }],
+            tail: conduit_ir::Tail::Jump {
+                target: conduit_ir::Label::RET,
+                args: results.into_iter().map(conduit_ir::Atom::Var).collect(),
+                source: None,
+            },
+        };
+        f.debug.name = Some("discontinue".into());
+        out.funcs.insert(FuncId(next), f);
+        map.insert((e, i), FuncId(next));
+    }
+    (out, map)
 }
 
-/// The function that the closure `discontinue E.i` throws calls: it takes
-/// the operation's arguments and performs it.
-fn thunk_func(m: &Module, e: EffectId, i: u32) -> Func {
-    let op = &m.effects[&e].ops[i as usize];
-    let mut f = Func::new(op.params.clone(), op.results.clone());
-    f.row = Row::one(e);
-    let results: Vec<_> = op.results.iter().map(|t| f.new_var(t.clone())).collect();
-    let args = f.params.iter().map(|&p| Atom::Var(p)).collect();
-    f.body = Block {
-        lets: vec![Let {
-            binds: results.clone(),
-            op: Op::Perform(e, i),
-            args,
-            source: None,
-        }],
-        tail: Tail::Jump {
-            target: Label::RET,
-            args: results.into_iter().map(Atom::Var).collect(),
-            source: None,
-        },
+/// Numbers the functions, table slots, tables and tags of the handlers in
+/// `switching`, after the clauses' wrappers, in the order `emit_module_with`
+/// lowers them. Returns how many functions they take.
+fn plan_switching(cx: &mut Cx<'_>, switching: &BTreeSet<HandlerId>) -> Result<u32, String> {
+    let disc = !cx.thunks.is_empty();
+    let first_func = cx.alloc + 1 + cx.wrapper_slots;
+    let mut func = first_func;
+    let mut slot = cx.wrapper_slots;
+    let mut table = 1;
+    let take = |next: &mut u32, n: u32| {
+        let range: Vec<u32> = (*next..*next + n).collect();
+        *next += n;
+        range
     };
-    f
+    for &h in switching {
+        let n = cx.m.effects[&cx.m.handlers[&h].effect].ops.len() as u32;
+        let start = take(&mut func, 1)[0];
+        let tramp = take(&mut func, 1)[0];
+        let drive = take(&mut func, n);
+        let kont_funcs = take(&mut func, n);
+        let (throw, disc_funcs) = if disc {
+            (take(&mut func, n), take(&mut func, n))
+        } else {
+            (Vec::new(), Vec::new())
+        };
+        let kont_slots = take(&mut slot, n);
+        let disc_slots = if disc { take(&mut slot, n) } else { Vec::new() };
+        let conts = take(&mut table, n);
+        cx.switches.insert(
+            h,
+            Switch {
+                start,
+                tramp,
+                drive,
+                throw,
+                kont_slots,
+                disc_slots,
+                conts,
+                kont_funcs,
+                disc_funcs,
+            },
+        );
+    }
+    cx.wrapper_slots = slot;
+    let mut tag = u32::from(!cx.aborts.is_empty());
+    if disc {
+        cx.disc_tag = Some(tag);
+        tag += 1;
+    }
+    let effects: BTreeSet<EffectId> = switching.iter().map(|h| cx.m.handlers[h].effect).collect();
+    for e in effects {
+        for i in 0..cx.m.effects[&e].ops.len() as u32 {
+            cx.tags.insert((e, i), tag);
+            tag += 1;
+        }
+    }
+    Ok(func - first_func)
 }
+
+/// Lays out constant `c` in `data`, after what's there, and gives its
+/// address, or `None` if it's a scalar.
+fn lay_out_const(cx: &mut Cx<'_>, data: &mut Vec<u8>, c: ConstId) -> Result<Option<u32>, String> {
+    if let Some(&a) = cx.consts.get(&c) {
+        return Ok(Some(a));
+    }
+    let decl =
+        cx.m.consts
+            .get(&c)
+            .ok_or_else(|| format!("unknown constant {c}"))?;
+    match &decl.value {
+        ConstValue::Lit(_) => Ok(None),
+        value => {
+            let ty = decl.ty.clone();
+            let a = lay_out_value(cx, data, value, &ty)?;
+            cx.consts.insert(c, a);
+            Ok(Some(a))
+        }
+    }
+}
+
+/// Lays out an object of a constant, and gives its address.
+fn lay_out_value(
+    cx: &mut Cx<'_>,
+    data: &mut Vec<u8>,
+    value: &ConstValue,
+    ty: &Ty,
+) -> Result<u32, String> {
+    // What goes in a slot of type `ty`: a literal's bits, or an address.
+    let slot =
+        |cx: &mut Cx<'_>, data: &mut Vec<u8>, v: &ConstValue, ty: &Ty| -> Result<Vec<u8>, String> {
+            Ok(match v {
+                ConstValue::Lit(l) => lit_bytes(*l),
+                ConstValue::Const(id) => match lay_out_const(cx, data, *id)? {
+                    Some(a) => a.to_le_bytes().to_vec(),
+                    None => match conduit_ir::verify::const_value(cx.m, *id) {
+                        Some(ConstValue::Lit(l)) => lit_bytes(*l),
+                        _ => return Err(format!("unknown constant {id}")),
+                    },
+                },
+                nested => lay_out_value(cx, data, nested, ty)?.to_le_bytes().to_vec(),
+            })
+        };
+    match (value, ty) {
+        (ConstValue::Array(elems), Ty::Array(..)) => {
+            let elem = conduit_ir::verify::elem_ty(ty).unwrap();
+            let size = Storage::of(&elem).size();
+            let mut bytes = vec![0u8; 8 + size as usize * elems.len()];
+            bytes[4..8].copy_from_slice(&(elems.len() as u32).to_le_bytes());
+            for (i, e) in elems.iter().enumerate() {
+                let b = slot(cx, data, e, &elem)?;
+                let at = 8 + i * size as usize;
+                bytes[at..at + size as usize].copy_from_slice(&b[..size as usize]);
+            }
+            Ok(place(data, bytes))
+        }
+        (ConstValue::New(c, fields), Ty::Data(_, m, args, rows)) => {
+            let decl = cx.fields(*c)?.to_vec();
+            let tys: Vec<Ty> = decl
+                .iter()
+                .map(|f| conduit_ir::verify::resolve(f, *m, args, rows))
+                .collect();
+            let (offsets, size) = layout(&tys);
+            let mut bytes = vec![0u8; size as usize];
+            bytes[4..8].copy_from_slice(&c.index.to_le_bytes());
+            for ((v, t), (at, s)) in fields.iter().zip(&tys).zip(&offsets) {
+                let b = slot(cx, data, v, t)?;
+                let at = *at as usize;
+                bytes[at..at + s.size() as usize].copy_from_slice(&b[..s.size() as usize]);
+            }
+            Ok(place(data, bytes))
+        }
+        (ConstValue::Const(id), _) => {
+            lay_out_const(cx, data, *id)?.ok_or_else(|| format!("{id} isn't an object"))
+        }
+        _ => Err(format!("a constant's value {value:?} isn't a {ty}")),
+    }
+}
+
+/// Puts an object's bytes at the next 8-aligned address of `data`.
+fn place(data: &mut Vec<u8>, bytes: Vec<u8>) -> u32 {
+    let at = data.len().next_multiple_of(8);
+    data.resize(at, 0);
+    data.extend(bytes);
+    at as u32
+}
+
+/// A literal's bytes, little-endian, at least as many as its storage.
+fn lit_bytes(l: Lit) -> Vec<u8> {
+    match l {
+        Lit::I8(n) => vec![n as u8],
+        Lit::I16(n) => n.to_le_bytes().to_vec(),
+        Lit::I32(n) => n.to_le_bytes().to_vec(),
+        Lit::I64(n) => n.to_le_bytes().to_vec(),
+        Lit::F32(bits) => bits.to_le_bytes().to_vec(),
+        Lit::F64(bits) => bits.to_le_bytes().to_vec(),
+    }
+}
+
+/// Names for tools and stack traces: the externs', functions' and
+/// `alloc`'s.
+fn name_section(m: &Module, cx: &Cx<'_>) -> Option<NameSection> {
+    let mut functions = NameMap::new();
+    for (i, ext) in m.externs.values().enumerate() {
+        if let Some(name) = &ext.debug_name {
+            functions.append(i as u32, name);
+        }
+    }
+    let first = m.externs.len() as u32;
+    for (i, f) in m.funcs.values().enumerate() {
+        if let Some(name) = &f.debug.name {
+            functions.append(first + i as u32, name);
+        }
+    }
+    functions.append(cx.alloc, "alloc");
+    let mut section = NameSection::new();
+    section.functions(&functions);
+    Some(section)
+}
+
+#[cfg(test)]
+mod tests;

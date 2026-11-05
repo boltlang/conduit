@@ -1,47 +1,31 @@
 //! Handlers that switch stacks, with the stack switching proposal: those
-//! with a clause that's neither tail-resumptive nor aborting, so that its
-//! continuation has to be captured.
+//! with a clause that's neither tail-resumptive nor aborting, when
+//! [`Options::stack_switching`](crate::Options) asks for it. Their bodies
+//! run as Wasm continuations, and a `perform` to one suspends:
 //!
-//! Each operation of an effect such a handler handles has a control tag.
-//! `handle` makes a frame of the handler's own type and calls the
-//! handler's `start` function, which links the frame onto the handler
-//! stack, runs the body as a Wasm continuation with a `resume` that has a
-//! label for each operation's tag, and then:
-//!
-//! - if the body returns, calls the return clause, under the handlers
-//!   outside this one;
-//! - if it suspends with operation `i`, calls clause `i`, under the
-//!   handlers outside this one, with a Conduit continuation holding the
-//!   frame, the environment and the Wasm continuation.
-//!
-//! `perform` finds the nearest frame of its effect on the handler stack as
-//! for any handler. If it's one of these, it suspends with the
-//! operation's tag, which goes to the `resume` of this handler, since the
-//! handlers between them are of other effects. Once it's resumed, it puts
-//! its handler stack back.
-//!
-//! Resuming the Conduit continuation calls its wrapper, which calls the
-//! handler's `drive` function for the operation: the same as `start`, but
-//! resuming the Wasm continuation with the operation's results, so the
-//! handler is deep. A Wasm continuation can only be resumed once, so a
-//! second resume traps, as rule 7 says. The frame's `next` is set on every
-//! `start` or `drive`, so the body sees the handlers around wherever it
-//! was last resumed.
-//!
-//! `discontinue F.j(k, args)` makes a closure that performs `F.j(args)`,
-//! and the continuation's `disc` function throws it into the Wasm
-//! continuation with `resume_throw`, through the handler's `throw`
-//! function. The `perform` the continuation was captured at catches it,
-//! puts its handler stack back, and calls it: so `F.j` is performed where
-//! the continuation was captured, under the handlers around it, and what
-//! it gives is what the `perform` gives.
+//! - A handler's frame has -1 in every clause slot, which tells `perform`
+//!   to suspend with the operation's tag instead of calling a clause.
+//! - `handle` calls the handler's `start`, which makes the body a Wasm
+//!   continuation of a trampoline that applies the body's closure, and
+//!   resumes it with a label per operation.
+//! - A Wasm continuation is a reference, which memory can't hold, so a
+//!   captured one goes in a table of its type, one per operation, and the
+//!   Conduit continuation holds its slot. Slots are never freed, as memory
+//!   isn't.
+//! - A Conduit continuation is a closure: the header, its wrapper's table
+//!   slot at 4, then, laid out from 8, the slot of the function that
+//!   discontinues it, the frame, the handler's environment and the slot of
+//!   the Wasm continuation. Its wrapper resumes it under the handler again
+//!   through `drive`, so the handler is deep, and a second resume traps.
+//! - `discontinue F.j(k, args)` makes a closure that performs `F.j(args)`
+//!   and throws its address into `k` with `resume_throw`, which the
+//!   `perform` catches and calls, under its own handlers.
 
-use conduit_ir::{EffectId, HandlerId};
-use wasm_encoder::{BlockType, Handle, Instruction as I, ValType};
+use conduit_ir::HandlerId;
+use wasm_encoder::{BlockType, Handle, HeapType, Instruction as I, RefType, ValType};
 
-use crate::func::Body;
-use crate::types::{FnSig, nullable};
-use crate::{Cx, HANDLERS};
+use crate::func::{Body, load, store};
+use crate::{Cx, FnSig, HANDLERS, Storage, layout, val};
 
 /// How a handler's `start`, `drive` or `throw` function runs its body.
 #[derive(Clone, Copy)]
@@ -54,37 +38,126 @@ pub(crate) enum Start {
     Throw(u32),
 }
 
-/// The signature of the `start`, `drive` or `throw` function of `h`: the
-/// frame, the environment, then what `start` says, to what the `handle`
-/// gives.
-pub(crate) fn drive_sig(cx: &mut Cx<'_>, h: HandlerId, start: Start) -> Result<FnSig, String> {
-    let m = cx.m;
-    let decl = &m.handlers[&h];
-    let mut params = vec![nullable(cx.types.switch_frame()?)];
-    params.extend(cx.types.vals(&decl.env)?);
-    match start {
-        Start::Body => {
-            let body = FnSig {
-                params: Vec::new(),
-                results: cx.types.body_results(h)?,
-            };
-            params.push(nullable(cx.types.closure(&body)?));
-        }
-        Start::Resume(i) => {
-            params.push(nullable(cx.types.op_cont(h, i)?));
-            params.extend(cx.types.clause_cont_sig(h, i)?.params);
-        }
-        Start::Throw(i) => {
-            params.push(nullable(cx.types.op_cont(h, i)?));
-            params.push(ValType::Ref(wasm_encoder::RefType::ANYREF));
-        }
+/// A nullable reference to the type at `idx`.
+pub(crate) fn nullable(idx: u32) -> ValType {
+    ValType::Ref(RefType {
+        nullable: true,
+        heap_type: HeapType::Concrete(idx),
+    })
+}
+
+impl Cx<'_> {
+    /// The results of the body of a `handle` of `h`: what its return
+    /// clause takes after the environment.
+    pub fn body_results(&self, h: HandlerId) -> Result<Vec<ValType>, String> {
+        let decl = &self.m.handlers[&h];
+        let ret = self
+            .m
+            .funcs
+            .get(&decl.ret)
+            .ok_or_else(|| format!("unknown return clause {}", decl.ret))?;
+        let sig = ret.sig();
+        Ok(sig.params[decl.env.len()..].iter().map(val).collect())
     }
-    let Some(ret) = m.funcs.get(&decl.ret) else {
-        return Err(format!("unknown return clause {}", decl.ret));
-    };
-    Ok(FnSig {
-        params,
-        results: cx.types.vals(&ret.results)?,
+
+    /// What a `handle` of `h` gives.
+    pub fn handle_results(&self, h: HandlerId) -> Result<Vec<ValType>, String> {
+        let decl = &self.m.handlers[&h];
+        let ret = self
+            .m
+            .funcs
+            .get(&decl.ret)
+            .ok_or_else(|| format!("unknown return clause {}", decl.ret))?;
+        Ok(ret.results.iter().map(val).collect())
+    }
+
+    /// The Wasm continuation captured by operation `i` under `h`: resumed
+    /// with the operation's results, it gives the body's.
+    pub fn op_cont(&mut self, h: HandlerId, i: u32) -> Result<u32, String> {
+        let decl = &self.m.handlers[&h];
+        let op = &self.m.effects[&decl.effect].ops[i as usize];
+        let sig = FnSig {
+            params: op.results.iter().map(val).collect(),
+            results: self.body_results(h)?,
+        };
+        Ok(self.cont(sig))
+    }
+
+    /// The continuation of `h`'s trampoline, which runs a body's closure.
+    pub fn start_cont(&mut self, h: HandlerId) -> Result<u32, String> {
+        let sig = FnSig {
+            params: vec![ValType::I32],
+            results: self.body_results(h)?,
+        };
+        Ok(self.cont(sig))
+    }
+
+    /// The layout of a Conduit continuation of `h`'s clause `i`, from 8:
+    /// the slot of its discontinue function, the frame, the environment,
+    /// and the slot of the Wasm continuation.
+    pub fn kont_layout(&self, h: HandlerId) -> (Vec<(u32, Storage)>, u32) {
+        let decl = &self.m.handlers[&h];
+        let mut tys = vec![conduit_ir::Ty::I32, conduit_ir::Ty::I32];
+        tys.extend(decl.env.iter().cloned());
+        tys.push(conduit_ir::Ty::I32);
+        layout(&tys)
+    }
+
+    /// The parameters of `h`'s `start`, `drive` or `throw` function, and
+    /// its results.
+    pub fn drive_sig(&mut self, h: HandlerId, start: Start) -> Result<FnSig, String> {
+        let decl = &self.m.handlers[&h];
+        let mut params = vec![ValType::I32];
+        params.extend(decl.env.iter().map(val));
+        match start {
+            Start::Body => params.push(ValType::I32),
+            Start::Resume(i) => {
+                params.push(nullable(self.op_cont(h, i)?));
+                let op = &self.m.effects[&decl.effect].ops[i as usize];
+                params.extend(op.results.iter().map(val));
+            }
+            Start::Throw(i) => {
+                params.push(nullable(self.op_cont(h, i)?));
+                params.push(ValType::I32);
+            }
+        }
+        Ok(FnSig {
+            params,
+            results: self.handle_results(h)?,
+        })
+    }
+
+    /// The type of the function that discontinues a continuation that
+    /// gives `results`: `(k, thunk) -> results`.
+    pub fn disc_sig(&mut self, results: Vec<ValType>) -> u32 {
+        self.sig(FnSig {
+            params: vec![ValType::I32, ValType::I32],
+            results,
+        })
+    }
+}
+
+/// The trampoline of `h`, `(closure) -> body results`, which the body
+/// runs in as a Wasm continuation: it applies the closure.
+pub(crate) fn lower_tramp(cx: &mut Cx<'_>, h: HandlerId) -> Result<Body, String> {
+    let results = cx.body_results(h)?;
+    let entry = cx.sig(FnSig {
+        params: vec![ValType::I32],
+        results,
+    });
+    let code = vec![
+        I::LocalGet(0),
+        I::LocalGet(0),
+        load(Storage::I32, 4),
+        I::ReturnCallIndirect {
+            type_index: entry,
+            table_index: 0,
+        },
+        I::End,
+    ];
+    Ok(Body {
+        locals: Vec::new(),
+        code,
     })
 }
 
@@ -92,79 +165,56 @@ pub(crate) fn drive_sig(cx: &mut Cx<'_>, h: HandlerId, start: Start) -> Result<F
 pub(crate) fn lower_drive(cx: &mut Cx<'_>, h: HandlerId, start: Start) -> Result<Body, String> {
     let m = cx.m;
     let decl = &m.handlers[&h];
-    let Some(effect) = m.effects.get(&decl.effect) else {
-        return Err(format!("unknown effect {}", decl.effect));
-    };
+    let effect = &m.effects[&decl.effect];
     let n = effect.ops.len() as u32;
-    let sig = drive_sig(cx, h, start)?;
+    let sig = cx.drive_sig(h, start)?;
     let env = decl.env.len() as u32;
-    let switch = cx
-        .switch(h)
-        .map(|s| (s.entry.clone(), s.disc.clone()))
-        .ok_or_else(|| format!("{h} doesn't switch stacks"))?;
-    let base = cx.types.frame()?;
+    let sw = cx.switch(h)?.clone();
     let mut locals: Vec<ValType> = Vec::new();
     let first_local = sig.params.len() as u32;
     let new_local = |locals: &mut Vec<ValType>, ty: ValType| {
         locals.push(ty);
         first_local + locals.len() as u32 - 1
     };
-    let table: Vec<Handle> = (0..n)
-        .map(|i| {
-            let tag = cx.tag(decl.effect, i).expect("a tag for each operation");
-            Handle::OnLabel { tag, label: i }
-        })
-        .collect();
+    let mut table = Vec::new();
+    for i in 0..n {
+        let tag = cx.tag(decl.effect, i).ok_or("no tag for an operation")?;
+        table.push(Handle::OnLabel { tag, label: i });
+    }
 
     // The frame goes on top of the handlers around this run.
     let mut code = vec![
         I::LocalGet(0),
         I::GlobalGet(HANDLERS),
-        I::StructSet {
-            struct_type_index: base,
-            field_index: 1,
-        },
+        store(Storage::I32, 12),
         I::LocalGet(0),
         I::GlobalSet(HANDLERS),
     ];
-    let body_results = cx.types.body_results(h)?;
-    let ret_block = cx.types.func(&FnSig {
+    let body_results = cx.body_results(h)?;
+    let ret_block = cx.sig(FnSig {
         params: Vec::new(),
         results: body_results.clone(),
-    })?;
+    });
     code.push(I::Block(BlockType::FunctionType(ret_block)));
-    // Operation `i` lands at label `i`, with its parameters and the
-    // continuation.
     let mut op_params = Vec::new();
-    for i in 0..n {
-        let op = &effect.ops[i as usize];
-        op_params.push(cx.types.vals(&op.params)?);
+    for op in &effect.ops {
+        op_params.push(op.params.iter().map(val).collect::<Vec<_>>());
     }
     for i in (0..n).rev() {
         let mut results = op_params[i as usize].clone();
-        results.push(nullable(cx.types.op_cont(h, i)?));
-        let ty = cx.types.func(&FnSig {
+        results.push(nullable(cx.op_cont(h, i)?));
+        let ty = cx.sig(FnSig {
             params: Vec::new(),
             results,
-        })?;
+        });
         code.push(I::Block(BlockType::FunctionType(ty)));
     }
     match start {
         Start::Body => {
-            let body = FnSig {
-                params: Vec::new(),
-                results: body_results.clone(),
-            };
-            let closure = cx.types.closure(&body)?;
-            let cont = cx.types.cont_of_entry(&body)?;
-            let c = 1 + env;
+            let cont = cx.start_cont(h)?;
             code.extend([
-                I::LocalGet(c),
-                I::LocalGet(c),
-                I::StructGet {
-                    struct_type_index: closure,
-                    field_index: 0,
-                },
+                I::LocalGet(1 + env),
+                I::RefFunc(sw.tramp),
                 I::ContNew(cont),
                 I::Resume {
                     cont_type_index: cont,
@@ -180,7 +230,7 @@ pub(crate) fn lower_drive(cx: &mut Cx<'_>, h: HandlerId, start: Start) -> Result
             }
             code.push(I::LocalGet(k));
             code.push(I::Resume {
-                cont_type_index: cx.types.op_cont(h, i)?,
+                cont_type_index: cx.op_cont(h, i)?,
                 resume_table: table.into(),
             });
         }
@@ -190,19 +240,19 @@ pub(crate) fn lower_drive(cx: &mut Cx<'_>, h: HandlerId, start: Start) -> Result
             code.push(I::LocalGet(k + 1));
             code.push(I::LocalGet(k));
             code.push(I::ResumeThrow {
-                cont_type_index: cx.types.op_cont(h, i)?,
+                cont_type_index: cx.op_cont(h, i)?,
                 tag_index: tag,
                 resume_table: table.into(),
             });
         }
     }
     code.push(I::Br(n));
+    let (kont_fields, kont_size) = cx.kont_layout(h);
     for i in 0..n {
         code.push(I::End);
         // Clause `i`, with what the `perform` gave and its continuation on
         // the stack, runs under the handlers outside this one.
-        let (cont_of, _) = cx.types.cont_of(h, i)?;
-        let k = new_local(&mut locals, nullable(cx.types.op_cont(h, i)?));
+        let k = new_local(&mut locals, nullable(cx.op_cont(h, i)?));
         let params: Vec<u32> = op_params[i as usize]
             .clone()
             .into_iter()
@@ -212,23 +262,56 @@ pub(crate) fn lower_drive(cx: &mut Cx<'_>, h: HandlerId, start: Start) -> Result
         for &p in params.iter().rev() {
             code.push(I::LocalSet(p));
         }
-        code.extend(outside(base));
+        // The Wasm continuation goes in a new slot of its table.
+        let slot = new_local(&mut locals, ValType::I32);
+        code.extend([
+            I::LocalGet(k),
+            I::I32Const(1),
+            I::TableGrow(sw.conts[i as usize]),
+            I::LocalTee(slot),
+            I::I32Const(-1),
+            I::I32Eq,
+            I::If(BlockType::Empty),
+            I::Unreachable,
+            I::End,
+        ]);
+        code.extend(outside());
         for j in 0..env {
             code.push(I::LocalGet(1 + j));
         }
         for &p in &params {
             code.push(I::LocalGet(p));
         }
-        code.push(I::RefFunc(switch.0[i as usize]));
-        if let Some(&disc) = switch.1.get(i as usize) {
-            code.push(I::RefFunc(disc));
+        // The Conduit continuation.
+        let obj = new_local(&mut locals, ValType::I32);
+        code.extend([
+            I::I32Const(kont_size as i32),
+            I::Call(cx.alloc),
+            I::LocalSet(obj),
+        ]);
+        code.extend([
+            I::LocalGet(obj),
+            I::I32Const(sw.kont_slots[i as usize] as i32),
+            store(Storage::I32, 4),
+        ]);
+        let disc = sw.disc_slots.get(i as usize).map_or(-1, |&s| s as i32);
+        code.extend([
+            I::LocalGet(obj),
+            I::I32Const(disc),
+            store(Storage::I32, kont_fields[0].0),
+        ]);
+        code.extend([
+            I::LocalGet(obj),
+            I::LocalGet(0),
+            store(Storage::I32, kont_fields[1].0),
+        ]);
+        for j in 0..env as usize {
+            let (at, s) = kont_fields[2 + j];
+            code.extend([I::LocalGet(obj), I::LocalGet(1 + j as u32), store(s, at)]);
         }
-        code.push(I::LocalGet(0));
-        for j in 0..env {
-            code.push(I::LocalGet(1 + j));
-        }
-        code.push(I::LocalGet(k));
-        code.push(I::StructNew(cont_of));
+        let (at, s) = kont_fields[2 + env as usize];
+        code.extend([I::LocalGet(obj), I::LocalGet(slot), store(s, at)]);
+        code.push(I::LocalGet(obj));
         code.push(I::ReturnCall(cx.func_index(decl.ops[i as usize])?));
     }
     code.push(I::End);
@@ -240,7 +323,7 @@ pub(crate) fn lower_drive(cx: &mut Cx<'_>, h: HandlerId, start: Start) -> Result
     for &r in results.iter().rev() {
         code.push(I::LocalSet(r));
     }
-    code.extend(outside(base));
+    code.extend(outside());
     for j in 0..env {
         code.push(I::LocalGet(1 + j));
     }
@@ -249,96 +332,62 @@ pub(crate) fn lower_drive(cx: &mut Cx<'_>, h: HandlerId, start: Start) -> Result
     }
     code.push(I::ReturnCall(cx.func_index(decl.ret)?));
     code.push(I::End);
-    Ok(Body {
-        locals,
-        code,
-        local_names: Vec::new(),
-    })
+    Ok(Body { locals, code })
 }
 
 /// Sets the handler stack to what's outside the frame in local 0.
-fn outside(base: u32) -> [I<'static>; 3] {
+fn outside() -> [I<'static>; 3] {
     [
         I::LocalGet(0),
-        I::StructGet {
-            struct_type_index: base,
-            field_index: 1,
-        },
+        load(Storage::I32, 12),
         I::GlobalSet(HANDLERS),
     ]
 }
 
-/// The wrapper of the Conduit continuation clause `i` of `h` gets, or with
-/// `disc`, the function it discontinues with: it reads the frame, the
+/// The wrapper of the Conduit continuation of `h`'s clause `i`, or with
+/// `disc`, the function that discontinues it: it reads the frame, the
 /// environment and the Wasm continuation out of it, and calls the
 /// handler's `drive` or `throw` function.
-pub(crate) fn lower_cont_entry(
+pub(crate) fn lower_kont(
     cx: &mut Cx<'_>,
     h: HandlerId,
     i: u32,
     disc: bool,
 ) -> Result<Body, String> {
-    let env = cx.m.handlers[&h].env.len() as u32;
-    let sig = cx.types.clause_cont_sig(h, i)?;
-    let (k, first) = cx.types.cont_of(h, i)?;
-    let args = if disc { 1 } else { sig.params.len() as u32 };
-    let s = 1 + args;
-    let mut code = vec![
-        I::LocalGet(0),
-        I::RefCastNullable(wasm_encoder::HeapType::Concrete(k)),
-        I::LocalSet(s),
-    ];
-    for f in 0..env + 2 {
-        code.push(I::LocalGet(s));
-        code.push(I::StructGet {
-            struct_type_index: k,
-            field_index: first + f,
-        });
+    let m = cx.m;
+    let decl = &m.handlers[&h];
+    let env = decl.env.len();
+    let args = if disc {
+        1
+    } else {
+        m.effects[&decl.effect].ops[i as usize].results.len() as u32
+    };
+    let (fields, _) = cx.kont_layout(h);
+    let sw = cx.switch(h)?.clone();
+    let mut code = Vec::new();
+    // The frame and the environment.
+    for &(at, s) in &fields[1..2 + env] {
+        code.push(I::LocalGet(0));
+        code.push(load(s, at));
     }
+    let (at, s) = fields[2 + env];
+    code.extend([
+        I::LocalGet(0),
+        load(s, at),
+        I::TableGet(sw.conts[i as usize]),
+    ]);
     for a in 0..args {
         code.push(I::LocalGet(1 + a));
     }
-    let switch = cx
-        .switch(h)
-        .ok_or_else(|| format!("{h} doesn't switch stacks"))?;
     let target = if disc {
-        switch.throw[i as usize]
+        sw.throw[i as usize]
     } else {
-        switch.drive[i as usize]
+        sw.drive[i as usize]
     };
     code.push(I::ReturnCall(target));
     code.push(I::End);
     Ok(Body {
-        locals: vec![nullable(k)],
+        locals: Vec::new(),
         code,
-        local_names: Vec::new(),
-    })
-}
-
-/// The wrapper of the closure that `discontinue E.i` throws: it reads the
-/// operation's arguments out of it and calls the function that performs
-/// it.
-pub(crate) fn lower_thunk_entry(cx: &mut Cx<'_>, e: EffectId, i: u32) -> Result<Body, String> {
-    let (t, _) = cx.types.thunk(e, i)?;
-    let args = cx.m.effects[&e].ops[i as usize].params.len() as u32;
-    let mut code = vec![
-        I::LocalGet(0),
-        I::RefCastNullable(wasm_encoder::HeapType::Concrete(t)),
-        I::LocalSet(1),
-    ];
-    for a in 0..args {
-        code.push(I::LocalGet(1));
-        code.push(I::StructGet {
-            struct_type_index: t,
-            field_index: 1 + a,
-        });
-    }
-    let (body, _) = cx.thunks[&(e, i)];
-    code.push(I::ReturnCall(body));
-    code.push(I::End);
-    Ok(Body {
-        locals: vec![nullable(t)],
-        code,
-        local_names: Vec::new(),
     })
 }

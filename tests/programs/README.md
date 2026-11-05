@@ -11,11 +11,10 @@ Every part of Conduit runs the checks that apply to it:
 |---|---|
 | `conduit-ir` | Parses it, checks that printing and parsing gives the same module, and verifies it |
 | `conduit-eval` | Runs its `run` checks |
-| `conduit-wasm` | Lowers it, validates the Wasm, compares `wat` snapshots and runs its `run` checks with Wasmtime |
+| `conduit-wasm` | Lowers it, validates the Wasm without the GC and stack switching proposals, compares `wat` snapshots and runs its `run` checks with Wasmtime. A program with a handler whose clauses aren't all tail-resumptive or aborting is lowered by evidence passing, and again with stack switching, which is then allowed |
 | `conduit-opt` | Optimizes it, verifies the result, compares `opt` snapshots and runs its `run` checks on the result with the evaluator. With `opt: passes`, it does this both after all passes and after only those |
 | `conduit-opt` (`effects`) | Lowers its effects by evidence passing, checks that the result verifies and has no effects left, and runs its `run` checks with the evaluator, then again after optimizing |
-| `conduit-wasm` (`linear`) | Lowers it with the linear memory backend, validates the Wasm without the GC and stack switching proposals, and runs its `run` checks with Wasmtime. A program with a general handler is also lowered with stack switching, then allowed |
-| `conduit-wasm` (`effects`) | Lowers its effects by evidence passing, then lowers it to Wasm, which must validate without stack switching, and runs its `run` checks with Wasmtime without it |
+
 
 So a `run` check is checked by the evaluator, by Wasm and after
 optimization, and they all have to agree.

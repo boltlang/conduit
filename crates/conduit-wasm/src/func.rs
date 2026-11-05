@@ -1,70 +1,44 @@
-//! How a function body becomes Wasm code. See "Lowering" in `docs/ir.md`.
+//! How a function body becomes Wasm code. See "Lowering" in `docs/ir.md`
+//! and the crate's documentation for the layouts of objects.
 //!
 //! Every variable is a local, and every block ends in a `return`, `br`,
 //! `return_call` or `unreachable`, so blocks never carry values and no
-//! code falls through. Join points become blocks:
-//!
-//! - `join j(..) = D in B` is `block B end` then `D`: a jump in `B` sets
-//!   `j`'s parameters and leaves the block.
-//! - `join rec j(..) = D in B` is `block B end` then `loop D end`. The
-//!   block and the loop are at the same depth, so a jump to `j` is the same
-//!   `br` in both: in `B` it leaves the block and enters the loop, and in
-//!   `D` it goes back to the start of the loop.
-//! - `join rec j1(..) = D1, .., jn(..) = Dn in B` does the same, with the
-//!   loop dispatching on a local saying which label was jumped to.
-//!
-//! A jump pushes all its arguments before setting any parameter, so a
-//! jump like `loop(y, x)` that swaps two parameters works.
-//!
-//! An `i8` or `i16` is an `i32` local whose low 8 or 16 bits are the value,
-//! as in LLVM's Wasm backend. The high bits can be anything, so ops that
-//! read them first sign- or zero-extend: `div`, `rem`, `shr`, comparisons,
-//! conversions to wider types, and `case`. Ops whose low bits only depend
-//! on the low bits of their operands (`add`, `mul`, `and`, `shl`, ..)
-//! don't, and an array of them stores only the low bits.
+//! code falls through. Join points become blocks, and loops for recursive
+//! ones. An `i8` or `i16` is an `i32` local whose low bits are the value,
+//! as in LLVM's Wasm backend: the ops that read the high bits extend it
+//! first, and memory stores only the low bits. Objects are loads and
+//! stores at the offsets of their layouts.
 
 use std::borrow::Cow;
 
 use conduit_ir::{
-    Atom, Block, CtorId, EffectId, Func, HandlerId, JoinDef, Label, Lit, Op, Prim, Sign, Tag, Tail,
-    Ty, Var,
+    Atom, Block, CtorId, Func, FuncId, JoinDef, Label, Lit, Op, Prim, Sign, Tag, Tail, Ty, Var,
 };
-use wasm_encoder::{
-    BlockType, Catch, HeapType, Ieee32, Ieee64, Instruction as I, RefType, ValType,
-};
+use wasm_encoder::{BlockType, Ieee32, Ieee64, Instruction as I, MemArg, MemArgTarget, ValType};
 
-use crate::types::nullable;
-use crate::{ABORT, Cx, HANDLERS, SITE};
+use crate::{ABORT, Cx, HANDLERS, HEAP, SITE, Storage, layout, val};
 
 /// A lowered function: the locals after its parameters, and its code.
 pub(crate) struct Body {
     pub locals: Vec<ValType>,
     pub code: Vec<I<'static>>,
-    /// The names of locals that hold named variables, by local index.
-    pub local_names: Vec<(u32, Box<str>)>,
 }
 
 /// Where a jump to a label goes.
 #[derive(Clone)]
 struct Target {
-    /// The depth of the `block` or `loop` to branch to.
     level: u32,
     params: Vec<Var>,
-    /// For a group of recursive join points: the local saying which one
-    /// was jumped to, and this one's number.
     which: Option<(u32, i32)>,
 }
 
 struct FuncCx<'a, 'm> {
     cx: &'a mut Cx<'m>,
     f: &'m Func,
-    /// The local of each variable.
     locals: Vec<u32>,
-    /// The types of the locals after the parameters.
     extra: Vec<ValType>,
     results: Vec<ValType>,
     labels: Vec<Option<Target>>,
-    /// How many blocks and loops are open.
     depth: u32,
     code: Vec<I<'static>>,
 }
@@ -72,6 +46,43 @@ struct FuncCx<'a, 'm> {
 /// Case arms on a dense range of `i32` tags dispatch with `br_table` when
 /// there are at least this many.
 const MIN_TABLE_ARMS: usize = 4;
+
+/// The largest array, in bytes of elements, so that sizes stay in `i32`.
+const MAX_BYTES: i32 = 0x7fff_0000;
+
+/// The memory argument of a load or store of `s` at `offset`.
+fn mem(offset: u32, s: Storage) -> MemArg {
+    MemArg {
+        offset: u64::from(offset),
+        align: s.size().trailing_zeros(),
+        target: MemArgTarget::Memory(0),
+        ordering: None,
+    }
+}
+
+pub(crate) fn load(s: Storage, offset: u32) -> I<'static> {
+    let m = mem(offset, s);
+    match s {
+        Storage::I8 => I::I32Load8S(m),
+        Storage::I16 => I::I32Load16S(m),
+        Storage::I32 => I::I32Load(m),
+        Storage::I64 => I::I64Load(m),
+        Storage::F32 => I::F32Load(m),
+        Storage::F64 => I::F64Load(m),
+    }
+}
+
+pub(crate) fn store(s: Storage, offset: u32) -> I<'static> {
+    let m = mem(offset, s);
+    match s {
+        Storage::I8 => I::I32Store8(m),
+        Storage::I16 => I::I32Store16(m),
+        Storage::I32 => I::I32Store(m),
+        Storage::I64 => I::I64Store(m),
+        Storage::F32 => I::F32Store(m),
+        Storage::F64 => I::F64Store(m),
+    }
+}
 
 pub(crate) fn lower_func<'m>(cx: &mut Cx<'m>, f: &'m Func) -> Result<Body, String> {
     let mut locals = vec![u32::MAX; f.vars.len()];
@@ -83,10 +94,10 @@ pub(crate) fn lower_func<'m>(cx: &mut Cx<'m>, f: &'m Func) -> Result<Body, Strin
     for (v, ty) in f.vars.iter().enumerate() {
         if locals[v] == u32::MAX {
             locals[v] = next + extra.len() as u32;
-            extra.push(cx.types.val(ty)?);
+            extra.push(val(ty));
         }
     }
-    let results = cx.types.vals(&f.results)?;
+    let results = f.results.iter().map(val).collect();
     let mut fcx = FuncCx {
         cx,
         f,
@@ -99,115 +110,140 @@ pub(crate) fn lower_func<'m>(cx: &mut Cx<'m>, f: &'m Func) -> Result<Body, Strin
     };
     fcx.block(&f.body)?;
     fcx.code.push(I::End);
-    let mut local_names: Vec<(u32, Box<str>)> = f
-        .debug
-        .vars
-        .iter()
-        .filter_map(|(v, name)| Some((*fcx.locals.get(v.0 as usize)?, name.clone())))
-        .collect();
-    local_names.sort();
     Ok(Body {
         locals: fcx.extra,
         code: fcx.code,
-        local_names,
     })
 }
 
-/// The wrapper that closures of `f` with `n` captured values call: it reads
-/// the captured values out of the closure and tail-calls `f`.
-pub(crate) fn lower_entry(
-    cx: &mut Cx<'_>,
-    f: conduit_ir::FuncId,
-    n: usize,
-) -> Result<Body, String> {
-    let (captures, sig) = cx.types.captures(f, n)?;
-    let env = sig.params.len() as u32 + 1;
-    let mut code = vec![
-        I::LocalGet(0),
-        I::RefCastNullable(HeapType::Concrete(captures)),
-        I::LocalSet(env),
-    ];
-    for i in 0..n as u32 {
-        code.push(I::LocalGet(env));
-        code.push(I::StructGet {
-            struct_type_index: captures,
-            field_index: 1 + i,
-        });
+/// The wrapper closures of `f` with `n` captures call: it reads the
+/// captures out of the closure and tail-calls `f`.
+pub(crate) fn lower_entry(cx: &mut Cx<'_>, f: FuncId, n: usize) -> Result<Body, String> {
+    let func = &cx.m.funcs[&f];
+    let sig = func.sig();
+    let (offsets, _) = layout(&sig.params[..n]);
+    let rest = sig.params.len() - n;
+    let mut code = Vec::new();
+    for &(at, s) in &offsets {
+        code.push(I::LocalGet(0));
+        code.push(load(s, at));
     }
-    for p in 0..sig.params.len() as u32 {
+    for p in 0..rest as u32 {
         code.push(I::LocalGet(1 + p));
     }
     code.push(I::ReturnCall(cx.func_index(f)?));
     code.push(I::End);
     Ok(Body {
-        locals: vec![nullable(captures)],
+        locals: Vec::new(),
         code,
-        local_names: Vec::new(),
     })
 }
 
 /// The wrapper of clause `i` of `h`, which `perform` calls with the frame
 /// and the operation's parameters: it reads the environment out of the
-/// frame and tail-calls the clause, as a plain function. For an aborting
+/// frame and calls the clause, as a plain function. For an aborting
 /// clause, it stores what the clause gives in the frame, and throws.
-pub(crate) fn lower_wrapper(cx: &mut Cx<'_>, h: HandlerId, i: u32) -> Result<Body, String> {
+pub(crate) fn lower_wrapper(
+    cx: &mut Cx<'_>,
+    h: conduit_ir::HandlerId,
+    i: u32,
+    plain: &Func,
+) -> Result<Body, String> {
     let decl = &cx.m.handlers[&h];
-    let (frame, first) = cx.types.handler_frame(h)?;
-    let Some(op) =
-        cx.m.effects
-            .get(&decl.effect)
-            .and_then(|e| e.ops.get(i as usize))
-    else {
-        return Err(format!("{} has no operation {i}", decl.effect));
-    };
+    let clause = decl.ops[i as usize];
+    let op = &cx.m.effects[&decl.effect].ops[i as usize];
     let params = op.params.len() as u32;
-    let local = params + 1;
-    let mut code = vec![
-        I::LocalGet(0),
-        I::RefCastNullable(HeapType::Concrete(frame)),
-        I::LocalSet(local),
-    ];
-    for j in 0..decl.env.len() as u32 {
-        code.push(I::LocalGet(local));
-        code.push(I::StructGet {
-            struct_type_index: frame,
-            field_index: first + j,
-        });
+    let (fields, _) = cx.frame(h)?;
+    let n_ops = decl.ops.len();
+    let env = &fields[2 + n_ops..2 + n_ops + decl.env.len()];
+    let mut code = Vec::new();
+    for &(at, s) in env {
+        code.push(I::LocalGet(0));
+        code.push(load(s, at));
     }
     for p in 0..params {
         code.push(I::LocalGet(1 + p));
     }
-    let clause = decl.ops[i as usize];
     let idx = cx.func_index(clause)?;
-    let mut locals = vec![nullable(frame)];
-    if cx.aborts.contains(&clause) {
+    let mut locals = Vec::new();
+    if cx.is_abort(clause) {
         code.push(I::Call(idx));
-        let results = cx.types.vals(&cx.m.funcs[&clause].results)?;
-        let first_result = first + decl.env.len() as u32;
-        let n = results.len() as u32;
-        locals.extend(results);
-        for j in (0..n).rev() {
-            code.push(I::LocalSet(local + 1 + j));
+        let results: Vec<ValType> = plain.results.iter().map(val).collect();
+        let first = 1 + params;
+        for (j, &ty) in results.iter().enumerate().rev() {
+            let _ = ty;
+            code.push(I::LocalSet(first + j as u32));
         }
-        for j in 0..n {
-            code.push(I::LocalGet(local));
-            code.push(I::LocalGet(local + 1 + j));
-            code.push(I::StructSet {
-                struct_type_index: frame,
-                field_index: first_result + j,
-            });
+        let outs = &fields[2 + n_ops + decl.env.len()..];
+        for (j, &(at, s)) in outs.iter().enumerate() {
+            code.push(I::LocalGet(0));
+            code.push(I::LocalGet(first + j as u32));
+            code.push(store(s, at));
         }
+        locals = results;
         code.push(I::LocalGet(0));
         code.push(I::Throw(ABORT));
     } else {
         code.push(I::ReturnCall(idx));
     }
     code.push(I::End);
-    Ok(Body {
-        locals,
+    Ok(Body { locals, code })
+}
+
+/// `alloc(size) -> address`: bumps the heap pointer by `size`, rounded up
+/// to 8, growing the memory as needed. Growing past what the engine allows
+/// traps.
+pub(crate) fn lower_alloc() -> Body {
+    let (size, p, end) = (0, 1, 2);
+    let code = vec![
+        I::LocalGet(size),
+        I::I32Const(7),
+        I::I32Add,
+        I::I32Const(-8),
+        I::I32And,
+        I::LocalSet(size),
+        I::GlobalGet(HEAP),
+        I::LocalTee(p),
+        I::LocalGet(size),
+        I::I32Add,
+        I::LocalTee(end),
+        // An `end` below `p` wrapped around.
+        I::LocalGet(p),
+        I::I32LtU,
+        I::If(BlockType::Empty),
+        I::Unreachable,
+        I::End,
+        I::LocalGet(end),
+        I::MemorySize(0),
+        I::I32Const(16),
+        I::I32Shl,
+        I::I32GtU,
+        I::If(BlockType::Empty),
+        I::LocalGet(end),
+        I::MemorySize(0),
+        I::I32Const(16),
+        I::I32Shl,
+        I::I32Sub,
+        I::I32Const(65535),
+        I::I32Add,
+        I::I32Const(16),
+        I::I32ShrU,
+        I::MemoryGrow(0),
+        I::I32Const(-1),
+        I::I32Eq,
+        I::If(BlockType::Empty),
+        I::Unreachable,
+        I::End,
+        I::End,
+        I::LocalGet(end),
+        I::GlobalSet(HEAP),
+        I::LocalGet(p),
+        I::End,
+    ];
+    Body {
+        locals: vec![ValType::I32, ValType::I32],
         code,
-        local_names: Vec::new(),
-    })
+    }
 }
 
 impl<'m> FuncCx<'_, 'm> {
@@ -232,10 +268,6 @@ impl<'m> FuncCx<'_, 'm> {
     fn var_ty(&self, v: Var) -> &'m Ty {
         let f: &'m Func = self.f;
         f.var_ty(v)
-    }
-
-    fn is_cont(&self, a: &Atom) -> bool {
-        matches!(self.atom_ty(a), Ty::Cont(_))
     }
 
     fn atom_ty(&self, a: &Atom) -> Ty {
@@ -390,7 +422,16 @@ impl<'m> FuncCx<'_, 'm> {
         };
         // A value of an ADT with one constructor can only be that one.
         let only = match data {
-            Some(d) if !self.cx.types.tagged(d)? => Some(arms.first().map(|a| &a.body).or(default)),
+            Some(d)
+                if self
+                    .cx
+                    .m
+                    .data
+                    .get(&d)
+                    .is_some_and(|decl| decl.ctors.len() == 1) =>
+            {
+                Some(arms.first().map(|a| &a.body).or(default))
+            }
             _ if arms.is_empty() => Some(default),
             _ => None,
         };
@@ -414,7 +455,6 @@ impl<'m> FuncCx<'_, 'm> {
         let fallback = if default.is_some() { n as u32 } else { 0 };
         match data {
             Some(d) => {
-                let base = self.cx.types.data(d)?;
                 let ctors = self.cx.m.data[&d].ctors.len() as u32;
                 let table = (0..ctors)
                     .map(|index| {
@@ -424,11 +464,9 @@ impl<'m> FuncCx<'_, 'm> {
                             .map_or(fallback, |i| i as u32)
                     })
                     .collect();
+                // The constructor's index is at 4.
                 self.atom(scrut);
-                self.emit(I::StructGet {
-                    struct_type_index: base,
-                    field_index: 0,
-                });
+                self.emit(I::I32Load(mem(4, Storage::I32)));
                 self.emit(I::BrTable(Cow::Owned(table), fallback));
             }
             None => self.int_dispatch(scrut, &ty, arms, default.is_some())?,
@@ -531,186 +569,220 @@ impl<'m> FuncCx<'_, 'm> {
                 return Ok(self.bind(binds, tail));
             }
             Op::Closure(f, ..) => {
-                let (entry, captures) = self.cx.entry(*f, args.len())?;
-                self.emit(I::RefFunc(entry));
-                self.atoms(args);
-                self.emit(I::StructNew(captures));
+                let slot = self.cx.entry(*f, args.len());
+                let tys: Vec<Ty> = args.iter().map(|a| self.atom_ty(a)).collect();
+                let (offsets, size) = layout(&tys);
+                let p = self.alloc_const(size);
+                self.emit(I::LocalGet(p));
+                self.emit(I::I32Const(slot as i32));
+                self.emit(store(Storage::I32, 4));
+                self.store_all(p, &offsets, args);
+                self.emit(I::LocalGet(p));
             }
             Op::Apply => {
                 let Some((c, rest)) = args.split_first() else {
                     return Err("apply needs a closure".into());
                 };
-                self.apply(c, rest, tail)?;
+                let Ty::Fn(sig, _) = self.atom_ty(c) else {
+                    return Err("apply of a value that isn't a closure".into());
+                };
+                let ty = self.cx.entry_sig(&sig);
+                self.atom(c);
+                self.atoms(rest);
+                self.atom(c);
+                self.emit(load(Storage::I32, 4));
+                self.emit(if tail {
+                    I::ReturnCallIndirect {
+                        type_index: ty,
+                        table_index: 0,
+                    }
+                } else {
+                    I::CallIndirect {
+                        type_index: ty,
+                        table_index: 0,
+                    }
+                });
                 return Ok(self.bind(binds, tail));
             }
             Op::New(c) => {
-                let (idx, first) = self.cx.types.ctor(*c)?;
-                if first == 1 {
-                    self.emit(I::I32Const(c.index as i32));
-                }
-                self.atoms(args);
-                self.emit(I::StructNew(idx));
-            }
-            Op::Const(id) => {
-                let global = self.cx.const_global(*id)?;
-                self.emit(I::GlobalGet(global));
-            }
-            // Every type has a default: 0, or null.
-            Op::Undefined => {
-                let ty = self.cx.types.val(self.var_ty(binds[0]))?;
-                self.emit(zero(ty));
+                let (offsets, size) = layout(self.cx.fields(*c)?);
+                let p = self.alloc_const(size);
+                self.emit(I::LocalGet(p));
+                self.emit(I::I32Const(c.index as i32));
+                self.emit(store(Storage::I32, 4));
+                self.store_all(p, &offsets, args);
+                self.emit(I::LocalGet(p));
             }
             Op::Get(c, i) => {
-                let (idx, first) = self.object(*c, &args[0])?;
-                // An `i8` or `i16` field is packed, as array elements are.
-                // Whether the field is one doesn't depend on mutabilities.
-                let packed = self
-                    .cx
-                    .m
-                    .data
-                    .get(&c.data)
-                    .and_then(|d| d.ctors.get(c.index as usize))
-                    .and_then(|ctor| ctor.fields.get(*i as usize))
-                    .is_some_and(|ty| narrow_bits(ty).is_some());
-                let at = (idx, first + i);
-                self.emit(if packed {
-                    I::StructGetS {
-                        struct_type_index: at.0,
-                        field_index: at.1,
-                    }
-                } else {
-                    I::StructGet {
-                        struct_type_index: at.0,
-                        field_index: at.1,
-                    }
-                });
+                let (at, s) = self.field(*c, *i)?;
+                self.atom(&args[0]);
+                self.emit(load(s, at));
             }
             Op::Set(c, i) => {
-                let (idx, first) = self.object(*c, &args[0])?;
+                let (at, s) = self.field(*c, *i)?;
+                self.atom(&args[0]);
                 self.atom(&args[1]);
-                self.emit(I::StructSet {
-                    struct_type_index: idx,
-                    field_index: first + i,
-                });
+                self.emit(store(s, at));
+            }
+            Op::Const(id) => match self.cx.constant(*id)? {
+                Ok(addr) => self.emit(I::I32Const(addr as i32)),
+                Err(lit) => self.atom(&Atom::Lit(lit)),
+            },
+            // 0 is no object, and every value has it.
+            Op::Undefined => {
+                let ty = val(self.var_ty(binds[0]));
+                self.emit(zero(ty));
             }
             Op::ArrayNew => {
-                let array = self.array_of(self.var_ty(binds[0]))?;
-                self.atoms(args);
-                self.emit(I::ArrayNewFixed {
-                    array_type_index: array,
-                    array_size: args.len() as u32,
-                });
+                let s = self.elem_of(self.var_ty(binds[0]))?;
+                let size = (8 + s.size() * args.len() as u32).next_multiple_of(8);
+                let p = self.alloc_const(size);
+                self.emit(I::LocalGet(p));
+                self.emit(I::I32Const(args.len() as i32));
+                self.emit(store(Storage::I32, 4));
+                for (i, a) in args.iter().enumerate() {
+                    self.emit(I::LocalGet(p));
+                    self.atom(a);
+                    self.emit(store(s, 8 + s.size() * i as u32));
+                }
+                self.emit(I::LocalGet(p));
             }
-            Op::ArrayFill => {
-                let array = self.array_of(self.var_ty(binds[0]))?;
-                // Wasm takes the value first, then the length.
-                self.atom(&args[1]);
+            Op::ArrayFill | Op::ArrayAlloc => {
+                let s = self.elem_of(self.var_ty(binds[0]))?;
+                let n = self.new_local(ValType::I32);
                 self.atom(&args[0]);
-                self.emit(I::ArrayNew(array));
+                self.emit(I::LocalSet(n));
+                let p = self.alloc_array(n, s);
+                if *op == Op::ArrayFill {
+                    // Every element, from the last.
+                    self.open(I::Block(BlockType::Empty));
+                    self.open(I::Loop(BlockType::Empty));
+                    self.emit(I::LocalGet(n));
+                    self.emit(I::I32Eqz);
+                    self.emit(I::BrIf(1));
+                    self.emit(I::LocalGet(n));
+                    self.emit(I::I32Const(1));
+                    self.emit(I::I32Sub);
+                    self.emit(I::LocalTee(n));
+                    self.elem_addr_of(p, s);
+                    self.atom(&args[1]);
+                    self.emit(store(s, 8));
+                    self.emit(I::Br(0));
+                    self.close();
+                    self.close();
+                }
+                self.emit(I::LocalGet(p));
             }
-            Op::ArrayGet | Op::ArraySet => {
-                let ty = self.atom_ty(&args[0]);
-                let array = self.array_of(&ty)?;
-                self.atoms(args);
-                let packed = matches!(&ty, Ty::Array(elem, _) if narrow_bits(elem).is_some());
-                self.emit(match op {
-                    // Either extension gives the right low bits.
-                    Op::ArrayGet if packed => I::ArrayGetS(array),
-                    Op::ArrayGet => I::ArrayGet(array),
-                    _ => I::ArraySet(array),
-                });
+            Op::ArrayGet => {
+                let s = self.elem_of(&self.atom_ty(&args[0]))?;
+                self.elem_addr(&args[0], &args[1], s);
+                self.emit(load(s, 8));
+            }
+            Op::ArraySet => {
+                let s = self.elem_of(&self.atom_ty(&args[0]))?;
+                self.elem_addr(&args[0], &args[1], s);
+                self.atom(&args[2]);
+                self.emit(store(s, 8));
             }
             Op::ArrayLen => {
-                self.atoms(args);
-                self.emit(I::ArrayLen);
-            }
-            Op::ArrayAlloc => {
-                // Every element type has a default, since references are
-                // nullable: unset elements are null or 0.
-                let array = self.array_of(self.var_ty(binds[0]))?;
                 self.atom(&args[0]);
-                self.emit(I::ArrayNewDefault(array));
-            }
-            Op::ArrayCopy => {
-                // Wasm takes the same arguments in the same order, and
-                // copies as through a temporary too.
-                let dst = self.array_of(&self.atom_ty(&args[0]))?;
-                let src = self.array_of(&self.atom_ty(&args[2]))?;
-                self.atoms(args);
-                self.emit(I::ArrayCopy {
-                    array_type_index_dst: dst,
-                    array_type_index_src: src,
-                });
+                self.emit(load(Storage::I32, 4));
             }
             Op::ArrayClone => {
-                // A new array as long as the original, then all of the
-                // original's elements copied into it. Mutability doesn't
-                // exist at run time, so both have the same Wasm type.
-                let array = self.array_of(self.var_ty(binds[0]))?;
-                let val = self.cx.types.val(self.var_ty(binds[0]))?;
-                let copy = self.new_local(val);
+                let s = self.elem_of(&self.atom_ty(&args[0]))?;
+                let n = self.new_local(ValType::I32);
                 self.atom(&args[0]);
-                self.emit(I::ArrayLen);
-                self.emit(I::ArrayNewDefault(array));
-                self.emit(I::LocalTee(copy));
-                self.emit(I::I32Const(0));
+                self.emit(load(Storage::I32, 4));
+                self.emit(I::LocalSet(n));
+                let p = self.alloc_array(n, s);
+                self.emit(I::LocalGet(p));
+                self.emit(I::I32Const(8));
+                self.emit(I::I32Add);
                 self.atom(&args[0]);
-                self.emit(I::I32Const(0));
-                self.atom(&args[0]);
-                self.emit(I::ArrayLen);
-                self.emit(I::ArrayCopy {
-                    array_type_index_dst: array,
-                    array_type_index_src: array,
+                self.emit(I::I32Const(8));
+                self.emit(I::I32Add);
+                self.emit(I::LocalGet(n));
+                self.scale(s);
+                self.emit(I::MemoryCopy {
+                    src_mem: 0,
+                    dst_mem: 0,
                 });
-                self.emit(I::LocalGet(copy));
-            }
-            Op::RefNew => {
-                let cell = self.cell_of(self.var_ty(binds[0]))?;
-                self.atoms(args);
-                self.emit(I::StructNew(cell));
-            }
-            Op::RefGet | Op::RefSet => {
-                let cell = self.cell_of(&self.atom_ty(&args[0]))?;
-                self.atoms(args);
-                self.emit(match op {
-                    Op::RefGet => I::StructGet {
-                        struct_type_index: cell,
-                        field_index: 0,
-                    },
-                    _ => I::StructSet {
-                        struct_type_index: cell,
-                        field_index: 0,
-                    },
-                });
-            }
-            Op::Box(ty) => {
-                self.atoms(args);
-                let val = self.cx.types.val(ty)?;
-                if is_scalar(val) {
-                    let b = self.cx.types.boxed(val)?;
-                    self.emit(I::StructNew(b));
-                }
-                // A reference is already an `anyref`.
-            }
-            Op::Unbox(ty) => {
-                self.atoms(args);
-                match self.cx.types.val(ty)? {
-                    val if is_scalar(val) => {
-                        let b = self.cx.types.boxed(val)?;
-                        self.emit(I::RefCastNullable(HeapType::Concrete(b)));
-                        self.emit(I::StructGet {
-                            struct_type_index: b,
-                            field_index: 0,
-                        });
-                    }
-                    ValType::Ref(RefType { heap_type, .. }) if heap_type != HeapType::ANY => {
-                        self.emit(I::RefCastNullable(heap_type));
-                    }
-                    _ => {}
-                }
+                self.emit(I::LocalGet(p));
             }
             // Mutability doesn't exist at run time.
             Op::ArrayFreeze => self.atoms(args),
+            Op::ArrayCopy => {
+                let s = self.elem_of(&self.atom_ty(&args[0]))?;
+                // Both ranges must fit, their starts and count read as
+                // unsigned, as Wasm's `array.copy` does.
+                for (array, start) in [(&args[0], &args[1]), (&args[2], &args[3])] {
+                    self.atom(start);
+                    self.emit(I::I64ExtendI32U);
+                    self.atom(&args[4]);
+                    self.emit(I::I64ExtendI32U);
+                    self.emit(I::I64Add);
+                    self.atom(array);
+                    self.emit(load(Storage::I32, 4));
+                    self.emit(I::I64ExtendI32U);
+                    self.emit(I::I64GtU);
+                    self.trap_if();
+                }
+                for (array, start) in [(&args[0], &args[1]), (&args[2], &args[3])] {
+                    self.atom(array);
+                    self.emit(I::I32Const(8));
+                    self.emit(I::I32Add);
+                    self.atom(start);
+                    self.scale(s);
+                    self.emit(I::I32Add);
+                }
+                self.atom(&args[4]);
+                self.scale(s);
+                self.emit(I::MemoryCopy {
+                    src_mem: 0,
+                    dst_mem: 0,
+                });
+            }
+            Op::RefNew => {
+                let s = Storage::of(&self.atom_ty(&args[0]));
+                let p = self.alloc_const(16);
+                self.emit(I::LocalGet(p));
+                self.atom(&args[0]);
+                self.emit(store(s, 8));
+                self.emit(I::LocalGet(p));
+            }
+            Op::RefGet => {
+                let Ty::Ref(inner) = self.atom_ty(&args[0]) else {
+                    return Err("ref get of something that isn't a ref".into());
+                };
+                self.atom(&args[0]);
+                self.emit(load(Storage::of(&inner), 8));
+            }
+            Op::RefSet => {
+                let Ty::Ref(inner) = self.atom_ty(&args[0]) else {
+                    return Err("ref set of something that isn't a ref".into());
+                };
+                self.atom(&args[0]);
+                self.atom(&args[1]);
+                self.emit(store(Storage::of(&inner), 8));
+            }
+            // A reference is already an `any`; a scalar goes in a box.
+            Op::Box(ty) => {
+                if is_scalar_ty(ty) {
+                    let p = self.alloc_const(16);
+                    self.emit(I::LocalGet(p));
+                    self.atom(&args[0]);
+                    self.emit(store(Storage::of(ty), 8));
+                    self.emit(I::LocalGet(p));
+                } else {
+                    self.atom(&args[0]);
+                }
+            }
+            Op::Unbox(ty) => {
+                self.atom(&args[0]);
+                if is_scalar_ty(ty) {
+                    self.emit(load(Storage::of(ty), 8));
+                }
+            }
             Op::Handle(h, _) => {
                 let tail = self.handle(*h, args, tail)?;
                 return Ok(self.bind(binds, tail));
@@ -721,183 +793,209 @@ impl<'m> FuncCx<'_, 'm> {
                 let Some((k, rest)) = args.split_first() else {
                     return Err("resume without a continuation".into());
                 };
-                self.call_closure(k, rest, tail)?;
+                let Ty::Cont(sig) = self.atom_ty(k) else {
+                    return Err("resume of something that isn't a continuation".into());
+                };
+                let ty = self.cx.entry_sig(&sig);
+                self.atom(k);
+                self.atoms(rest);
+                self.atom(k);
+                self.emit(load(Storage::I32, 4));
+                self.emit(if tail {
+                    I::ReturnCallIndirect {
+                        type_index: ty,
+                        table_index: 0,
+                    }
+                } else {
+                    I::CallIndirect {
+                        type_index: ty,
+                        table_index: 0,
+                    }
+                });
+                return Ok(self.bind(binds, tail));
+            }
+            // A continuation's: throws a closure that performs the
+            // operation into it.
+            Op::Discontinue(e, i)
+                if args
+                    .first()
+                    .is_some_and(|k| matches!(self.atom_ty(k), Ty::Cont(_))) =>
+            {
+                let (k, rest) = args.split_first().unwrap();
+                let Ty::Cont(sig) = self.atom_ty(k) else {
+                    unreachable!()
+                };
+                let thunk = self.cx.thunk(*e, *i)?;
+                let slot = self.cx.entry(thunk, rest.len());
+                let tys: Vec<Ty> = rest.iter().map(|a| self.atom_ty(a)).collect();
+                let (offsets, size) = layout(&tys);
+                let t = self.alloc_const(size);
+                self.emit(I::LocalGet(t));
+                self.emit(I::I32Const(slot as i32));
+                self.emit(store(Storage::I32, 4));
+                self.store_all(t, &offsets, rest);
+                let results = sig.results.iter().map(val).collect();
+                let ty = self.cx.disc_sig(results);
+                self.atom(k);
+                self.emit(I::LocalGet(t));
+                self.atom(k);
+                self.emit(load(Storage::I32, 8));
+                self.emit(if tail {
+                    I::ReturnCallIndirect {
+                        type_index: ty,
+                        table_index: 0,
+                    }
+                } else {
+                    I::CallIndirect {
+                        type_index: ty,
+                        table_index: 0,
+                    }
+                });
                 return Ok(self.bind(binds, tail));
             }
             // In a tail-resumptive clause, without its continuation: the
-            // `perform` it handles performs this instead, so it runs under
-            // that `perform`'s handlers.
-            Op::Discontinue(e, i) if args.first().is_none_or(|a| !self.is_cont(a)) => {
+            // `perform` it handles performs this instead, under its
+            // handlers.
+            Op::Discontinue(e, i) => {
                 self.emit(I::GlobalGet(SITE));
                 self.emit(I::GlobalSet(HANDLERS));
                 self.perform(*e, *i, args)?;
-            }
-            Op::Discontinue(e, i) => {
-                self.discontinue(*e, *i, args, tail)?;
-                return Ok(self.bind(binds, tail));
             }
         }
         Ok(self.bind(binds, false))
     }
 
-    /// Calls closure `c` with `args`.
-    fn apply(&mut self, c: &Atom, args: &[Atom], tail: bool) -> Result<(), String> {
-        if !matches!(self.atom_ty(c), Ty::Fn(..)) {
-            return Err("apply of a value that isn't a closure".into());
-        }
-        self.call_closure(c, args, tail)
-    }
-
-    /// Calls `c`, a closure or a continuation, with `args`.
-    fn call_closure(&mut self, c: &Atom, args: &[Atom], tail: bool) -> Result<(), String> {
-        let (Ty::Fn(sig, _) | Ty::Cont(sig)) = self.atom_ty(c) else {
-            return Err("a call of a value that isn't a closure".into());
+    /// Calls the closure `body` with no arguments, leaving its results.
+    fn apply_body(&mut self, body: &Atom) -> Result<(), String> {
+        let Ty::Fn(sig, _) = self.atom_ty(body) else {
+            return Err("the body of a handle isn't a closure".into());
         };
-        let sig = self.cx.types.sig(&sig)?;
-        let base = self.cx.types.closure(&sig)?;
-        let entry = self.cx.types.entry(&sig)?;
-        self.atom(c);
-        self.atoms(args);
-        self.atom(c);
-        self.emit(I::StructGet {
-            struct_type_index: base,
-            field_index: 0,
-        });
-        self.emit(if tail {
-            I::ReturnCallRef(entry)
-        } else {
-            I::CallRef(entry)
+        let ty = self.cx.entry_sig(&sig);
+        self.atom(body);
+        self.atom(body);
+        self.emit(load(Storage::I32, 4));
+        self.emit(I::CallIndirect {
+            type_index: ty,
+            table_index: 0,
         });
         Ok(())
     }
 
-    /// `handle h(env.., body)`: pushes a frame of `h` on the handler stack,
-    /// runs the body, pops the frame and calls the return clause with the
-    /// body's results. If `h` has an aborting clause, the body runs in a
-    /// `try_table` that catches the exception holding this frame, and the
-    /// results are then the frame's. Returns whether it was a tail call.
-    fn handle(&mut self, h: HandlerId, args: &[Atom], tail: bool) -> Result<bool, String> {
-        if let Some(switch) = self.cx.switch(h) {
-            // A frame of its own, linked in by `start`, which runs the body.
-            let start = switch.start;
-            let number = self.cx.effect_number(self.cx.m.handlers[&h].effect)?;
-            let frame = self.cx.types.switch_frame()?;
-            let base = self.cx.types.frame()?;
+    /// `handle h(env.., body)`: pushes a frame of `h`, runs the body, pops
+    /// the frame and calls the return clause. If `h` has an aborting
+    /// clause, the body runs in a `try_table` that catches the exception
+    /// holding this frame, and the results are then the frame's. Returns
+    /// whether it was a tail call.
+    fn handle(
+        &mut self,
+        h: conduit_ir::HandlerId,
+        args: &[Atom],
+        tail: bool,
+    ) -> Result<bool, String> {
+        let m = self.cx.m;
+        let decl = &m.handlers[&h];
+        let (env, body) = args.split_at(args.len() - 1);
+        let (fields, size) = self.cx.frame(h)?;
+        let number = self.cx.effect_number(decl.effect)?;
+        let ret = self.cx.func_index(decl.ret)?;
+        let Ty::Fn(sig, _) = self.atom_ty(&body[0]) else {
+            return Err(format!("the body of handle {h} isn't a closure"));
+        };
+        let results: Vec<u32> = sig.results.iter().map(|t| self.new_local(val(t))).collect();
+        let n_ops = decl.ops.len();
+        if self.cx.is_switching(h) {
+            // A frame with -1 in every clause slot, which `start` links in
+            // before it runs the body.
+            let start = self.cx.switch(h)?.start;
+            let frame = self.alloc_const(size);
+            self.emit(I::LocalGet(frame));
             self.emit(I::I32Const(number));
-            self.emit(I::RefNull(HeapType::Concrete(base)));
-            self.emit(I::StructNew(frame));
-            self.atoms(args);
+            self.emit(store(Storage::I32, fields[0].0));
+            for i in 0..n_ops {
+                self.emit(I::LocalGet(frame));
+                self.emit(I::I32Const(-1));
+                self.emit(store(Storage::I32, fields[2 + i].0));
+            }
+            let env_fields = fields[2 + n_ops..2 + n_ops + env.len()].to_vec();
+            self.store_all(frame, &env_fields, env);
+            self.emit(I::LocalGet(frame));
+            self.atoms(env);
+            self.atom(&body[0]);
             self.emit(if tail {
                 I::ReturnCall(start)
             } else {
                 I::Call(start)
             });
+            let _ = results;
             return Ok(tail);
         }
-        if self.cx.types.aborting.contains(&h) {
-            self.handle_aborting(h, args)?;
-            return Ok(false);
-        }
-        let first_wrapper = self.cx.wrapper(h, 0)?;
-        let decl = &self.cx.m.handlers[&h];
-        let (env, body) = args.split_at(args.len() - 1);
-        let (frame, _) = self.cx.types.handler_frame(h)?;
-        let base = nullable(self.cx.types.frame()?);
-        let number = self.cx.effect_number(decl.effect)?;
-        let ret = self.cx.func_index(decl.ret)?;
-        let Ty::Fn(sig, _) = self.atom_ty(&body[0]) else {
-            return Err(format!("the body of handle {h} isn't a closure"));
-        };
-        let results: Vec<u32> = self
-            .cx
-            .types
-            .vals(&sig.results)?
-            .into_iter()
-            .map(|ty| self.new_local(ty))
-            .collect();
-
-        let saved = self.new_local(base);
-        self.emit(I::GlobalGet(HANDLERS));
-        self.emit(I::LocalSet(saved));
-        self.emit(I::I32Const(number));
-        self.emit(I::LocalGet(saved));
-        for i in 0..decl.ops.len() as u32 {
-            self.emit(I::RefFunc(first_wrapper + i));
-        }
-        self.atoms(env);
-        self.emit(I::StructNew(frame));
-        self.emit(I::GlobalSet(HANDLERS));
-        self.apply(&body[0], &[], false)?;
-        for &r in results.iter().rev() {
-            self.emit(I::LocalSet(r));
-        }
-        self.emit(I::LocalGet(saved));
-        self.emit(I::GlobalSet(HANDLERS));
-        self.atoms(env);
-        for &r in &results {
-            self.emit(I::LocalGet(r));
-        }
-        self.emit(if tail {
-            I::ReturnCall(ret)
-        } else {
-            I::Call(ret)
-        });
-        Ok(tail)
-    }
-
-    /// `handle` of a handler with an aborting clause.
-    fn handle_aborting(&mut self, h: HandlerId, args: &[Atom]) -> Result<(), String> {
-        let first_wrapper = self.cx.wrapper(h, 0)?;
-        let decl = &self.cx.m.handlers[&h];
-        let (env, body) = args.split_at(args.len() - 1);
-        let (frame, first) = self.cx.types.handler_frame(h)?;
-        let base = nullable(self.cx.types.frame()?);
-        let number = self.cx.effect_number(decl.effect)?;
-        let ret = self.cx.func_index(decl.ret)?;
-        let Ty::Fn(sig, _) = self.atom_ty(&body[0]) else {
-            return Err(format!("the body of handle {h} isn't a closure"));
-        };
-        let Some(ret_func) = self.cx.m.funcs.get(&decl.ret) else {
-            return Err(format!("unknown return clause {}", decl.ret));
-        };
-        let body_tys = self.cx.types.vals(&sig.results)?;
-        let out_tys = self.cx.types.vals(&ret_func.results)?;
-        let first_result = first + env.len() as u32;
-        let results: Vec<u32> = body_tys.into_iter().map(|t| self.new_local(t)).collect();
-        let outs: Vec<u32> = out_tys.iter().map(|&t| self.new_local(t)).collect();
-        let saved = self.new_local(base);
-        let me = self.new_local(nullable(frame));
-        let thrown = self.new_local(base);
-        let site = self.cx.discontinues.then(|| self.new_local(base));
-
-        if let Some(site) = site {
+        let aborting = self.cx.is_aborting(h);
+        let site = (aborting && self.cx.discontinues).then(|| {
+            let site = self.new_local(ValType::I32);
             self.emit(I::GlobalGet(SITE));
             self.emit(I::LocalSet(site));
-        }
+            site
+        });
+
+        let saved = self.new_local(ValType::I32);
         self.emit(I::GlobalGet(HANDLERS));
         self.emit(I::LocalSet(saved));
+        let frame = self.alloc_const(size);
+        self.emit(I::LocalGet(frame));
         self.emit(I::I32Const(number));
+        self.emit(store(Storage::I32, fields[0].0));
+        self.emit(I::LocalGet(frame));
         self.emit(I::LocalGet(saved));
-        for i in 0..decl.ops.len() as u32 {
-            self.emit(I::RefFunc(first_wrapper + i));
+        self.emit(store(Storage::I32, fields[1].0));
+        for i in 0..n_ops {
+            let slot = self.cx.wrapper(h, i as u32)?;
+            self.emit(I::LocalGet(frame));
+            self.emit(I::I32Const(slot as i32));
+            self.emit(store(Storage::I32, fields[2 + i].0));
         }
-        self.atoms(env);
-        for &ty in &out_tys {
-            self.emit(zero(ty));
-        }
-        self.emit(I::StructNew(frame));
-        self.emit(I::LocalTee(me));
+        let env_fields = fields[2 + n_ops..2 + n_ops + env.len()].to_vec();
+        self.store_all(frame, &env_fields, env);
+        self.emit(I::LocalGet(frame));
         self.emit(I::GlobalSet(HANDLERS));
 
+        if !aborting {
+            self.apply_body(&body[0])?;
+            for &r in results.iter().rev() {
+                self.emit(I::LocalSet(r));
+            }
+            self.emit(I::LocalGet(saved));
+            self.emit(I::GlobalSet(HANDLERS));
+            self.atoms(env);
+            for &r in &results {
+                self.emit(I::LocalGet(r));
+            }
+            self.emit(if tail {
+                I::ReturnCall(ret)
+            } else {
+                I::Call(ret)
+            });
+            return Ok(tail);
+        }
+
+        let ret_func = m
+            .funcs
+            .get(&decl.ret)
+            .ok_or_else(|| format!("unknown return clause {}", decl.ret))?;
+        let outs: Vec<u32> = ret_func
+            .results
+            .iter()
+            .map(|t| self.new_local(val(t)))
+            .collect();
+        let thrown = self.new_local(ValType::I32);
         self.open(I::Block(BlockType::Empty));
-        self.open(I::Block(BlockType::Result(base)));
+        self.open(I::Block(BlockType::Result(ValType::I32)));
         // A catch's label is counted from outside the `try_table`.
-        let catches = vec![Catch::One {
+        let catches = vec![wasm_encoder::Catch::One {
             tag: ABORT,
             label: 0,
         }];
         self.open(I::TryTable(BlockType::Empty, Cow::Owned(catches)));
-        self.apply(&body[0], &[], false)?;
+        self.apply_body(&body[0])?;
         for &r in results.iter().rev() {
             self.emit(I::LocalSet(r));
         }
@@ -917,58 +1015,120 @@ impl<'m> FuncCx<'_, 'm> {
         self.close();
         // A clause aborted: to this handler, or else to one further out.
         self.emit(I::LocalTee(thrown));
-        self.emit(I::LocalGet(me));
-        self.emit(I::RefEq);
-        self.emit(I::I32Eqz);
+        self.emit(I::LocalGet(frame));
+        self.emit(I::I32Ne);
         self.open(I::If(BlockType::Empty));
         self.emit(I::LocalGet(thrown));
         self.emit(I::Throw(ABORT));
         self.close();
-        // The handler stack is already `saved`: the `perform` set it to the
-        // frames below this one before calling the clause. The `perform`s
-        // the exception left didn't put back the stack of the clause they
-        // ran, so this does.
+        self.emit(I::LocalGet(saved));
+        self.emit(I::GlobalSet(HANDLERS));
         if let Some(site) = site {
             self.emit(I::LocalGet(site));
             self.emit(I::GlobalSet(SITE));
         }
-        for (j, &o) in outs.iter().enumerate() {
-            self.emit(I::LocalGet(me));
-            self.emit(I::StructGet {
-                struct_type_index: frame,
-                field_index: first_result + j as u32,
-            });
+        let out_fields = fields[2 + n_ops + env.len()..].to_vec();
+        for (&o, &(at, s)) in outs.iter().zip(&out_fields) {
+            self.emit(I::LocalGet(frame));
+            self.emit(load(s, at));
             self.emit(I::LocalSet(o));
         }
         self.close();
         for &o in &outs {
             self.emit(I::LocalGet(o));
         }
-        Ok(())
+        Ok(false)
     }
 
     /// `perform e.i(args)`: finds the nearest frame of `e`, trapping if
     /// there's none, and calls its clause with the handler stack below the
     /// frame, so that a `perform` in the clause goes to an outer handler.
-    fn perform(&mut self, e: EffectId, i: u32, args: &[Atom]) -> Result<(), String> {
-        let Some(tag) = self.cx.tag(e, i) else {
-            return self.perform_call(e, i, args);
-        };
-        // The nearest frame may be of a handler that switches stacks, or
-        // not: which one is only known when it runs. The results go
-        // through locals, as both ways give them.
+    fn perform(&mut self, e: conduit_ir::EffectId, i: u32, args: &[Atom]) -> Result<(), String> {
+        let number = self.cx.effect_number(e)?;
+        let clause = self.cx.clause_sig(e, i)?;
+        let saved = self.new_local(ValType::I32);
+        let found = self.new_local(ValType::I32);
+        self.emit(I::GlobalGet(HANDLERS));
+        self.emit(I::LocalTee(saved));
+        self.emit(I::LocalSet(found));
+        self.open(I::Block(BlockType::Empty));
+        self.open(I::Loop(BlockType::Empty));
+        // No frame left: the effect isn't handled.
+        self.emit(I::LocalGet(found));
+        self.emit(I::I32Eqz);
+        self.trap_if();
+        self.emit(I::LocalGet(found));
+        self.emit(load(Storage::I32, 8));
+        self.emit(I::I32Const(number));
+        self.emit(I::I32Eq);
+        self.emit(I::BrIf(1));
+        self.emit(I::LocalGet(found));
+        self.emit(load(Storage::I32, 12));
+        self.emit(I::LocalSet(found));
+        self.emit(I::Br(0));
+        self.close();
+        self.close();
+
+        if let Some(tag) = self.cx.tag(e, i) {
+            return self.perform_or_suspend(e, i, args, saved, found, tag, clause);
+        }
+        self.call_clause(i, args, saved, found, clause);
+        Ok(())
+    }
+
+    /// Calls clause `i` of the frame in local `found` with `args`, under
+    /// the frames below it, and puts the handler stack in `saved` back.
+    fn call_clause(&mut self, i: u32, args: &[Atom], saved: u32, found: u32, clause: u32) {
+        self.emit(I::LocalGet(found));
+        self.emit(load(Storage::I32, 12));
+        self.emit(I::GlobalSet(HANDLERS));
+        // The clause can discontinue under this `perform`'s handlers.
+        let site = self.cx.discontinues.then(|| {
+            let old = self.new_local(ValType::I32);
+            self.emit(I::GlobalGet(SITE));
+            self.emit(I::LocalSet(old));
+            self.emit(I::LocalGet(saved));
+            self.emit(I::GlobalSet(SITE));
+            old
+        });
+        self.emit(I::LocalGet(found));
+        self.atoms(args);
+        self.emit(I::LocalGet(found));
+        self.emit(load(Storage::I32, 16 + 4 * i));
+        self.emit(I::CallIndirect {
+            type_index: clause,
+            table_index: 0,
+        });
+        self.emit(I::LocalGet(saved));
+        self.emit(I::GlobalSet(HANDLERS));
+        if let Some(old) = site {
+            self.emit(I::LocalGet(old));
+            self.emit(I::GlobalSet(SITE));
+        }
+    }
+
+    /// `perform` of an effect some handler of which switches stacks: the
+    /// frame found may be one, with -1 in its clause slots, which is
+    /// suspended to, or else one whose clause is called. The results go
+    /// through locals, as both ways give them.
+    #[allow(clippy::too_many_arguments)]
+    fn perform_or_suspend(
+        &mut self,
+        e: conduit_ir::EffectId,
+        i: u32,
+        args: &[Atom],
+        saved: u32,
+        found: u32,
+        tag: u32,
+        clause: u32,
+    ) -> Result<(), String> {
         let m = self.cx.m;
         let op = &m.effects[&e].ops[i as usize];
-        let tys = self.cx.types.vals(&op.results)?;
-        let results: Vec<u32> = tys.iter().map(|&t| self.new_local(t)).collect();
-        let base = self.cx.types.frame()?;
-        let switch_frame = self.cx.types.switch_frame()?;
-        let saved = self.new_local(nullable(base));
-        self.emit(I::GlobalGet(HANDLERS));
-        self.emit(I::LocalSet(saved));
-        let found = self.find_frame(e)?;
+        let results: Vec<u32> = op.results.iter().map(|t| self.new_local(val(t))).collect();
         self.emit(I::LocalGet(found));
-        self.emit(I::RefTestNonNull(HeapType::Concrete(switch_frame)));
+        self.emit(load(Storage::I32, 16 + 4 * i));
+        self.emit(I::I32Const(-1));
+        self.emit(I::I32Eq);
         self.open(I::If(BlockType::Empty));
         match self.cx.disc_tag {
             None => {
@@ -980,14 +1140,13 @@ impl<'m> FuncCx<'_, 'm> {
             }
             Some(disc) => {
                 // A continuation discontinued here gets a closure thrown
-                // at it, which performs what it gives instead.
-                let (_, thunk_sig) = self.cx.types.thunk(e, i)?;
-                let thunk = self.cx.types.closure(&thunk_sig)?;
-                let entry = self.cx.types.entry(&thunk_sig)?;
-                let t = self.new_local(nullable(thunk));
+                // at it, which performs what gives this instead.
+                let thunk_sig = conduit_ir::Sig::new(Vec::new(), op.results.clone());
+                let entry = self.cx.entry_sig(&thunk_sig);
+                let t = self.new_local(ValType::I32);
                 self.open(I::Block(BlockType::Empty));
-                self.open(I::Block(BlockType::Result(ValType::Ref(RefType::ANYREF))));
-                let catches = vec![Catch::One {
+                self.open(I::Block(BlockType::Result(ValType::I32)));
+                let catches = vec![wasm_encoder::Catch::One {
                     tag: disc,
                     label: 0,
                 }];
@@ -1001,17 +1160,16 @@ impl<'m> FuncCx<'_, 'm> {
                 self.close();
                 self.emit(I::Unreachable);
                 self.close();
-                self.emit(I::RefCastNullable(HeapType::Concrete(thunk)));
                 self.emit(I::LocalSet(t));
                 self.emit(I::LocalGet(saved));
                 self.emit(I::GlobalSet(HANDLERS));
                 self.emit(I::LocalGet(t));
                 self.emit(I::LocalGet(t));
-                self.emit(I::StructGet {
-                    struct_type_index: thunk,
-                    field_index: 0,
+                self.emit(load(Storage::I32, 4));
+                self.emit(I::CallIndirect {
+                    type_index: entry,
+                    table_index: 0,
                 });
-                self.emit(I::CallRef(entry));
                 for &r in results.iter().rev() {
                     self.emit(I::LocalSet(r));
                 }
@@ -1022,7 +1180,7 @@ impl<'m> FuncCx<'_, 'm> {
         self.emit(I::LocalGet(saved));
         self.emit(I::GlobalSet(HANDLERS));
         self.emit(I::Else);
-        self.perform_call(e, i, args)?;
+        self.call_clause(i, args, saved, found, clause);
         for &r in results.iter().rev() {
             self.emit(I::LocalSet(r));
         }
@@ -1033,145 +1191,96 @@ impl<'m> FuncCx<'_, 'm> {
         Ok(())
     }
 
-    /// The local holding the nearest frame of `e` on the handler stack,
-    /// trapping if there's none.
-    fn find_frame(&mut self, e: EffectId) -> Result<u32, String> {
-        let base = self.cx.types.frame()?;
-        let number = self.cx.effect_number(e)?;
-        let found = self.new_local(nullable(base));
-        self.emit(I::GlobalGet(HANDLERS));
-        self.emit(I::LocalSet(found));
-        self.open(I::Block(BlockType::Empty));
-        self.open(I::Loop(BlockType::Empty));
-        // Reading the effect of a null frame traps.
-        self.emit(I::LocalGet(found));
-        self.emit(I::StructGet {
-            struct_type_index: base,
-            field_index: 0,
-        });
-        self.emit(I::I32Const(number));
-        self.emit(I::I32Eq);
-        self.emit(I::BrIf(1));
-        self.emit(I::LocalGet(found));
-        self.emit(I::StructGet {
-            struct_type_index: base,
-            field_index: 1,
-        });
-        self.emit(I::LocalSet(found));
-        self.emit(I::Br(0));
-        self.close();
-        self.close();
-        Ok(found)
-    }
-
-    /// `discontinue F.j(k, args)` of a continuation: throws a closure that
-    /// performs `F.j(args)` into it.
-    fn discontinue(
-        &mut self,
-        e: EffectId,
-        i: u32,
-        args: &[Atom],
-        tail: bool,
-    ) -> Result<(), String> {
-        let Some((k, rest)) = args.split_first() else {
-            return Err("discontinue without a continuation".into());
-        };
-        let Ty::Cont(sig) = self.atom_ty(k) else {
-            return Err("discontinue of something that isn't a continuation".into());
-        };
-        let sig = self.cx.types.sig(&sig)?;
-        let base = self.cx.types.cont_base(&sig)?;
-        let disc = self.cx.types.discontinue(&sig)?;
-        let (thunk, _) = self.cx.types.thunk(e, i)?;
-        let (_, entry) = self
-            .cx
-            .thunks
-            .get(&(e, i))
+    /// The offset and storage of field `i` of `c`.
+    fn field(&self, c: CtorId, i: u32) -> Result<(u32, Storage), String> {
+        let (offsets, _) = layout(self.cx.fields(c)?);
+        offsets
+            .get(i as usize)
             .copied()
-            .ok_or_else(|| format!("no thunk for {e}.{i}"))?;
-        self.atom(k);
-        self.emit(I::RefFunc(entry));
-        self.atoms(rest);
-        self.emit(I::StructNew(thunk));
-        self.atom(k);
-        self.emit(I::StructGet {
-            struct_type_index: base,
-            field_index: 1,
-        });
-        self.emit(if tail {
-            I::ReturnCallRef(disc)
-        } else {
-            I::CallRef(disc)
-        });
-        Ok(())
+            .ok_or_else(|| format!("{c} has no field {i}"))
     }
 
-    /// `perform e.i(args)` of a handler that doesn't switch stacks.
-    fn perform_call(&mut self, e: EffectId, i: u32, args: &[Atom]) -> Result<(), String> {
-        let base = self.cx.types.frame()?;
-        let frame = self.cx.types.effect_frame(e)?;
-        let clause = self.cx.types.clause(e, i)?;
-        let number = self.cx.effect_number(e)?;
-        let saved = self.new_local(nullable(base));
-        let found = self.new_local(nullable(base));
-        let this = self.new_local(nullable(frame));
-
-        self.emit(I::GlobalGet(HANDLERS));
-        self.emit(I::LocalTee(saved));
-        self.emit(I::LocalSet(found));
-        self.open(I::Block(BlockType::Empty));
-        self.open(I::Loop(BlockType::Empty));
-        // Reading the effect of a null frame traps.
-        self.emit(I::LocalGet(found));
-        self.emit(I::StructGet {
-            struct_type_index: base,
-            field_index: 0,
-        });
-        self.emit(I::I32Const(number));
-        self.emit(I::I32Eq);
-        self.emit(I::BrIf(1));
-        self.emit(I::LocalGet(found));
-        self.emit(I::StructGet {
-            struct_type_index: base,
-            field_index: 1,
-        });
-        self.emit(I::LocalSet(found));
-        self.emit(I::Br(0));
-        self.close();
-        self.close();
-
-        self.emit(I::LocalGet(found));
-        self.emit(I::StructGet {
-            struct_type_index: base,
-            field_index: 1,
-        });
-        self.emit(I::GlobalSet(HANDLERS));
-        self.emit(I::LocalGet(found));
-        self.emit(I::RefCastNullable(HeapType::Concrete(frame)));
-        self.emit(I::LocalTee(this));
-        // The clause can discontinue under this `perform`'s handlers.
-        let site = self.cx.discontinues.then(|| {
-            let old = self.new_local(nullable(base));
-            self.emit(I::GlobalGet(SITE));
-            self.emit(I::LocalSet(old));
-            self.emit(I::LocalGet(saved));
-            self.emit(I::GlobalSet(SITE));
-            old
-        });
-        self.atoms(args);
-        self.emit(I::LocalGet(this));
-        self.emit(I::StructGet {
-            struct_type_index: frame,
-            field_index: 2 + i,
-        });
-        self.emit(I::CallRef(clause));
-        self.emit(I::LocalGet(saved));
-        self.emit(I::GlobalSet(HANDLERS));
-        if let Some(old) = site {
-            self.emit(I::LocalGet(old));
-            self.emit(I::GlobalSet(SITE));
+    /// How an array of type `ty` stores its elements.
+    fn elem_of(&self, ty: &Ty) -> Result<Storage, String> {
+        match ty {
+            Ty::Array(elem, _) => Ok(Storage::of(elem)),
+            _ => Err(format!("expected an array, but got a {ty}")),
         }
-        Ok(())
+    }
+
+    /// Allocates `size` bytes, into a new local.
+    fn alloc_const(&mut self, size: u32) -> u32 {
+        let p = self.new_local(ValType::I32);
+        self.emit(I::I32Const(size as i32));
+        self.emit(I::Call(self.cx.alloc));
+        self.emit(I::LocalSet(p));
+        p
+    }
+
+    /// Allocates an array of the length in local `n`, with its length set,
+    /// into a new local. A negative or too big length traps.
+    fn alloc_array(&mut self, n: u32, s: Storage) -> u32 {
+        self.emit(I::LocalGet(n));
+        self.emit(I::I32Const(MAX_BYTES / s.size() as i32));
+        self.emit(I::I32GtU);
+        self.trap_if();
+        let p = self.new_local(ValType::I32);
+        self.emit(I::LocalGet(n));
+        self.scale(s);
+        self.emit(I::I32Const(8));
+        self.emit(I::I32Add);
+        self.emit(I::Call(self.cx.alloc));
+        self.emit(I::LocalTee(p));
+        self.emit(I::LocalGet(n));
+        self.emit(store(Storage::I32, 4));
+        p
+    }
+
+    /// Multiplies the `i32` on the stack by the size of `s`.
+    fn scale(&mut self, s: Storage) {
+        let shift = s.size().trailing_zeros();
+        if shift > 0 {
+            self.emit(I::I32Const(shift as i32));
+            self.emit(I::I32Shl);
+        }
+    }
+
+    /// Pushes the address of element `index` of `array`, less 8, trapping
+    /// if it's out of bounds.
+    fn elem_addr(&mut self, array: &Atom, index: &Atom, s: Storage) {
+        self.atom(index);
+        self.atom(array);
+        self.emit(load(Storage::I32, 4));
+        self.emit(I::I32GeU);
+        self.trap_if();
+        self.atom(array);
+        self.atom(index);
+        self.scale(s);
+        self.emit(I::I32Add);
+    }
+
+    /// With an index on the stack, pushes the address of that element of
+    /// the array in local `p`, less 8.
+    fn elem_addr_of(&mut self, p: u32, s: Storage) {
+        self.scale(s);
+        self.emit(I::LocalGet(p));
+        self.emit(I::I32Add);
+    }
+
+    /// Stores `vals` at `offsets` of the object in local `p`.
+    fn store_all(&mut self, p: u32, offsets: &[(u32, Storage)], vals: &[Atom]) {
+        for (&(at, s), a) in offsets.iter().zip(vals) {
+            self.emit(I::LocalGet(p));
+            self.atom(a);
+            self.emit(store(s, at));
+        }
+    }
+
+    /// Traps if the `i32` on the stack isn't 0.
+    fn trap_if(&mut self) {
+        self.open(I::If(BlockType::Empty));
+        self.emit(I::Unreachable);
+        self.close();
     }
 
     /// Stores an op's results, unless it was a tail call. Returns `tail`.
@@ -1202,34 +1311,9 @@ impl<'m> FuncCx<'_, 'm> {
         }
         let mut tys = Vec::with_capacity(binds.len());
         for &b in binds {
-            tys.push(self.cx.types.val(self.var_ty(b))?);
+            tys.push(val(self.var_ty(b)));
         }
         Ok(tys == self.results)
-    }
-
-    /// Pushes the object of a `Get` or `Set`, cast to its constructor if
-    /// the ADT has several.
-    fn object(&mut self, c: CtorId, obj: &Atom) -> Result<(u32, u32), String> {
-        let (idx, first) = self.cx.types.ctor(c)?;
-        self.atom(obj);
-        if first == 1 {
-            self.emit(I::RefCastNullable(HeapType::Concrete(idx)));
-        }
-        Ok((idx, first))
-    }
-
-    fn array_of(&mut self, ty: &Ty) -> Result<u32, String> {
-        match ty {
-            Ty::Array(elem, _) => self.cx.types.array(elem),
-            _ => Err(format!("expected an array, but got a {ty}")),
-        }
-    }
-
-    fn cell_of(&mut self, ty: &Ty) -> Result<u32, String> {
-        match ty {
-            Ty::Ref(inner) => self.cx.types.cell(inner),
-            _ => Err(format!("expected a ref, but got a {ty}")),
-        }
     }
 
     /// Pushes an integer, with an `i8` or `i16` extended to an `i32` as
@@ -1464,7 +1548,6 @@ impl<'m> FuncCx<'_, 'm> {
         Ok(())
     }
 }
-
 /// How many bits an `i8` or `i16` has; `None` for other types.
 fn narrow_bits(ty: &Ty) -> Option<u32> {
     match ty {
@@ -1472,10 +1555,6 @@ fn narrow_bits(ty: &Ty) -> Option<u32> {
         Ty::I16 => Some(16),
         _ => None,
     }
-}
-
-fn is_scalar(v: ValType) -> bool {
-    matches!(v, ValType::I32 | ValType::I64 | ValType::F32 | ValType::F64)
 }
 
 /// The instruction for a scalar op whose first operand has type `ty`.
@@ -1596,4 +1675,9 @@ fn zero(ty: ValType) -> I<'static> {
         ValType::V128 => I::V128Const(0),
         ValType::Ref(r) => I::RefNull(r.heap_type),
     }
+}
+
+/// Whether `ty` is a scalar, which a box holds in memory.
+fn is_scalar_ty(ty: &Ty) -> bool {
+    matches!(ty, Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::F32 | Ty::F64)
 }
