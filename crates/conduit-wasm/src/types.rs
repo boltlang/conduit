@@ -95,6 +95,15 @@ fn field(ty: ValType, mutable: bool) -> FieldType {
     }
 }
 
+/// A field of a data type, of type `ty`: packed for `i8` and `i16`, as an
+/// array's elements are, and mutable, as every field is.
+fn data_field(types: &mut Types<'_>, ty: &Ty) -> Result<FieldType, String> {
+    Ok(FieldType {
+        element_type: storage(types, ty)?,
+        mutable: true,
+    })
+}
+
 /// How an array stores elements of type `ty`: `i8` and `i16` packed.
 fn storage(types: &mut Types<'_>, ty: &Ty) -> Result<StorageType, String> {
     Ok(match ty {
@@ -206,9 +215,12 @@ impl<'m> Types<'m> {
         let ctors = self.ctors(d)?;
         if let [only] = ctors {
             self.get_or(Key::Data(d), |t| {
-                let fields = t.vals(&only.fields)?;
-                let fields = fields.into_iter().map(|f| field(f, true)).collect();
-                Ok(subtype(true, None, struct_(fields)))
+                let fields = only.fields.iter().map(|f| data_field(t, f));
+                Ok(subtype(
+                    true,
+                    None,
+                    struct_(fields.collect::<Result<_, _>>()?),
+                ))
             })
         } else {
             self.get_or(Key::Data(d), |_| {
@@ -233,8 +245,8 @@ impl<'m> Types<'m> {
         };
         let idx = self.get_or(Key::Ctor(c), |t| {
             let mut fields = vec![field(ValType::I32, false)];
-            for f in t.vals(&decl.fields)? {
-                fields.push(field(f, true));
+            for f in &decl.fields {
+                fields.push(data_field(t, f)?);
             }
             Ok(subtype(true, Some(base), struct_(fields)))
         })?;

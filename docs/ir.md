@@ -1088,7 +1088,8 @@ or an `i32.and` with a mask: `div`, `rem`, `shr`, comparisons, `convert`
 to a wider type, and `case`. A signed `div` traps when the result doesn't
 fit, as `i32.div_s` does, and so does `convert` from a float out of range.
 Arrays of them are packed, `(array (mut i8))` and `(array (mut i16))`,
-which store only the low bits. A host sees an `i8` or `i16` as an `i32`,
+and so are fields of data types, `(field (mut i8))`, which store only the
+low bits. A host sees an `i8` or `i16` as an `i32`,
 and should only read its low bits.
 
 **To a flat CFG (Cranelift, LLVM).** Each join definition becomes a block
@@ -1135,7 +1136,7 @@ Status:
 | `Closure` | allocate env, store a table index + captures | `struct.new` with `ref.func` + captures | ✅ |
 | `Apply` | `call_indirect` | `call_ref` | ✅ |
 | `New` | allocate, store tag + fields | `struct.new` (one struct type per constructor) | ✅ |
-| `Get` | `*.load` | `struct.get` | ✅ |
+| `Get` | `*.load` | `struct.get`, or `struct.get_s` for `i8` and `i16` | ✅ |
 | `Set` | `*.store` | `struct.set` | ✅ |
 | `ArrayNew` | allocate length + elements | `array.new` | ✅ |
 | `ArrayGet` | bounds check + `*.load` | `array.get`, or `array.get_s` for `i8` and `i16` | ✅ |

@@ -3,16 +3,19 @@
     (type (;0;) (struct (field i32)))
     (type (;1;) (array (mut i8)))
     (type (;2;) (array (mut i16)))
-    (type (;3;) (struct (field (mut i32)) (field (mut i32))))
+    (type (;3;) (struct (field (mut i8)) (field (mut i16))))
+    (type (;4;) (sub (struct (field i32))))
+    (type (;5;) (sub final 4 (struct (field i32) (field (mut i32)) (field (mut i8)))))
   )
-  (type (;4;) (func (param i32) (result i32 i32 i64 i64 i32 i32)))
-  (type (;5;) (func (param i64) (result i32 i32 i32)))
-  (type (;6;) (func (param f64) (result i32)))
-  (type (;7;) (func (param f32) (result i32)))
-  (type (;8;) (func (param i32) (result f64 f32)))
-  (type (;9;) (func (param i32) (result i32)))
-  (type (;10;) (func (param i32) (result i32 i32)))
-  (type (;11;) (func (param i32 i32) (result i32)))
+  (type (;6;) (func (param i32) (result i32 i32 i64 i64 i32 i32)))
+  (type (;7;) (func (param i64) (result i32 i32 i32)))
+  (type (;8;) (func (param f64) (result i32)))
+  (type (;9;) (func (param f32) (result i32)))
+  (type (;10;) (func (param i32) (result f64 f32)))
+  (type (;11;) (func (param i32) (result i32)))
+  (type (;12;) (func (param i32) (result i32 i32)))
+  (type (;13;) (func (param i32 i32) (result i32)))
+  (global (;0;) (ref null 3) i32.const -1 i32.const -2 struct.new 3)
   (export "fn0" (func $widen))
   (export "fn1" (func $narrow))
   (export "fn2" (func $f64_to_i8))
@@ -25,7 +28,9 @@
   (export "fn9" (func $array_i8))
   (export "fn10" (func $array_i16))
   (export "fn11" (func $fields))
-  (func $widen (;0;) (type 4) (param $x i32) (result i32 i32 i64 i64 i32 i32)
+  (export "fn12" (func $set_field))
+  (export "fn13" (func $tagged))
+  (func $widen (;0;) (type 6) (param $x i32) (result i32 i32 i64 i64 i32 i32)
     (local $x1 i32) (local $x2 i32) (local $s32 i32) (local $u32 i32) (local $s64 i64) (local $u64 i64) (local $s16 i32) (local $u16 i32)
     local.get $x
     i32.const -128
@@ -66,7 +71,7 @@
     local.get $u16
     return
   )
-  (func $narrow (;1;) (type 5) (param $x i64) (result i32 i32 i32)
+  (func $narrow (;1;) (type 7) (param $x i64) (result i32 i32 i32)
     (local $s8 i32) (local $u16 i32) (local $u8 i32)
     local.get $x
     i32.wrap_i64
@@ -81,7 +86,7 @@
     local.get $u8
     return
   )
-  (func $f64_to_i8 (;2;) (type 6) (param $x f64) (result i32)
+  (func $f64_to_i8 (;2;) (type 8) (param $x f64) (result i32)
     (local $y i32) (local i32)
     local.get $x
     i32.trunc_f64_s
@@ -98,7 +103,7 @@
     local.get $y
     return
   )
-  (func $f64_to_u8 (;3;) (type 6) (param $x f64) (result i32)
+  (func $f64_to_u8 (;3;) (type 8) (param $x f64) (result i32)
     (local $y i32) (local i32)
     local.get $x
     i32.trunc_f64_u
@@ -113,7 +118,7 @@
     local.get $y
     return
   )
-  (func $f32_to_i16 (;4;) (type 7) (param $x f32) (result i32)
+  (func $f32_to_i16 (;4;) (type 9) (param $x f32) (result i32)
     (local $y i32) (local i32)
     local.get $x
     i32.trunc_f32_s
@@ -130,7 +135,7 @@
     local.get $y
     return
   )
-  (func $to_floats (;5;) (type 8) (param $x i32) (result f64 f32)
+  (func $to_floats (;5;) (type 10) (param $x i32) (result f64 f32)
     (local $x1 i32) (local $x2 i32) (local $f f64) (local $s f32)
     local.get $x
     i32.const -32768
@@ -153,7 +158,7 @@
     local.get $s
     return
   )
-  (func $case_i8 (;6;) (type 9) (param $x i32) (result i32)
+  (func $case_i8 (;6;) (type 11) (param $x i32) (result i32)
     (local $x1 i32) (local $x2 i32)
     local.get $x
     i32.const -128
@@ -196,7 +201,7 @@
     i32.const 0
     return
   )
-  (func $case_i16 (;7;) (type 9) (param $x i32) (result i32)
+  (func $case_i16 (;7;) (type 11) (param $x i32) (result i32)
     (local $x1 i32) (local $x2 i32)
     local.get $x
     i32.const -32768
@@ -236,7 +241,7 @@
     i32.const 0
     return
   )
-  (func $boxed (;8;) (type 9) (param $x i32) (result i32)
+  (func $boxed (;8;) (type 11) (param $x i32) (result i32)
     (local $boxed anyref) (local $y i32)
     local.get $x
     struct.new 0
@@ -248,7 +253,7 @@
     local.get $y
     return
   )
-  (func $array_i8 (;9;) (type 10) (param $x i32) (result i32 i32)
+  (func $array_i8 (;9;) (type 12) (param $x i32) (result i32 i32)
     (local $x1 i32) (local $x2 i32) (local $xs (ref null 1)) (local $frozen (ref null 1)) (local $y i32) (local $yu i32) (local (ref null 1))
     local.get $x
     i32.const -128
@@ -290,7 +295,7 @@
     local.get $yu
     return
   )
-  (func $array_i16 (;10;) (type 9) (param $x i32) (result i32)
+  (func $array_i16 (;10;) (type 11) (param $x i32) (result i32)
     (local $xs (ref null 2)) (local $a i32) (local $b i32) (local $sum i32)
     local.get $x
     i32.const 255
@@ -311,17 +316,17 @@
     local.get $sum
     return
   )
-  (func $fields (;11;) (type 11) (param $a i32) (param $b i32) (result i32)
+  (func $fields (;11;) (type 13) (param $a i32) (param $b i32) (result i32)
     (local $s (ref null 3)) (local $a2 i32) (local $b2 i32) (local $a16 i32) (local $lt i32)
     local.get $a
     local.get $b
     struct.new 3
     local.set $s
     local.get $s
-    struct.get 3 0
+    struct.get_s 3 0
     local.set $a2
     local.get $s
-    struct.get 3 1
+    struct.get_s 3 1
     local.set $b2
     local.get $a2
     i32.extend8_s
@@ -333,6 +338,90 @@
     i32.lt_s
     local.set $lt
     local.get $lt
+    return
+  )
+  (func $set_field (;12;) (type 12) (param $x i32) (result i32 i32)
+    (local $y i32) (local $s (ref null 3)) (local $a i32) (local $u i32) (local $v i32)
+    local.get $x
+    i32.const 1
+    i32.add
+    local.set $y
+    i32.const 0
+    i32.const 0
+    struct.new 3
+    local.set $s
+    local.get $s
+    local.get $y
+    struct.set 3 0
+    local.get $s
+    struct.get_s 3 0
+    local.set $a
+    local.get $a
+    i32.const 255
+    i32.and
+    local.set $u
+    local.get $a
+    i32.extend8_s
+    local.set $v
+    local.get $u
+    local.get $v
+    return
+  )
+  (func $tagged (;13;) (type 11) (param $x i32) (result i32)
+    (local $m (ref null 4)) (local $c (ref null 3)) (local $a i32) (local $n i32) (local $b i32) (local $d i32) (local $a32 i32) (local $b32 i32) (local $d32 i32) (local $r1 i32) (local $r2 i32) (local $r i32)
+    i32.const 1
+    i32.const 1000
+    local.get $x
+    struct.new 5
+    local.set $m
+    global.get 0
+    local.set $c
+    block ;; label = @1
+      block ;; label = @2
+        local.get $m
+        struct.get 4 0
+        br_table 0 (;@2;) 1 (;@1;) 0 (;@2;)
+      end
+      i32.const 0
+      return
+    end
+    local.get $m
+    ref.cast (ref null 5)
+    struct.get_s 5 2
+    local.set $a
+    local.get $m
+    ref.cast (ref null 5)
+    struct.get 5 1
+    local.set $n
+    local.get $c
+    struct.get_s 3 0
+    local.set $b
+    local.get $c
+    struct.get_s 3 1
+    local.set $d
+    local.get $a
+    i32.extend8_s
+    local.set $a32
+    local.get $b
+    i32.const 255
+    i32.and
+    local.set $b32
+    local.get $d
+    i32.extend16_s
+    local.set $d32
+    local.get $n
+    local.get $a32
+    i32.add
+    local.set $r1
+    local.get $r1
+    local.get $b32
+    i32.add
+    local.set $r2
+    local.get $r2
+    local.get $d32
+    i32.add
+    local.set $r
+    local.get $r
     return
   )
 )

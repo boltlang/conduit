@@ -6,6 +6,14 @@ data Small {
   (i8, i16)
 }
 
+// Several constructors, so the fields come after a tag.
+data Maybe {
+  ()
+  (i32, i8)
+}
+
+const small: imm Small = Small.0(255i8, -2i16)
+
 // To wider integers, read as signed or unsigned.
 fn widen(%x: i8) -> (i32, i32, i64, i64, i16, i16) {
   let %x1: i8 = add(%x, -128i8)
@@ -113,6 +121,39 @@ fn fields(%a: i8, %b: i16) -> (i32) {
   jump ret(%lt)
 }
 
+// A field set to a value whose Wasm i32 has its high bits set, then read
+// unsigned and signed.
+fn set_field(%x: i8) -> (i32, i32) {
+  let %y: i8 = add(%x, 1i8)
+  let %s: mut Small = new Small.0(0i8, 0i16)
+  let = set Small.0.0(%s, %y)
+  let %a: i8 = get Small.0.0(%s)
+  let %u: i32 = convert.u[i32](%a)
+  let %v: i32 = convert.s[i32](%a)
+  jump ret(%u, %v)
+}
+
+// A packed field after a tag, and in a constant.
+fn tagged(%x: i8) -> (i32) {
+  let %m: imm Maybe = new Maybe.1(1000i32, %x)
+  let %c: imm Small = const small()
+  case %m {
+    Maybe.0 => jump ret(0i32)
+    Maybe.1 =>
+      let %a: i8 = get Maybe.1.1(%m)
+      let %n: i32 = get Maybe.1.0(%m)
+      let %b: i8 = get Small.0.0(%c)
+      let %d: i16 = get Small.0.1(%c)
+      let %a32: i32 = convert.s[i32](%a)
+      let %b32: i32 = convert.u[i32](%b)
+      let %d32: i32 = convert.s[i32](%d)
+      let %r1: i32 = add(%n, %a32)
+      let %r2: i32 = add(%r1, %b32)
+      let %r: i32 = add(%r2, %d32)
+      jump ret(%r)
+  }
+}
+
 //# run widen(-1i8) == (-1i32, 255i32, -1i64, 255i64, -1i16, 255i16)
 //# run widen(127i8) == (127i32, 127i32, 127i64, 127i64, 127i16, 127i16)
 //# run widen(-128i8) == (-128i32, 128i32, -128i64, 128i64, -128i16, 128i16)
@@ -147,4 +188,7 @@ fn fields(%a: i8, %b: i16) -> (i32) {
 //# run array_i16(32767i16) == -32514i16
 //# run fields(-1i8, 0i16) == 1i32
 //# run fields(127i8, 127i16) == 0i32
+//# run set_field(127i8) == (128i32, -128i32)
+//# run set_field(-1i8) == (0i32, 0i32)
+//# run tagged(-3i8) == 1250i32
 //# wat

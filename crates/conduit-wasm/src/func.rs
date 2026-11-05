@@ -555,9 +555,27 @@ impl<'m> FuncCx<'_, 'm> {
             }
             Op::Get(c, i) => {
                 let (idx, first) = self.object(*c, &args[0])?;
-                self.emit(I::StructGet {
-                    struct_type_index: idx,
-                    field_index: first + i,
+                // An `i8` or `i16` field is packed, as array elements are.
+                // Whether the field is one doesn't depend on mutabilities.
+                let packed = self
+                    .cx
+                    .m
+                    .data
+                    .get(&c.data)
+                    .and_then(|d| d.ctors.get(c.index as usize))
+                    .and_then(|ctor| ctor.fields.get(*i as usize))
+                    .is_some_and(|ty| narrow_bits(ty).is_some());
+                let at = (idx, first + i);
+                self.emit(if packed {
+                    I::StructGetS {
+                        struct_type_index: at.0,
+                        field_index: at.1,
+                    }
+                } else {
+                    I::StructGet {
+                        struct_type_index: at.0,
+                        field_index: at.1,
+                    }
                 });
             }
             Op::Set(c, i) => {
