@@ -1,0 +1,99 @@
+// after simplify
+
+data Shape {
+  (f64)
+  (f64, f64)
+}
+
+fn area(%s: imm Shape) -> (f64) {
+  case %s {
+    Shape.0 =>
+      let %r: f64 = call radius(%s)
+      let %rr: f64 = mul(%r, %r)
+      let %a: f64 = mul(%rr, 3.0f64)
+      jump ret(%a)
+    Shape.1 =>
+      let %w: f64 = get Shape.1.0(%s)
+      let %h: f64 = get Shape.1.1(%s)
+      let %a2: f64 = mul(%w, %h)
+      jump ret(%a2)
+  }
+}
+
+fn radius(%s: imm Shape) -> (f64) {
+  case %s {
+    Shape.0 =>
+      let %r: f64 = get Shape.0.0(%s)
+      jump ret(%r)
+    Shape.1 => jump ret(0.0f64)
+  }
+}
+
+fn digit(%x: i8) -> (i32) {
+  case %x {
+    7 => jump ret(8i32)
+    _ =>
+      let %w: i32 = convert.s[i32](%x)
+      jump ret(%w)
+  }
+}
+
+fn circle() -> (f64) {
+  let %s: imm Shape = new Shape.0(2.0f64)
+  let %a: f64 = call area(%s)
+  jump ret(%a)
+}
+
+fn rect() -> (f64) {
+  let %s: imm Shape = new Shape.1(2.0f64, 3.5f64)
+  let %a: f64 = call area(%s)
+  jump ret(%a)
+}
+
+// after inline, joins, simplify, dce
+
+data Shape {
+  (f64)
+  (f64, f64)
+}
+
+fn area(%s: imm Shape) -> (f64) {
+  case %s {
+    Shape.0 =>
+      let %r: f64 = get Shape.0.0(%s)
+      let %rr: f64 = mul(%r, %r)
+      let %a: f64 = mul(%rr, 3.0f64)
+      jump ret(%a)
+    Shape.1 =>
+      let %w: f64 = get Shape.1.0(%s)
+      let %h: f64 = get Shape.1.1(%s)
+      let %a2: f64 = mul(%w, %h)
+      jump ret(%a2)
+  }
+}
+
+fn radius(%s: imm Shape) -> (f64) {
+  case %s {
+    Shape.0 =>
+      let %r: f64 = get Shape.0.0(%s)
+      jump ret(%r)
+    Shape.1 => jump ret(0.0f64)
+  }
+}
+
+fn digit(%x: i8) -> (i32) {
+  case %x {
+    7 => jump ret(8i32)
+    _ =>
+      let %w: i32 = convert.s[i32](%x)
+      jump ret(%w)
+  }
+}
+
+fn circle() -> (f64) {
+  jump ret(12.0f64)
+}
+
+fn rect() -> (f64) {
+  jump ret(7.0f64)
+}

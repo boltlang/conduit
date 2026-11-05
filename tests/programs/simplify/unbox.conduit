@@ -1,0 +1,17 @@
+// `unbox[T]` of `box[T](x)` is `x`, as code erased to `any` gives once
+// it's inlined. At another type it's undefined, so it stays.
+
+fn same(%x: i64) -> (i64) {
+  let %b: imm any = box[i64](%x)
+  let %y: i64 = unbox[i64](%b)
+  jump ret(%y)
+}
+
+fn other(%x: i64) -> (f64) {
+  let %b: imm any = box[i64](%x)
+  let %y: f64 = unbox[f64](%b)
+  jump ret(%y)
+}
+
+//# run same(-5i64) == -5i64
+//# opt: simplify

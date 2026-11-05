@@ -12,6 +12,15 @@
 //! - **Fields of a known object.** A `get` of an `Imm` object made by
 //!   `new` in this function is the `new`'s argument. A `Mut` object's
 //!   field may have been set in between.
+//! - **What an arm says.** In an arm `C =>` of a `case` on `x`, a `case`
+//!   on `x` is known to be `C`, and in an arm `3 =>`, `x` is `3`.
+//! - **Unboxing what was boxed.** `unbox[T]` of `box[T](x)` is `x`. At
+//!   another type it's undefined, so it stays.
+//! - **Arrays made here.** The length of an array made by `array_new`,
+//!   `array_fill`, `array_alloc`, or `array_clone` or `array_freeze` of one
+//!   whose length is known, is known: `array_fill` and `array_alloc` trap
+//!   on a length they can't make. An element of an `Imm` one at a literal
+//!   index in bounds is what it was made with.
 //! - **Parts of a constant.** A constant that's a literal is the literal.
 //!   A `case` on a constant takes its arm, as for
 //!   `new`. A field of a constant, its length and an element at a literal
@@ -59,6 +68,9 @@ pub fn simplify(p: &dyn Program, f: &mut Func) -> bool {
         vars: &f.vars,
         subst: HashMap::new(),
         news: HashMap::new(),
+        boxes: HashMap::new(),
+        arrays: HashMap::new(),
+        arms: Vec::new(),
         changed: false,
     };
     let body = cx.block(body);
@@ -76,7 +88,28 @@ struct Cx<'f> {
     subst: HashMap<Var, Atom>,
     /// The objects made by `new`: their constructor and fields.
     news: HashMap<Var, (CtorId, Vec<Atom>)>,
+    /// What `box` boxed, and at which type.
+    boxes: HashMap<Var, (Ty, Atom)>,
+    /// The arrays made here whose length is known.
+    arrays: HashMap<Var, Made>,
+    /// What the enclosing `case` arms say a variable was built by.
+    arms: Vec<(Var, CtorId)>,
     changed: bool,
+}
+
+/// An array made here: its length, and for an `Imm` one, its elements.
+#[derive(Clone)]
+struct Made {
+    len: Atom,
+    elems: Option<Elems>,
+}
+
+#[derive(Clone)]
+enum Elems {
+    /// These, by index.
+    All(Vec<Atom>),
+    /// This one, at every index.
+    Fill(Atom),
 }
 
 impl<'f> Cx<'f> {
@@ -130,9 +163,66 @@ impl<'f> Cx<'f> {
             (Op::Const(id), [v]) => {
                 self.consts.insert(*v, *id);
             }
+            (Op::Box(ty), [v]) => {
+                self.boxes.insert(*v, (ty.clone(), l.args[0].clone()));
+            }
+            (op, [v]) => {
+                if let Some(made) = self.made(op, &l.args, *v) {
+                    self.arrays.insert(*v, made);
+                }
+            }
             _ => {}
         }
         lets.push(l);
+    }
+
+    /// What's known about the array `op` makes, binding `v`.
+    fn made(&self, op: &Op, args: &[Atom], v: Var) -> Option<Made> {
+        let imm = matches!(self.vars[v.0 as usize], Ty::Array(_, Mutability::Imm));
+        Some(match op {
+            Op::ArrayNew => Made {
+                len: Atom::Lit(Lit::I32(args.len() as i32)),
+                elems: imm.then(|| Elems::All(args.to_vec())),
+            },
+            Op::ArrayFill => Made {
+                len: args[0].clone(),
+                elems: imm.then(|| Elems::Fill(args[1].clone())),
+            },
+            Op::ArrayAlloc => Made {
+                len: args[0].clone(),
+                elems: None,
+            },
+            // The same length, and the same elements if they couldn't have
+            // changed since the original was made.
+            Op::ArrayClone | Op::ArrayFreeze => {
+                let Atom::Var(src) = &args[0] else {
+                    return None;
+                };
+                let from = self.arrays.get(src)?;
+                let src_imm = matches!(self.vars[src.0 as usize], Ty::Array(_, Mutability::Imm));
+                Made {
+                    len: from.len.clone(),
+                    elems: from.elems.clone().filter(|_| imm && src_imm),
+                }
+            }
+            _ => return None,
+        })
+    }
+
+    /// Element `i` of an array made here, if it's known.
+    fn element(&self, array: Option<&Atom>, index: Option<&Atom>) -> Option<Atom> {
+        let (Some(Atom::Var(x)), Some(Atom::Lit(Lit::I32(i)))) = (array, index) else {
+            return None;
+        };
+        let made = self.arrays.get(x)?;
+        let i = usize::try_from(*i).ok()?;
+        match made.elems.as_ref()? {
+            Elems::All(elems) => elems.get(i).cloned(),
+            Elems::Fill(value) => match made.len {
+                Atom::Lit(Lit::I32(len)) if i < len as usize => Some(value.clone()),
+                _ => None,
+            },
+        }
     }
 
     /// What constant `a` is, if it's a variable bound by `const`.
@@ -163,8 +253,19 @@ impl<'f> Cx<'f> {
                 ConstValue::Lit(lit) => Some(Atom::Lit(*lit)),
                 _ => None,
             },
-            Op::ArrayLen => match self.constant(l.args.first()) {
-                Some(ConstValue::Array(elems)) => Some(Atom::Lit(Lit::I32(elems.len() as i32))),
+            Op::ArrayLen => match (self.constant(l.args.first()), l.args.first()) {
+                (Some(ConstValue::Array(elems)), _) => {
+                    Some(Atom::Lit(Lit::I32(elems.len() as i32)))
+                }
+                (_, Some(Atom::Var(x))) => self.arrays.get(x).map(|m| m.len.clone()),
+                _ => None,
+            },
+            Op::ArrayGet => self.element(l.args.first(), l.args.get(1)),
+            Op::Unbox(ty) => match l.args.first() {
+                Some(Atom::Var(b)) => match self.boxes.get(b) {
+                    Some((boxed, x)) if boxed == ty => Some(x.clone()),
+                    _ => None,
+                },
                 _ => None,
             },
             _ => None,
@@ -218,15 +319,16 @@ impl<'f> Cx<'f> {
                         }
                     }
                 }
+                let arms = arms
+                    .into_iter()
+                    .map(|a| Arm {
+                        tag: a.tag,
+                        body: self.arm(&scrut, a.tag, a.body),
+                    })
+                    .collect();
                 Tail::Case {
                     scrut,
-                    arms: arms
-                        .into_iter()
-                        .map(|a| Arm {
-                            tag: a.tag,
-                            body: self.block(a.body),
-                        })
-                        .collect(),
+                    arms,
                     default: default.map(|d| Box::new(self.block(*d))),
                 }
             }
@@ -245,6 +347,35 @@ impl<'f> Cx<'f> {
         })
     }
 
+    /// The arm `tag` of a `case` on `scrut`, simplified knowing that it
+    /// matched.
+    fn arm(&mut self, scrut: &Atom, tag: Tag, body: Block) -> Block {
+        let Atom::Var(x) = scrut else {
+            return self.block(body);
+        };
+        match tag {
+            Tag::Ctor(c) => {
+                self.arms.push((*x, c));
+                let body = self.block(body);
+                self.arms.pop();
+                body
+            }
+            Tag::Int(n) => {
+                let lit = match self.vars[x.0 as usize] {
+                    Ty::I8 => Lit::I8(n as i8),
+                    Ty::I16 => Lit::I16(n as i16),
+                    Ty::I32 => Lit::I32(n as i32),
+                    Ty::I64 => Lit::I64(n),
+                    _ => return self.block(body),
+                };
+                self.subst.insert(*x, Atom::Lit(lit));
+                let body = self.block(body);
+                self.subst.remove(x);
+                body
+            }
+        }
+    }
+
     /// The tag a `case` on `scrut` matches, if it's known.
     fn tag(&self, scrut: &Atom) -> Option<Tag> {
         match scrut {
@@ -253,13 +384,18 @@ impl<'f> Cx<'f> {
             Atom::Lit(Lit::I32(n)) => Some(Tag::Int((*n).into())),
             Atom::Lit(Lit::I64(n)) => Some(Tag::Int(*n)),
             Atom::Lit(Lit::F32(_) | Lit::F64(_)) => None,
-            Atom::Var(v) => match self.news.get(v) {
-                Some((c, _)) => Some(Tag::Ctor(*c)),
-                None => match self.constant(Some(scrut))? {
+            Atom::Var(v) => {
+                if let Some((c, _)) = self.news.get(v) {
+                    return Some(Tag::Ctor(*c));
+                }
+                if let Some((_, c)) = self.arms.iter().rev().find(|(x, _)| x == v) {
+                    return Some(Tag::Ctor(*c));
+                }
+                match self.constant(Some(scrut))? {
                     ConstValue::New(c, _) => Some(Tag::Ctor(*c)),
                     _ => None,
-                },
-            },
+                }
+            }
         }
     }
 }

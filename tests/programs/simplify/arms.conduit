@@ -1,0 +1,68 @@
+// In an arm of a `case` on `x`, what the arm matched is known: a `case` on
+// `x` again takes the same arm, and in an integer arm `x` is that integer.
+// In the default arm nothing is known.
+
+data Shape {
+  (f64)
+  (f64, f64)
+}
+
+fn area(%s: imm Shape) -> (f64) {
+  case %s {
+    Shape.0 =>
+      let %r: f64 = call radius(%s)
+      let %rr: f64 = mul(%r, %r)
+      let %a: f64 = mul(%rr, 3.0f64)
+      jump ret(%a)
+    Shape.1 =>
+      case %s {
+        Shape.0 => jump ret(0.0f64)
+        Shape.1 =>
+          let %w: f64 = get Shape.1.0(%s)
+          let %h: f64 = get Shape.1.1(%s)
+          let %a2: f64 = mul(%w, %h)
+          jump ret(%a2)
+      }
+  }
+}
+
+// After inlining, its `case` is on a shape already matched.
+fn radius(%s: imm Shape) -> (f64) {
+  case %s {
+    Shape.0 =>
+      let %r: f64 = get Shape.0.0(%s)
+      jump ret(%r)
+    Shape.1 => jump ret(0.0f64)
+  }
+}
+
+fn digit(%x: i8) -> (i32) {
+  case %x {
+    7 =>
+      let %y: i32 = convert.s[i32](%x)
+      let %z: i32 = add(%y, 1i32)
+      jump ret(%z)
+    _ =>
+      let %w: i32 = convert.s[i32](%x)
+      jump ret(%w)
+  }
+}
+
+fn circle() -> (f64) {
+  let %s: imm Shape = new Shape.0(2.0f64)
+  let %a: f64 = call area(%s)
+  jump ret(%a)
+}
+
+fn rect() -> (f64) {
+  let %s: imm Shape = new Shape.1(2.0f64, 3.5f64)
+  let %a: f64 = call area(%s)
+  jump ret(%a)
+}
+
+//# run circle() == 12.0f64
+//# run rect() == 7.0f64
+//# run digit(7i8) == 8i32
+//# run digit(-2i8) == -2i32
+//# opt: simplify
+//# opt: inline, joins, simplify, dce

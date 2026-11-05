@@ -1,0 +1,28 @@
+fn lengths(%n: i32) -> (i32) {
+  let %a: imm [i32] = array_new(1i32, 2i32, 3i32)
+  let %b: mut [f64] = array_fill(%n, 0.5f64)
+  let %c: mut [i64] = array_alloc(%n)
+  let %d: imm [i32] = array_clone(%a)
+  let %s1: i32 = add(3i32, %n)
+  let %s2: i32 = add(%s1, %n)
+  let %s3: i32 = add(%s2, 3i32)
+  jump ret(%s3)
+}
+
+fn elements() -> (i32) {
+  let %a: imm [i32] = array_new(10i32, 20i32, 30i32)
+  let %f: imm [i32] = array_fill(4i32, 7i32)
+  let %m: mut [i32] = array_new(1i32, 2i32)
+  let = array_set(%m, 0i32, 5i32)
+  let %z: i32 = array_get(%m, 0i32)
+  let %frozen: imm [i32] = array_clone(%a)
+  let %s2: i32 = add(27i32, %z)
+  let %s3: i32 = add(%s2, 30i32)
+  jump ret(%s3)
+}
+
+fn out_of_bounds() -> (i32) {
+  let %f: imm [i32] = array_fill(2i32, 7i32)
+  let %y: i32 = array_get(%f, 2i32)
+  jump ret(%y)
+}

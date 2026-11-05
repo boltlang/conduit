@@ -1,0 +1,45 @@
+// An array made here has a known length, and an `imm` one known elements
+// at literal indices in bounds. A `mut` one's elements may have been set,
+// an index out of bounds traps, and a clone keeps what it can.
+
+fn lengths(%n: i32) -> (i32) {
+  let %a: imm [i32] = array_new(1i32, 2i32, 3i32)
+  let %b: mut [f64] = array_fill(%n, 0.5f64)
+  let %c: mut [i64] = array_alloc(%n)
+  let %d: imm [i32] = array_clone(%a)
+  let %la: i32 = array_len(%a)
+  let %lb: i32 = array_len(%b)
+  let %lc: i32 = array_len(%c)
+  let %ld: i32 = array_len(%d)
+  let %s1: i32 = add(%la, %lb)
+  let %s2: i32 = add(%s1, %lc)
+  let %s3: i32 = add(%s2, %ld)
+  jump ret(%s3)
+}
+
+fn elements() -> (i32) {
+  let %a: imm [i32] = array_new(10i32, 20i32, 30i32)
+  let %f: imm [i32] = array_fill(4i32, 7i32)
+  let %m: mut [i32] = array_new(1i32, 2i32)
+  let = array_set(%m, 0i32, 5i32)
+  let %x: i32 = array_get(%a, 1i32)
+  let %y: i32 = array_get(%f, 3i32)
+  let %z: i32 = array_get(%m, 0i32)
+  let %frozen: imm [i32] = array_clone(%a)
+  let %w: i32 = array_get(%frozen, 2i32)
+  let %s1: i32 = add(%x, %y)
+  let %s2: i32 = add(%s1, %z)
+  let %s3: i32 = add(%s2, %w)
+  jump ret(%s3)
+}
+
+fn out_of_bounds() -> (i32) {
+  let %f: imm [i32] = array_fill(2i32, 7i32)
+  let %y: i32 = array_get(%f, 2i32)
+  jump ret(%y)
+}
+
+//# run lengths(4i32) == 14i32
+//# run elements() == 62i32
+//# run out_of_bounds() traps
+//# opt: simplify
