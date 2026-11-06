@@ -1489,7 +1489,13 @@ doesn't need a deep stack.
   that still own objects, like the results, and reports objects with more
   counts than references (a missing `Drop`), with fewer (a `Drop` too
   many), references to freed objects, and garbage that only cycles keep
-  alive. A test program with `//# counted` runs that way and must leave
+  alive. With `Machine::cycles` on too, it collects cycles by trial
+  deletion (Bacon and Rajan, synchronous): an object that may be in a
+  cycle, which only a `Mut` object, a ref or an `any` can, is buffered when
+  a `drop` leaves it above 0, and the buffer is collected once it's full
+  or by `Machine::collect_cycles`. Tests run counted programs that way,
+  with a small buffer, so that collections happen in the middle of runs.
+  A test program with `//# counted` runs that way and must leave
   nothing. Without counting, `Dup` and `Drop` do nothing, and objects are
   never freed.
 

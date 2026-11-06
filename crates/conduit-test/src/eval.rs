@@ -37,8 +37,9 @@ pub fn check_runs_counted(p: &Program, m: &Module) -> Result<(), String> {
     runs(p, m, counting, all_freed, |_| Ok(()))
 }
 
-/// [`check_runs`] with reference counting on, then `leaks` on what each
-/// run that gave results left behind, with its results as roots.
+/// [`check_runs`] with reference counting on, and cycles collected, often,
+/// then `leaks` on what each run that gave results left behind, with its
+/// results as roots, after a last collection.
 pub fn check_runs_with_counts(
     p: &Program,
     m: &Module,
@@ -58,10 +59,15 @@ fn runs(
         let mut machine = Machine::new(m, TestHost);
         machine.fuel = Some(FUEL);
         machine.counting = counting;
+        // Cycles too, collected often, so that collections run in the
+        // middle of the program.
+        machine.cycles = counting;
+        machine.cycle_buffer = 8;
         let args = run.args.iter().map(|&l| Value::from(l)).collect();
         let mut leaks = None;
         let got = match machine.call(run.func, args) {
             Ok(values) => {
+                machine.collect_cycles();
                 leaks = Some(machine.leaks(&values));
                 values
                     .into_iter()

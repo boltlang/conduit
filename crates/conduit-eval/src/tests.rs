@@ -1322,3 +1322,45 @@ fn fn0() -> (i32) {{
         "fn0: undefined behavior: decref of a unique object"
     );
 }
+
+/// With cycles collected too, the cycle of a ref that holds a box of
+/// itself is freed, and a list it held with it; a shared object only the
+/// cycle and a root hold stays.
+#[test]
+fn cycles_are_collected() {
+    let src = format!(
+        "{LIST_TEXT}
+data Pair {{
+  (mut any, imm List)
+}}
+
+fn fn0() -> (imm List) {{
+  let %u: mut any = undefined()
+  let %r: ref mut any = ref_new(%u)
+  let %nil: imm List = new List.0()
+  let %kept: imm List = new List.1(1i32, %nil)
+  let = dup(%kept)
+  let = dup(%r)
+  let %a: mut any = box[ref mut any](%r)
+  let %p: mut Pair = new Pair.0(%a, %kept)
+  let %b: mut any = box[mut Pair](%p)
+  let = ref_set(%r, %b)
+  let = drop(%r)
+  jump ret(%kept)
+}}"
+    );
+    let m = conduit_ir::text::parse(&src).unwrap();
+    verify_module(&m).unwrap();
+    let mut machine = Machine::new(&m, NoHost);
+    machine.counting = true;
+    machine.cycles = true;
+    let results = machine.call(FuncId(0), vec![]).unwrap();
+    assert_eq!(machine.leaks(&results).cycles.len(), 4);
+    machine.collect_cycles();
+    let leaks = machine.leaks(&results);
+    assert!(leaks.is_empty(), "{leaks}");
+    let Value::Obj(kept) = results[0] else {
+        panic!()
+    };
+    assert_eq!(machine.count(kept), Some(Count::Live(1)));
+}

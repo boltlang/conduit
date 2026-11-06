@@ -1,9 +1,10 @@
 //! Inserts reuse and reference counts into every test program with `run`
 //! checks,
 //! then checks that the result verifies and still passes the `run` checks
-//! in the evaluator with counting on, with every count right: nothing
-//! undropped, dropped too often or used after it's freed. Cycles, and what
-//! a continuation that's never resumed holds, may still be left.
+//! in the evaluator with counting on and cycles collected, with every count
+//! right: nothing undropped, dropped too often or used after it's freed,
+//! and no cycles left. What a continuation that's never resumed holds may
+//! still be left.
 //!
 //! It does so for the program as written, after the optimizer, and after
 //! lowering effects by evidence passing and then optimizing, each time with
@@ -72,7 +73,7 @@ fn run(p: &Program, m: &Module, when: &str) -> Result<(), String> {
 }
 
 fn counts_ok(leaks: &Leaks) -> Result<(), String> {
-    match leaks.counts_ok() {
+    match leaks.counts_ok() && leaks.cycles.is_empty() {
         true => Ok(()),
         false => Err(leaks.to_string()),
     }
