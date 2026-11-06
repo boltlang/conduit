@@ -41,7 +41,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use conduit_ir::{Block, DataId, FuncId, Module, Mutability, Op, Tail, Ty};
+use conduit_ir::{DataId, FuncId, Module, Mutability, Op, Ty};
 use wasm_encoder::{BlockType, Instruction as I, ValType};
 
 use crate::func::{Body, load, store};
@@ -185,7 +185,7 @@ impl Runtime {
                         tys.push(t);
                     }
                 }
-                children(b, &mut todo);
+                todo.extend(b.children());
             }
         }
         for d in m.data.values() {
@@ -1707,19 +1707,5 @@ pub(crate) fn lower_alloc(heads: u32) -> Body {
     Body {
         locals: vec![ValType::I32, ValType::I32, ValType::I32],
         code,
-    }
-}
-
-fn children<'b>(b: &'b Block, out: &mut Vec<&'b Block>) {
-    match &b.tail {
-        Tail::Join { defs, body, .. } => {
-            out.extend(defs.iter().map(|d| &d.body));
-            out.push(body);
-        }
-        Tail::Case { arms, default, .. } => {
-            out.extend(arms.iter().map(|a| &a.body));
-            out.extend(default.as_deref());
-        }
-        _ => {}
     }
 }

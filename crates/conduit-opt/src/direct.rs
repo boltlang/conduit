@@ -46,7 +46,7 @@ use conduit_ir::{
 };
 
 use crate::Pass;
-use crate::inline::{MAX_CALLEE_SIZE, MAX_CALLER_SIZE, Rename, has_op, new_label, size};
+use crate::inline::{MAX_CALLEE_SIZE, MAX_CALLER_SIZE, Rename, has_op};
 
 /// The pass that runs handlers directly.
 pub struct Direct;
@@ -72,23 +72,13 @@ pub fn direct(p: &dyn Program, f: &mut Func) -> bool {
                 closures.insert(*c, (*g, ms.clone(), rs.clone(), l.args.clone()));
             }
         }
-        match &b.tail {
-            Tail::Join { defs, body, .. } => {
-                todo.extend(defs.iter().map(|d| &d.body));
-                todo.push(body);
-            }
-            Tail::Case { arms, default, .. } => {
-                todo.extend(arms.iter().map(|a| &a.body));
-                todo.extend(default.as_deref());
-            }
-            Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
-        }
+        todo.extend(b.children());
     }
     let body = std::mem::replace(&mut f.body, Tail::Unreachable.into());
     let mut cx = Cx {
         p,
         closures,
-        size: size(&body),
+        size: body.size(),
         changed: false,
     };
     f.body = cx.block(body, f);
@@ -139,7 +129,7 @@ impl<'p> Cx<'p> {
         let closure = self.closures.get(c)?.clone();
         let body = self.p.func(closure.0)?;
         if body.params.len() != closure.3.len()
-            || size(&body.body) > MAX_CALLEE_SIZE
+            || body.body.size() > MAX_CALLEE_SIZE
             || (body.mut_params.count > 0 && has_op(&body.body, &|op| matches!(op, Op::Box(_))))
         {
             return None;
@@ -154,13 +144,13 @@ impl<'p> Cx<'p> {
                     _ => let_row(self.p, body, l).is_nothing(),
                 };
             }
-            children(b, &mut todo);
+            todo.extend(b.children());
         }
         if !ok {
             return None;
         }
         let mut clauses = Vec::new();
-        let mut copies = size(&body.body);
+        let mut copies = body.body.size();
         for &c in &decl.ops {
             let cf = self.p.func(c)?;
             let clause = match plain_call(cf) {
@@ -168,10 +158,10 @@ impl<'p> Cx<'p> {
                 _ => Clause::Aborts(aborting(cf)?),
             };
             let (Clause::Resumes(cf) | Clause::Aborts(cf)) = &clause;
-            if size(&cf.body) > MAX_CALLEE_SIZE {
+            if cf.body.size() > MAX_CALLEE_SIZE {
                 return None;
             }
-            copies += size(&cf.body);
+            copies += cf.body.size();
             clauses.push(clause);
         }
         if self.size + copies > MAX_CALLER_SIZE {
@@ -254,9 +244,9 @@ impl<'p> Cx<'p> {
             }
             _ => None,
         };
-        let after_label = direct.unwrap_or_else(|| new_label(f));
+        let after_label = direct.unwrap_or_else(|| f.new_label());
         // `done(xs..)`: the body returned, so the return clause runs.
-        let done = new_label(f);
+        let done = f.new_label();
         let xs: Vec<Var> = (h.body.results.iter())
             .map(|t| f.new_var(subst_all(t, &margs, &rows)))
             .collect();
@@ -287,7 +277,7 @@ impl<'p> Cx<'p> {
             callee: h.body,
         };
         let body = r.block(&h.body.body, f);
-        self.size += size(&body);
+        self.size += body.size();
         let mut clauses = Clauses {
             effect: h.effect,
             clauses: &h.clauses,
@@ -399,7 +389,7 @@ impl Clauses<'_> {
             Clause::Resumes(cf) => (cf, true),
             Clause::Aborts(cf) => (cf, false),
         };
-        self.size += size(&cf.body);
+        self.size += cf.body.size();
         let xs: Vec<Atom> = perform.binds.iter().map(|&v| Atom::Var(v)).collect();
         // A resuming clause gives what the `perform` gives, to the rest; an
         // aborting one what the `handle` gives.
@@ -410,7 +400,7 @@ impl Clauses<'_> {
             _ => None,
         };
         let ret = if resumes {
-            direct.unwrap_or_else(|| new_label(f))
+            direct.unwrap_or_else(|| f.new_label())
         } else {
             self.after
         };
@@ -436,19 +426,5 @@ impl Clauses<'_> {
             body: Box::new(copy),
         }
         .into()
-    }
-}
-
-fn children<'b>(b: &'b Block, out: &mut Vec<&'b Block>) {
-    match &b.tail {
-        Tail::Join { defs, body, .. } => {
-            out.extend(defs.iter().map(|d| &d.body));
-            out.push(body);
-        }
-        Tail::Case { arms, default, .. } => {
-            out.extend(arms.iter().map(|a| &a.body));
-            out.extend(default.as_deref());
-        }
-        Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
     }
 }

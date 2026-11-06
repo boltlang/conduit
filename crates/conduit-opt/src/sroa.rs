@@ -46,7 +46,7 @@ struct Candidate {
 /// escape. Returns whether anything changed.
 pub fn sroa(p: &dyn Program, f: &mut Func) -> bool {
     let mut candidates: BTreeMap<Var, Candidate> = BTreeMap::new();
-    walk(&f.body, &mut |b| {
+    f.body.walk(|b| {
         for l in &b.lets {
             let [x] = l.binds[..] else { continue };
             let ty = f.var_ty(x);
@@ -83,7 +83,7 @@ pub fn sroa(p: &dyn Program, f: &mut Func) -> bool {
     // Every use other than as the object of an access it can replace keeps
     // a candidate, such as being the value a `set` stores.
     let mut kept = BTreeSet::new();
-    walk(&f.body, &mut |b| {
+    f.body.walk(|b| {
         for l in &b.lets {
             for (j, a) in l.args.iter().enumerate() {
                 let Atom::Var(v) = a else { continue };
@@ -232,24 +232,5 @@ impl Cx<'_> {
             args,
             source: l.source,
         });
-    }
-}
-
-/// Calls `visit` on every block, nested ones included, without recursion.
-fn walk<'a>(b: &'a Block, visit: &mut impl FnMut(&'a Block)) {
-    let mut todo = vec![b];
-    while let Some(b) = todo.pop() {
-        visit(b);
-        match &b.tail {
-            Tail::Join { defs, body, .. } => {
-                todo.extend(defs.iter().map(|d| &d.body));
-                todo.push(body);
-            }
-            Tail::Case { arms, default, .. } => {
-                todo.extend(arms.iter().map(|a| &a.body));
-                todo.extend(default.as_deref());
-            }
-            Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
-        }
     }
 }

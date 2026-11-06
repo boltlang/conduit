@@ -281,28 +281,9 @@ fn same_margs(f: &Func) -> Vec<Mutability> {
     (1..=f.mut_params.count).map(Mutability::Param).collect()
 }
 
-/// Calls `visit` on every block, nested ones included, without recursion.
-fn walk<'a>(b: &'a Block, visit: &mut impl FnMut(&'a Block)) {
-    let mut todo = vec![b];
-    while let Some(b) = todo.pop() {
-        visit(b);
-        match &b.tail {
-            Tail::Join { defs, body, .. } => {
-                todo.extend(defs.iter().map(|d| &d.body));
-                todo.push(body);
-            }
-            Tail::Case { arms, default, .. } => {
-                todo.extend(arms.iter().map(|a| &a.body));
-                todo.extend(default.as_deref());
-            }
-            Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
-        }
-    }
-}
-
 fn any_let(b: &Block, test: &mut impl FnMut(&Let) -> bool) -> bool {
     let mut found = false;
-    walk(b, &mut |b| found |= b.lets.iter().any(&mut *test));
+    b.walk(|b| found |= b.lets.iter().any(&mut *test));
     found
 }
 
@@ -310,7 +291,7 @@ fn any_let(b: &Block, test: &mut impl FnMut(&Let) -> bool) -> bool {
 fn free_vars(b: &Block) -> BTreeSet<Var> {
     let mut used = BTreeSet::new();
     let mut bound = BTreeSet::new();
-    walk(b, &mut |b| {
+    b.walk(|b| {
         for l in &b.lets {
             for a in &l.args {
                 if let Atom::Var(x) = a {
@@ -346,7 +327,7 @@ fn free_vars(b: &Block) -> BTreeSet<Var> {
 /// The labels `b` jumps to.
 fn jumped_labels(b: &Block) -> BTreeSet<Label> {
     let mut labels = BTreeSet::new();
-    walk(b, &mut |b| {
+    b.walk(|b| {
         if let Tail::Jump { target, .. } = &b.tail {
             labels.insert(*target);
         }
@@ -357,7 +338,7 @@ fn jumped_labels(b: &Block) -> BTreeSet<Label> {
 /// The labels `b` defines.
 fn defined_labels(b: &Block) -> BTreeSet<Label> {
     let mut labels = BTreeSet::new();
-    walk(b, &mut |b| {
+    b.walk(|b| {
         if let Tail::Join { defs, .. } = &b.tail {
             labels.extend(defs.iter().map(|d| d.label));
         }
@@ -518,7 +499,7 @@ impl Lower {
         // time.
         let mut discontinued: Vec<(EffectId, u32, Vec<Ty>)> = Vec::new();
         for f in self.src.funcs.values() {
-            walk(&f.body, &mut |b| {
+            f.body.walk(|b| {
                 for l in &b.lets {
                     if let (Op::Discontinue(e, i), Some(Atom::Var(k))) = (&l.op, l.args.first())
                         && let Some(Ty::Cont(sig)) = f.vars.get(k.0 as usize)

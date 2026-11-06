@@ -47,7 +47,7 @@ pub fn inline_joins(p: &dyn Program, f: &mut Func) -> bool {
     let mut jumps = HashMap::new();
     let mut known = BTreeSet::new();
     let mut size = 0;
-    walk(&f.body, &mut |b| {
+    f.body.walk(|b| {
         size += b.lets.len() + 1;
         for l in &b.lets {
             let is_known = match (&l.op, &l.binds[..]) {
@@ -72,7 +72,7 @@ pub fn inline_joins(p: &dyn Program, f: &mut Func) -> bool {
     // The definitions this run moves: those of a `join` that isn't
     // recursive, which only one jump goes to.
     let mut moved = BTreeSet::new();
-    walk(&f.body, &mut |b| {
+    f.body.walk(|b| {
         if let Tail::Join {
             rec: false, defs, ..
         } = &b.tail
@@ -85,7 +85,7 @@ pub fn inline_joins(p: &dyn Program, f: &mut Func) -> bool {
     // The definitions that may be copied, as they are before this run
     // changes them, and the parameters they `case` on.
     let mut copyable = HashMap::new();
-    walk(&f.body, &mut |b| {
+    f.body.walk(|b| {
         let Tail::Join {
             rec: false, defs, ..
         } = &b.tail
@@ -93,9 +93,7 @@ pub fn inline_joins(p: &dyn Program, f: &mut Func) -> bool {
             return;
         };
         for d in defs {
-            if jumps.get(&d.label).copied().unwrap_or(0) < 2
-                || block_size(&d.body) > MAX_CALLEE_SIZE
-            {
+            if jumps.get(&d.label).copied().unwrap_or(0) < 2 || d.body.size() > MAX_CALLEE_SIZE {
                 continue;
             }
             let scrutinized: Vec<usize> = (0..d.params.len())
@@ -109,7 +107,7 @@ pub fn inline_joins(p: &dyn Program, f: &mut Func) -> bool {
             // would be left without it.
             let inner = defined_labels(&d.body);
             let mut jumps_to_moved = false;
-            walk(&d.body, &mut |b| {
+            d.body.walk(|b| {
                 if let Tail::Jump { target, .. } = &b.tail {
                     jumps_to_moved |= !inner.contains(target) && moved.contains(target);
                 }
@@ -252,7 +250,7 @@ impl Cx {
         {
             return None;
         }
-        let grown = block_size(&d.body);
+        let grown = d.body.size();
         if self.size + grown > MAX_CALLER_SIZE {
             return None;
         }
@@ -261,7 +259,7 @@ impl Cx {
         s.vars
             .extend(d.params.iter().copied().zip(args.iter().cloned()));
         // Fresh variables and labels for what the copy binds and defines.
-        walk(&d.body, &mut |b| {
+        d.body.walk(|b| {
             for l in &b.lets {
                 s.fresh.extend(l.binds.iter().copied());
             }
@@ -380,36 +378,10 @@ impl Subst {
     }
 }
 
-/// Calls `visit` on every block, nested ones included, without recursion.
-fn walk<'a>(b: &'a Block, visit: &mut impl FnMut(&'a Block)) {
-    let mut todo = vec![b];
-    while let Some(b) = todo.pop() {
-        visit(b);
-        match &b.tail {
-            Tail::Join { defs, body, .. } => {
-                todo.extend(defs.iter().map(|d| &d.body));
-                todo.push(body);
-            }
-            Tail::Case { arms, default, .. } => {
-                todo.extend(arms.iter().map(|a| &a.body));
-                todo.extend(default.as_deref());
-            }
-            Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
-        }
-    }
-}
-
-/// How big a block is: its `let`s and tails, nested ones included.
-fn block_size(b: &Block) -> usize {
-    let mut n = 0;
-    walk(b, &mut |b| n += b.lets.len() + 1);
-    n
-}
-
 /// Whether a `case` in `b` is on `v`.
 fn cases_on(b: &Block, v: Var) -> bool {
     let mut found = false;
-    walk(b, &mut |b| {
+    b.walk(|b| {
         found |= matches!(&b.tail, Tail::Case { scrut: Atom::Var(s), .. } if *s == v);
     });
     found
@@ -418,7 +390,7 @@ fn cases_on(b: &Block, v: Var) -> bool {
 /// The labels `b` defines.
 fn defined_labels(b: &Block) -> BTreeSet<Label> {
     let mut labels = BTreeSet::new();
-    walk(b, &mut |b| {
+    b.walk(|b| {
         if let Tail::Join { defs, .. } = &b.tail {
             labels.extend(defs.iter().map(|d| d.label));
         }
@@ -431,7 +403,7 @@ fn mentions_cont(b: &Block, vars: &[Ty]) -> bool {
     let is_cont = |v: &Var| matches!(vars.get(v.0 as usize), Some(Ty::Cont(_)));
     let atom_cont = |a: &Atom| matches!(a, Atom::Var(v) if is_cont(v));
     let mut found = false;
-    walk(b, &mut |b| {
+    b.walk(|b| {
         for l in &b.lets {
             found |= l.args.iter().any(atom_cont) || l.binds.iter().any(is_cont);
         }

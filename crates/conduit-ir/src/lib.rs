@@ -32,7 +32,7 @@ pub use module::{
 };
 pub use op::{Effects, Memory, Op, Prim, Sign};
 pub use row::Row;
-pub use term::{Arm, Atom, Block, JoinDef, Let, Lit, Tag, Tail};
+pub use term::{Arm, Atom, Block, Blocks, JoinDef, Let, Lit, Tag, Tail};
 pub use ty::{CtorDecl, Mutability, Sig, Ty};
 
 /// How passes reach items other than the function they work on. Each

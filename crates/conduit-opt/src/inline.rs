@@ -58,42 +58,16 @@ pub fn inline(p: &dyn Program, id: FuncId, f: &mut Func) -> bool {
     let mut cx = Cx {
         p,
         id,
-        size: size(&body),
+        size: body.size(),
         changed: false,
     };
     f.body = cx.block(body, f);
     cx.changed
 }
 
-/// How big a block is: its `let`s and tails, nested ones included.
-pub(crate) fn size(b: &Block) -> usize {
-    b.lets.len()
-        + 1
-        + match &b.tail {
-            Tail::Join { defs, body, .. } => {
-                defs.iter().map(|d| size(&d.body)).sum::<usize>() + size(body)
-            }
-            Tail::Case { arms, default, .. } => {
-                arms.iter().map(|a| size(&a.body)).sum::<usize>()
-                    + default.as_deref().map_or(0, size)
-            }
-            Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => 0,
-        }
-}
-
 /// Whether some op in `b` is one that `is` holds for.
 pub(crate) fn has_op(b: &Block, is: &dyn Fn(&Op) -> bool) -> bool {
-    b.lets.iter().any(|l| is(&l.op))
-        || match &b.tail {
-            Tail::Join { defs, body, .. } => {
-                defs.iter().any(|d| has_op(&d.body, is)) || has_op(body, is)
-            }
-            Tail::Case { arms, default, .. } => {
-                arms.iter().any(|a| has_op(&a.body, is))
-                    || default.as_deref().is_some_and(|d| has_op(d, is))
-            }
-            Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => false,
-        }
+    b.blocks().any(|b| b.lets.iter().any(|l| is(&l.op)))
 }
 
 struct Cx<'p> {
@@ -114,7 +88,7 @@ impl<'p> Cx<'p> {
             return None;
         }
         let callee = self.p.func(g)?;
-        let n = size(&callee.body);
+        let n = callee.body.size();
         let ok = n <= MAX_CALLEE_SIZE
             && self.size + n <= MAX_CALLER_SIZE
             && !self.recursive(g, callee)
@@ -196,7 +170,7 @@ impl<'p> Cx<'p> {
     /// of the block it's in.
     fn inline_call(&mut self, callee: &Func, call: Let, after: Block, f: &mut Func) -> Block {
         self.changed = true;
-        self.size += size(&callee.body);
+        self.size += callee.body.size();
         let Op::Call(_, margs, rows) = call.op else {
             unreachable!("only calls are inlined")
         };
@@ -209,7 +183,7 @@ impl<'p> Cx<'p> {
             }
             _ => None,
         };
-        let ret = direct.unwrap_or_else(|| new_label(f));
+        let ret = direct.unwrap_or_else(|| f.new_label());
         let mut r = Rename {
             vars: callee
                 .params
@@ -238,11 +212,6 @@ impl<'p> Cx<'p> {
         }
         .into()
     }
-}
-
-pub(crate) fn new_label(f: &mut Func) -> Label {
-    f.labels += 1;
-    Label(f.labels - 1)
 }
 
 /// A copy of a callee's body for the caller.
@@ -296,7 +265,7 @@ impl Rename<'_> {
         if let Some(&new) = self.labels.get(&l) {
             return new;
         }
-        let new = new_label(f);
+        let new = f.new_label();
         if let Some(name) = self.callee.debug.labels.get(&l) {
             f.debug.labels.insert(new, name.clone());
         }

@@ -500,17 +500,7 @@ fn reads_fields(b: &Block, obj: &Atom) -> bool {
         {
             return true;
         }
-        match &b.tail {
-            Tail::Join { defs, body, .. } => {
-                todo.extend(defs.iter().map(|d| &d.body));
-                todo.push(body);
-            }
-            Tail::Case { arms, default, .. } => {
-                todo.extend(arms.iter().map(|a| &a.body));
-                todo.extend(default.as_deref());
-            }
-            Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
-        }
+        todo.extend(b.children());
     }
     false
 }

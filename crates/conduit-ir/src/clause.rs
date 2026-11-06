@@ -45,17 +45,7 @@ pub fn plain_call(f: &Func) -> Option<Func> {
 /// Whether some way out of `f`, a plain function from [`plain_call`],
 /// discontinues.
 pub fn discontinues(f: &Func) -> bool {
-    fn block(b: &Block) -> bool {
-        b.lets.iter().any(|l| matches!(l.op, Op::Discontinue(..)))
-            || match &b.tail {
-                Tail::Join { defs, body, .. } => defs.iter().any(|d| block(&d.body)) || block(body),
-                Tail::Case { arms, default, .. } => {
-                    arms.iter().any(|a| block(&a.body)) || default.as_deref().is_some_and(block)
-                }
-                Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => false,
-            }
-    }
-    block(&f.body)
+    (f.body.blocks()).any(|b| b.lets.iter().any(|l| matches!(l.op, Op::Discontinue(..))))
 }
 
 /// The clause `f` without its continuation `k`, its last parameter, if
@@ -93,38 +83,21 @@ fn strip_counts(b: &mut Block, k: Var) {
             let counts = matches!(l.op, Op::Dup | Op::Drop | Op::Free | Op::DecRef);
             !(counts && l.args == [Atom::Var(k)])
         });
-        match &mut b.tail {
-            Tail::Join { defs, body, .. } => {
-                todo.extend(defs.iter_mut().map(|d| &mut d.body));
-                todo.push(body);
-            }
-            Tail::Case { arms, default, .. } => {
-                todo.extend(arms.iter_mut().map(|a| &mut a.body));
-                todo.extend(default.as_deref_mut());
-            }
-            Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
-        }
+        todo.extend(b.children_mut());
     }
 }
 
 /// Whether `b` uses `v` anywhere.
 fn uses(b: &Block, v: Var) -> bool {
-    let has = |args: &[Atom]| args.contains(&Atom::Var(v));
-    b.lets.iter().any(|l| has(&l.args))
-        || match &b.tail {
-            Tail::Jump { args, .. } => has(args),
-            Tail::Join { defs, body, .. } => defs.iter().any(|d| uses(&d.body, v)) || uses(body, v),
-            Tail::Case {
-                scrut,
-                arms,
-                default,
-            } => {
-                *scrut == Atom::Var(v)
-                    || arms.iter().any(|a| uses(&a.body, v))
-                    || default.as_deref().is_some_and(|d| uses(d, v))
+    let v = Atom::Var(v);
+    b.blocks().any(|b| {
+        b.lets.iter().any(|l| l.args.contains(&v))
+            || match &b.tail {
+                Tail::Jump { args, .. } => args.contains(&v),
+                Tail::Case { scrut, .. } => *scrut == v,
+                Tail::Join { .. } | Tail::Unreachable | Tail::Trap => false,
             }
-            Tail::Unreachable | Tail::Trap => false,
-        }
+    })
 }
 
 struct Rewrite<'a> {

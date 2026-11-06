@@ -66,6 +66,68 @@ impl Block {
         self.lets.insert(0, l);
         self
     }
+
+    /// The blocks this one ends in, directly: a `join`'s definitions, then
+    /// its body, or a `case`'s arms, then its default.
+    pub fn children(&self) -> impl Iterator<Item = &Block> {
+        let (defs, body, arms, default) = match &self.tail {
+            Tail::Join { defs, body, .. } => (&defs[..], Some(&**body), &[][..], None),
+            Tail::Case { arms, default, .. } => (&[][..], None, &arms[..], default.as_deref()),
+            Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => (&[][..], None, &[][..], None),
+        };
+        (defs.iter().map(|d| &d.body))
+            .chain(body)
+            .chain(arms.iter().map(|a| &a.body))
+            .chain(default)
+    }
+
+    /// [`children`](Self::children), to change.
+    pub fn children_mut(&mut self) -> impl Iterator<Item = &mut Block> {
+        let (defs, body, arms, default) = match &mut self.tail {
+            Tail::Join { defs, body, .. } => (&mut defs[..], Some(&mut **body), &mut [][..], None),
+            Tail::Case { arms, default, .. } => {
+                (&mut [][..], None, &mut arms[..], default.as_deref_mut())
+            }
+            Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {
+                (&mut [][..], None, &mut [][..], None)
+            }
+        };
+        (defs.iter_mut().map(|d| &mut d.body))
+            .chain(body)
+            .chain(arms.iter_mut().map(|a| &mut a.body))
+            .chain(default)
+    }
+
+    /// This block and every block nested in it, without recursion: a block
+    /// comes before the blocks it ends in, which come last to first.
+    pub fn blocks(&self) -> Blocks<'_> {
+        Blocks { todo: vec![self] }
+    }
+
+    /// Calls `visit` on each of [`blocks`](Self::blocks).
+    pub fn walk<'a>(&'a self, mut visit: impl FnMut(&'a Block)) {
+        self.blocks().for_each(&mut visit);
+    }
+
+    /// How big this block is: its `let`s and tails, nested ones included.
+    pub fn size(&self) -> usize {
+        self.blocks().map(|b| b.lets.len() + 1).sum()
+    }
+}
+
+/// The blocks of [`Block::blocks`].
+pub struct Blocks<'a> {
+    todo: Vec<&'a Block>,
+}
+
+impl<'a> Iterator for Blocks<'a> {
+    type Item = &'a Block;
+
+    fn next(&mut self) -> Option<&'a Block> {
+        let b = self.todo.pop()?;
+        self.todo.extend(b.children());
+        Some(b)
+    }
 }
 
 /// A block without `let`s.

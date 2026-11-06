@@ -150,7 +150,7 @@ pub fn borrows(m: &Module) -> Borrows {
                         give(a, &mut owned);
                     }
                 }
-                children(block, &mut todo);
+                todo.extend(block.children());
             }
         }
         let mut changed = false;
@@ -191,7 +191,7 @@ fn lent_vars(id: FuncId, f: &Func, b: &Borrows) -> Set {
                 lent.insert(*y);
             }
         }
-        children(block, &mut todo);
+        todo.extend(block.children());
     }
     lent
 }
@@ -242,7 +242,7 @@ fn each_let(b: &Block, f: &mut impl FnMut(&Let)) {
     let mut todo = vec![b];
     while let Some(b) = todo.pop() {
         b.lets.iter().for_each(&mut *f);
-        children(b, &mut todo);
+        todo.extend(b.children());
     }
 }
 
@@ -286,7 +286,7 @@ pub fn count_func(id: FuncId, f: &mut Func, borrows: &Borrows) -> Result<(), Str
                 _ => {}
             }
         }
-        children(b, &mut todo);
+        todo.extend(b.children());
     }
     let mut cx = Counts {
         counted,
@@ -333,7 +333,7 @@ impl Counts<'_> {
             if let Tail::Join { defs: ds, .. } = &b.tail {
                 defs.extend(ds);
             }
-            children(b, &mut todo);
+            todo.extend(b.children());
         }
         loop {
             let mut changed = false;
@@ -593,21 +593,6 @@ fn is_object(ty: &Ty) -> bool {
     )
 }
 
-/// The blocks `b` ends in.
-fn children<'b>(b: &'b Block, out: &mut Vec<&'b Block>) {
-    match &b.tail {
-        Tail::Join { defs, body, .. } => {
-            out.extend(defs.iter().map(|d| &d.body));
-            out.push(body);
-        }
-        Tail::Case { arms, default, .. } => {
-            out.extend(arms.iter().map(|a| &a.body));
-            out.extend(default.as_deref());
-        }
-        Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
-    }
-}
-
 /// Specializes the `drop`s of every function of `m` that [`insert_counts`]
 /// counted: see [`specialize_func`].
 pub fn specialize_drops(m: &mut Module) {
@@ -648,7 +633,7 @@ pub fn specialize_func(data: &BTreeMap<DataId, DataDecl>, f: &mut Func) {
                 reads.insert(*y, (*x, *c, *i));
             }
         }
-        children(b, &mut todo);
+        todo.extend(b.children());
     }
     let body = std::mem::replace(&mut f.body, Tail::Unreachable.into());
     f.body = Specialize { data, f, reads }.block(body);
@@ -1066,11 +1051,7 @@ fn reuse_func(shapes: &Module, f: &mut Func) {
     let vars = &mut f.vars;
     while let Some(b) = todo.pop() {
         match &mut b.tail {
-            Tail::Case {
-                scrut,
-                arms,
-                default,
-            } => {
+            Tail::Case { scrut, arms, .. } => {
                 for arm in arms.iter_mut() {
                     if let (Atom::Var(x), Tag::Ctor(c)) = (&*scrut, arm.tag)
                         && matches!(vars[x.0 as usize], Ty::Data(..))
@@ -1078,15 +1059,10 @@ fn reuse_func(shapes: &Module, f: &mut Func) {
                         reuse_arm(&cx, shapes, &mut arm.body, *x, c, vars);
                     }
                 }
-                todo.extend(arms.iter_mut().map(|a| &mut a.body));
-                todo.extend(default.as_deref_mut());
             }
-            Tail::Join { defs, body, .. } => {
-                todo.extend(defs.iter_mut().map(|d| &mut d.body));
-                todo.push(body);
-            }
-            Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
+            Tail::Join { .. } | Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
         }
+        todo.extend(b.children_mut());
     }
 }
 

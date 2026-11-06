@@ -976,17 +976,7 @@ fn with_thunks(m: &Module) -> (Module, BTreeMap<(EffectId, u32), FuncId>) {
                     ops.insert((*e, *i));
                 }
             }
-            match &b.tail {
-                conduit_ir::Tail::Join { defs, body, .. } => {
-                    todo.extend(defs.iter().map(|d| &d.body));
-                    todo.push(body);
-                }
-                conduit_ir::Tail::Case { arms, default, .. } => {
-                    todo.extend(arms.iter().map(|a| &a.body));
-                    todo.extend(default.as_deref());
-                }
-                _ => {}
-            }
+            todo.extend(b.children());
         }
     }
     let mut out = m.clone();

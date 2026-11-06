@@ -87,7 +87,7 @@ fn promotable(f: &Func) -> BTreeSet<Var> {
             Atom::Lit(_) => None,
         }));
     };
-    walk(&f.body, &mut |b| {
+    f.body.walk(|b| {
         for l in &b.lets {
             match l.op {
                 Op::RefNew => {
@@ -118,7 +118,7 @@ fn promotable(f: &Func) -> BTreeSet<Var> {
 /// its join definition reads before writing.
 fn needs(f: &Func, refs: &BTreeSet<Var>) -> Vec<BTreeSet<Var>> {
     let mut defs: Vec<&JoinDef> = Vec::new();
-    walk(&f.body, &mut |b| {
+    f.body.walk(|b| {
         if let Tail::Join { defs: ds, .. } = &b.tail {
             defs.extend(ds);
         }
@@ -291,24 +291,5 @@ impl Rewrite<'_> {
             Tail::Trap => Tail::Trap,
         };
         Block { lets, tail }
-    }
-}
-
-/// Calls `visit` on every block, without recursion.
-fn walk<'a>(b: &'a Block, visit: &mut impl FnMut(&'a Block)) {
-    let mut todo = vec![b];
-    while let Some(b) = todo.pop() {
-        visit(b);
-        match &b.tail {
-            Tail::Join { defs, body, .. } => {
-                todo.extend(defs.iter().map(|d| &d.body));
-                todo.push(body);
-            }
-            Tail::Case { arms, default, .. } => {
-                todo.extend(arms.iter().map(|a| &a.body));
-                todo.extend(default.as_deref());
-            }
-            Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
-        }
     }
 }

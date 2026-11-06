@@ -296,7 +296,7 @@ fn func_with(names: &Items, id: FuncId, f: &Func) -> String {
 
     let mut bound = BTreeSet::new();
     let mut max_label = 0;
-    walk(&f.body, &mut |b| {
+    f.body.walk(|b| {
         for l in &b.lets {
             bound.extend(l.binds.iter().copied());
         }
@@ -371,25 +371,6 @@ fn spell_locals(text: &str, f: &Func) -> String {
         while chars.next().is_some_and(|(i, _)| i < end) {}
     }
     out
-}
-
-/// Calls `visit` on every block, without recursion.
-fn walk<'a>(b: &'a Block, visit: &mut impl FnMut(&'a Block)) {
-    let mut todo = vec![b];
-    while let Some(b) = todo.pop() {
-        visit(b);
-        match &b.tail {
-            Tail::Join { defs, body, .. } => {
-                todo.extend(defs.iter().map(|d| &d.body));
-                todo.push(body);
-            }
-            Tail::Case { arms, default, .. } => {
-                todo.extend(arms.iter().map(|a| &a.body));
-                todo.extend(default.as_deref());
-            }
-            Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
-        }
-    }
 }
 
 struct Printer<'a> {

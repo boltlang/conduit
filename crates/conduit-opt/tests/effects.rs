@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 use conduit_eval::{Machine, ObjId, Object, Value};
 use conduit_ir::text;
 use conduit_ir::verify::verify_module;
-use conduit_ir::{Module, Op, Tail};
+use conduit_ir::{Module, Op};
 use conduit_test::{CheckKind, Program};
 
 fn main() {
@@ -174,17 +174,7 @@ fn effects_left(m: &Module) -> Option<String> {
                     return Some(format!("an effect op in {id}"));
                 }
             }
-            match &b.tail {
-                Tail::Join { defs, body, .. } => {
-                    todo.extend(defs.iter().map(|d| &d.body));
-                    todo.push(body);
-                }
-                Tail::Case { arms, default, .. } => {
-                    todo.extend(arms.iter().map(|a| &a.body));
-                    todo.extend(default.as_deref());
-                }
-                Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
-            }
+            todo.extend(b.children());
         }
     }
     None
