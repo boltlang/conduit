@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use conduit_ir::verify::subst_params;
+use conduit_ir::types::subst_params;
 use conduit_ir::{
     Atom, Block, ConstId, ConstValue, EffectId, Extern, ExternId, Func, FuncId, HandlerId, JoinDef,
     Label, Mutability, Op, Program, Row, Sig, SourceId, Tag, Tail, Ty, Var,

@@ -36,7 +36,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use conduit_ir::verify::deep_imm;
+use conduit_ir::types::deep_imm;
 use conduit_ir::{Atom, Block, Func, FuncId, Label, Let, Mutability, Op, Program, Tail, Ty, Var};
 
 use crate::Pass;

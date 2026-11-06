@@ -123,7 +123,7 @@ pub enum Op {
     ReuseToken,
     /// `New`, in the memory of a reuse token if it has some. Args: the
     /// token, of a constructor of the same shape (see
-    /// [`same_shape`](crate::verify::same_shape)), then the fields.
+    /// [`same_shape`](crate::types::same_shape)), then the fields.
     Reuse(CtorId),
 }
 
@@ -183,6 +183,29 @@ impl Op {
                 | Op::DropReuse
                 | Op::ReuseToken
         )
+    }
+
+    /// What an op may perform, given its arguments' types: an operation's
+    /// effect, a callee's, closure's or continuation's row, or a handler's. A
+    /// `discontinue` also performs its operation where the continuation was
+    /// captured.
+    pub fn row<P: crate::Program + ?Sized>(&self, p: &P, tys: &[Ty]) -> Row {
+        let first = || match tys.first() {
+            Some(Ty::Fn(sig, _) | Ty::Cont(sig)) => sig.row.clone(),
+            _ => Row::NOTHING,
+        };
+        match self {
+            Op::Perform(e, _) => Row::one(*e),
+            Op::Call(f, _, rows) => p
+                .func_sig(*f)
+                .map_or(Row::NOTHING, |sig| sig.row.subst(rows)),
+            Op::Apply | Op::Resume => first(),
+            Op::Discontinue(e, _) => first().union(&Row::one(*e)),
+            Op::Handle(h, rows) => p
+                .handler(*h)
+                .map_or(Row::NOTHING, |decl| decl.row.subst(rows)),
+            _ => Row::NOTHING,
+        }
     }
 
     pub fn effects(&self) -> Effects {

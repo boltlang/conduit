@@ -415,7 +415,7 @@ impl Cx<'_> {
         if let Some(&a) = self.consts.get(&c) {
             return Ok(Ok(a));
         }
-        match conduit_ir::verify::const_value(self.m, c) {
+        match conduit_ir::const_value(self.m, c) {
             Some(ConstValue::Lit(l)) => Ok(Err(*l)),
             _ => Err(format!("unknown constant {c}")),
         }
@@ -1087,7 +1087,7 @@ fn lay_out_value(
                 ConstValue::Lit(l) => lit_bytes(*l),
                 ConstValue::Const(id) => match lay_out_const(cx, data, *id)? {
                     Some(a) => a.to_le_bytes().to_vec(),
-                    None => match conduit_ir::verify::const_value(cx.m, *id) {
+                    None => match conduit_ir::const_value(cx.m, *id) {
                         Some(ConstValue::Lit(l)) => lit_bytes(*l),
                         _ => return Err(format!("unknown constant {id}")),
                     },
@@ -1097,7 +1097,7 @@ fn lay_out_value(
         };
     match (value, ty) {
         (ConstValue::Array(elems), Ty::Array(..)) => {
-            let elem = conduit_ir::verify::elem_ty(ty).unwrap();
+            let elem = conduit_ir::types::elem_ty(ty).unwrap();
             let size = Storage::of(&elem).size();
             let mut bytes = vec![0u8; 8 + size as usize * elems.len()];
             bytes[0..4].copy_from_slice(&immortal(cx));
@@ -1113,7 +1113,7 @@ fn lay_out_value(
             let decl = cx.fields(*c)?.to_vec();
             let tys: Vec<Ty> = decl
                 .iter()
-                .map(|f| conduit_ir::verify::resolve(f, *m, args, rows))
+                .map(|f| conduit_ir::types::resolve(f, *m, args, rows))
                 .collect();
             let (offsets, size) = layout(&tys);
             let mut bytes = vec![0u8; size as usize];

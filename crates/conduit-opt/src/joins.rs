@@ -20,7 +20,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use conduit_ir::verify::const_value;
+use conduit_ir::const_value;
 use conduit_ir::{
     Arm, Atom, Block, ConstValue, Func, FuncId, JoinDef, Label, Op, Program, Tail, Ty, Var,
 };

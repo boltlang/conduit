@@ -43,7 +43,7 @@
 
 use std::collections::HashMap;
 
-use conduit_ir::verify::const_value;
+use conduit_ir::const_value;
 use conduit_ir::{
     Arm, Atom, Block, ConstId, ConstValue, CtorId, Func, FuncId, JoinDef, Let, Lit, Mutability, Op,
     Prim, Program, Tag, Tail, Ty, Var,

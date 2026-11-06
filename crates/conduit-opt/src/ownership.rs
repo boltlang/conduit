@@ -42,7 +42,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use conduit_ir::verify::resolve;
+use conduit_ir::types::resolve;
 use conduit_ir::{
     Arm, Atom, Block, CtorId, DataDecl, DataId, Func, FuncId, JoinDef, Label, Let, Module,
     Mutability, Op, Tag, Tail, Ty, Var,
@@ -998,7 +998,7 @@ fn count_atom(op: Op, a: &Atom) -> Let {
 /// `C =>` of a `case` on `x` whose last use of `x` is in the arm's own
 /// block, right after it, and before the first `new C'(..)` after it of a
 /// constructor of the same shape (see
-/// [`same_shape`](conduit_ir::verify::same_shape)), or, if there's none in
+/// [`same_shape`](conduit_ir::types::same_shape)), or, if there's none in
 /// the block, at the start of each branch after it that has one:
 ///
 /// ```text
@@ -1081,7 +1081,7 @@ fn reuse_arm(
     };
     let found = from.and_then(|from| {
         let at = b.lets[from..].iter().position(|l| match l.op {
-            Op::New(c2) => conduit_ir::verify::same_shape(shapes, c, c2),
+            Op::New(c2) => conduit_ir::types::same_shape(shapes, c, c2),
             _ => false,
         });
         at.map(|j| (from, from + j))

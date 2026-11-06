@@ -24,7 +24,7 @@
 
 use std::collections::BTreeMap;
 
-use conduit_ir::verify::subst_all;
+use conduit_ir::types::subst_all;
 use conduit_ir::{
     Arm, Atom, Block, Func, FuncId, JoinDef, Label, Let, Mutability, Op, Program, Row, SourceId,
     Tail, Var,

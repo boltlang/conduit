@@ -149,6 +149,20 @@ pub struct Let {
     pub source: Option<SourceId>,
 }
 
+impl Let {
+    /// The effects this `let` of `f` may perform: its op's
+    /// ([`Op::row`]), with the types of its arguments.
+    pub fn row<P: crate::Program + ?Sized>(&self, p: &P, f: &crate::Func) -> crate::Row {
+        let tys: Vec<Ty> = (self.args.iter())
+            .map(|a| match a {
+                Atom::Var(v) => f.var_ty(*v).clone(),
+                Atom::Lit(lit) => lit.ty(),
+            })
+            .collect();
+        self.op.row(p, &tys)
+    }
+}
+
 /// What ends a block. A block's tail is its only exit, so every
 /// [`Tail::Jump`] is a tail jump by construction.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

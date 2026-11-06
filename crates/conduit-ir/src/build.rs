@@ -498,7 +498,7 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
         if let [v] = binds[..] {
             let made = match &op {
                 Op::New(c) => Some(*c),
-                Op::Const(id) => match crate::verify::const_value(self.p, *id) {
+                Op::Const(id) => match crate::const_value(self.p, *id) {
                     Some(ConstValue::New(c, _)) => Some(*c),
                     _ => None,
                 },
@@ -677,7 +677,7 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
             self.error(format!("unknown function {f}"));
             return self.func.new_var(Ty::I32);
         };
-        let sig = verify::subst_sig_rows(&verify::subst_sig(&sig, &margs), &rows);
+        let sig = crate::types::subst_sig_rows(&crate::types::subst_sig(&sig, &margs), &rows);
         let n = captures.len().min(sig.params.len());
         let rest = Sig {
             row: sig.row,
@@ -840,7 +840,7 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
         let elem = self
             .atom_ty(&array)
             .as_ref()
-            .and_then(crate::verify::elem_ty);
+            .and_then(crate::types::elem_ty);
         let out = elem.map(|elem| Ty::Array(Box::new(elem), m));
         self.emit1(Op::ArrayClone, vec![array], out)
     }

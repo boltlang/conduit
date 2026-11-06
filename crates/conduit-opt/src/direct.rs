@@ -39,7 +39,7 @@
 use std::collections::BTreeMap;
 
 use conduit_ir::clause::{aborting, discontinues, plain_call};
-use conduit_ir::verify::{let_row, subst_all};
+use conduit_ir::types::subst_all;
 use conduit_ir::{
     Atom, Block, EffectId, Func, FuncId, JoinDef, Label, Let, Mutability, Op, Program, Row, Tail,
     Var,
@@ -141,7 +141,7 @@ impl<'p> Cx<'p> {
             for l in &b.lets {
                 ok &= match l.op {
                     Op::Perform(e, _) => e == decl.effect,
-                    _ => let_row(self.p, body, l).is_nothing(),
+                    _ => l.row(self.p, body).is_nothing(),
                 };
             }
             todo.extend(b.children());

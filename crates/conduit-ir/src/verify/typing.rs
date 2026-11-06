@@ -2,9 +2,9 @@
 //! [`crate::build`]), so that they agree.
 
 use super::{
-    Allowed, Checked, at_most, elem_ty, fits, inherit, instantiate, object_mutability,
-    prim_results, resolve, row_ok, sub, subst_rows, subst_sig_rows, ty_ok,
+    Allowed, Checked, fits, instantiate, object_mutability, prim_results, row_ok, sub, ty_ok,
 };
+use crate::types::{at_most, elem_ty, inherit, resolve, subst_rows, subst_sig_rows};
 use crate::*;
 
 /// The types an op gives. For ops whose result type the IR doesn't
@@ -281,7 +281,7 @@ pub(crate) fn op_results<P: Program + ?Sized>(
             let Some((Ty::Reuse(from), fields)) = tys.split_first() else {
                 return Err(format!("reuse {c} needs a reuse token, then the fields"));
             };
-            if !crate::verify::same_shape(p, *from, *c) {
+            if !crate::types::same_shape(p, *from, *c) {
                 return Err(format!(
                     "reuse {c} takes a token of {from}, which isn't of the same shape"
                 ));
@@ -495,29 +495,6 @@ fn article(m: Mutability) -> &'static str {
     match m {
         Mutability::Imm | Mutability::Inherit => "an",
         _ => "a",
-    }
-}
-
-/// What an op may perform, given its arguments' types: an operation's
-/// effect, a callee's, closure's or continuation's row, or a handler's. A
-/// `discontinue` also performs its operation where the continuation was
-/// captured.
-pub(crate) fn op_row<P: Program + ?Sized>(p: &P, op: &Op, tys: &[Ty]) -> Row {
-    let first = || match tys.first() {
-        Some(Ty::Fn(sig, _) | Ty::Cont(sig)) => sig.row.clone(),
-        _ => Row::NOTHING,
-    };
-    match op {
-        Op::Perform(e, _) => Row::one(*e),
-        Op::Call(f, _, rows) => p
-            .func_sig(*f)
-            .map_or(Row::NOTHING, |sig| sig.row.subst(rows)),
-        Op::Apply | Op::Resume => first(),
-        Op::Discontinue(e, _) => first().union(&Row::one(*e)),
-        Op::Handle(h, rows) => p
-            .handler(*h)
-            .map_or(Row::NOTHING, |decl| decl.row.subst(rows)),
-        _ => Row::NOTHING,
     }
 }
 

@@ -1,4 +1,6 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+
+use crate::Program;
 
 use crate::id::{ConstId, CtorId, DataId, EffectId, ExternId, FuncId, HandlerId, Label, Var};
 use crate::row::Row;
@@ -199,4 +201,33 @@ pub enum ConstValue {
     /// The same object as another constant. Constants can't refer to each
     /// other in a cycle.
     Const(ConstId),
+}
+
+/// What constant `id` is, past the constants that are only another name
+/// for one: `None` if one of them is unknown, or they refer to each other
+/// in a cycle.
+pub fn const_value<P: Program + ?Sized>(p: &P, id: ConstId) -> Option<&ConstValue> {
+    let mut seen = BTreeSet::new();
+    let mut value = &p.constant(id)?.value;
+    while let ConstValue::Const(next) = value {
+        if !seen.insert(*next) {
+            return None;
+        }
+        value = &p.constant(*next)?.value;
+    }
+    Some(value)
+}
+
+/// The constants a value refers to.
+pub fn const_refs(value: &ConstValue) -> Vec<ConstId> {
+    let mut refs = Vec::new();
+    let mut todo = vec![value];
+    while let Some(v) = todo.pop() {
+        match v {
+            ConstValue::Lit(_) => {}
+            ConstValue::Array(parts) | ConstValue::New(_, parts) => todo.extend(parts),
+            ConstValue::Const(id) => refs.push(*id),
+        }
+    }
+    refs
 }

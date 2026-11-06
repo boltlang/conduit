@@ -48,7 +48,7 @@
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 
-use conduit_ir::verify::deep_imm;
+use conduit_ir::types::deep_imm;
 use conduit_ir::{
     Atom, Block, Func, FuncId, Let, Lit, Memory, Mutability, Op, Program, Tail, Ty, Var,
 };

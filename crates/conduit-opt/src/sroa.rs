@@ -16,7 +16,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use conduit_ir::verify::{elem_ty, resolve};
+use conduit_ir::types::{elem_ty, resolve};
 use conduit_ir::{Atom, Block, Func, FuncId, Let, Lit, Mutability, Op, Program, Tail, Ty, Var};
 
 use crate::Pass;
