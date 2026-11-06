@@ -441,7 +441,7 @@ pub fn emit_module_with(
 ) -> Result<Vec<u8>, Error> {
     let lowered;
     let mut thunks = BTreeMap::new();
-    if options.counts && !options.stack_switching && !direct_handlers(m) {
+    if options.counts && !options.stack_switching && !conduit_ir::clause::direct_handlers(m) {
         return Err(Error {
             item: Item::Func(FuncId(0)),
             message: "a module that counts references and has handlers that need evidence \
@@ -449,7 +449,7 @@ pub fn emit_module_with(
                 .into(),
         });
     }
-    let m = if !options.stack_switching && !direct_handlers(m) {
+    let m = if !options.stack_switching && !conduit_ir::clause::direct_handlers(m) {
         let mut copy = m.clone();
         conduit_opt::effects::lower_effects(&mut copy).map_err(|message| Error {
             item: Item::Func(FuncId(0)),
@@ -457,7 +457,7 @@ pub fn emit_module_with(
         })?;
         lowered = copy;
         &lowered
-    } else if options.stack_switching && !direct_handlers(m) {
+    } else if options.stack_switching && !conduit_ir::clause::direct_handlers(m) {
         let (copy, map) = with_thunks(m);
         lowered = copy;
         thunks = map;
@@ -469,7 +469,7 @@ pub fn emit_module_with(
         .handlers
         .keys()
         .copied()
-        .filter(|&h| !direct_handler(m, h))
+        .filter(|&h| !conduit_ir::clause::direct_handler(m, h))
         .collect();
 
     // Tail-resumptive and aborting clauses are lowered as plain functions,
@@ -944,21 +944,6 @@ pub fn emit_module_with(
         module.section(&names);
     }
     Ok(module.finish())
-}
-
-/// Whether every clause of every handler of `m` is tail-resumptive or
-/// aborting, so that its handlers can be lowered directly.
-fn direct_handlers(m: &Module) -> bool {
-    m.handlers.keys().all(|&h| direct_handler(m, h))
-}
-
-/// Whether every clause of `h` is tail-resumptive or aborting.
-fn direct_handler(m: &Module, h: HandlerId) -> bool {
-    m.handlers[&h].ops.iter().all(|c| {
-        m.funcs.get(c).is_some_and(|f| {
-            conduit_ir::clause::plain_call(f).is_some() || conduit_ir::clause::aborting(f).is_some()
-        })
-    })
 }
 
 /// `m` with a function for each operation some function discontinues a

@@ -20,9 +20,7 @@
 use conduit_eval::{Machine, Stats, Value};
 use conduit_ir::verify::verify_module;
 use conduit_ir::{Atom, FuncId, Lit, Module, text};
-use conduit_opt::ownership::{
-    Borrows, insert_counts, insert_counts_with, insert_reuse, specialize_drops,
-};
+use conduit_opt::ownership::CONFIGS;
 use conduit_test::{CheckKind, Program};
 
 fn main() {
@@ -35,31 +33,16 @@ fn applies(p: &Program) -> bool {
 
 fn test(p: &Program) -> Result<(), String> {
     let mut optimized = p.module()?;
-    if has_general_handler(&optimized) {
+    if !conduit_ir::clause::direct_handlers(&optimized) {
         conduit_opt::effects::lower_effects(&mut optimized)?;
     }
     conduit_opt::optimize_module(&mut optimized);
-    let mut counts = optimized.clone();
-    insert_counts_with(&mut counts, &Borrows::default())?;
-    let mut borrows = optimized.clone();
-    insert_counts(&mut borrows)?;
-    let mut reuse = optimized.clone();
-    insert_reuse(&mut reuse);
-    insert_counts(&mut reuse)?;
-    let mut specialized = reuse.clone();
-    specialize_drops(&mut specialized);
-    // How each is compiled, and whether it's run counting and collecting
-    // cycles.
-    let configs = [
-        ("optimized", &optimized, false, false),
-        ("counts", &counts, true, false),
-        ("+borrows", &borrows, true, false),
-        ("+reuse", &reuse, true, false),
-        ("+specialized", &specialized, true, false),
-        ("+cycles", &specialized, true, true),
-    ];
-    for (when, m, ..) in &configs {
-        verify_module(m).map_err(|e| format!("{when}: {e:?}\n\n{}", text::print(m)))?;
+    let mut configs = Vec::new();
+    for config in CONFIGS {
+        let mut m = optimized.clone();
+        config.apply(&mut m)?;
+        verify_module(&m).map_err(|e| format!("{}: {e:?}\n\n{}", config.name, text::print(&m)))?;
+        configs.push((config.name, m, config.counts, config.cycles));
     }
     let row = |name: &str, cells: [String; 8]| {
         format!(
@@ -82,8 +65,8 @@ fn test(p: &Program) -> Result<(), String> {
             "cycles",
         ];
         out.push_str(&row("", heads.map(String::from)));
-        for &(when, m, counting, cycles) in &configs {
-            let s = stats(m, run.func, run.args, counting, cycles);
+        for (when, m, counting, cycles) in &configs {
+            let s = stats(m, run.func, run.args, *counting, *cycles);
             let cells = [
                 s.steps,
                 s.allocs,
@@ -113,15 +96,4 @@ fn stats(m: &Module, func: FuncId, args: &[Lit], counting: bool, cycles: bool) -
         machine.collect_cycles();
     }
     machine.stats
-}
-
-fn has_general_handler(m: &Module) -> bool {
-    m.handlers.values().any(|h| {
-        h.ops.iter().any(|c| {
-            m.funcs.get(c).is_some_and(|f| {
-                conduit_ir::clause::plain_call(f).is_none()
-                    && conduit_ir::clause::aborting(f).is_none()
-            })
-        })
-    })
 }

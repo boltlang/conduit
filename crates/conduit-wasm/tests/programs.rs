@@ -47,22 +47,11 @@ fn test(p: &Program) -> Result<(), String> {
     }
     // A general handler is lowered by evidence passing without stack
     // switching, and by stack switching with it.
-    if has_general_handler(&m) {
+    if !conduit_ir::clause::direct_handlers(&m) {
         let bytes = lower(p, &m, true)?.expect("lowering failed without stack switching too");
         run(p, &m, &bytes, true)?;
     }
     Ok(())
-}
-
-fn has_general_handler(m: &Module) -> bool {
-    m.handlers.values().any(|h| {
-        h.ops.iter().any(|c| {
-            m.funcs.get(c).is_some_and(|f| {
-                conduit_ir::clause::plain_call(f).is_none()
-                    && conduit_ir::clause::aborting(f).is_none()
-            })
-        })
-    })
 }
 
 fn with(stack_switching: bool) -> &'static str {
@@ -146,7 +135,7 @@ fn run(p: &Program, m: &Module, bytes: &[u8], stack_switching: bool) -> Result<(
 /// Runs `p` counted and with freeing: see the crate's tests' documentation.
 fn counted(p: &Program, m: &Module) -> Result<(), String> {
     let mut c = m.clone();
-    if has_general_handler(&c) {
+    if !conduit_ir::clause::direct_handlers(&c) {
         conduit_opt::effects::lower_effects(&mut c)?;
     }
     // A program counted by hand already has its counts.

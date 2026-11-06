@@ -34,23 +34,11 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use conduit_ir::{Atom, FuncId, Lit, Module, Ty};
-use conduit_opt::ownership::{
-    Borrows, insert_counts, insert_counts_with, insert_reuse, specialize_drops,
-};
+use conduit_opt::ownership::{CONFIGS, Config};
 use conduit_test::{CheckKind, Outcome, Program};
 use conduit_wasm::Options;
 use serde_json::{Value as Json, json};
 use wasmtime::{Engine, Linker, Store, Val};
-
-/// The ways of compiling a program, in the order of the `bench` snapshots.
-const CONFIGS: [&str; 6] = [
-    "optimized",
-    "counts",
-    "+borrows",
-    "+reuse",
-    "+specialized",
-    "+cycles",
-];
 
 struct Args {
     filter: Option<String>,
@@ -64,7 +52,7 @@ struct Args {
 fn args() -> Result<Args, String> {
     let mut args = Args {
         filter: None,
-        configs: CONFIGS.iter().map(|c| c.to_string()).collect(),
+        configs: CONFIGS.iter().map(|c| c.name.to_string()).collect(),
         fuel_only: false,
         time: Duration::from_millis(300),
         json: None,
@@ -76,8 +64,9 @@ fn args() -> Result<Args, String> {
         match a.as_str() {
             "--config" => {
                 args.configs = value("--config")?.split(',').map(String::from).collect();
-                if let Some(c) = args.configs.iter().find(|c| !CONFIGS.contains(&c.as_str())) {
-                    return Err(format!("unknown config {c}: expected one of {CONFIGS:?}"));
+                if let Some(c) = args.configs.iter().find(|c| Config::named(c).is_none()) {
+                    let names: Vec<&str> = CONFIGS.iter().map(|c| c.name).collect();
+                    return Err(format!("unknown config {c}: expected one of {names:?}"));
                 }
             }
             "--fuel" => args.fuel_only = true,
@@ -167,38 +156,21 @@ fn run() -> Result<(), String> {
 /// lower it with.
 fn modules(p: &Program, configs: &[String]) -> Result<Vec<(String, Module, Options)>, String> {
     let mut optimized = p.module()?;
-    if has_general_handler(&optimized) {
+    if !conduit_ir::clause::direct_handlers(&optimized) {
         conduit_opt::effects::lower_effects(&mut optimized)?;
     }
     conduit_opt::optimize_module(&mut optimized);
-    let counted = |cycles| Options {
-        stack_switching: false,
-        counts: true,
-        cycles,
-    };
     let mut out = Vec::new();
-    for c in configs {
+    for name in configs {
+        let config = Config::named(name).ok_or_else(|| format!("unknown config {name}"))?;
         let mut m = optimized.clone();
-        let options = match c.as_str() {
-            "optimized" => Options::default(),
-            "counts" => {
-                insert_counts_with(&mut m, &Borrows::default())?;
-                counted(false)
-            }
-            "+borrows" => {
-                insert_counts(&mut m)?;
-                counted(false)
-            }
-            _ => {
-                insert_reuse(&mut m);
-                insert_counts(&mut m)?;
-                if c != "+reuse" {
-                    specialize_drops(&mut m);
-                }
-                counted(c == "+cycles")
-            }
+        config.apply(&mut m)?;
+        let options = Options {
+            stack_switching: false,
+            counts: config.counts,
+            cycles: config.cycles,
         };
-        out.push((c.clone(), m, options));
+        out.push((name.clone(), m, options));
     }
     Ok(out)
 }
@@ -382,17 +354,6 @@ fn call_func(
         Err(e) if e.downcast_ref::<wasmtime::Trap>().is_some() => Ok(Outcome::Trap(e.to_string())),
         Err(e) => Err(e.to_string()),
     }
-}
-
-fn has_general_handler(m: &Module) -> bool {
-    m.handlers.values().any(|h| {
-        h.ops.iter().any(|c| {
-            m.funcs.get(c).is_some_and(|f| {
-                conduit_ir::clause::plain_call(f).is_none()
-                    && conduit_ir::clause::aborting(f).is_none()
-            })
-        })
-    })
 }
 
 /// A baseline's measurements, by program, run and config: fuel, and the

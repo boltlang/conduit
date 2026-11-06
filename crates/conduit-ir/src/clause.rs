@@ -2,7 +2,7 @@
 //! continuation. See "Two kinds of clause a backend should notice" in
 //! `docs/ir.md`.
 
-use crate::{Atom, Block, Func, Label, Op, Tail, Ty, Var};
+use crate::{Atom, Block, Func, HandlerId, Label, Module, Op, Tail, Ty, Var};
 
 /// The clause `f` as a plain function, if it's **tail-resumptive**: every
 /// way out of it is `let rs = resume(k, xs); jump ret(rs)` or
@@ -40,6 +40,24 @@ pub fn plain_call(f: &Func) -> Option<Func> {
         vars: &mut plain.vars,
     };
     cx.block(&mut plain.body).then_some(plain)
+}
+
+/// Whether every clause of `h` is tail-resumptive or aborting, so that a
+/// backend can lower the handler without capturing a continuation.
+pub fn direct_handler(m: &Module, h: HandlerId) -> bool {
+    m.handlers.get(&h).is_some_and(|decl| {
+        decl.ops.iter().all(|c| {
+            m.funcs
+                .get(c)
+                .is_some_and(|f| plain_call(f).is_some() || aborting(f).is_some())
+        })
+    })
+}
+
+/// Whether every handler of `m` is [direct](direct_handler). One that
+/// isn't needs real continuations: stack switching, or evidence passing.
+pub fn direct_handlers(m: &Module) -> bool {
+    m.handlers.keys().all(|&h| direct_handler(m, h))
 }
 
 /// Whether some way out of `f`, a plain function from [`plain_call`],
