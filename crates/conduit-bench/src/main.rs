@@ -33,12 +33,12 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use conduit_ir::{Atom, FuncId, Lit, Module, Ty};
+use conduit_ir::{Atom, FuncId, Module, Ty};
 use conduit_opt::ownership::{CONFIGS, Config};
-use conduit_test::{CheckKind, Outcome, Program};
+use conduit_test::{CheckKind, Program};
 use conduit_wasm::Options;
 use serde_json::{Value as Json, json};
-use wasmtime::{Engine, Linker, Store, Val};
+use wasmtime::{Engine, Store};
 
 struct Args {
     filter: Option<String>,
@@ -213,7 +213,7 @@ fn bench(p: &Program, args: &Args) -> Result<Vec<Result1>, String> {
             let mut store = Store::new(&fuel_engine, ());
             store.set_fuel(u64::MAX / 2).map_err(|e| e.to_string())?;
             let instance = instantiate(&fuel_engine, &mut store, fuel_module)?;
-            let got = call_func(&mut store, &instance, run.func, run.args, results);
+            let got = conduit_test::wasm::call(&mut store, &instance, run.func, run.args, results);
             let fuel = u64::MAX / 2 - store.get_fuel().map_err(|e| e.to_string())?;
             let pages = instance
                 .get_memory(&mut store, "memory")
@@ -260,7 +260,7 @@ fn time_calls(
         let mut store = Store::new(engine, ());
         let instance = instantiate(engine, &mut store, module)?;
         let t = Instant::now();
-        let got = call_func(&mut store, &instance, run.func, run.args, results);
+        let got = conduit_test::wasm::call(&mut store, &instance, run.func, run.args, results);
         let elapsed = t.elapsed();
         got?;
         Ok(elapsed)
@@ -289,10 +289,8 @@ fn time_calls(
 }
 
 fn engine(fuel: bool) -> Result<Engine, String> {
-    let mut config = wasmtime::Config::new();
+    let mut config = conduit_test::wasm::config();
     config
-        .wasm_tail_call(true)
-        .wasm_exceptions(true)
         .consume_fuel(fuel)
         // Instantiating from a pool is quicker, which leaves more of the
         // time for runs.
@@ -305,55 +303,8 @@ fn instantiate(
     store: &mut Store<()>,
     module: &wasmtime::Module,
 ) -> Result<wasmtime::Instance, String> {
-    let mut linker = Linker::new(engine);
-    // The same host functions as the test programs get.
-    linker
-        .func_wrap("test", "double", |n: i32| n.wrapping_mul(2))
-        .map_err(|e| e.to_string())?;
+    let linker = conduit_test::wasm::linker(engine)?;
     linker.instantiate(store, module).map_err(|e| e.to_string())
-}
-
-fn call_func(
-    store: &mut Store<()>,
-    instance: &wasmtime::Instance,
-    func: FuncId,
-    args: &[Lit],
-    result_tys: &[Ty],
-) -> Result<Outcome, String> {
-    let name = func.to_string();
-    let f = instance
-        .get_func(&mut *store, &name)
-        .ok_or_else(|| format!("{name} isn't exported"))?;
-    let params: Vec<Val> = args
-        .iter()
-        .map(|l| match *l {
-            Lit::I8(n) => Val::I32(n.into()),
-            Lit::I16(n) => Val::I32(n.into()),
-            Lit::I32(n) => Val::I32(n),
-            Lit::I64(n) => Val::I64(n),
-            Lit::F32(bits) => Val::F32(bits),
-            Lit::F64(bits) => Val::F64(bits),
-        })
-        .collect();
-    let mut results = vec![Val::I32(0); f.ty(&*store).results().len()];
-    match f.call(&mut *store, &params, &mut results) {
-        Ok(()) => results
-            .into_iter()
-            .zip(result_tys.iter().map(Some).chain(std::iter::repeat(None)))
-            .map(|(v, ty)| match (v, ty) {
-                (Val::I32(n), Some(Ty::I8)) => Ok(Lit::I8(n as i8)),
-                (Val::I32(n), Some(Ty::I16)) => Ok(Lit::I16(n as i16)),
-                (Val::I32(n), _) => Ok(Lit::I32(n)),
-                (Val::I64(n), _) => Ok(Lit::I64(n)),
-                (Val::F32(bits), _) => Ok(Lit::F32(bits)),
-                (Val::F64(bits), _) => Ok(Lit::F64(bits)),
-                _ => Err("gave a reference".to_string()),
-            })
-            .collect::<Result<_, _>>()
-            .map(Outcome::Values),
-        Err(e) if e.downcast_ref::<wasmtime::Trap>().is_some() => Ok(Outcome::Trap(e.to_string())),
-        Err(e) => Err(e.to_string()),
-    }
 }
 
 /// A baseline's measurements, by program, run and config: fuel, and the

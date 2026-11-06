@@ -12,7 +12,7 @@ wasm-encoder = "0.263.0"
 
 [dev-dependencies]
 conduit-eval = { path = "../conduit-eval" }
-conduit-test = { path = "../conduit-test" }
+conduit-test = { path = "../conduit-test", features = ["wasmtime"] }
 wasmparser = "0.263.0"
 wasmprinter = "0.263.0"
 wasmtime = "50.0.1"

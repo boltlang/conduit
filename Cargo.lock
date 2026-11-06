@@ -236,6 +236,7 @@ dependencies = [
  "conduit-eval",
  "conduit-ir",
  "libtest-mimic",
+ "wasmtime",
 ]
 
 [[package]]

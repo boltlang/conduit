@@ -13,6 +13,8 @@
 
 mod checks;
 pub mod eval;
+#[cfg(feature = "wasmtime")]
+pub mod wasm;
 
 use std::fs;
 use std::path::{Path, PathBuf};

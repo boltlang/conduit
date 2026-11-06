@@ -9,3 +9,8 @@ publish.workspace = true
 conduit-ir = { path = "../conduit-ir" }
 libtest-mimic = "0.8.2"
 conduit-eval = { path = "../conduit-eval" }
+wasmtime = { version = "50.0.1", optional = true }
+
+[features]
+# Running programs as Wasm, in `wasm`.
+wasmtime = ["dep:wasmtime"]
