@@ -28,10 +28,19 @@
 //!
 //! Variables bound by `const` or `undefined` are never counted, since
 //! their counts would do nothing.
+//!
+//! [`specialize_drops`] then makes the counts cheaper where a field read
+//! out of an object is kept and the object dropped: when the object turns
+//! out to be unique at run time, its reference to the field becomes the
+//! variable's, so neither is counted.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use conduit_ir::{Atom, Block, Func, Label, Let, Module, Op, Tail, Ty, Var};
+use conduit_ir::verify::resolve;
+use conduit_ir::{
+    Arm, Atom, Block, CtorId, DataDecl, DataId, Func, JoinDef, Label, Let, Module, Mutability, Op,
+    Tag, Tail, Ty, Var,
+};
 
 type Set = BTreeSet<Var>;
 
@@ -51,7 +60,9 @@ pub fn count_func(f: &mut Func) -> Result<(), String> {
     while let Some(b) = todo.pop() {
         for l in &b.lets {
             match l.op {
-                Op::Dup | Op::Drop => return Err("it has dups or drops already".into()),
+                Op::Dup | Op::Drop | Op::IsUnique | Op::Free | Op::DecRef => {
+                    return Err("it has counts already".into());
+                }
                 Op::Const(_) | Op::Undefined => {
                     for v in &l.binds {
                         counted[v.0 as usize] = false;
@@ -345,4 +356,235 @@ fn children<'b>(b: &'b Block, out: &mut Vec<&'b Block>) {
         }
         Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
     }
+}
+
+/// Specializes the `drop`s of every function of `m` that [`insert_counts`]
+/// counted: see [`specialize_func`].
+pub fn specialize_drops(m: &mut Module) {
+    let data = &m.data;
+    for f in m.funcs.values_mut() {
+        specialize_func(data, f);
+    }
+}
+
+/// Specializes a `drop(x)` of an `imm` data object, in a block where `dup`s
+/// of fields read from `x` come before it:
+///
+/// ```text
+/// let %t = get C.i(%x)          let %t = get C.i(%x)
+/// let = dup(%t)                 let %u: i32 = is_unique(%x)
+/// ..                            join k() = <the rest>
+/// let = drop(%x)          =>    in case %u {
+/// <the rest>                      1 => <drop x's other object fields>
+///                                      free(%x); jump k()
+///                                 _ => dup(%t); decref(%x); jump k()
+///                               }
+/// ```
+///
+/// When `x` is unique, its reference to the field is `%t`'s, so the `dup`
+/// and the field's `drop` cancel. Only `imm` objects, whose fields can't
+/// have changed since they were read, and only where a `dup` cancels: a
+/// `drop` with nothing to cancel is as fast as its expansion.
+pub fn specialize_func(data: &BTreeMap<DataId, DataDecl>, f: &mut Func) {
+    let body = std::mem::replace(&mut f.body, Tail::Unreachable.into());
+    f.body = Specialize { data, f }.block(body);
+}
+
+/// A `dup` of a field that can move into the branches of a specialized
+/// `drop`.
+struct Sink {
+    field: u32,
+    /// Its index among the block's `let`s.
+    at: usize,
+    var: Var,
+}
+
+struct Specialize<'a> {
+    data: &'a BTreeMap<DataId, DataDecl>,
+    f: &'a mut Func,
+}
+
+impl Specialize<'_> {
+    fn block(&mut self, mut b: Block) -> Block {
+        for d in 0..b.lets.len() {
+            if let Some((c, sinks)) = self.sinks(&b.lets, d) {
+                let rest_lets = b.lets.split_off(d + 1);
+                let drop = b.lets.pop().unwrap();
+                let rest = self.block(Block {
+                    lets: rest_lets,
+                    tail: b.tail,
+                });
+                let mut lets = b.lets;
+                let moved: Vec<(u32, Var)> = sinks.iter().map(|s| (s.field, s.var)).collect();
+                let mut at: Vec<usize> = sinks.iter().map(|s| s.at).collect();
+                at.sort_unstable();
+                for s in at.into_iter().rev() {
+                    lets.remove(s);
+                }
+                let tail = self.expand(&drop.args[0], c, &moved, rest, &mut lets);
+                return Block { lets, tail };
+            }
+        }
+        b.tail = match b.tail {
+            Tail::Case {
+                scrut,
+                arms,
+                default,
+            } => Tail::Case {
+                scrut,
+                arms: arms
+                    .into_iter()
+                    .map(|mut arm| {
+                        arm.body = self.block(arm.body);
+                        arm
+                    })
+                    .collect(),
+                default: default.map(|d| Box::new(self.block(*d))),
+            },
+            Tail::Join { rec, defs, body } => Tail::Join {
+                rec,
+                defs: defs
+                    .into_iter()
+                    .map(|mut def| {
+                        def.body = self.block(def.body);
+                        def
+                    })
+                    .collect(),
+                body: Box::new(self.block(*body)),
+            },
+            tail => tail,
+        };
+        b
+    }
+
+    /// If `lets[d]` is a `drop` to specialize: the constructor its object
+    /// is known to be built by, and the `dup`s that can move into its
+    /// branches.
+    fn sinks(&self, lets: &[Let], d: usize) -> Option<(CtorId, Vec<Sink>)> {
+        let l = &lets[d];
+        let (Op::Drop, [Atom::Var(x)]) = (&l.op, &l.args[..]) else {
+            return None;
+        };
+        if !matches!(self.f.var_ty(*x), Ty::Data(_, Mutability::Imm, ..)) {
+            return None;
+        }
+        // What each variable was read from, in this block.
+        let mut reads: BTreeMap<Var, (CtorId, u32)> = BTreeMap::new();
+        let mut ctor = None;
+        let mut sinks: Vec<Sink> = Vec::new();
+        for (s, l) in lets[..d].iter().enumerate() {
+            match (&l.op, &l.args[..], &l.binds[..]) {
+                (Op::Get(c, i), [Atom::Var(o)], [y]) if o == x => {
+                    reads.insert(*y, (*c, *i));
+                }
+                (Op::Dup, [Atom::Var(y)], []) => {
+                    let Some(&(c, i)) = reads.get(y) else {
+                        continue;
+                    };
+                    let used_later = lets[s + 1..d].iter().any(|l| {
+                        l.args.iter().enumerate().any(|(p, a)| {
+                            *a == Atom::Var(*y) && (is_count(&l.op) || takes(&l.op, p))
+                        })
+                    });
+                    if !used_later && !sinks.iter().any(|sink| sink.field == i) {
+                        ctor = Some(c);
+                        sinks.push(Sink {
+                            field: i,
+                            at: s,
+                            var: *y,
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+        ctor.map(|c| (c, sinks))
+    }
+
+    /// The tail that replaces the `drop` of `x`, built by `c`, whose fields
+    /// in `moved` are held by those variables. Adds the `is_unique` to
+    /// `lets`.
+    fn expand(
+        &mut self,
+        x: &Atom,
+        c: CtorId,
+        moved: &[(u32, Var)],
+        rest: Block,
+        lets: &mut Vec<Let>,
+    ) -> Tail {
+        let Atom::Var(xv) = x else { unreachable!() };
+        let Ty::Data(_, m, margs, rows) = self.f.var_ty(*xv).clone() else {
+            unreachable!()
+        };
+        let u = self.f.new_var(Ty::I32);
+        lets.push(Let {
+            binds: vec![u],
+            op: Op::IsUnique,
+            args: vec![x.clone()],
+            source: None,
+        });
+        let k = self.f.new_label();
+        let jump = || Tail::Jump {
+            target: k,
+            args: Vec::new(),
+            source: None,
+        };
+        let fields = self.data[&c.data].ctors[c.index as usize].fields.clone();
+        let mut unique = Vec::new();
+        for (i, field) in fields.iter().enumerate() {
+            let ty = resolve(field, m, &margs, &rows);
+            if !is_object(&ty) || moved.iter().any(|&(j, _)| j as usize == i) {
+                continue;
+            }
+            let v = self.f.new_var(ty);
+            unique.push(Let {
+                binds: vec![v],
+                op: Op::Get(c, i as u32),
+                args: vec![x.clone()],
+                source: None,
+            });
+            unique.push(count(Op::Drop, v));
+        }
+        unique.push(count_atom(Op::Free, x));
+        let mut shared: Vec<Let> = moved.iter().map(|&(_, y)| count(Op::Dup, y)).collect();
+        shared.push(count_atom(Op::DecRef, x));
+        Tail::Join {
+            rec: false,
+            defs: vec![JoinDef {
+                label: k,
+                params: Vec::new(),
+                body: rest,
+            }],
+            body: Box::new(Block::from(Tail::Case {
+                scrut: Atom::Var(u),
+                arms: vec![Arm {
+                    tag: Tag::Int(1),
+                    body: Block {
+                        lets: unique,
+                        tail: jump(),
+                    },
+                }],
+                default: Some(Box::new(Block {
+                    lets: shared,
+                    tail: jump(),
+                })),
+            })),
+        }
+    }
+}
+
+fn count_atom(op: Op, a: &Atom) -> Let {
+    Let {
+        binds: Vec::new(),
+        op,
+        args: vec![a.clone()],
+        source: None,
+    }
+}
+
+fn is_count(op: &Op) -> bool {
+    matches!(
+        op,
+        Op::Dup | Op::Drop | Op::IsUnique | Op::Free | Op::DecRef
+    )
 }

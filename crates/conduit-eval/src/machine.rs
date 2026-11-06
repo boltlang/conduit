@@ -335,6 +335,51 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
         Ok(())
     }
 
+    /// Whether `value`'s object has a count of 1. Without counting, none
+    /// does, and neither does an uncounted object.
+    fn is_unique(&self, value: Value) -> Step<bool> {
+        let id = obj(value)?;
+        match self.counts.get(id.0 as usize) {
+            Some(Count::Live(1)) => Ok(self.counting),
+            Some(Count::Live(_) | Count::Immortal) => Ok(false),
+            Some(Count::Freed) => Err(freed("is_unique")),
+            None => Err(unverified("dangling object")),
+        }
+    }
+
+    /// Frees an object whose count is 1, without dropping what it holds.
+    fn free(&mut self, value: Value) -> Step<()> {
+        let id = obj(value)?;
+        if !self.counting {
+            return Ok(());
+        }
+        match self.counts.get_mut(id.0 as usize) {
+            Some(c @ Count::Live(1)) => *c = Count::Freed,
+            Some(Count::Freed) => return Err(freed("free")),
+            Some(_) => return Err(ErrorKind::Undefined("free of a shared object".into())),
+            None => return Err(unverified("dangling object")),
+        }
+        Ok(())
+    }
+
+    /// Takes 1 from the count of an object that's shared.
+    fn decref(&mut self, value: Value) -> Step<()> {
+        let id = obj(value)?;
+        if !self.counting {
+            return Ok(());
+        }
+        match self.counts.get_mut(id.0 as usize) {
+            Some(Count::Live(1)) => {
+                return Err(ErrorKind::Undefined("decref of a unique object".into()));
+            }
+            Some(Count::Live(c)) => *c -= 1,
+            Some(Count::Immortal) => {}
+            Some(Count::Freed) => return Err(freed("decref")),
+            None => return Err(unverified("dangling object")),
+        }
+        Ok(())
+    }
+
     fn dup_all(&mut self, values: &[Value]) -> Step<()> {
         values.iter().try_for_each(|v| self.dup(*v))
     }
@@ -942,6 +987,15 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
             }
             Op::Drop => {
                 self.drop_value(arg(&args, 0)?)?;
+                vec![]
+            }
+            Op::IsUnique => vec![Value::I32(self.is_unique(arg(&args, 0)?)? as i32)],
+            Op::Free => {
+                self.free(arg(&args, 0)?)?;
+                vec![]
+            }
+            Op::DecRef => {
+                self.decref(arg(&args, 0)?)?;
                 vec![]
             }
         };

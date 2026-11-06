@@ -260,7 +260,8 @@ pub(crate) fn op_results<P: Program + ?Sized>(
                 _ => Err("unbox needs one any".into()),
             }
         }
-        Op::Dup | Op::Drop => match tys {
+        Op::Dup | Op::Drop | Op::Free | Op::DecRef | Op::IsUnique => match tys {
+            [ty] if is_object(ty) && *op == Op::IsUnique => Ok(vec![Ty::I32]),
             [ty] if is_object(ty) => Ok(vec![]),
             [ty] => Err(format!("{} of a {ty}, which isn't an object", op_word(op))),
             _ => Err(format!("{} needs one object", op_word(op))),
@@ -500,6 +501,9 @@ fn is_object(ty: &Ty) -> bool {
 fn op_word(op: &Op) -> &'static str {
     match op {
         Op::Dup => "dup",
+        Op::IsUnique => "is_unique",
+        Op::Free => "free",
+        Op::DecRef => "decref",
         _ => "drop",
     }
 }

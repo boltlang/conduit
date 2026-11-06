@@ -711,8 +711,10 @@ impl<'m> FuncCx<'_, 'm> {
             }
             // Mutability doesn't exist at run time.
             Op::ArrayFreeze => self.atoms(args),
-            // Nothing is freed yet.
-            Op::Dup | Op::Drop => {}
+            // Nothing is freed yet, and no object is unique, so code that
+            // specialized a `drop` takes the branch that only decrements.
+            Op::Dup | Op::Drop | Op::Free | Op::DecRef => {}
+            Op::IsUnique => self.emit(I::I32Const(0)),
             Op::ArrayCopy => {
                 let s = self.elem_of(&self.atom_ty(&args[0]))?;
                 // Both ranges must fit, their starts and count read as

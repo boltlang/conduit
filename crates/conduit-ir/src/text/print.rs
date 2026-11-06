@@ -745,5 +745,8 @@ pub(crate) fn op_name(op: &Op) -> String {
         Op::Discontinue(e, i) => format!("discontinue {e}.{i}"),
         Op::Dup => "dup".into(),
         Op::Drop => "drop".into(),
+        Op::IsUnique => "is_unique".into(),
+        Op::Free => "free".into(),
+        Op::DecRef => "decref".into(),
     }
 }

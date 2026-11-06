@@ -1289,3 +1289,36 @@ fn fn3() -> () does Yield {
     assert_eq!(results, vec![Value::I32(3)]);
     assert!(leaks.is_empty(), "{leaks}");
 }
+
+/// `is_unique` tells a count of 1, `free` needs one and `decref` needs more.
+#[test]
+fn unique_free_and_decref() {
+    let src = |shared: &str, op: &str| {
+        format!(
+            "{LIST_TEXT}
+fn fn0() -> (i32) {{
+  let %l: imm List = new List.0()
+  {shared}
+  let %u: i32 = is_unique(%l)
+  let = {op}(%l)
+  jump ret(%u)
+}}"
+        )
+    };
+    let (results, leaks) = counted(&src("", "free"), vec![]).unwrap();
+    assert_eq!(results, vec![Value::I32(1)]);
+    assert!(leaks.is_empty(), "{leaks}");
+    let (results, leaks) = counted(&src("let = dup(%l)", "decref"), vec![]).unwrap();
+    assert_eq!(results, vec![Value::I32(0)]);
+    assert_eq!(leaks.to_string(), "undropped: #0 (+1)");
+    let error = counted(&src("let = dup(%l)", "free"), vec![]).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "fn0: undefined behavior: free of a shared object"
+    );
+    let error = counted(&src("", "decref"), vec![]).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "fn0: undefined behavior: decref of a unique object"
+    );
+}

@@ -1034,6 +1034,9 @@ impl Parser {
             "resume" => Op::Resume,
             "dup" => Op::Dup,
             "drop" => Op::Drop,
+            "is_unique" => Op::IsUnique,
+            "free" => Op::Free,
+            "decref" => Op::DecRef,
             "discontinue" => {
                 let e = EffectId(self.item("effect")?);
                 self.punct(".")?;

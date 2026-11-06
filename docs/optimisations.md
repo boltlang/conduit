@@ -204,12 +204,21 @@ a reference to it, parameters of functions and join points included:
   it hands over with its arguments.
 - What `const` and `undefined` give is never counted.
 
-There's no borrowing yet, and no specialization of `drop`, so a `get`
-followed by the `drop` of its object pays a `dup` and a `drop` that
-specialization will cancel. `crates/conduit-opt/tests/counts.rs` runs
+There's no borrowing yet. `crates/conduit-opt/tests/counts.rs` runs
 every test program after it, as written, after optimizing, and after
-evidence passing, with the evaluator counting: every count must be
-right.
+evidence passing, with the evaluator counting, and again after
+specializing drops: every count must be right.
+
+**Specialized drops** (`ownership::specialize_drops`, after
+`insert_counts`). A `drop(x)` of an `imm` data object, in a block where
+fields read from `x` were `dup`ped before it, becomes a branch on
+`is_unique(x)`. If `x` is unique, its references to those fields become
+the variables', so the `dup`s go, the other object fields are dropped,
+and `x` is freed with `free`. If not, the `dup`s stay and `decref(x)`
+takes 1 from its count. The rest of the block becomes a join point that
+both branches jump to. Only `imm` objects, whose fields can't have
+changed since they were read, and only where a `dup` can go: a `drop`
+with nothing to cancel is already as fast as its expansion.
 
 ## Not done yet
 

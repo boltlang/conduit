@@ -5,7 +5,8 @@
 //! a continuation that's never resumed holds, may still be left.
 //!
 //! It does so for the program as written, after the optimizer, and after
-//! lowering effects by evidence passing and then optimizing.
+//! lowering effects by evidence passing and then optimizing, each time with
+//! the counts as inserted and again with their `drop`s specialized.
 
 use conduit_eval::Leaks;
 use conduit_ir::Module;
@@ -35,6 +36,13 @@ fn test(p: &Program) -> Result<(), String> {
 
 fn check(p: &Program, mut m: Module, when: &str) -> Result<(), String> {
     conduit_opt::ownership::insert_counts(&mut m).map_err(|e| format!("{when}: {e}"))?;
+    run(p, &m, when)?;
+    conduit_opt::ownership::specialize_drops(&mut m);
+    run(p, &m, &format!("{when}, with drops specialized"))
+}
+
+fn run(p: &Program, m: &Module, when: &str) -> Result<(), String> {
+    let m = m.clone();
     if let Err(errors) = verify_module(&m) {
         let errors: Vec<String> = errors.iter().map(|e| e.named(&m)).collect();
         return Err(format!(

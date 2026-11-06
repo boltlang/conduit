@@ -879,6 +879,22 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
         self.emit(Op::Drop, vec![object.into()], None);
     }
 
+    /// Whether the count of `object` is 1: see [`Op::IsUnique`].
+    pub fn is_unique(&mut self, object: impl Into<Atom>) -> Var {
+        self.emit1(Op::IsUnique, vec![object.into()], Some(Ty::I32))
+    }
+
+    /// Frees `object`, whose count is 1: see [`Op::Free`].
+    pub fn free(&mut self, object: impl Into<Atom>) {
+        self.emit(Op::Free, vec![object.into()], None);
+    }
+
+    /// Takes 1 from the count of `object`, which is shared: see
+    /// [`Op::DecRef`].
+    pub fn decref(&mut self, object: impl Into<Atom>) {
+        self.emit(Op::DecRef, vec![object.into()], None);
+    }
+
     /// `value`, of type `ty`, as an `any`.
     pub fn boxed(&mut self, ty: Ty, value: impl Into<Atom>) -> Var {
         self.emit1(Op::Box(ty), vec![value.into()], None)

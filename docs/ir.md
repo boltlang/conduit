@@ -113,6 +113,9 @@ pub enum Op {
     Discontinue(EffectId, u32), // args[0] = continuation, rest = the operation's args
     Dup,                   // args = an object; count + 1; binds nothing: see "Reference counts"
     Drop,                  // args = an object; count - 1, freeing it at 0; binds nothing
+    IsUnique,              // args = an object; 1 if its count is 1, else 0
+    Free,                  // args = an object of count 1; frees it, not what it holds
+    DecRef,                // args = an object of count > 1; count - 1
 }
 
 impl Op {
@@ -559,6 +562,17 @@ a `Drop`. What `Get` and the other reads give is `Dup`ped right away, so
 that it's owned too. Passes that run before it don't need to know about
 any of this. A pass that runs after it must keep counts right, which
 most don't.
+
+Three more ops are for specializing a `Drop`, as Perceus does: **`IsUnique`**
+gives 1 if an object's count is 1, and 0 if it's shared or not counted;
+**`Free`** frees an object whose count is 1 without dropping what it
+holds, which the code took already; and **`DecRef`** takes 1 from the
+count of an object that's shared, so it never frees. `Free` of a shared
+object and `DecRef` of a unique one are undefined behavior.
+`conduit_opt::ownership::specialize_drops` uses them where a field read
+out of an `imm` object is `Dup`ped and the object then dropped: when the
+object is unique, the field's reference becomes the variable's, so the
+`Dup` and the field's `Drop` both go.
 
 ## Rules
 
@@ -1257,7 +1271,8 @@ Status:
 | `Unbox` to a reference | nothing | ✅ |
 | `Const` | the address of its object in a data segment, or its literal | ✅ |
 | `Undefined` | 0 | ✅ |
-| `Dup`, `Drop` | nothing yet: memory is never freed | ✅ |
+| `Dup`, `Drop`, `Free`, `DecRef` | nothing yet: memory is never freed | ✅ |
+| `IsUnique` | 0 for now, since no object is ever counted | ✅ |
 | `Handle`, `Perform` with tail-resumptive clauses | a handler stack in a global, and a `call_indirect` of the clause | ✅ |
 | `Handle`, `Perform` with aborting clauses | the same, then `throw`, caught by `try_table` | ✅ (exception handling, Wasm 3.0) |
 | `Discontinue` in a tail-resumptive clause | a `perform` under the handler stack of the `perform` the clause handles, kept in a second global | ✅ |
@@ -1370,7 +1385,8 @@ fn fn1(%0: i32) -> (i32) {
   `array_clone`, `array_freeze`,
   `ref_new`, `ref_get`, `ref_set`, `box[i32](..)`, `unbox[i32](..)`,
   `handle handler30(..)`, `perform effect20.0(..)`, `resume(..)`,
-  `discontinue effect20.0(..)`, `dup(..)` and `drop(..)`.
+  `discontinue effect20.0(..)`, `dup(..)`, `drop(..)`, `is_unique(..)`,
+  `free(..)` and `decref(..)`.
 - **Literals** carry their type: `5i32`, `-1i64`, `1.5f32`, `1e300f64`.
   Finite floats are printed in the shortest form that reads back exactly.
   NaNs and infinities are written by their bits: `f32_bits(2143289344)`.

@@ -98,6 +98,18 @@ pub enum Op {
     /// object. Using the object after it's freed, or dropping it when its
     /// count is already 0, is undefined behavior.
     Drop,
+    /// Whether an object's count is 1, as an `i32`: 1 if it is, 0 if not,
+    /// or if the object isn't counted. Args: the object. What specializing
+    /// `Drop` branches on.
+    IsUnique,
+    /// Frees an object whose count is 1, without dropping what it holds,
+    /// which the code has already taken; binds nothing. Args: the object.
+    /// Undefined behavior if its count isn't 1.
+    Free,
+    /// Takes 1 from the count of an object that `IsUnique` showed is
+    /// shared, so it's never freed; binds nothing. Args: the object.
+    /// Undefined behavior if its count is 1.
+    DecRef,
 }
 
 /// What an op may do: to memory, and whether it may stop the program
@@ -157,7 +169,8 @@ impl Op {
             Op::ArrayGet | Op::Unbox(_) => (Reads, true),
             Op::Set(..) | Op::RefSet => (Writes, false),
             // They write the count, and `Drop` may free.
-            Op::Dup | Op::Drop => (Writes, false),
+            Op::Dup | Op::Drop | Op::Free | Op::DecRef => (Writes, false),
+            Op::IsUnique => (Reads, false),
             Op::ArraySet | Op::ArrayCopy => (Writes, true),
             Op::Call(..) | Op::CallExtern(_) | Op::Apply => (Unknown, true),
             Op::Handle(..) | Op::Perform(..) | Op::Resume | Op::Discontinue(..) => (Unknown, true),

@@ -1288,11 +1288,7 @@ impl Linear<'_> {
     fn uses(&mut self, b: &Block) -> Counts {
         let mut c = Counts::new();
         // Counting a continuation's references isn't using it.
-        for l in b
-            .lets
-            .iter()
-            .filter(|l| !matches!(l.op, Op::Dup | Op::Drop))
-        {
+        for l in b.lets.iter().filter(|l| !is_count_op(&l.op)) {
             add(&mut c, &self.atoms(&l.args));
         }
         let tail = match &b.tail {
@@ -1390,3 +1386,11 @@ fn binds(b: &Block, out: &mut BTreeSet<Var>) {
 
 #[cfg(test)]
 mod tests;
+
+/// Whether an op only counts references, which isn't using what it counts.
+fn is_count_op(op: &Op) -> bool {
+    matches!(
+        op,
+        Op::Dup | Op::Drop | Op::IsUnique | Op::Free | Op::DecRef
+    )
+}
