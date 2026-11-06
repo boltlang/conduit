@@ -41,6 +41,28 @@ calls. Only callees of at most 20 `let`s and tails are inlined, and only
 while the caller is below 1000. A function is never inlined into itself,
 nor one that calls itself directly or through one other function.
 
+## Handlers run directly (`direct`)
+
+Right after inlining. A `let rs = handle H(env.., c)` whose body `c` is a
+known closure of `f`, which performs `H`'s effect only itself, with every
+other op's row empty, and whose clauses are all tail-resumptive without
+`discontinue`, or aborting, becomes `f`'s body, copied as `inline` copies
+a callee, in place of the `handle`. Its `ret` becomes a join point that
+calls the return clause. Each `perform` in it becomes a copy of its clause
+without the continuation: a tail-resumptive clause's `ret`, where it
+resumes, is a join point holding what followed the `perform`, and an
+aborting clause's `ret` is what follows the `handle`, skipping the rest
+and the return clause, as an exception does. The copies run where the
+`handle` was, under the handlers outside it, as clauses do.
+
+The other passes then see ordinary code: the generator from `ir.md`
+folds to its sum, a state handler around a loop becomes a loop variable,
+and an exception a jump (`tests/programs/direct`). A body that performs
+through a callee that isn't inlined, or that performs another effect
+too, keeps its handler, as does a clause that discontinues or does more
+after resuming. The body and the clauses must be small, as `inline`'s
+callees, and the handler can't have effect parameters.
+
 ## Scalar replacement (`sroa`)
 
 Like LLVM's SROA. A `mut` object made by `new` whose only uses are `get`
@@ -263,9 +285,11 @@ statically; this catches the rest at run time.
 
 ## Not done yet
 
-- Handlers whose clauses are called directly. The body of a `handle` is
-  always a closure, so a `perform` is never in the same function as its
-  `handle`: calling the clause directly needs a copy of the body's
-  function, and of what it calls, specialized to the handler. The passes
-  rewrite one function at a time and can't add functions, so this needs a
-  pass over the whole module.
+- Handlers whose clauses are called directly when the `perform` isn't in
+  the body's own function. The body of a `handle` is always a closure, so
+  a `perform` is never in the same function as its `handle`: `direct`
+  handles the case where inlining makes the body's function perform
+  itself. Otherwise, calling the clause directly needs a copy of the
+  body's function, and of what it calls, specialized to the handler. The
+  passes rewrite one function at a time and can't add functions, so this
+  needs a pass over the whole module.

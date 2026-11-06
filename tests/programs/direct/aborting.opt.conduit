@@ -1,0 +1,39 @@
+effect Fail {
+  () -> ()
+}
+
+handler catch for Fail env(i32) ops(fail) ret done
+
+fn fail(%default: i32, %k: cont() -> (i32)) -> (i32) {
+  jump ret(%default)
+}
+
+fn done(%default: i32, %r: i32) -> (i32) {
+  let %r1: i32 = add(%r, 1000i32)
+  jump ret(%r1)
+}
+
+fn divide(%x: i32) -> (i32) does Fail {
+  case %x {
+    0 =>
+      let = perform Fail.0()
+      unreachable
+    _ =>
+      let %r: i32 = div.s(100i32, %x)
+      jump ret(%r)
+  }
+}
+
+fn safe_divide(%x: i32) -> (i32) {
+  join j1(%r#1: i32) =
+    let %r2: i32 = mul(%r#1, 2i32)
+    jump ret(%r2)
+  in
+  case %x {
+    0 => jump j1(-1i32)
+    _ =>
+      let %r#3: i32 = div.s(100i32, %x)
+      let %r1: i32 = add(%r#3, 1000i32)
+      jump j1(%r1)
+  }
+}

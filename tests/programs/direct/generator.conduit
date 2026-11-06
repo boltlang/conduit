@@ -1,0 +1,39 @@
+// The generator from docs/ir.md: `produce` yields 1 and 2 to a handler
+// that adds them up in a ref. The handle runs directly, its clause in
+// place of each `perform`, so the ref becomes values, and `sum()` folds
+// to 3.
+
+effect Yield {
+  (i32) -> ()
+}
+
+handler adder for Yield env(ref i32) ops(add_yield) ret done
+
+fn add_yield(%acc: ref i32, %x: i32, %k: cont() -> ()) -> () {
+  let %old: i32 = ref_get(%acc)
+  let %new: i32 = add(%old, %x)
+  let = ref_set(%acc, %new)
+  let = resume(%k)
+  jump ret()
+}
+
+fn done(%acc: ref i32) -> () {
+  jump ret()
+}
+
+fn produce() -> () does Yield {
+  let = perform Yield.0(1i32)
+  let = perform Yield.0(2i32)
+  jump ret()
+}
+
+fn sum() -> (i32) {
+  let %acc: ref i32 = ref_new(0i32)
+  let %body: imm fn() -> () does Yield = closure produce()
+  let = handle adder(%acc, %body)
+  let %total: i32 = ref_get(%acc)
+  jump ret(%total)
+}
+
+//# run sum() == 3i32
+//# opt

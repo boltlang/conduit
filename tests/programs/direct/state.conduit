@@ -1,0 +1,52 @@
+// A state handler, get and put on a ref, around a loop that counts the
+// state up to n. Run directly, the loop is plain code on the ref, which
+// becomes a loop variable.
+
+effect State {
+  () -> (i32)
+  (i32) -> ()
+}
+
+handler state for State env(ref i32) ops(get, put) ret finish
+
+fn get(%s: ref i32, %k: cont(i32) -> (i32)) -> (i32) {
+  let %x: i32 = ref_get(%s)
+  let %r: i32 = resume(%k, %x)
+  jump ret(%r)
+}
+
+fn put(%s: ref i32, %x: i32, %k: cont() -> (i32)) -> (i32) {
+  let = ref_set(%s, %x)
+  let %r: i32 = resume(%k)
+  jump ret(%r)
+}
+
+fn finish(%s: ref i32, %r: i32) -> (i32) {
+  jump ret(%r)
+}
+
+// while get() < n { put(get() + 1) }; get()
+fn count_to(%n: i32) -> (i32) does State {
+  join rec go() =
+    let %x: i32 = perform State.0()
+    let %more: i32 = lt.s(%x, %n)
+    case %more {
+      1 =>
+        let %x1: i32 = add(%x, 1i32)
+        let = perform State.1(%x1)
+        jump go()
+      _ => jump ret(%x)
+    }
+  in jump go()
+}
+
+fn run(%n: i32) -> (i32) {
+  let %s: ref i32 = ref_new(0i32)
+  let %body: imm fn() -> (i32) does State = closure count_to(%n)
+  let %r: i32 = handle state(%s, %body)
+  jump ret(%r)
+}
+
+//# run run(10i32) == 10i32
+//# run run(0i32) == 0i32
+//# opt

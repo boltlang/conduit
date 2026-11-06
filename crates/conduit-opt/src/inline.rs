@@ -66,7 +66,7 @@ pub fn inline(p: &dyn Program, id: FuncId, f: &mut Func) -> bool {
 }
 
 /// How big a block is: its `let`s and tails, nested ones included.
-fn size(b: &Block) -> usize {
+pub(crate) fn size(b: &Block) -> usize {
     b.lets.len()
         + 1
         + match &b.tail {
@@ -82,7 +82,7 @@ fn size(b: &Block) -> usize {
 }
 
 /// Whether some op in `b` is one that `is` holds for.
-fn has_op(b: &Block, is: &dyn Fn(&Op) -> bool) -> bool {
+pub(crate) fn has_op(b: &Block, is: &dyn Fn(&Op) -> bool) -> bool {
     b.lets.iter().any(|l| is(&l.op))
         || match &b.tail {
             Tail::Join { defs, body, .. } => {
@@ -240,22 +240,22 @@ impl<'p> Cx<'p> {
     }
 }
 
-fn new_label(f: &mut Func) -> Label {
+pub(crate) fn new_label(f: &mut Func) -> Label {
     f.labels += 1;
     Label(f.labels - 1)
 }
 
 /// A copy of a callee's body for the caller.
-struct Rename<'a> {
+pub(crate) struct Rename<'a> {
     /// What each callee variable is in the caller: an argument for a
     /// parameter, else a fresh variable.
-    vars: BTreeMap<Var, Atom>,
-    labels: BTreeMap<Label, Label>,
-    margs: Vec<Mutability>,
+    pub vars: BTreeMap<Var, Atom>,
+    pub labels: BTreeMap<Label, Label>,
+    pub margs: Vec<Mutability>,
     /// The rows the call gives for the callee's effect parameters.
-    rows: Vec<Row>,
-    source: Option<SourceId>,
-    callee: &'a Func,
+    pub rows: Vec<Row>,
+    pub source: Option<SourceId>,
+    pub callee: &'a Func,
 }
 
 impl Rename<'_> {
@@ -324,7 +324,7 @@ impl Rename<'_> {
         }
     }
 
-    fn block(&mut self, b: &Block, f: &mut Func) -> Block {
+    pub fn block(&mut self, b: &Block, f: &mut Func) -> Block {
         let lets = b
             .lets
             .iter()

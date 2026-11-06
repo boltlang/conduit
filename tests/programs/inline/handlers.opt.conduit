@@ -90,7 +90,8 @@ fn ask_twice() -> (i32) does Ask {
 }
 
 fn main(%x: i32) -> (i32) {
-  let %body: imm fn() -> (i32) does Ask = closure ask_twice()
-  let %r: i32 = handle tenfold(%x, %body)
+  let %y#1: i32 = mul(%x, 10i32)
+  let %y#2: i32 = add(%y#1, 1i32)
+  let %r: i32 = add(%y#2, %y#2)
   jump ret(%r)
 }

@@ -1,0 +1,48 @@
+effect State {
+  () -> (i32)
+  (i32) -> ()
+}
+
+handler state for State env(ref i32) ops(get, put) ret finish
+
+fn get(%s: ref i32, %k: cont(i32) -> (i32)) -> (i32) {
+  let %x: i32 = ref_get(%s)
+  let %r: i32 = resume(%k, %x)
+  jump ret(%r)
+}
+
+fn put(%s: ref i32, %x: i32, %k: cont() -> (i32)) -> (i32) {
+  let = ref_set(%s, %x)
+  let %r: i32 = resume(%k)
+  jump ret(%r)
+}
+
+fn finish(%s: ref i32, %r: i32) -> (i32) {
+  jump ret(%r)
+}
+
+fn count_to(%n: i32) -> (i32) does State {
+  join rec go() =
+    let %x: i32 = perform State.0()
+    let %more: i32 = lt.s(%x, %n)
+    case %more {
+      1 =>
+        let %x1: i32 = add(%x, 1i32)
+        let = perform State.1(%x1)
+        jump go()
+      _ => jump ret(%x)
+    }
+  in jump go()
+}
+
+fn run(%n: i32) -> (i32) {
+  join rec go(%s: i32) =
+    let %more: i32 = lt.s(%s, %n)
+    case %more {
+      1 =>
+        let %x1: i32 = add(%s, 1i32)
+        jump go(%x1)
+      _ => jump ret(%s)
+    }
+  in jump go(0i32)
+}

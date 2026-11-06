@@ -1,0 +1,41 @@
+// An exception: an aborting clause gives what the whole `handle` gives,
+// without the rest of the body or the return clause. Run directly, the
+// `perform` jumps out to what follows the `handle`.
+
+effect Fail {
+  () -> ()
+}
+
+handler catch for Fail env(i32) ops(fail) ret done
+
+fn fail(%default: i32, %k: cont() -> (i32)) -> (i32) {
+  jump ret(%default)
+}
+
+fn done(%default: i32, %r: i32) -> (i32) {
+  let %r1: i32 = add(%r, 1000i32)
+  jump ret(%r1)
+}
+
+// 100 / x, failing for 0
+fn divide(%x: i32) -> (i32) does Fail {
+  case %x {
+    0 =>
+      let = perform Fail.0()
+      unreachable
+    _ =>
+      let %r: i32 = div.s(100i32, %x)
+      jump ret(%r)
+  }
+}
+
+fn safe_divide(%x: i32) -> (i32) {
+  let %body: imm fn() -> (i32) does Fail = closure divide(%x)
+  let %r: i32 = handle catch(-1i32, %body)
+  let %r2: i32 = mul(%r, 2i32)
+  jump ret(%r2)
+}
+
+//# run safe_divide(4i32) == 2050i32
+//# run safe_divide(0i32) == -2i32
+//# opt

@@ -1,0 +1,27 @@
+effect Yield {
+  (i32) -> ()
+}
+
+handler adder for Yield env(ref i32) ops(add_yield) ret done
+
+fn add_yield(%acc: ref i32, %x: i32, %k: cont() -> ()) -> () {
+  let %old: i32 = ref_get(%acc)
+  let %new: i32 = add(%old, %x)
+  let = ref_set(%acc, %new)
+  let = resume(%k)
+  jump ret()
+}
+
+fn done(%acc: ref i32) -> () {
+  jump ret()
+}
+
+fn produce() -> () does Yield {
+  let = perform Yield.0(1i32)
+  let = perform Yield.0(2i32)
+  jump ret()
+}
+
+fn sum() -> (i32) {
+  jump ret(3i32)
+}

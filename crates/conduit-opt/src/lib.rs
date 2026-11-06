@@ -17,6 +17,7 @@ mod compact;
 pub mod copies;
 pub mod cse;
 pub mod dce;
+pub mod direct;
 pub mod effects;
 pub mod handlers;
 pub mod inline;
@@ -43,7 +44,9 @@ pub trait Pass {
 /// closures go next,
 /// since the calls they make can then be inlined in the same round.
 /// Inlining is next, since the others only see one function, and a
-/// callee's body in its caller shows them more. Scalar replacement turns
+/// callee's body in its caller shows them more. Handlers run directly right
+/// after, since inlining is what puts a `perform` where its handler's body
+/// is the function itself. Scalar replacement turns
 /// objects that don't escape into refs, which promoting refs, next, turns
 /// into values. Promoting refs comes early, since a ref holding an
 /// array ties it to the ref's region, which keeps `copies` from freezing
@@ -57,6 +60,7 @@ pub const PASSES: &[&dyn Pass] = &[
     &handlers::Handlers,
     &closures::KnownClosures,
     &inline::Inline,
+    &direct::Direct,
     &sroa::Sroa,
     &promote::Promote,
     &joins::Joins,

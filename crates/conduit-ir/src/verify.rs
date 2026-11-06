@@ -539,6 +539,18 @@ pub fn same_shape<P: Program + ?Sized>(p: &P, a: CtorId, b: CtorId) -> bool {
             })
 }
 
+/// The effects `l`, a `let` of `f`, may perform: as the verifier finds
+/// them, from its op and the types of its arguments.
+pub fn let_row<P: Program + ?Sized>(p: &P, f: &Func, l: &Let) -> Row {
+    let tys: Vec<Ty> = (l.args.iter())
+        .map(|a| match a {
+            Atom::Var(v) => f.var_ty(*v).clone(),
+            Atom::Lit(lit) => lit.ty(),
+        })
+        .collect();
+    typing::op_row(p, &l.op, &tys)
+}
+
 /// Fails if `ty` is a reuse token, which only a variable can hold.
 fn no_token(ty: &Ty) -> Result<(), String> {
     match ty {
