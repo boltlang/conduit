@@ -1184,6 +1184,25 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                 vec![]
             }
             Op::DropReuse => vec![self.drop_reuse(arg(&args, 0)?)?],
+            Op::ReuseToken => {
+                let id = obj(arg(&args, 0)?)?;
+                if !self.counting {
+                    vec![Value::Unset]
+                } else {
+                    match self.counts.get(id.0 as usize) {
+                        Some(Count::Live(1)) => {
+                            self.counts[id.0 as usize] = Count::Reserved;
+                            vec![Value::Obj(id)]
+                        }
+                        Some(Count::Freed | Count::Reserved) => return Err(freed("reuse_token")),
+                        _ => {
+                            return Err(ErrorKind::Undefined(
+                                "reuse_token of an object that isn't unique".into(),
+                            ));
+                        }
+                    }
+                }
+            }
             Op::Reuse(c) => {
                 let (token, fields) = args
                     .split_first()

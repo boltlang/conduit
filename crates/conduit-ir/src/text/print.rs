@@ -751,6 +751,7 @@ pub(crate) fn op_name(op: &Op) -> String {
         Op::Free => "free".into(),
         Op::DecRef => "decref".into(),
         Op::DropReuse => "drop_reuse".into(),
+        Op::ReuseToken => "reuse_token".into(),
         Op::Reuse(c) => format!("reuse {c}"),
     }
 }

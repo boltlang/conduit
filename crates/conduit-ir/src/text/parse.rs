@@ -1039,6 +1039,7 @@ impl Parser {
             "free" => Op::Free,
             "decref" => Op::DecRef,
             "drop_reuse" => Op::DropReuse,
+            "reuse_token" => Op::ReuseToken,
             "reuse" => Op::Reuse(self.ctor()?),
             "discontinue" => {
                 let e = EffectId(self.item("effect")?);

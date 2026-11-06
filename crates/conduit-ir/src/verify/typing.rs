@@ -261,14 +261,22 @@ pub(crate) fn op_results<P: Program + ?Sized>(
                 _ => Err("unbox needs one any".into()),
             }
         }
-        Op::DropReuse => match (tys, out) {
-            ([Ty::Data(d, ..)], [Ty::Reuse(c)]) => {
-                field_access(p, known, c, *d, &args[0])
-                    .map_err(|m| format!("drop_reuse to a token of {c}: {m}"))?;
-                Ok(out.to_vec())
+        Op::DropReuse | Op::ReuseToken => {
+            let name = match op {
+                Op::DropReuse => "drop_reuse",
+                _ => "reuse_token",
+            };
+            match (tys, out) {
+                ([Ty::Data(d, ..)], [Ty::Reuse(c)]) => {
+                    field_access(p, known, c, *d, &args[0])
+                        .map_err(|m| format!("{name} to a token of {c}: {m}"))?;
+                    Ok(out.to_vec())
+                }
+                _ => Err(format!(
+                    "{name} needs a data object and binds a reuse token"
+                )),
             }
-            _ => Err("drop_reuse needs a data object and binds a reuse token".into()),
-        },
+        }
         Op::Reuse(c) => {
             let Some((Ty::Reuse(from), fields)) = tys.split_first() else {
                 return Err(format!("reuse {c} needs a reuse token, then the fields"));

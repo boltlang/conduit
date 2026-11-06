@@ -115,6 +115,12 @@ pub enum Op {
     /// if its count was 1, after dropping what it held, or none. Args: the
     /// object.
     DropReuse,
+    /// The memory of a unique data object known to be built by `C`, whose
+    /// fields the code has taken already, as a reuse token of type
+    /// `Reuse(C)`: what `DropReuse` gives when the object is unique, without
+    /// dropping the fields. Args: the object. Undefined behavior if its
+    /// count isn't 1. What specializing `DropReuse` makes.
+    ReuseToken,
     /// `New`, in the memory of a reuse token if it has some. Args: the
     /// token, of a constructor of the same shape (see
     /// [`same_shape`](crate::verify::same_shape)), then the fields.
@@ -178,7 +184,9 @@ impl Op {
             Op::ArrayGet | Op::Unbox(_) => (Reads, true),
             Op::Set(..) | Op::RefSet => (Writes, false),
             // They write the count, and `Drop` may free.
-            Op::Dup | Op::Drop | Op::Free | Op::DecRef | Op::DropReuse => (Writes, false),
+            Op::Dup | Op::Drop | Op::Free | Op::DecRef | Op::DropReuse | Op::ReuseToken => {
+                (Writes, false)
+            }
             // It may write into memory that's no object's any more, and it
             // must not be removed, since its token would be lost.
             Op::Reuse(_) => (Writes, false),

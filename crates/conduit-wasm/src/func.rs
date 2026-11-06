@@ -650,6 +650,27 @@ impl<'m> FuncCx<'_, 'm> {
                 });
                 return Ok(self.bind(binds, tail));
             }
+            // The object's own memory, unless it's buffered, which is the
+            // collector's to give back: then it's freed for it, and the token
+            // holds none.
+            Op::ReuseToken => match self.counted(&self.atom_ty(&args[0])) {
+                Some(k) => {
+                    let t = self.new_local(ValType::I32);
+                    self.atom(&args[0]);
+                    self.emit(I::LocalTee(t));
+                    self.emit(load(Storage::I32, 0));
+                    self.emit(I::I32Const(0x4000_0000));
+                    self.emit(I::I32And);
+                    self.open(I::If(BlockType::Result(ValType::I32)));
+                    self.emit(I::LocalGet(t));
+                    self.call_rt(|rt| rt.free(&k));
+                    self.emit(I::I32Const(0));
+                    self.emit(I::Else);
+                    self.emit(I::LocalGet(t));
+                    self.close();
+                }
+                None => self.emit(I::I32Const(0)),
+            },
             Op::DropReuse => match self.counted(&self.atom_ty(&args[0])) {
                 Some(k) => {
                     self.atom(&args[0]);

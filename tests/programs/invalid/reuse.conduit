@@ -24,6 +24,9 @@ fn fn1(%l: imm List) -> () {
       let %p: imm Pair = reuse Pair.0(%u, 1.5f64, %nil)
       let %b: imm any = box[reuse List.1](%u)
       jump ret()
+    List.0 =>
+      let %v: reuse List.1 = reuse_token(%l)
+      jump ret()
     _ => jump ret()
   }
 }
@@ -32,3 +35,4 @@ fn fn1(%l: imm List) -> () {
 //# verify-error: fn1: drop_reuse to a token of data0.1: %0 isn't known to be built by data0.1 here
 //# verify-error: fn1: reuse data1.0 takes a token of data0.1, which isn't of the same shape
 //# verify-error: fn1: a reuse token can't be boxed
+//# verify-error: fn1: reuse_token to a token of data0.1: %0 isn't known to be built by data0.1 here

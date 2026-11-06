@@ -117,6 +117,7 @@ pub enum Op {
     Free,                  // args = an object of count 1; frees it, not what it holds
     DecRef,                // args = an object of count > 1; count - 1
     DropReuse,             // args = a data object; Drop that keeps its memory in a reuse token
+    ReuseToken,            // args = a unique data object whose fields are taken; its memory as a token
     Reuse(CtorId),         // args = a reuse token, then the fields; New in the token's memory
 }
 
@@ -590,6 +591,9 @@ object in both or of the same scalar type, so that both are the same size
 in every backend. A token isn't an object and isn't counted, and only a
 variable can hold one: not a field, an element, a ref or an `any`.
 `conduit_opt::ownership::insert_reuse` adds them, before the counts.
+**`ReuseToken(x)`** is what specializing a `DropReuse` makes: the token of
+a unique object whose fields the code has already taken, without dropping
+them; it's undefined behavior if `x`'s count isn't 1.
 
 ## Rules
 
@@ -1317,6 +1321,7 @@ Status:
 | `IsUnique` | whether the header is 1 | ✅ with `Options::counts`, else 0 |
 | `Free` | a call that puts a data object or array on its free list | ✅ with `Options::counts`, else nothing |
 | `DropReuse` | a call that drops what the object holds and gives its address if it was unique, else 0 | ✅ with `Options::counts`, else 0 |
+| `ReuseToken` | the object's address, or 0 if it's buffered, which it then frees for the collector | ✅ with `Options::counts`, else 0 |
 | `Reuse` | `New` in the token's memory, or allocated if it's 0 | ✅ |
 | `Handle`, `Perform` with tail-resumptive clauses | a handler stack in a global, and a `call_indirect` of the clause | ✅ |
 | `Handle`, `Perform` with aborting clauses | the same, then `throw`, caught by `try_table` | ✅ (exception handling, Wasm 3.0) |
@@ -1431,7 +1436,8 @@ fn fn1(%0: i32) -> (i32) {
   `ref_new`, `ref_get`, `ref_set`, `box[i32](..)`, `unbox[i32](..)`,
   `handle handler30(..)`, `perform effect20.0(..)`, `resume(..)`,
   `discontinue effect20.0(..)`, `dup(..)`, `drop(..)`, `is_unique(..)`,
-  `free(..)`, `decref(..)`, `drop_reuse(..)` and `reuse data10.1(..)`.
+  `free(..)`, `decref(..)`, `drop_reuse(..)`, `reuse_token(..)` and
+  `reuse data10.1(..)`.
   A reuse token's type is `reuse data10.1`.
 - **Literals** carry their type: `5i32`, `-1i64`, `1.5f32`, `1e300f64`.
   Finite floats are printed in the shortest form that reads back exactly.

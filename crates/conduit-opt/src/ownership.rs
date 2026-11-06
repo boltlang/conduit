@@ -275,7 +275,7 @@ pub fn count_func(id: FuncId, f: &mut Func, borrows: &Borrows) -> Result<(), Str
     while let Some(b) = todo.pop() {
         for l in &b.lets {
             match l.op {
-                Op::Dup | Op::Drop | Op::IsUnique | Op::Free | Op::DecRef => {
+                Op::Dup | Op::Drop | Op::IsUnique | Op::Free | Op::DecRef | Op::ReuseToken => {
                     return Err("it has counts already".into());
                 }
                 Op::Const(_) | Op::Undefined => {
@@ -562,6 +562,7 @@ fn takes(op: &Op, i: usize) -> bool {
         | Op::Box(_)
         | Op::ArrayFreeze
         | Op::DropReuse
+        | Op::ReuseToken
         | Op::Reuse(_) => true,
         Op::Set(..) | Op::RefSet | Op::ArrayFill => i == 1,
         Op::ArraySet => i == 2,
@@ -631,7 +632,9 @@ pub fn specialize_drops(m: &mut Module) {
 /// ```
 ///
 /// When `x` is unique, its reference to the field is `%t`'s, so the `dup`
-/// and the field's `drop` cancel. Only `imm` objects, whose fields can't
+/// and the field's `drop` cancel. A `drop_reuse(x)` is specialized the
+/// same way, with the token a parameter of `k`: `reuse_token(x)` when `x`
+/// is unique, and `undefined`, no memory, when it's shared. Only `imm` objects, whose fields can't
 /// have changed since they were read, and only where a `dup` cancels: a
 /// `drop` with nothing to cancel is as fast as its expansion.
 pub fn specialize_func(data: &BTreeMap<DataId, DataDecl>, f: &mut Func) {
@@ -682,7 +685,8 @@ impl Specialize<'_> {
                 for s in at.into_iter().rev() {
                     lets.remove(s);
                 }
-                let tail = self.expand(&drop.args[0], c, &moved, rest, &mut lets);
+                let token = drop.binds.first().copied();
+                let tail = self.expand(&drop.args[0], c, &moved, token, rest, &mut lets);
                 return Block { lets, tail };
             }
         }
@@ -810,7 +814,7 @@ impl Specialize<'_> {
     /// branches.
     fn sinks(&self, lets: &[Let], d: usize) -> Option<(CtorId, Vec<Sink>)> {
         let l = &lets[d];
-        let (Op::Drop, [Atom::Var(x)]) = (&l.op, &l.args[..]) else {
+        let (Op::Drop | Op::DropReuse, [Atom::Var(x)]) = (&l.op, &l.args[..]) else {
             return None;
         };
         if !matches!(self.f.var_ty(*x), Ty::Data(_, Mutability::Imm, ..)) {
@@ -850,13 +854,14 @@ impl Specialize<'_> {
     }
 
     /// The tail that replaces the `drop` of `x`, built by `c`, whose fields
-    /// in `moved` are held by those variables. Adds the `is_unique` to
-    /// `lets`.
+    /// in `moved` are held by those variables, or the `drop_reuse` of it
+    /// that binds `token`. Adds the `is_unique` to `lets`.
     fn expand(
         &mut self,
         x: &Atom,
         c: CtorId,
         moved: &[(u32, Var)],
+        token: Option<Var>,
         rest: Block,
         lets: &mut Vec<Let>,
     ) -> Tail {
@@ -872,11 +877,16 @@ impl Specialize<'_> {
             source: None,
         });
         let k = self.f.new_label();
-        let jump = || Tail::Jump {
+        let jump = |token: Option<Var>| Tail::Jump {
             target: k,
-            args: Vec::new(),
+            args: token.map(Atom::Var).into_iter().collect(),
             source: None,
         };
+        // For a `drop_reuse`, a token from each branch for the rest.
+        let tokens = token.map(|t| {
+            let ty = self.f.var_ty(t).clone();
+            (self.f.new_var(ty.clone()), self.f.new_var(ty))
+        });
         let fields = self.data[&c.data].ctors[c.index as usize].fields.clone();
         let mut unique = Vec::new();
         for (i, field) in fields.iter().enumerate() {
@@ -893,14 +903,32 @@ impl Specialize<'_> {
             });
             unique.push(count(Op::Drop, v));
         }
-        unique.push(count_atom(Op::Free, x));
         let mut shared: Vec<Let> = moved.iter().map(|&(_, y)| count(Op::Dup, y)).collect();
         shared.push(count_atom(Op::DecRef, x));
+        match tokens {
+            // Unique: its memory is the token. Shared: there's none.
+            Some((t1, t2)) => {
+                unique.push(Let {
+                    binds: vec![t1],
+                    op: Op::ReuseToken,
+                    args: vec![x.clone()],
+                    source: None,
+                });
+                shared.push(Let {
+                    binds: vec![t2],
+                    op: Op::Undefined,
+                    args: Vec::new(),
+                    source: None,
+                });
+            }
+            None => unique.push(count_atom(Op::Free, x)),
+        }
+        let (t1, t2) = tokens.unzip();
         Tail::Join {
             rec: false,
             defs: vec![JoinDef {
                 label: k,
-                params: Vec::new(),
+                params: token.into_iter().collect(),
                 body: rest,
             }],
             body: Box::new(Block::from(Tail::Case {
@@ -909,12 +937,12 @@ impl Specialize<'_> {
                     tag: Tag::Int(1),
                     body: Block {
                         lets: unique,
-                        tail: jump(),
+                        tail: jump(t1),
                     },
                 }],
                 default: Some(Box::new(Block {
                     lets: shared,
-                    tail: jump(),
+                    tail: jump(t2),
                 })),
             })),
         }

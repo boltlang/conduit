@@ -157,7 +157,7 @@ an array, and `ref_new`.
 | `discontinue F.i` | a continuation, then what operation `i` of `F` takes; what the operation gives must fit what the continuation takes | what the continuation gives |
 | `dup`, `drop`, `free`, `decref` | an object: a value of any type but a scalar | nothing |
 | `is_unique` | an object | `i32` |
-| `drop_reuse` | a data object known to be built by `C` (as for `get C.i`) | the `reuse C` it binds |
+| `drop_reuse`, `reuse_token` | a data object known to be built by `C` (as for `get C.i`) | the `reuse C` it binds |
 | `reuse C'` | a `reuse C`, where `C` has the same shape as `C'`, then what `new C'` takes | what `new C'` gives |
 
 Field accesses also follow rule 5: `get C.i` and `set C.i` on `x` need `x`
