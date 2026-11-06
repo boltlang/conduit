@@ -1273,8 +1273,8 @@ exception handling, both part of Wasm 3.0.
   A full buffer of 256 is collected, and so is what the export
   `conduit_collect` asks for. A buffered object's memory only ever goes
   back through the collector, so the buffer never points at another
-  object. The collector recurses through what objects hold, so a very
-  deep cyclic structure can run out of stack.
+  object. The collector follows what objects hold with a stack in
+  memory, which grows as needed, so it doesn't recurse.
 - Handlers whose clauses are all tail-resumptive or aborting are lowered
   directly. For a module with any other clause, the consumer chooses with
   `Options::stack_switching`: stack switching, which isn't standard yet,

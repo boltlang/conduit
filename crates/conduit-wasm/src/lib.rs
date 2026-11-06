@@ -868,7 +868,7 @@ pub fn emit_module_with(
     // The heap pointer, the handler stack, the stack of the `perform`
     // whose clause runs, and, when counting, the live objects.
     let inits: &[i32] = if cx.rt.is_some() {
-        &[heap_base as i32, 0, 0, 0, 0, 0]
+        &[heap_base as i32, 0, 0, 0, 0, 0, 0, 0, 0]
     } else {
         &[heap_base as i32, 0, 0]
     };

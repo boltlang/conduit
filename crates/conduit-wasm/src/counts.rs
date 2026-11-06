@@ -29,10 +29,11 @@
 //!   collected when it's full: `mark_gray`, `scan`, `scan_black` and
 //!   `collect_white` follow what an object holds through its kind's
 //!   `children`, which does one step of them on each child that can be in
-//!   a cycle, and drops the others of a white object. A buffered object's
-//!   memory is only ever given back by the collector, so the buffer never
-//!   points to memory that holds another object. The traversal recurses,
-//!   so a very deep cyclic structure can run out of stack.
+//!   a cycle, and drops the others of a white object. A step pushes the
+//!   child on a stack in memory, which each of them pops until it's back
+//!   where it started, so the collector doesn't recurse. A buffered
+//!   object's memory is only ever given back by the collector, so the
+//!   buffer never points to memory that holds another object.
 //!
 //! The functions come right after `alloc`, in the order of the methods
 //! below, so their indices are known before any code is lowered: the
@@ -56,6 +57,12 @@ pub(crate) const ROOTS: u32 = 4;
 /// The global that's 1 while cycles are collected, so that what's buffered
 /// meanwhile doesn't start another collection.
 pub(crate) const COLLECTING: u32 = 5;
+
+/// The globals of the collector's stack: its address, how many entries it
+/// has room for, and how many it holds.
+const STACK: u32 = 6;
+const CAP: u32 = 7;
+const TOP: u32 = 8;
 
 /// Size classes have free lists up to this many 8-byte words.
 const CLASSES: u32 = 32;
@@ -90,7 +97,7 @@ const OP_WHITE: i32 = 3;
 const OP_FREE: i32 = 4;
 
 /// The functions every counted module has, before those of each kind.
-const FIXED: u32 = 12;
+const FIXED: u32 = 13;
 
 /// The functions of each kind.
 const PER_KIND: u32 = 8;
@@ -319,6 +326,11 @@ impl Runtime {
         self.base + 11
     }
 
+    /// `push(p, kind)` onto the collector's stack.
+    fn push(&self) -> u32 {
+        self.base + 12
+    }
+
     /// The number of a kind. A box holds it plus 1.
     pub fn number(&self, k: &DropKey) -> u32 {
         self.index[k]
@@ -385,6 +397,7 @@ impl Runtime {
             (two, self.scan_body(two, slots)),
             (two, self.scan_black_body(two, slots)),
             (two, self.collect_white_body(two, slots)),
+            (two, self.push_body()),
         ];
         for k in &self.keys {
             out.push((one, self.drop_body(cx, k, false, one, slots)));
@@ -711,77 +724,186 @@ impl Runtime {
         }
     }
 
-    /// `mark_gray(p, kind)`: gray, then the step on each child.
-    fn mark_gray_body(&self, two: u32, slots: Slots) -> Body {
-        let mut code = color_is(GRAY);
-        code.extend([I::If(BlockType::Empty), I::Return, I::End]);
-        code.extend(set_color(GRAY));
-        code.extend(children_call(OP_GRAY, two, slots));
-        code.push(I::End);
+    /// A phase of trial deletion: `first` on the object in local 0, then
+    /// `body` on it, `u`, of kind `uk`, and on each object the steps push,
+    /// popped from the stack until it's back where it was. `body` has the
+    /// header in local `h`.
+    fn phase(&self, first: Vec<I<'static>>, body: Vec<I<'static>>) -> Body {
+        let (p, kind, base, at, u, uk) = (0, 1, 3, 4, 5, 6);
+        let mut code = first;
+        code.extend([
+            I::GlobalGet(TOP),
+            I::LocalSet(base),
+            I::LocalGet(p),
+            I::LocalGet(kind),
+            I::Call(self.push()),
+            I::Block(BlockType::Empty),
+            I::Loop(BlockType::Empty),
+            I::GlobalGet(TOP),
+            I::LocalGet(base),
+            I::I32LeU,
+            I::BrIf(1),
+            I::GlobalGet(TOP),
+            I::I32Const(1),
+            I::I32Sub,
+            I::GlobalSet(TOP),
+            I::GlobalGet(STACK),
+            I::GlobalGet(TOP),
+            I::I32Const(3),
+            I::I32Shl,
+            I::I32Add,
+            I::LocalTee(at),
+            load(Storage::I32, 0),
+            I::LocalSet(u),
+            I::LocalGet(at),
+            load(Storage::I32, 4),
+            I::LocalSet(uk),
+        ]);
+        code.extend(body);
+        code.extend([I::Br(0), I::End, I::End, I::End]);
         Body {
-            locals: vec![ValType::I32],
+            locals: vec![ValType::I32; 5],
             code,
         }
     }
 
-    /// `scan(p, kind)`: of a gray object, black again if it's still above
-    /// 0, or else white, then the step on each child.
+    /// `mark_gray(p, kind)`: gray, then the step on each child, which
+    /// takes 1 from its count and marks it too.
+    fn mark_gray_body(&self, two: u32, slots: Slots) -> Body {
+        let (u, uk, h) = (5, 6, 2);
+        let mut body = color_is(u, h, GRAY);
+        body.extend([I::I32Eqz, I::If(BlockType::Empty)]);
+        body.extend(set_color(u, h, GRAY));
+        body.extend(children_call(u, uk, OP_GRAY, two, slots));
+        body.push(I::End);
+        self.phase(Vec::new(), body)
+    }
+
+    /// `scan(p, kind)`: a gray object is black again if it's still above 0,
+    /// with what it reaches, or else white, then each child is scanned.
     fn scan_body(&self, two: u32, slots: Slots) -> Body {
-        let mut code = color_is(GRAY);
-        code.extend([I::I32Eqz, I::If(BlockType::Empty), I::Return, I::End]);
-        code.extend([
-            I::LocalGet(2),
+        let (u, uk, h) = (5, 6, 2);
+        let mut body = color_is(u, h, GRAY);
+        body.extend([
+            I::If(BlockType::Empty),
+            I::LocalGet(h),
             I::I32Const(COUNT),
             I::I32And,
             I::If(BlockType::Empty),
-            I::LocalGet(0),
-            I::LocalGet(1),
-            I::ReturnCall(self.scan_black()),
-            I::End,
+            I::LocalGet(u),
+            I::LocalGet(uk),
+            I::Call(self.scan_black()),
+            I::Else,
         ]);
-        code.extend(set_color(WHITE));
-        code.extend(children_call(OP_SCAN, two, slots));
-        code.push(I::End);
-        Body {
-            locals: vec![ValType::I32],
-            code,
-        }
+        body.extend(set_color(u, h, WHITE));
+        body.extend(children_call(u, uk, OP_SCAN, two, slots));
+        body.extend([I::End, I::End]);
+        self.phase(Vec::new(), body)
     }
 
     /// `scan_black(p, kind)`: black, then the step on each child, which
-    /// gives back the count `mark_gray` took.
+    /// gives back the count `mark_gray` took, and makes it black too if it
+    /// isn't. What's on the stack is black already.
     fn scan_black_body(&self, two: u32, slots: Slots) -> Body {
-        let mut code = vec![I::LocalGet(0), load(Storage::I32, 0), I::LocalSet(2)];
-        code.extend(set_color(BLACK));
-        code.extend(children_call(OP_BLACK, two, slots));
-        code.push(I::End);
-        Body {
-            locals: vec![ValType::I32],
-            code,
-        }
+        let (p, u, uk, h) = (0, 5, 6, 2);
+        let mut first = vec![I::LocalGet(p), load(Storage::I32, 0), I::LocalSet(h)];
+        first.extend(set_color(p, h, BLACK));
+        self.phase(first, children_call(u, uk, OP_BLACK, two, slots))
     }
 
     /// `collect_white(p, kind)`: a white object that isn't buffered is
     /// garbage: black, so it's done once, then what it holds, then its
     /// memory, which `children` gives back.
     fn collect_white_body(&self, two: u32, slots: Slots) -> Body {
-        let mut code = color_is(WHITE);
-        code.extend([
-            I::LocalGet(2),
+        let (u, uk, h) = (5, 6, 2);
+        let mut body = color_is(u, h, WHITE);
+        body.extend([
+            I::LocalGet(h),
             I::I32Const(BUFFERED),
             I::I32And,
             I::I32Eqz,
             I::I32And,
+            I::If(BlockType::Empty),
+        ]);
+        body.extend(set_color(u, h, BLACK));
+        body.extend(children_call(u, uk, OP_WHITE, two, slots));
+        body.push(I::End);
+        self.phase(Vec::new(), body)
+    }
+
+    /// `push(p, kind)`: onto the collector's stack, a block from `alloc`
+    /// that doubles when it's full. It isn't an object, so it isn't live.
+    fn push_body(&self) -> Body {
+        let (p, kind, cap, new) = (0, 1, 2, 3);
+        let alloc = self.base - 1;
+        let code = vec![
+            I::GlobalGet(TOP),
+            I::GlobalGet(CAP),
+            I::I32GeU,
+            I::If(BlockType::Empty),
+            I::GlobalGet(CAP),
+            I::I32Const(1),
+            I::I32Shl,
+            I::LocalTee(cap),
             I::I32Eqz,
             I::If(BlockType::Empty),
-            I::Return,
+            I::I32Const(64),
+            I::LocalSet(cap),
             I::End,
-        ]);
-        code.extend(set_color(BLACK));
-        code.extend(children_call(OP_WHITE, two, slots));
-        code.push(I::End);
+            I::LocalGet(cap),
+            I::I32Const(3),
+            I::I32Shl,
+            I::Call(alloc),
+            I::LocalSet(new),
+            I::GlobalGet(LIVE),
+            I::I32Const(1),
+            I::I32Sub,
+            I::GlobalSet(LIVE),
+            I::GlobalGet(STACK),
+            I::If(BlockType::Empty),
+            I::LocalGet(new),
+            I::GlobalGet(STACK),
+            I::GlobalGet(TOP),
+            I::I32Const(3),
+            I::I32Shl,
+            I::MemoryCopy {
+                src_mem: 0,
+                dst_mem: 0,
+            },
+            I::GlobalGet(LIVE),
+            I::I32Const(1),
+            I::I32Add,
+            I::GlobalSet(LIVE),
+            I::GlobalGet(STACK),
+            I::GlobalGet(CAP),
+            I::I32Const(3),
+            I::I32Shl,
+            I::Call(self.release()),
+            I::End,
+            I::LocalGet(new),
+            I::GlobalSet(STACK),
+            I::LocalGet(cap),
+            I::GlobalSet(CAP),
+            I::End,
+            I::GlobalGet(STACK),
+            I::GlobalGet(TOP),
+            I::I32Const(3),
+            I::I32Shl,
+            I::I32Add,
+            I::LocalTee(new),
+            I::LocalGet(p),
+            store(Storage::I32, 0),
+            I::LocalGet(new),
+            I::LocalGet(kind),
+            store(Storage::I32, 4),
+            I::GlobalGet(TOP),
+            I::I32Const(1),
+            I::I32Add,
+            I::GlobalSet(TOP),
+            I::End,
+        ];
         Body {
-            locals: vec![ValType::I32],
+            locals: vec![ValType::I32, ValType::I32],
             code,
         }
     }
@@ -1074,6 +1196,7 @@ impl Runtime {
                 I::If(BlockType::Empty),
             ]
         };
+        let push = [I::LocalGet(c), I::I32Const(n), I::ReturnCall(self.push())];
         // Gray: one count less, for the reference from inside.
         code.extend(is(OP_GRAY));
         code.extend([
@@ -1082,43 +1205,32 @@ impl Runtime {
             I::I32Const(1),
             I::I32Sub,
             store(Storage::I32, 0),
-            I::LocalGet(c),
-            I::I32Const(n),
-            I::ReturnCall(self.mark_gray()),
-            I::End,
         ]);
-        code.extend(is(OP_SCAN));
-        code.extend([
-            I::LocalGet(c),
-            I::I32Const(n),
-            I::ReturnCall(self.scan()),
-            I::End,
-        ]);
-        // Black: the count back.
+        code.extend(push.clone());
+        code.push(I::End);
+        // Black: the count back, and black, if it isn't, to be looked into.
         code.extend(is(OP_BLACK));
         code.extend([
             I::LocalGet(c),
             I::LocalGet(h),
             I::I32Const(1),
             I::I32Add,
+            I::I32Const(!COLOR),
+            I::I32And,
             store(Storage::I32, 0),
             I::LocalGet(h),
             I::I32Const(COLOR),
             I::I32And,
+            I::I32Eqz,
             I::If(BlockType::Empty),
-            I::LocalGet(c),
-            I::I32Const(n),
-            I::ReturnCall(self.scan_black()),
-            I::End,
             I::Return,
             I::End,
         ]);
-        code.extend([
-            I::LocalGet(c),
-            I::I32Const(n),
-            I::ReturnCall(self.collect_white()),
-            I::End,
-        ]);
+        code.extend(push.clone());
+        code.push(I::End);
+        // Scan and white: looked into in turn.
+        code.extend(push);
+        code.push(I::End);
         Body {
             locals: vec![ValType::I32],
             code,
@@ -1384,13 +1496,13 @@ fn sig(params: &[ValType], results: &[ValType]) -> crate::FnSig {
     }
 }
 
-/// Whether the color of the object in local 0 is `c`; leaves its header in
-/// local 2.
-fn color_is(c: i32) -> Vec<I<'static>> {
+/// Whether the color of the object in local `p` is `c`; leaves its header
+/// in local `h`.
+fn color_is(p: u32, h: u32, c: i32) -> Vec<I<'static>> {
     vec![
-        I::LocalGet(0),
+        I::LocalGet(p),
         load(Storage::I32, 0),
-        I::LocalTee(2),
+        I::LocalTee(h),
         I::I32Const(COLOR),
         I::I32And,
         I::I32Const(c),
@@ -1398,11 +1510,11 @@ fn color_is(c: i32) -> Vec<I<'static>> {
     ]
 }
 
-/// Sets the color of the object in local 0, whose header is in local 2.
-fn set_color(c: i32) -> Vec<I<'static>> {
+/// Sets the color of the object in local `p`, whose header is in local `h`.
+fn set_color(p: u32, h: u32, c: i32) -> Vec<I<'static>> {
     vec![
-        I::LocalGet(0),
-        I::LocalGet(2),
+        I::LocalGet(p),
+        I::LocalGet(h),
         I::I32Const(!COLOR),
         I::I32And,
         I::I32Const(c),
@@ -1411,16 +1523,16 @@ fn set_color(c: i32) -> Vec<I<'static>> {
     ]
 }
 
-/// `children(p, op)` of the object in local 0, of the kind numbered in
-/// local 1, through the table.
-fn children_call(op: i32, two: u32, slots: Slots) -> Vec<I<'static>> {
+/// `children(p, op)` of the object in local `p`, of the kind numbered in
+/// local `kind`, through the table.
+fn children_call(p: u32, kind: u32, op: i32, two: u32, slots: Slots) -> Vec<I<'static>> {
     vec![
-        I::LocalGet(0),
+        I::LocalGet(p),
         I::I32Const(op),
-        I::LocalGet(1),
+        I::LocalGet(kind),
         I::I32Const(slots.kind_children),
         I::I32Add,
-        I::ReturnCallIndirect {
+        I::CallIndirect {
             type_index: two,
             table_index: 0,
         },

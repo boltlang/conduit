@@ -137,8 +137,16 @@ fn freed_big_blocks_are_reused() {
 /// give `expected`, stay in two pages of memory, and leave no object live
 /// after a last collection.
 fn run_counted(src: &str, expected: i32) {
+    run_counted_in(src, expected, true)
+}
+
+/// [`run_counted`], of `src` with its counts already if not `count`, and
+/// without the limit on memory then.
+fn run_counted_in(src: &str, expected: i32, count: bool) {
     let mut m = text::parse(src).unwrap();
-    conduit_opt::ownership::insert_counts(&mut m).unwrap();
+    if count {
+        conduit_opt::ownership::insert_counts(&mut m).unwrap();
+    }
     conduit_opt::ownership::specialize_drops(&mut m);
     let main = *m
         .funcs
@@ -163,7 +171,9 @@ fn run_counted(src: &str, expected: i32) {
         .unwrap();
     assert_eq!(f.call(&mut store, ()).unwrap(), expected);
     let memory = instance.get_memory(&mut store, "memory").unwrap();
-    assert!(memory.size(&store) <= 2, "{} pages", memory.size(&store));
+    if count {
+        assert!(memory.size(&store) <= 2, "{} pages", memory.size(&store));
+    }
     let collect = instance
         .get_typed_func::<(), ()>(&mut store, "conduit_collect")
         .unwrap();
@@ -220,5 +230,35 @@ fn cycles_of_two_roots_are_collected() {
   in jump go(1000i32)
 }",
         0,
+    );
+}
+
+/// A cycle of 100,000 refs, each holding a box of the one before and the
+/// first holding the last, is collected: the collector's stack is in
+/// memory, not Wasm's.
+#[test]
+fn deep_cycles_are_collected() {
+    run_counted_in(
+        "fn main() -> (i32) {
+  let %u: mut any = undefined()
+  let %first: ref mut any = ref_new(%u)
+  let = dup(%first)
+  join rec go(%i: i32, %prev: ref mut any) =
+    case %i {
+      0 =>
+        let %b: mut any = box[ref mut any](%prev)
+        let = ref_set(%first, %b)
+        let = drop(%first)
+        jump ret(%i)
+      _ =>
+        let %a: mut any = box[ref mut any](%prev)
+        let %r: ref mut any = ref_new(%a)
+        let %i1: i32 = sub(%i, 1i32)
+        jump go(%i1, %r)
+    }
+  in jump go(100000i32, %first)
+}",
+        0,
+        false,
     );
 }
