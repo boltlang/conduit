@@ -21,6 +21,7 @@ pub mod effects;
 pub mod handlers;
 pub mod inline;
 pub mod joins;
+pub mod ownership;
 pub mod promote;
 pub mod simplify;
 pub mod sroa;

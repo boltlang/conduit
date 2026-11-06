@@ -184,7 +184,8 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
     ///
     /// The values in a continuation's frames aren't counted as references,
     /// since a frame keeps values it has already given away. So what a
-    /// continuation that's never resumed holds shows up as undropped.
+    /// continuation that's never resumed holds shows up as lost, apart from
+    /// what's undropped.
     pub fn leaks(&self, roots: &[Value]) -> Leaks {
         let n = self.heap.len();
         let live = |id: usize| matches!(self.counts[id], Count::Live(_));
@@ -217,12 +218,45 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                 }
             }
         }
-        // What the roots reach is in use, and what an undropped object
-        // reaches is lost through it. What's left, if live, only garbage
-        // holds, so cycles keep it alive.
+        // An undropped object that the frames of a continuation that was
+        // never resumed can reach was lost with it.
+        let mut in_frames = vec![false; n];
+        let mut todo: Vec<ObjId> = Vec::new();
+        for object in &self.heap {
+            if let Object::Cont(Continuation {
+                frames: Some(frames),
+            }) = object
+            {
+                for frame in frames {
+                    match frame {
+                        Frame::Code(code) => {
+                            todo.extend(code.vars.iter().flatten().filter_map(as_obj))
+                        }
+                        Frame::Handler { env, .. } => todo.extend(env.iter().filter_map(as_obj)),
+                    }
+                }
+            }
+        }
+        while let Some(o) = todo.pop() {
+            let id = o.0 as usize;
+            if id >= n || in_frames[id] || !live(id) {
+                continue;
+            }
+            in_frames[id] = true;
+            todo.extend(self.heap[id].values().iter().filter_map(as_obj));
+        }
+        let (lost, undropped) = leaks
+            .undropped
+            .iter()
+            .partition(|(o, _)| in_frames[o.0 as usize]);
+        leaks.lost = lost;
+        leaks.undropped = undropped;
+        // What the roots reach is in use, and what an undropped or lost
+        // object reaches is lost through it. What's left, if live, only
+        // garbage holds, so cycles keep it alive.
         let mut seen = vec![false; n];
-        let mut todo: Vec<ObjId> = roots.iter().filter_map(as_obj).collect();
-        todo.extend(leaks.undropped.iter().map(|(o, _)| *o));
+        todo = roots.iter().filter_map(as_obj).collect();
+        todo.extend(leaks.undropped.iter().chain(&leaks.lost).map(|(o, _)| *o));
         while let Some(o) = todo.pop() {
             let id = o.0 as usize;
             if id >= n || seen[id] || !live(id) {
@@ -668,9 +702,11 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                     } => (*func, margs.clone(), captures.clone()),
                     _ => return Err(unverified("apply of something that isn't a closure")),
                 };
-                // The closure is borrowed, and the function owns its
-                // parameters, the captures among them.
+                // It takes the closure, and the function owns its
+                // parameters, the captures among them: as if the closure
+                // gave up its captures, which it keeps if it's shared.
                 self.dup_all(&all)?;
+                self.drop_value(*closure)?;
                 all.extend_from_slice(rest);
                 return self.call_from(func, margs, all, binds, next);
             }
@@ -934,8 +970,9 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
             } => (*func, margs.clone(), captures.clone()),
             _ => return Err(unverified("the body of a handle isn't a closure")),
         };
-        // As for `apply`: the closure is borrowed.
+        // As for `apply`.
         self.dup_all(&captures)?;
+        self.drop_value(closure)?;
         self.code()?.waiting = Some((binds, next));
         self.stack.push(Frame::Handler { handler, env: args });
         self.enter(func, captures, margs)

@@ -218,7 +218,8 @@ continuation twice in a way it can see:
 
 - Each time it's an argument counts as a use: of `resume` and
   `discontinue`, but also of
-  any other op, like a call, `closure` or `new`, and of a jump.
+  any other op, like a call, `closure` or `new`, and of a jump. `dup` and
+  `drop` don't count: they only count its references.
 - Uses add up along a path. A `case` takes the most of its arms, and a jump
   adds what the join point's body uses of variables bound outside it.
   Recursive join points are counted until the counts stop changing, so a

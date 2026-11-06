@@ -1246,8 +1246,7 @@ fn fn0() -> () {{
 }
 
 /// A handler's environment is the handler's, and each clause gets its own
-/// reference; `apply` and `handle` borrow the closure, and `resume` takes
-/// the continuation. With every owner
+/// reference; `handle` takes the closure, and `resume` the continuation. With every owner
 /// dropping what it owns, a generator under a handler frees everything.
 #[test]
 fn handlers_count_their_environment() {
@@ -1262,7 +1261,6 @@ fn fn0() -> (i32) {
   let %body: imm fn() -> () does Yield = closure fn3()
   let = dup(%acc)
   let = handle handler0(%acc, %body)
-  let = drop(%body)
   let %total: i32 = ref_get(%acc)
   let = drop(%acc)
   jump ret(%total)

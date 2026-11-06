@@ -525,13 +525,13 @@ and an op either **takes** an argument's reference, moving it, or
   captures of `Closure`, the value of `RefNew`, `Box`, `Set`, `ArraySet`
   and `RefSet`, the array of `ArrayFreeze` (which gives it back), the
   arguments of `Call`, `Apply`, `Perform`, `Resume` and `Discontinue`,
-  the environment of `Handle`, the continuation of `Resume` and
+  the closure of `Apply`, the environment and closure of `Handle`, the
+  continuation of `Resume` and
   `Discontinue`, and what a jump passes or returns. A function owns its
   parameters, unless a convention between it and its callers says one is
   borrowed, which only changes where the `Drop`s go.
 - They borrow: what `Get`, `ArrayGet`, `ArrayLen`, `RefGet`, `Unbox`,
-  `ArrayClone`, `CallExtern` and `case` look at, and the closure of
-  `Apply` and `Handle`. What `Get`, `ArrayGet`, `RefGet` and `Unbox` give
+  `ArrayClone`, `CallExtern` and `case` look at. What `Get`, `ArrayGet`, `RefGet` and `Unbox` give
   is borrowed from the object it was read from: code that keeps it longer
   `Dup`s it.
 - They count for themselves where a reference appears or goes away
@@ -539,8 +539,9 @@ and an op either **takes** an argument's reference, moving it, or
   replace; `ArrayCopy` dups what it copies and drops what it overwrites;
   `ArrayClone` dups every element it shares; `ArrayFill` holds its value
   once per element, so it takes one reference and adds the rest, or drops
-  it for a length of 0; `Apply` and `Handle` dup the captures they pass
-  to the function; and each `Perform` dups the handler's environment for
+  it for a length of 0; `Apply` and `Handle` take the closure, so they
+  dup the captures they pass to the function and then drop the closure,
+  which frees it if nothing else holds it; and each `Perform` dups the handler's environment for
   the clause, while the handler keeps its own, which its return clause
   takes.
 
@@ -550,9 +551,14 @@ whose count is already 0, is undefined behavior. A continuation that's
 dropped without being resumed or discontinued loses what its frames hold.
 Cycles are never freed by counting alone.
 
-Passes that run before the counts are made don't need to know about any
-of this. A pass that runs after them must keep counts right, which most
-don't: `Dup` and `Drop` are meant to come last.
+`conduit_opt::ownership::insert_counts` adds the `Dup`s and `Drop`s, after
+optimization: every variable that holds an object owns a reference, a
+use that takes one while the variable is still needed gets a `Dup`, and
+the last use that doesn't take it, or a branch that doesn't use it, gets
+a `Drop`. What `Get` and the other reads give is `Dup`ped right away, so
+that it's owned too. Passes that run before it don't need to know about
+any of this. A pass that runs after it must keep counts right, which
+most don't.
 
 ## Rules
 

@@ -1287,7 +1287,12 @@ impl Linear<'_> {
 
     fn uses(&mut self, b: &Block) -> Counts {
         let mut c = Counts::new();
-        for l in &b.lets {
+        // Counting a continuation's references isn't using it.
+        for l in b
+            .lets
+            .iter()
+            .filter(|l| !matches!(l.op, Op::Dup | Op::Drop))
+        {
             add(&mut c, &self.atoms(&l.args));
         }
         let tail = match &b.tail {

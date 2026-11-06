@@ -19,3 +19,7 @@ harness = false
 [[test]]
 name = "effects"
 harness = false
+
+[[test]]
+name = "counts"
+harness = false

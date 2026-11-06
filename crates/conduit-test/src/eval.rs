@@ -1,6 +1,6 @@
 //! Running `run` checks with the evaluator.
 
-use conduit_eval::{ErrorKind, Host, Machine, Value};
+use conduit_eval::{ErrorKind, Host, Leaks, Machine, Value};
 use conduit_ir::{Extern, ExternId, Lit, Module};
 
 use crate::{CheckKind, Outcome, Program};
@@ -22,7 +22,7 @@ pub fn check_runs_then(
     m: &Module,
     after: impl Fn(&Machine<'_, Module, TestHost>) -> Result<(), String>,
 ) -> Result<(), String> {
-    runs(p, m, false, after)
+    runs(p, m, false, |_| Ok(()), after)
 }
 
 /// [`check_runs`], with reference counting on if `p` has a `counted`
@@ -30,13 +30,28 @@ pub fn check_runs_then(
 /// Only for `p`'s own module: passes don't keep counts right.
 pub fn check_runs_counted(p: &Program, m: &Module) -> Result<(), String> {
     let counting = p.has(|k| matches!(k, CheckKind::Counted));
-    runs(p, m, counting, |_| Ok(()))
+    let all_freed = |leaks: &Leaks| match leaks.is_empty() {
+        true => Ok(()),
+        false => Err(leaks.to_string()),
+    };
+    runs(p, m, counting, all_freed, |_| Ok(()))
+}
+
+/// [`check_runs`] with reference counting on, then `leaks` on what each
+/// run that gave results left behind, with its results as roots.
+pub fn check_runs_with_counts(
+    p: &Program,
+    m: &Module,
+    leaks: impl Fn(&Leaks) -> Result<(), String>,
+) -> Result<(), String> {
+    runs(p, m, true, leaks, |_| Ok(()))
 }
 
 fn runs(
     p: &Program,
     m: &Module,
     counting: bool,
+    check_leaks: impl Fn(&Leaks) -> Result<(), String>,
     after: impl Fn(&Machine<'_, Module, TestHost>) -> Result<(), String>,
 ) -> Result<(), String> {
     for run in p.runs(m)? {
@@ -58,8 +73,8 @@ fn runs(
             Err(e) => Err(e.to_string()),
         };
         run.check(p, got)?;
-        if let Some(leaks) = leaks.filter(|l| counting && !l.is_empty()) {
-            return Err(format!("{}: {}: {leaks}", p.at(run.line), run.name));
+        if let Some(leaks) = leaks.filter(|_| counting) {
+            check_leaks(&leaks).map_err(|e| format!("{}: {}: {e}", p.at(run.line), run.name))?;
         }
         after(&machine)?;
     }

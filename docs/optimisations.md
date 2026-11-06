@@ -185,6 +185,32 @@ can run on it.
 The test programs run after it in the evaluator, after the optimizer, and
 in Wasm without stack switching.
 
+## Reference counts (`ownership::insert_counts`)
+
+Not one of the passes above either: a module-level pass, run once after
+optimization, that adds the `dup`s and `drop`s that free memory (see
+"Reference counts" in `ir.md`). Every variable that holds an object owns
+a reference to it, parameters of functions and join points included:
+
+- A use that takes the reference, while the variable is still needed
+  after it or is taken twice by the same op, gets a `dup` first.
+- The last use that only borrows it gets a `drop` after, and so does a
+  variable whose value is never used. A branch drops what's owned when it
+  starts but it doesn't use.
+- What `get`, `array_get`, `ref_get` and `unbox` read out of an object is
+  `dup`ped right away, so that it's owned, before the object may be
+  dropped.
+- A join point owns what its body uses from outside, which each jump to
+  it hands over with its arguments.
+- What `const` and `undefined` give is never counted.
+
+There's no borrowing yet, and no specialization of `drop`, so a `get`
+followed by the `drop` of its object pays a `dup` and a `drop` that
+specialization will cancel. `crates/conduit-opt/tests/counts.rs` runs
+every test program after it, as written, after optimizing, and after
+evidence passing, with the evaluator counting: every count must be
+right.
+
 ## Not done yet
 
 - Handlers whose clauses are called directly. The body of a `handle` is

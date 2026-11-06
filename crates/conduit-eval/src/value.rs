@@ -113,6 +113,10 @@ pub struct Leaks {
     /// Objects with fewer counts than references, and how many fewer:
     /// something dropped a reference it didn't own.
     pub overdropped: Vec<(ObjId, u32)>,
+    /// Undropped objects that the frames of a continuation that was never
+    /// resumed can reach: dropping a continuation loses what its frames
+    /// hold, which is expected until a dropped continuation is unwound.
+    pub lost: Vec<(ObjId, u32)>,
     /// Freed objects that a live object or a root still refers to.
     pub dangling: Vec<ObjId>,
     /// Garbage whose counts are all right: only other garbage refers to
@@ -129,7 +133,7 @@ impl Leaks {
 
     /// Whether everything the run made that the roots don't own was freed.
     pub fn is_empty(&self) -> bool {
-        self.counts_ok() && self.cycles.is_empty()
+        self.counts_ok() && self.cycles.is_empty() && self.lost.is_empty()
     }
 }
 
@@ -158,6 +162,10 @@ impl std::fmt::Display for Leaks {
         if !self.dangling.is_empty() {
             let list = objs(&mut self.dangling.iter().map(|o| format!("#{}", o.0)));
             parts.push(format!("freed but referred to: {list}"));
+        }
+        if !self.lost.is_empty() {
+            let list = objs(&mut self.lost.iter().map(|(o, n)| format!("#{} (+{n})", o.0)));
+            parts.push(format!("lost with continuations: {list}"));
         }
         if !self.cycles.is_empty() {
             let list = objs(&mut self.cycles.iter().map(|o| format!("#{}", o.0)));
