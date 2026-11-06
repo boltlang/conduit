@@ -239,6 +239,7 @@ pub(crate) fn op_results<P: Program + ?Sized>(
             [Ty::Ref(inner), ty] => Err(format!("ref of {inner} gets a {ty}")),
             _ => Err("ref set needs a ref and a value".into()),
         },
+        Op::Box(Ty::Reuse(_)) => Err("a reuse token can't be boxed".into()),
         Op::Box(ty) => {
             ty_ok(p, ty, Allowed::func(mp.count, effects))?;
             match tys {
@@ -259,6 +260,25 @@ pub(crate) fn op_results<P: Program + ?Sized>(
                 [Ty::Any(_)] => Ok(vec![ty.clone()]),
                 _ => Err("unbox needs one any".into()),
             }
+        }
+        Op::DropReuse => match (tys, out) {
+            ([Ty::Data(d, ..)], [Ty::Reuse(c)]) => {
+                field_access(p, known, c, *d, &args[0])
+                    .map_err(|m| format!("drop_reuse to a token of {c}: {m}"))?;
+                Ok(out.to_vec())
+            }
+            _ => Err("drop_reuse needs a data object and binds a reuse token".into()),
+        },
+        Op::Reuse(c) => {
+            let Some((Ty::Reuse(from), fields)) = tys.split_first() else {
+                return Err(format!("reuse {c} needs a reuse token, then the fields"));
+            };
+            if !crate::verify::same_shape(p, *from, *c) {
+                return Err(format!(
+                    "reuse {c} takes a token of {from}, which isn't of the same shape"
+                ));
+            }
+            op_results(p, mp, effects, &Op::New(*c), &args[1..], fields, out, known)
         }
         Op::Dup | Op::Drop | Op::Free | Op::DecRef | Op::IsUnique => match tys {
             [ty] if is_object(ty) && *op == Op::IsUnique => Ok(vec![Ty::I32]),
@@ -495,7 +515,10 @@ pub(crate) fn op_row<P: Program + ?Sized>(p: &P, op: &Op, tys: &[Ty]) -> Row {
 
 /// Whether values of a type are objects, which have a reference count.
 fn is_object(ty: &Ty) -> bool {
-    !matches!(ty, Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::F32 | Ty::F64)
+    !matches!(
+        ty,
+        Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::F32 | Ty::F64 | Ty::Reuse(_)
+    )
 }
 
 fn op_word(op: &Op) -> &'static str {

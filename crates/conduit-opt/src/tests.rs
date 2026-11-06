@@ -158,3 +158,36 @@ fn borrowed_parameters() {
     assert_eq!(by_name("add"), vec![false, false]);
     assert_eq!(by_name("build"), vec![false]);
 }
+
+/// `map` in `tests/programs/counts/reuse.conduit` builds each new cell in
+/// the old one's memory: mapping a list of 100 makes no new objects.
+#[test]
+fn map_reuses_its_cells() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/programs/counts/reuse.conduit"
+    );
+    let mut m = parse(&std::fs::read_to_string(path).unwrap()).unwrap();
+    crate::ownership::insert_reuse(&mut m);
+    crate::ownership::insert_counts(&mut m).unwrap();
+    crate::ownership::specialize_drops(&mut m);
+    conduit_ir::verify::verify_module(&m).unwrap();
+    let main = *m
+        .funcs
+        .iter()
+        .find(|(_, f)| f.debug.name.as_deref() == Some("main"))
+        .unwrap()
+        .0;
+    let mut machine = conduit_eval::Machine::new(&m, conduit_eval::NoHost);
+    machine.counting = true;
+    let r = machine
+        .call(main, vec![conduit_eval::Value::I32(100)])
+        .unwrap();
+    assert_eq!(r, vec![conduit_eval::Value::I32(5150)]);
+    // `build` makes 101 objects, and `map` none.
+    let made = (0..)
+        .take_while(|&i| machine.count(conduit_eval::ObjId(i)).is_some())
+        .count();
+    assert_eq!(made, 101);
+    assert!(machine.leaks(&[]).is_empty());
+}

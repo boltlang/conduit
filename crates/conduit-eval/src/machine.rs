@@ -154,7 +154,7 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
     /// An object, unless it has been freed.
     pub fn object(&self, id: ObjId) -> Option<&Object<'p>> {
         match self.counts.get(id.0 as usize)? {
-            Count::Freed => None,
+            Count::Freed | Count::Reserved => None,
             _ => self.heap.get(id.0 as usize),
         }
     }
@@ -172,7 +172,7 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
             .iter()
             .zip(&self.counts)
             .enumerate()
-            .filter(|(_, (_, c))| **c != Count::Freed)
+            .filter(|(_, (_, c))| !matches!(c, Count::Freed | Count::Reserved))
             .map(|(i, (o, _))| (ObjId(i as u32), o))
     }
 
@@ -203,12 +203,16 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
         for v in roots {
             point(v, &mut refs, &mut leaks);
         }
-        for id in (0..n).filter(|&id| self.counts[id] != Count::Freed) {
+        for id in (0..n).filter(|&id| matches!(self.counts[id], Count::Live(_) | Count::Immortal)) {
             for v in self.heap[id].values() {
                 point(v, &mut refs, &mut leaks);
             }
         }
         for id in 0..n {
+            // A token never used is memory never given back.
+            if self.counts[id] == Count::Reserved {
+                leaks.undropped.push((ObjId(id as u32), 1));
+            }
             if let Count::Live(c) = self.counts[id] {
                 let o = ObjId(id as u32);
                 if c > refs[id] {
@@ -301,7 +305,7 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                 Ok(())
             }
             Some(Count::Immortal) => Ok(()),
-            Some(Count::Freed) => Err(freed("dup")),
+            Some(Count::Freed | Count::Reserved) => Err(freed("dup")),
             None => Err(unverified("dangling object")),
         }
     }
@@ -328,11 +332,38 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                 }
                 Some(Count::Live(c)) => *c -= 1,
                 Some(Count::Immortal) => {}
-                Some(Count::Freed) => return Err(freed("drop")),
+                Some(Count::Freed | Count::Reserved) => return Err(freed("drop")),
                 None => return Err(unverified("dangling object")),
             }
         }
         Ok(())
+    }
+
+    /// `drop_reuse`: like `drop`, but at 0 the memory is kept for the token
+    /// it gives, which is otherwise none, `Unset`. Without counting, it's
+    /// always none, and nothing changes.
+    fn drop_reuse(&mut self, value: Value) -> Step<Value> {
+        let id = obj(value)?;
+        if !self.counting {
+            return Ok(Value::Unset);
+        }
+        let i = id.0 as usize;
+        match self.counts.get(i) {
+            Some(Count::Live(1)) => {
+                self.counts[i] = Count::Reserved;
+                let held = self.heap[i].values().to_vec();
+                for v in held {
+                    self.drop_value(v)?;
+                }
+                Ok(Value::Obj(id))
+            }
+            Some(Count::Live(_) | Count::Immortal) => {
+                self.drop_value(value)?;
+                Ok(Value::Unset)
+            }
+            Some(Count::Freed | Count::Reserved) => Err(freed("drop_reuse")),
+            None => Err(unverified("dangling object")),
+        }
     }
 
     /// Whether `value`'s object has a count of 1. Without counting, none
@@ -342,7 +373,7 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
         match self.counts.get(id.0 as usize) {
             Some(Count::Live(1)) => Ok(self.counting),
             Some(Count::Live(_) | Count::Immortal) => Ok(false),
-            Some(Count::Freed) => Err(freed("is_unique")),
+            Some(Count::Freed | Count::Reserved) => Err(freed("is_unique")),
             None => Err(unverified("dangling object")),
         }
     }
@@ -355,7 +386,7 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
         }
         match self.counts.get_mut(id.0 as usize) {
             Some(c @ Count::Live(1)) => *c = Count::Freed,
-            Some(Count::Freed) => return Err(freed("free")),
+            Some(Count::Freed | Count::Reserved) => return Err(freed("free")),
             Some(_) => return Err(ErrorKind::Undefined("free of a shared object".into())),
             None => return Err(unverified("dangling object")),
         }
@@ -374,7 +405,7 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
             }
             Some(Count::Live(c)) => *c -= 1,
             Some(Count::Immortal) => {}
-            Some(Count::Freed) => return Err(freed("decref")),
+            Some(Count::Freed | Count::Reserved) => return Err(freed("decref")),
             None => return Err(unverified("dangling object")),
         }
         Ok(())
@@ -564,7 +595,7 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
     /// Fails if the object has been freed.
     fn live(&self, id: ObjId) -> Step<()> {
         match self.counts.get(id.0 as usize) {
-            Some(Count::Freed) => Err(freed("use")),
+            Some(Count::Freed | Count::Reserved) => Err(freed("use")),
             _ => Ok(()),
         }
     }
@@ -997,6 +1028,31 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
             Op::DecRef => {
                 self.decref(arg(&args, 0)?)?;
                 vec![]
+            }
+            Op::DropReuse => vec![self.drop_reuse(arg(&args, 0)?)?],
+            Op::Reuse(c) => {
+                let (token, fields) = args
+                    .split_first()
+                    .ok_or_else(|| unverified("reuse without a token"))?;
+                let is_mut = self.binds_mut(binds)?;
+                let object = Object::Data {
+                    ctor: *c,
+                    fields: fields.to_vec(),
+                    is_mut,
+                };
+                match *token {
+                    Value::Unset => vec![self.alloc(object)],
+                    Value::Obj(id) if self.counts.get(id.0 as usize) == Some(&Count::Reserved) => {
+                        self.heap[id.0 as usize] = object;
+                        self.counts[id.0 as usize] = Count::Live(1);
+                        vec![Value::Obj(id)]
+                    }
+                    _ => {
+                        return Err(ErrorKind::Undefined(
+                            "reuse of a token that holds no memory to reuse".into(),
+                        ));
+                    }
+                }
             }
         };
         let code = self.code()?;

@@ -101,6 +101,9 @@ pub enum Count {
     Freed,
     /// Never counted: a constant's object.
     Immortal,
+    /// Freed by `drop_reuse`, its memory held by a reuse token until a
+    /// `reuse` builds a new object in it.
+    Reserved,
 }
 
 /// What [`Machine::leaks`](crate::Machine::leaks) found. Each list is

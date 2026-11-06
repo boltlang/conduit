@@ -512,6 +512,7 @@ impl Parser {
             "f64" => Ty::F64,
             "cont" => Ty::Cont(Box::new(self.sig()?)),
             "ref" => Ty::Ref(Box::new(self.ty()?)),
+            "reuse" => Ty::Reuse(self.ctor()?),
             m if matches!(m, "imm" | "mut" | "ro" | "inherit") || m.starts_with('\'') => {
                 self.i -= 1;
                 let m = self.mutability()?;
@@ -1037,6 +1038,8 @@ impl Parser {
             "is_unique" => Op::IsUnique,
             "free" => Op::Free,
             "decref" => Op::DecRef,
+            "drop_reuse" => Op::DropReuse,
+            "reuse" => Op::Reuse(self.ctor()?),
             "discontinue" => {
                 let e = EffectId(self.item("effect")?);
                 self.punct(".")?;

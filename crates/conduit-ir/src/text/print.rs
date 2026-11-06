@@ -104,6 +104,7 @@ impl Items {
             Ty::Fn(sig, m) => format!("{m} fn{}", self.sig(sig)),
             Ty::Cont(sig) => format!("cont{}", self.sig(sig)),
             Ty::Ref(ty) => format!("ref {}", self.ty(ty)),
+            Ty::Reuse(c) => format!("reuse {}", self.ctor(*c)),
             other => other.to_string(),
         }
     }
@@ -172,6 +173,7 @@ impl Items {
                 format!("closure {}{}", self.func(*f), self.args(margs, rows))
             }
             Op::New(c) => format!("new {}", self.ctor(*c)),
+            Op::Reuse(c) => format!("reuse {}", self.ctor(*c)),
             Op::Const(id) => format!("const {}", self.constant(*id)),
             Op::Get(c, i) => format!("get {}.{i}", self.ctor(*c)),
             Op::Set(c, i) => format!("set {}.{i}", self.ctor(*c)),
@@ -748,5 +750,7 @@ pub(crate) fn op_name(op: &Op) -> String {
         Op::IsUnique => "is_unique".into(),
         Op::Free => "free".into(),
         Op::DecRef => "decref".into(),
+        Op::DropReuse => "drop_reuse".into(),
+        Op::Reuse(c) => format!("reuse {c}"),
     }
 }

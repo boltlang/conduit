@@ -1,4 +1,5 @@
-//! Inserts reference counts into every test program with `run` checks,
+//! Inserts reuse and reference counts into every test program with `run`
+//! checks,
 //! then checks that the result verifies and still passes the `run` checks
 //! in the evaluator with counting on, with every count right: nothing
 //! undropped, dropped too often or used after it's freed. Cycles, and what
@@ -8,7 +9,8 @@
 //! lowering effects by evidence passing and then optimizing, each time with
 //! the counts as inserted and again with their `drop`s specialized. A
 //! program with a `counts` check must match its `<name>.counts.conduit`
-//! snapshot of the program as written, with counts and drops specialized.
+//! snapshot of the program as written, with reuse, counts and drops
+//! specialized.
 
 use conduit_eval::Leaks;
 use conduit_ir::Module;
@@ -29,6 +31,7 @@ fn test(p: &Program) -> Result<(), String> {
     let m = p.module()?;
     if p.has(|k| matches!(k, CheckKind::Counts)) {
         let mut counted = m.clone();
+        conduit_opt::ownership::insert_reuse(&mut counted);
         conduit_opt::ownership::insert_counts(&mut counted)?;
         conduit_opt::ownership::specialize_drops(&mut counted);
         p.snapshot("counts.conduit", &text::print(&counted))?;
@@ -47,6 +50,7 @@ fn test(p: &Program) -> Result<(), String> {
 }
 
 fn check(p: &Program, mut m: Module, when: &str) -> Result<(), String> {
+    conduit_opt::ownership::insert_reuse(&mut m);
     conduit_opt::ownership::insert_counts(&mut m).map_err(|e| format!("{when}: {e}"))?;
     run(p, &m, when)?;
     conduit_opt::ownership::specialize_drops(&mut m);

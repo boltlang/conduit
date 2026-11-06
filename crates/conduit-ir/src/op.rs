@@ -110,6 +110,15 @@ pub enum Op {
     /// shared, so it's never freed; binds nothing. Args: the object.
     /// Undefined behavior if its count is 1.
     DecRef,
+    /// `Drop` of a data object known to be built by a constructor `C`,
+    /// which gives a reuse token of type `Reuse(C)`: the object's memory,
+    /// if its count was 1, after dropping what it held, or none. Args: the
+    /// object.
+    DropReuse,
+    /// `New`, in the memory of a reuse token if it has some. Args: the
+    /// token, of a constructor of the same shape (see
+    /// [`same_shape`](crate::verify::same_shape)), then the fields.
+    Reuse(CtorId),
 }
 
 /// What an op may do: to memory, and whether it may stop the program
@@ -169,7 +178,10 @@ impl Op {
             Op::ArrayGet | Op::Unbox(_) => (Reads, true),
             Op::Set(..) | Op::RefSet => (Writes, false),
             // They write the count, and `Drop` may free.
-            Op::Dup | Op::Drop | Op::Free | Op::DecRef => (Writes, false),
+            Op::Dup | Op::Drop | Op::Free | Op::DecRef | Op::DropReuse => (Writes, false),
+            // It may write into memory that's no object's any more, and it
+            // must not be removed, since its token would be lost.
+            Op::Reuse(_) => (Writes, false),
             Op::IsUnique => (Reads, false),
             Op::ArraySet | Op::ArrayCopy => (Writes, true),
             Op::Call(..) | Op::CallExtern(_) | Op::Apply => (Unknown, true),

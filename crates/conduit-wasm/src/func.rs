@@ -649,9 +649,40 @@ impl<'m> FuncCx<'_, 'm> {
                 });
                 return Ok(self.bind(binds, tail));
             }
-            Op::New(c) => {
+            Op::DropReuse => match self.counted(&self.atom_ty(&args[0])) {
+                Some(k) => {
+                    self.atom(&args[0]);
+                    self.call_rt(|rt| rt.drop_reuse(&k));
+                }
+                // Without counting, there's never memory to reuse.
+                None => self.emit(I::I32Const(0)),
+            },
+            Op::New(c) | Op::Reuse(c) => {
                 let (offsets, size) = layout(self.cx.fields(*c)?);
-                let p = self.alloc_const(size);
+                let (token, args) = match op {
+                    Op::Reuse(_) => (args.first(), &args[1..]),
+                    _ => (None, args),
+                };
+                let p = match token {
+                    // The token's memory, with a count of 1, or else new.
+                    Some(t) if self.cx.rt.is_some() => {
+                        let p = self.new_local(ValType::I32);
+                        self.atom(t);
+                        self.emit(I::LocalTee(p));
+                        self.emit(I::I32Eqz);
+                        self.open(I::If(BlockType::Empty));
+                        self.emit(I::I32Const(size as i32));
+                        self.emit(I::Call(self.cx.alloc));
+                        self.emit(I::LocalSet(p));
+                        self.emit(I::Else);
+                        self.emit(I::LocalGet(p));
+                        self.emit(I::I32Const(1));
+                        self.emit(store(Storage::I32, 0));
+                        self.close();
+                        p
+                    }
+                    _ => self.alloc_const(size),
+                };
                 self.emit(I::LocalGet(p));
                 self.emit(I::I32Const(c.index as i32));
                 self.emit(store(Storage::I32, 4));

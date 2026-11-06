@@ -10,7 +10,7 @@
 //!
 //! Each program is also lowered with its reference counts inserted and
 //! freeing on: its effects lowered by evidence passing first if it needs
-//! that, then counted and its drops specialized. Each run must then leave
+//! that, then given reuse, counted and its drops specialized. Each run must then leave
 //! as many objects live as the evaluator's run of the same module does,
 //! not counting its continuations, which Wasm doesn't make.
 
@@ -149,6 +149,7 @@ fn counted(p: &Program, m: &Module) -> Result<(), String> {
     }
     // A program counted by hand already has its counts.
     if !p.has(|k| matches!(k, CheckKind::Counted)) {
+        conduit_opt::ownership::insert_reuse(&mut c);
         conduit_opt::ownership::insert_counts(&mut c)?;
         conduit_opt::ownership::specialize_drops(&mut c);
     }

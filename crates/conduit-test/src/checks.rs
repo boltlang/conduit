@@ -37,7 +37,7 @@ pub enum CheckKind {
     /// reference counting on, and each run must leave nothing behind but
     /// its results: no leaks, no wrong counts, and no cycles.
     Counted,
-    /// `//# counts`: the program after `insert_counts` and
+    /// `//# counts`: the program after `insert_reuse`, `insert_counts` and
     /// `specialize_drops` matches `<name>.counts.conduit`.
     Counts,
 }

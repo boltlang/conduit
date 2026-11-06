@@ -30,6 +30,11 @@
 //! Variables bound by `const` or `undefined` are never counted, since
 //! their counts would do nothing.
 //!
+//! [`insert_reuse`] runs first: where an arm of a `case` takes an object
+//! apart and builds one of the same shape, the new one goes in the old
+//! one's memory when that's unique, instead of freeing one and allocating
+//! the other: Perceus's "functional but in-place".
+//!
 //! [`specialize_drops`] then makes the counts cheaper where a field read
 //! out of an object is kept and the object dropped: when the object turns
 //! out to be unique at run time, its reference to the field becomes the
@@ -555,7 +560,9 @@ fn takes(op: &Op, i: usize) -> bool {
         | Op::Discontinue(..)
         | Op::RefNew
         | Op::Box(_)
-        | Op::ArrayFreeze => true,
+        | Op::ArrayFreeze
+        | Op::DropReuse
+        | Op::Reuse(_) => true,
         Op::Set(..) | Op::RefSet | Op::ArrayFill => i == 1,
         Op::ArraySet => i == 2,
         _ => false,
@@ -576,8 +583,13 @@ fn count(op: Op, v: Var) -> Let {
     }
 }
 
+/// Whether values of `ty` are objects, which are counted. A reuse token
+/// isn't one.
 fn is_object(ty: &Ty) -> bool {
-    !matches!(ty, Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::F32 | Ty::F64)
+    !matches!(
+        ty,
+        Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::F32 | Ty::F64 | Ty::Reuse(_)
+    )
 }
 
 /// The blocks `b` ends in.
@@ -644,6 +656,18 @@ struct Specialize<'a> {
 impl Specialize<'_> {
     fn block(&mut self, mut b: Block) -> Block {
         for d in 0..b.lets.len() {
+            if let Some(clone) = self.freezes(&b.lets, d) {
+                let mut rest_lets = b.lets.split_off(clone + 1);
+                rest_lets.remove(d - clone - 1);
+                let l = b.lets.pop().unwrap();
+                let rest = self.block(Block {
+                    lets: rest_lets,
+                    tail: b.tail,
+                });
+                let mut lets = b.lets;
+                let tail = self.freeze(l, rest, &mut lets);
+                return Block { lets, tail };
+            }
             if let Some((c, sinks)) = self.sinks(&b.lets, d) {
                 let rest_lets = b.lets.split_off(d + 1);
                 let drop = b.lets.pop().unwrap();
@@ -692,6 +716,93 @@ impl Specialize<'_> {
             tail => tail,
         };
         b
+    }
+
+    /// If `lets[d]` is a `drop(a)` whose array was last used by an
+    /// `array_clone` to `imm` before it, with nothing in between that uses
+    /// `a`: that clone's index.
+    fn freezes(&self, lets: &[Let], d: usize) -> Option<usize> {
+        let (Op::Drop, [a @ Atom::Var(_)]) = (&lets[d].op, &lets[d].args[..]) else {
+            return None;
+        };
+        let (c, l) = lets[..d]
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, l)| l.args.contains(a))?;
+        let imm = match &l.binds[..] {
+            [b] => matches!(self.f.var_ty(*b), Ty::Array(_, Mutability::Imm)),
+            _ => false,
+        };
+        (l.op == Op::ArrayClone && imm).then_some(c)
+    }
+
+    /// `let b = array_clone(a)`, then `rest`, without the `drop(a)` after
+    /// it, as the array itself when it's unique:
+    ///
+    /// ```text
+    /// let %u: i32 = is_unique(%a)
+    /// join k(%b) = <rest>
+    /// in case %u {
+    ///   1 => let %b1 = array_freeze(%a); jump k(%b1)
+    ///   _ => let %b2 = array_clone(%a); decref(%a); jump k(%b2)
+    /// }
+    /// ```
+    fn freeze(&mut self, clone: Let, rest: Block, lets: &mut Vec<Let>) -> Tail {
+        let a = clone.args[0].clone();
+        let b = clone.binds[0];
+        let ty = self.f.var_ty(b).clone();
+        let u = self.f.new_var(Ty::I32);
+        lets.push(Let {
+            binds: vec![u],
+            op: Op::IsUnique,
+            args: vec![a.clone()],
+            source: None,
+        });
+        let k = self.f.new_label();
+        let (b1, b2) = (self.f.new_var(ty.clone()), self.f.new_var(ty));
+        let jump = |v: Var| Tail::Jump {
+            target: k,
+            args: vec![Atom::Var(v)],
+            source: None,
+        };
+        let frozen = Block {
+            lets: vec![Let {
+                binds: vec![b1],
+                op: Op::ArrayFreeze,
+                args: vec![a.clone()],
+                source: clone.source,
+            }],
+            tail: jump(b1),
+        };
+        let copied = Block {
+            lets: vec![
+                Let {
+                    binds: vec![b2],
+                    op: Op::ArrayClone,
+                    args: vec![a.clone()],
+                    source: clone.source,
+                },
+                count_atom(Op::DecRef, &a),
+            ],
+            tail: jump(b2),
+        };
+        Tail::Join {
+            rec: false,
+            defs: vec![JoinDef {
+                label: k,
+                params: vec![b],
+                body: rest,
+            }],
+            body: Box::new(Block::from(Tail::Case {
+                scrut: Atom::Var(u),
+                arms: vec![Arm {
+                    tag: Tag::Int(1),
+                    body: frozen,
+                }],
+                default: Some(Box::new(copied)),
+            })),
+        }
     }
 
     /// If `lets[d]` is a `drop` to specialize: the constructor its object
@@ -824,4 +935,120 @@ fn is_count(op: &Op) -> bool {
         op,
         Op::Dup | Op::Drop | Op::IsUnique | Op::Free | Op::DecRef
     )
+}
+
+/// Adds reuse to every function of `m`, before [`insert_counts`]: in an arm
+/// `C =>` of a `case` on `x` whose last use of `x` is in the arm's own
+/// block, right after it, and before the first `new C'(..)` after it of a
+/// constructor of the same shape (see
+/// [`same_shape`](conduit_ir::verify::same_shape)):
+///
+/// ```text
+/// let %t: reuse C = drop_reuse(%x)
+/// ..
+/// let %y = reuse C'(%t, ..)
+/// ```
+///
+/// That builds `y` in `x`'s memory if `x` was unique, and allocates
+/// otherwise. The `drop_reuse` is right after the last use, rather than at
+/// the `new`, so that `x` doesn't keep its fields alive in between: a
+/// recursive call on a field, as in `map`, then finds it unique. Only in
+/// the arm's own block, so that the token is always used. `x` is then
+/// owned where it was borrowed, which [`borrows`] sees.
+pub fn insert_reuse(m: &mut Module) {
+    let shapes = Module {
+        data: m.data.clone(),
+        ..Module::default()
+    };
+    for f in m.funcs.values_mut() {
+        reuse_func(&shapes, f);
+    }
+}
+
+fn reuse_func(shapes: &Module, f: &mut Func) {
+    let none = Borrows::default();
+    let mut cx = Counts {
+        counted: f.vars.iter().map(is_object).collect(),
+        lent: Set::new(),
+        borrows: &none,
+        free: BTreeMap::new(),
+    };
+    cx.find_free(&f.body);
+    let mut todo = vec![&mut f.body];
+    let vars = &mut f.vars;
+    while let Some(b) = todo.pop() {
+        match &mut b.tail {
+            Tail::Case {
+                scrut,
+                arms,
+                default,
+            } => {
+                for arm in arms.iter_mut() {
+                    if let (Atom::Var(x), Tag::Ctor(c)) = (&*scrut, arm.tag)
+                        && matches!(vars[x.0 as usize], Ty::Data(..))
+                    {
+                        reuse_arm(&cx, shapes, &mut arm.body, *x, c, vars);
+                    }
+                }
+                todo.extend(arms.iter_mut().map(|a| &mut a.body));
+                todo.extend(default.as_deref_mut());
+            }
+            Tail::Join { defs, body, .. } => {
+                todo.extend(defs.iter_mut().map(|d| &mut d.body));
+                todo.push(body);
+            }
+            Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
+        }
+    }
+}
+
+/// Reuses `x`, built by `c`, for the first `new` of the same shape in `b`
+/// after `x`'s last use, if there's one.
+fn reuse_arm(
+    cx: &Counts<'_>,
+    shapes: &Module,
+    b: &mut Block,
+    x: Var,
+    c: CtorId,
+    vars: &mut Vec<Ty>,
+) {
+    let mut afters = vec![Set::new(); b.lets.len()];
+    let mut live = cx.live_tail(&b.tail);
+    for (i, l) in b.lets.iter().enumerate().rev() {
+        afters[i] = live.clone();
+        cx.step_back(l, &mut live);
+    }
+    // Where `x` is dead from: after its last use, if it's in the block.
+    // A last use that gives `x` away leaves no memory to reuse.
+    let gives =
+        |l: &Let| (l.args.iter().enumerate()).any(|(p, a)| *a == Atom::Var(x) && takes(&l.op, p));
+    let from = match b.lets.iter().rposition(|l| l.args.contains(&Atom::Var(x))) {
+        Some(i) if !afters[i].contains(&x) && !gives(&b.lets[i]) => i + 1,
+        Some(_) => return,
+        None if !live.contains(&x) => 0,
+        None => return,
+    };
+    let found = b.lets[from..].iter().position(|l| match l.op {
+        Op::New(c2) => conduit_ir::verify::same_shape(shapes, c, c2),
+        _ => false,
+    });
+    let Some(j) = found.map(|j| from + j) else {
+        return;
+    };
+    vars.push(Ty::Reuse(c));
+    let t = Var(vars.len() as u32 - 1);
+    let Op::New(c2) = b.lets[j].op else {
+        unreachable!()
+    };
+    b.lets[j].op = Op::Reuse(c2);
+    b.lets[j].args.insert(0, Atom::Var(t));
+    b.lets.insert(
+        from,
+        Let {
+            binds: vec![t],
+            op: Op::DropReuse,
+            args: vec![Atom::Var(x)],
+            source: None,
+        },
+    );
 }

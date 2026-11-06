@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::id::DataId;
+use crate::id::{CtorId, DataId};
 use crate::row::Row;
 
 /// A type.
@@ -31,6 +31,11 @@ pub enum Ty {
     /// A boxed value of any type. `Imm` means it holds a value that's `Imm`
     /// all the way down.
     Any(Mutability),
+    /// A reuse token, from `DropReuse` of an object built by this
+    /// constructor: its memory, if it was unique, or none. Only `Reuse` of
+    /// a constructor of the same shape takes it. It isn't an object, so it
+    /// isn't counted, and only variables have it.
+    Reuse(CtorId),
 }
 
 impl Ty {
@@ -47,7 +52,14 @@ impl Ty {
     /// The mutability of an object type; `None` for scalars and `Cont`.
     pub fn mutability(&self) -> Option<Mutability> {
         match self {
-            Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::F32 | Ty::F64 | Ty::Cont(_) => None,
+            Ty::I8
+            | Ty::I16
+            | Ty::I32
+            | Ty::I64
+            | Ty::F32
+            | Ty::F64
+            | Ty::Cont(_)
+            | Ty::Reuse(_) => None,
             Ty::Data(_, m, ..) | Ty::Array(_, m) | Ty::Fn(_, m) | Ty::Any(m) => Some(*m),
             Ty::Ref(_) => Some(Mutability::Mut),
         }
@@ -188,6 +200,7 @@ impl fmt::Display for Ty {
             Ty::Cont(sig) => write!(f, "cont{sig}"),
             Ty::Ref(ty) => write!(f, "ref {ty}"),
             Ty::Any(m) => write!(f, "{m} any"),
+            Ty::Reuse(c) => write!(f, "reuse {c}"),
         }
     }
 }

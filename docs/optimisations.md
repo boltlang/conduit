@@ -228,6 +228,20 @@ every test program after it, as written, after optimizing, and after
 evidence passing, with the evaluator counting, and again after
 specializing drops: every count must be right.
 
+**Reuse** (`ownership::insert_reuse`, before `insert_counts`). In an arm
+`C =>` of a `case` on `x`, where the arm's own block has `x`'s last use,
+a `drop_reuse(x)` goes right after it, and the first `new C'` after that,
+of a constructor of the same shape, becomes `reuse C'` of its token. When
+`x` turns out to be unique, the new object is built in its memory instead
+of freeing one and allocating the other: `map` over a list it owns makes
+no new cells. The `drop_reuse` goes right after the last use, not at the
+`new`, so that `x` doesn't keep its fields alive meanwhile, and a
+recursive call on a field still finds it unique. Only within the arm's
+block, so the token is always used, and not where the last use gives `x`
+away. It makes `x` owned, since `drop_reuse` takes it. Specializing the
+`drop_reuse`, so that the fields it would drop cancel against their `dup`s
+when `x` is unique, isn't done yet.
+
 **Specialized drops** (`ownership::specialize_drops`, after
 `insert_counts`). A `drop(x)` of an `imm` data object, in a block where
 fields read from `x` were `dup`ped before it, becomes a branch on
@@ -238,6 +252,12 @@ takes 1 from its count. The rest of the block becomes a join point that
 both branches jump to. Only `imm` objects, whose fields can't have
 changed since they were read, and only where a `dup` can go: a `drop`
 with nothing to cancel is already as fast as its expansion.
+
+It also **freezes in place**: an `array_clone` to `imm` that is its
+array's last use, followed by the array's `drop`, becomes a branch on
+`is_unique`: the array itself, by `array_freeze`, when it's unique, and a
+clone and a `decref` otherwise. The `copies` pass can only prove that
+statically; this catches the rest at run time.
 
 ## Not done yet
 

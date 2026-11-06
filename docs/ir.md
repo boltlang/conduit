@@ -116,6 +116,8 @@ pub enum Op {
     IsUnique,              // args = an object; 1 if its count is 1, else 0
     Free,                  // args = an object of count 1; frees it, not what it holds
     DecRef,                // args = an object of count > 1; count - 1
+    DropReuse,             // args = a data object; Drop that keeps its memory in a reuse token
+    Reuse(CtorId),         // args = a reuse token, then the fields; New in the token's memory
 }
 
 impl Op {
@@ -574,6 +576,19 @@ object and `DecRef` of a unique one are undefined behavior.
 out of an `imm` object is `Dup`ped and the object then dropped: when the
 object is unique, the field's reference becomes the variable's, so the
 `Dup` and the field's `Drop` both go.
+
+**Reuse** builds an object in the memory of one that's just been dropped,
+as Perceus does. **`DropReuse(x)`**, of a data object known to be built by
+a constructor `C` (as `Get` needs), is a `Drop` that, when the count was
+1, keeps the memory instead of freeing it, after dropping what `x` held,
+and gives it as a **reuse token**, of type `Reuse(C)`, written
+`reuse C`; otherwise the token holds none. **`Reuse(C')(t, fields..)`**
+is a `New` that builds in `t`'s memory if it has some, and allocates
+otherwise. `C'` must have the same shape as `C`: as many fields, each an
+object in both or of the same scalar type, so that both are the same size
+in every backend. A token isn't an object and isn't counted, and only a
+variable can hold one: not a field, an element, a ref or an `any`.
+`conduit_opt::ownership::insert_reuse` adds them, before the counts.
 
 ## Rules
 
@@ -1289,6 +1304,8 @@ Status:
 | `Drop` | a call of the drop function of the object's kind | ✅ with `Options::counts`, else nothing |
 | `IsUnique` | whether the header is 1 | ✅ with `Options::counts`, else 0 |
 | `Free` | a call that puts a data object or array on its free list | ✅ with `Options::counts`, else nothing |
+| `DropReuse` | a call that drops what the object holds and gives its address if it was unique, else 0 | ✅ with `Options::counts`, else 0 |
+| `Reuse` | `New` in the token's memory, or allocated if it's 0 | ✅ |
 | `Handle`, `Perform` with tail-resumptive clauses | a handler stack in a global, and a `call_indirect` of the clause | ✅ |
 | `Handle`, `Perform` with aborting clauses | the same, then `throw`, caught by `try_table` | ✅ (exception handling, Wasm 3.0) |
 | `Discontinue` in a tail-resumptive clause | a `perform` under the handler stack of the `perform` the clause handles, kept in a second global | ✅ |
@@ -1402,7 +1419,8 @@ fn fn1(%0: i32) -> (i32) {
   `ref_new`, `ref_get`, `ref_set`, `box[i32](..)`, `unbox[i32](..)`,
   `handle handler30(..)`, `perform effect20.0(..)`, `resume(..)`,
   `discontinue effect20.0(..)`, `dup(..)`, `drop(..)`, `is_unique(..)`,
-  `free(..)` and `decref(..)`.
+  `free(..)`, `decref(..)`, `drop_reuse(..)` and `reuse data10.1(..)`.
+  A reuse token's type is `reuse data10.1`.
 - **Literals** carry their type: `5i32`, `-1i64`, `1.5f32`, `1e300f64`.
   Finite floats are printed in the shortest form that reads back exactly.
   NaNs and infinities are written by their bits: `f32_bits(2143289344)`.

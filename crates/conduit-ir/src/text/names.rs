@@ -60,7 +60,7 @@ pub(super) fn valid(name: &str, prefix: &str) -> bool {
 const KEYWORDS: &[&str] = &[
     "Any", "Nothing", "and", "any", "cont", "does", "env", "f32", "f32_bits", "f64", "f64_bits",
     "fn", "for", "i16", "i32", "i64", "i8", "imm", "in", "inherit", "labels", "mut", "ops", "rec",
-    "ref", "ret", "ro", "vars", "where",
+    "ref", "ret", "reuse", "ro", "vars", "where",
 ];
 
 /// The names of one kind of thing, as the parser reads them.

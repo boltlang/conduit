@@ -39,6 +39,9 @@ const CLASSES: u32 = 32;
 /// The functions every counted module has, before those of each kind.
 const FIXED: u32 = 6;
 
+/// The functions of each kind.
+const PER_KIND: u32 = 4;
+
 /// A kind of object that's dropped the same way.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum DropKey {
@@ -54,7 +57,9 @@ pub(crate) enum DropKey {
 /// Continuations aren't: what they hold is lost when they're dropped.
 pub(crate) fn key_of(ty: &Ty) -> Option<DropKey> {
     Some(match ty {
-        Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::F32 | Ty::F64 | Ty::Cont(_) => return None,
+        Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::F32 | Ty::F64 | Ty::Cont(_) | Ty::Reuse(_) => {
+            return None;
+        }
         Ty::Data(d, ..) => DropKey::Data(*d),
         Ty::Array(e, _) => DropKey::Array(Storage::of(e), key_of(e).map(Box::new)),
         Ty::Ref(t) => DropKey::Ref(Storage::of(t), key_of(t).map(Box::new)),
@@ -126,7 +131,7 @@ impl Runtime {
 
     /// How many functions it takes.
     pub fn len(&self) -> u32 {
-        FIXED + 3 * self.keys.len() as u32
+        FIXED + PER_KIND * self.keys.len() as u32
     }
 
     /// `dup(p)`.
@@ -166,7 +171,7 @@ impl Runtime {
 
     /// `drop(p)` of a kind.
     pub fn drop(&self, k: &DropKey) -> u32 {
-        self.base + FIXED + 3 * self.number(k)
+        self.base + FIXED + PER_KIND * self.number(k)
     }
 
     /// `drop_range(address, n)`: drops `n` references of a kind stored
@@ -179,6 +184,12 @@ impl Runtime {
     /// holds.
     pub fn free(&self, k: &DropKey) -> u32 {
         self.drop(k) + 2
+    }
+
+    /// `drop_reuse(p) -> token` of a data type: like `drop`, but at 0 it
+    /// keeps the memory, for the token, which is otherwise 0.
+    pub fn drop_reuse(&self, k: &DropKey) -> u32 {
+        self.drop(k) + 3
     }
 
     /// The bodies of the functions, with their types. A closure's free
@@ -200,6 +211,7 @@ impl Runtime {
             out.push((one, self.drop_body(cx, k, closures, kinds, one)));
             out.push((two, range(self.drop(k))));
             out.push((one, self.free_body(cx, k)));
+            out.push((test, self.drop_reuse_body(cx, k)));
         }
         out
     }
@@ -419,6 +431,65 @@ impl Runtime {
             }
         }
         code.push(I::End);
+        Body { locals, code }
+    }
+
+    /// `drop_reuse(p) -> token` of kind `k`, which is only for data.
+    fn drop_reuse_body(&self, cx: &mut Cx<'_>, k: &DropKey) -> Body {
+        let DropKey::Data(d) = k else {
+            return Body {
+                locals: Vec::new(),
+                code: vec![I::Unreachable, I::End],
+            };
+        };
+        let (p, h, ctor) = (0, 1, 2);
+        let locals = vec![ValType::I32, ValType::I32];
+        let mut code = vec![
+            I::LocalGet(p),
+            load(Storage::I32, 0),
+            I::LocalTee(h),
+            I::I32Const(1),
+            I::I32Ne,
+            I::If(BlockType::Empty),
+            // Shared or immortal: no memory to reuse.
+            I::LocalGet(h),
+            I::I32Const(0),
+            I::I32GeS,
+            I::If(BlockType::Empty),
+            I::LocalGet(p),
+            I::LocalGet(h),
+            I::I32Const(1),
+            I::I32Sub,
+            store(Storage::I32, 0),
+            I::End,
+            I::I32Const(0),
+            I::Return,
+            I::End,
+            I::LocalGet(p),
+            load(Storage::I32, 4),
+            I::LocalSet(ctor),
+        ];
+        let ctors = cx.m.data.get(d).map_or(&[][..], |d| &d.ctors[..]);
+        for (i, c) in ctors.iter().enumerate() {
+            let (offsets, _) = layout(&c.fields);
+            code.extend([
+                I::LocalGet(ctor),
+                I::I32Const(i as i32),
+                I::I32Eq,
+                I::If(BlockType::Empty),
+            ]);
+            for (t, &(at, _)) in c.fields.iter().zip(&offsets) {
+                if let Some(k) = key_of(t) {
+                    code.extend([
+                        I::LocalGet(p),
+                        load(Storage::I32, at),
+                        I::Call(self.drop(&k)),
+                    ]);
+                }
+            }
+            code.extend([I::LocalGet(p), I::Return, I::End]);
+        }
+        code.extend([I::Unreachable, I::End]);
         Body { locals, code }
     }
 

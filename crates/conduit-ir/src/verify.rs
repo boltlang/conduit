@@ -162,7 +162,9 @@ fn decl_error(item: Item, message: String) -> Error {
 fn check_data<P: Program + ?Sized>(p: &P, id: DataId, decl: &DataDecl, errors: &mut Vec<Error>) {
     for (c, ctor) in decl.ctors.iter().enumerate() {
         for (i, field) in ctor.fields.iter().enumerate() {
-            if let Err(message) = ty_ok(p, field, Allowed::field(decl.params, decl.effect_params)) {
+            let ok = no_token(field)
+                .and_then(|()| ty_ok(p, field, Allowed::field(decl.params, decl.effect_params)));
+            if let Err(message) = ok {
                 errors.push(decl_error(
                     Item::Data(id),
                     format!("field {i} of constructor {c}: {message}"),
@@ -485,6 +487,7 @@ fn ty_ok<P: Program + ?Sized>(p: &P, ty: &Ty, allowed: Allowed) -> Result<(), St
         // An element can have the array's mutability.
         Ty::Array(elem, m) => {
             mut_ok(m)?;
+            no_token(elem)?;
             ty_ok(
                 p,
                 elem,
@@ -503,8 +506,44 @@ fn ty_ok<P: Program + ?Sized>(p: &P, ty: &Ty, allowed: Allowed) -> Result<(), St
             sig_ok(p, sig, allowed.params, allowed.rows)?;
             row_ok(p, &sig.row, allowed.rows)
         }
-        Ty::Ref(ty) => ty_ok(p, ty, Allowed { ..allowed }),
+        Ty::Ref(ty) => {
+            no_token(ty)?;
+            ty_ok(p, ty, Allowed { ..allowed })
+        }
         Ty::Any(m) => mut_ok(m),
+        Ty::Reuse(c) => match p.data(c.data).and_then(|d| d.ctors.get(c.index as usize)) {
+            Some(_) => Ok(()),
+            None => Err(format!("unknown constructor {c}")),
+        },
+    }
+}
+
+/// Whether objects of constructors `a` and `b` have the same shape, so
+/// that one can be built in the other's memory: as many fields, each an
+/// object in both, or of the same scalar type. Such objects are the same
+/// size in every backend.
+pub fn same_shape<P: Program + ?Sized>(p: &P, a: CtorId, b: CtorId) -> bool {
+    let fields = |c: CtorId| p.data(c.data).and_then(|d| d.ctors.get(c.index as usize));
+    let (Some(a), Some(b)) = (fields(a), fields(b)) else {
+        return false;
+    };
+    let scalar = |t: &Ty| matches!(t, Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::F32 | Ty::F64);
+    a.fields.len() == b.fields.len()
+        && a.fields
+            .iter()
+            .zip(&b.fields)
+            .all(|(x, y)| match (scalar(x), scalar(y)) {
+                (false, false) => true,
+                (true, true) => x == y,
+                _ => false,
+            })
+}
+
+/// Fails if `ty` is a reuse token, which only a variable can hold.
+fn no_token(ty: &Ty) -> Result<(), String> {
+    match ty {
+        Ty::Reuse(_) => Err(format!("{ty} can only be a variable's type")),
+        _ => Ok(()),
     }
 }
 
@@ -712,6 +751,8 @@ fn at_most_in<P: Program + ?Sized>(
         Ty::Array(elem, m) => le(*m) && at_most_in(p, &inherit(elem, *m), bound, assumes, seen),
         Ty::Fn(_, m) | Ty::Any(m) => le(*m),
         Ty::Ref(_) | Ty::Cont(_) => le(Mutability::Mut),
+        // A token holds nothing.
+        Ty::Reuse(_) => true,
     }
 }
 
@@ -862,7 +903,7 @@ impl<P: Program + ?Sized> Cx<'_, P> {
             // What `new` builds is known for as long as it's in scope,
             // and so is what a constant is.
             match (&l.op, &l.binds[..]) {
-                (Op::New(c), [v]) => self.known.push((*v, *c)),
+                (Op::New(c) | Op::Reuse(c), [v]) => self.known.push((*v, *c)),
                 (Op::Const(id), [v]) => {
                     if let Some(ConstValue::New(c, _)) = const_value(self.p, *id) {
                         self.known.push((*v, *c));
