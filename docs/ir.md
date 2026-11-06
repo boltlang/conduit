@@ -171,6 +171,7 @@ pub enum Ty {
     Cont(Box<Sig>),               // one-shot continuation captured by a handler
     Ref(Box<Ty>),                 // mutable cell holding one value: always Mut
     Any(Mutability),              // a boxed value of any type: see "Polymorphism"
+    Reuse(CtorId),                // a reuse token: see "Reference counts"
 }
 
 pub enum Mutability { Imm, Mut, ReadOnly, Inherit, Param(u32) }
