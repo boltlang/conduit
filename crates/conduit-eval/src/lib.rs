@@ -35,9 +35,9 @@ mod prim;
 mod value;
 
 pub use error::{Error, ErrorKind};
-pub use machine::{Host, Machine, NoHost};
+pub use machine::{Count, Host, Leaks, Machine, NoHost, Stats};
 pub use prim::fold;
-pub use value::{Continuation, Count, Leaks, ObjId, Object, Stats, Value};
+pub use value::{Continuation, ObjId, Object, Value};
 
 #[cfg(test)]
 mod tests;
