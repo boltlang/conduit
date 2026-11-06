@@ -79,9 +79,8 @@ fn strip_counts(b: &mut Block, k: Var) {
     let mut todo = vec![b];
     while let Some(b) = todo.pop() {
         b.lets.retain(|l| {
-            // `is_unique` binds a variable, but is never of a continuation.
-            let counts = matches!(l.op, Op::Dup | Op::Drop | Op::Free | Op::DecRef);
-            !(counts && l.args == [Atom::Var(k)])
+            // Those that bind something are never of a continuation.
+            !(l.op.is_count() && l.binds.is_empty() && l.args == [Atom::Var(k)])
         });
         todo.extend(b.children_mut());
     }

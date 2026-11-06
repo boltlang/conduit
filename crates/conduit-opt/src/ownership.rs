@@ -106,7 +106,7 @@ pub fn borrows(m: &Module) -> Borrows {
         let borrowed = f
             .params
             .iter()
-            .map(|p| is_object(f.var_ty(*p)) && !always_owned.contains(id))
+            .map(|p| f.var_ty(*p).is_object() && !always_owned.contains(id))
             .collect();
         b.params.insert(*id, borrowed);
     }
@@ -186,7 +186,7 @@ fn lent_vars(id: FuncId, f: &Func, b: &Borrows) -> Set {
                 && reads
                 && lent.contains(x)
                 && f.var_ty(*x).mutability() == Some(Mutability::Imm)
-                && is_object(f.var_ty(*y))
+                && f.var_ty(*y).is_object()
             {
                 lent.insert(*y);
             }
@@ -264,7 +264,7 @@ pub fn insert_counts_with(m: &mut Module, borrows: &Borrows) -> Result<(), Strin
 
 /// Adds `dup`s and `drop`s to one function, `id`.
 pub fn count_func(id: FuncId, f: &mut Func, borrows: &Borrows) -> Result<(), String> {
-    let mut counted: Vec<bool> = f.vars.iter().map(is_object).collect();
+    let mut counted: Vec<bool> = f.vars.iter().map(Ty::is_object).collect();
     // A borrowed variable isn't the function's to count: it only gets a
     // `dup` for each use that takes a reference.
     let lent = lent_vars(id, f, borrows);
@@ -275,7 +275,8 @@ pub fn count_func(id: FuncId, f: &mut Func, borrows: &Borrows) -> Result<(), Str
     while let Some(b) = todo.pop() {
         for l in &b.lets {
             match l.op {
-                Op::Dup | Op::Drop | Op::IsUnique | Op::Free | Op::DecRef | Op::ReuseToken => {
+                // `drop_reuse` comes before, from `insert_reuse`.
+                ref op if op.is_count() && *op != Op::DropReuse => {
                     return Err("it has counts already".into());
                 }
                 Op::Const(_) | Op::Undefined => {
@@ -584,15 +585,6 @@ fn count(op: Op, v: Var) -> Let {
     }
 }
 
-/// Whether values of `ty` are objects, which are counted. A reuse token
-/// isn't one.
-fn is_object(ty: &Ty) -> bool {
-    !matches!(
-        ty,
-        Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::F32 | Ty::F64 | Ty::Reuse(_)
-    )
-}
-
 /// Specializes the `drop`s of every function of `m` that [`insert_counts`]
 /// counted: see [`specialize_func`].
 pub fn specialize_drops(m: &mut Module) {
@@ -751,7 +743,7 @@ impl Specialize<'_> {
             let touched = b.lets[s + 1..].iter().any(|l| {
                 (l.args.iter().enumerate()).any(|(p, a)| {
                     (*a == Atom::Var(*y) || *a == Atom::Var(x))
-                        && (is_count(&l.op) || takes(&l.op, p))
+                        && (l.op.is_count() || takes(&l.op, p))
                 })
             });
             if dropped.contains(&x) && !touched {
@@ -883,7 +875,7 @@ impl Specialize<'_> {
             }
             let used_later = lets[s + 1..d].iter().any(|l| {
                 (l.args.iter().enumerate())
-                    .any(|(p, a)| *a == Atom::Var(*y) && (is_count(&l.op) || takes(&l.op, p)))
+                    .any(|(p, a)| *a == Atom::Var(*y) && (l.op.is_count() || takes(&l.op, p)))
             });
             if !used_later && !sinks.iter().any(|sink| sink.field == i) {
                 ctor = Some(c);
@@ -935,7 +927,7 @@ impl Specialize<'_> {
         let mut unique = Vec::new();
         for (i, field) in fields.iter().enumerate() {
             let ty = resolve(field, m, &margs, &rows);
-            if !is_object(&ty) || moved.iter().any(|&(j, _)| j as usize == i) {
+            if !ty.is_object() || moved.iter().any(|&(j, _)| j as usize == i) {
                 continue;
             }
             let v = self.f.new_var(ty);
@@ -1002,13 +994,6 @@ fn count_atom(op: Op, a: &Atom) -> Let {
     }
 }
 
-fn is_count(op: &Op) -> bool {
-    matches!(
-        op,
-        Op::Dup | Op::Drop | Op::IsUnique | Op::Free | Op::DecRef
-    )
-}
-
 /// Adds reuse to every function of `m`, before [`insert_counts`]: in an arm
 /// `C =>` of a `case` on `x` whose last use of `x` is in the arm's own
 /// block, right after it, and before the first `new C'(..)` after it of a
@@ -1041,7 +1026,7 @@ pub fn insert_reuse(m: &mut Module) {
 fn reuse_func(shapes: &Module, f: &mut Func) {
     let none = Borrows::default();
     let mut cx = Counts {
-        counted: f.vars.iter().map(is_object).collect(),
+        counted: f.vars.iter().map(Ty::is_object).collect(),
         lent: Set::new(),
         borrows: &none,
         free: BTreeMap::new(),

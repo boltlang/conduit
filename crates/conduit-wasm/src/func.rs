@@ -999,7 +999,7 @@ impl<'m> FuncCx<'_, 'm> {
             }
             // A reference is already an `any`; a scalar goes in a box.
             Op::Box(ty) => {
-                if is_scalar_ty(ty) {
+                if ty.is_scalar() {
                     let p = self.alloc_const(16);
                     self.emit(I::LocalGet(p));
                     self.atom(&args[0]);
@@ -1011,7 +1011,7 @@ impl<'m> FuncCx<'_, 'm> {
             }
             Op::Unbox(ty) => {
                 self.atom(&args[0]);
-                if is_scalar_ty(ty) {
+                if ty.is_scalar() {
                     self.emit(load(Storage::of(ty), 8));
                 }
             }
@@ -1944,9 +1944,4 @@ fn zero(ty: ValType) -> I<'static> {
         ValType::V128 => I::V128Const(0),
         ValType::Ref(r) => I::RefNull(r.heap_type),
     }
-}
-
-/// Whether `ty` is a scalar, which a box holds in memory.
-fn is_scalar_ty(ty: &Ty) -> bool {
-    matches!(ty, Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::F32 | Ty::F64)
 }

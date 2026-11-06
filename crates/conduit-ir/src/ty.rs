@@ -44,6 +44,20 @@ impl Ty {
         Ty::Data(d, m, Vec::new(), Vec::new())
     }
 
+    /// Whether this is a scalar: an integer or a float.
+    pub fn is_scalar(&self) -> bool {
+        matches!(
+            self,
+            Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::F32 | Ty::F64
+        )
+    }
+
+    /// Whether values of this type are objects, which have a reference
+    /// count: anything but a scalar or a reuse token.
+    pub fn is_object(&self) -> bool {
+        !self.is_scalar() && !matches!(self, Ty::Reuse(_))
+    }
+
     /// Whether this is an integer type: `i8`, `i16`, `i32` or `i64`.
     pub fn is_int(&self) -> bool {
         matches!(self, Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64)

@@ -169,6 +169,22 @@ impl Effects {
 }
 
 impl Op {
+    /// Whether the op only counts references, which reference counting
+    /// adds: `Dup`, `Drop`, `IsUnique`, `Free`, `DecRef`, `DropReuse` and
+    /// `ReuseToken`. Counting an object's references isn't using it.
+    pub fn is_count(&self) -> bool {
+        matches!(
+            self,
+            Op::Dup
+                | Op::Drop
+                | Op::IsUnique
+                | Op::Free
+                | Op::DecRef
+                | Op::DropReuse
+                | Op::ReuseToken
+        )
+    }
+
     pub fn effects(&self) -> Effects {
         use Memory::*;
         let (memory, may_trap) = match self {

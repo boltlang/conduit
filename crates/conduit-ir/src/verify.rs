@@ -527,12 +527,11 @@ pub fn same_shape<P: Program + ?Sized>(p: &P, a: CtorId, b: CtorId) -> bool {
     let (Some(a), Some(b)) = (fields(a), fields(b)) else {
         return false;
     };
-    let scalar = |t: &Ty| matches!(t, Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::F32 | Ty::F64);
     a.fields.len() == b.fields.len()
         && a.fields
             .iter()
             .zip(&b.fields)
-            .all(|(x, y)| match (scalar(x), scalar(y)) {
+            .all(|(x, y)| match (x.is_scalar(), y.is_scalar()) {
                 (false, false) => true,
                 (true, true) => x == y,
                 _ => false,
@@ -1341,7 +1340,7 @@ impl Linear<'_> {
     fn uses(&mut self, b: &Block) -> Counts {
         let mut c = Counts::new();
         // Counting a continuation's references isn't using it.
-        for l in b.lets.iter().filter(|l| !is_count_op(&l.op)) {
+        for l in b.lets.iter().filter(|l| !l.op.is_count()) {
             add(&mut c, &self.atoms(&l.args));
         }
         let tail = match &b.tail {
@@ -1439,11 +1438,3 @@ fn binds(b: &Block, out: &mut BTreeSet<Var>) {
 
 #[cfg(test)]
 mod tests;
-
-/// Whether an op only counts references, which isn't using what it counts.
-fn is_count_op(op: &Op) -> bool {
-    matches!(
-        op,
-        Op::Dup | Op::Drop | Op::IsUnique | Op::Free | Op::DecRef
-    )
-}

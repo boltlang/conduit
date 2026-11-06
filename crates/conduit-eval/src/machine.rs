@@ -924,16 +924,7 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
     }
 
     fn op(&mut self, op: &'p Op, args: Vec<Value>, binds: &'p [Var], next: At<'p>) -> Step<()> {
-        if matches!(
-            op,
-            Op::Dup
-                | Op::Drop
-                | Op::IsUnique
-                | Op::Free
-                | Op::DecRef
-                | Op::DropReuse
-                | Op::ReuseToken
-        ) {
+        if op.is_count() {
             self.stats.count_ops += 1;
         }
         let results = match op {

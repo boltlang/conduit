@@ -289,8 +289,8 @@ pub(crate) fn op_results<P: Program + ?Sized>(
             op_results(p, mp, effects, &Op::New(*c), &args[1..], fields, out, known)
         }
         Op::Dup | Op::Drop | Op::Free | Op::DecRef | Op::IsUnique => match tys {
-            [ty] if is_object(ty) && *op == Op::IsUnique => Ok(vec![Ty::I32]),
-            [ty] if is_object(ty) => Ok(vec![]),
+            [ty] if ty.is_object() && *op == Op::IsUnique => Ok(vec![Ty::I32]),
+            [ty] if ty.is_object() => Ok(vec![]),
             [ty] => Err(format!("{} of a {ty}, which isn't an object", op_word(op))),
             _ => Err(format!("{} needs one object", op_word(op))),
         },
@@ -519,14 +519,6 @@ pub(crate) fn op_row<P: Program + ?Sized>(p: &P, op: &Op, tys: &[Ty]) -> Row {
             .map_or(Row::NOTHING, |decl| decl.row.subst(rows)),
         _ => Row::NOTHING,
     }
-}
-
-/// Whether values of a type are objects, which have a reference count.
-fn is_object(ty: &Ty) -> bool {
-    !matches!(
-        ty,
-        Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::F32 | Ty::F64 | Ty::Reuse(_)
-    )
 }
 
 fn op_word(op: &Op) -> &'static str {
