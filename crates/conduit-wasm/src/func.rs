@@ -16,6 +16,7 @@ use conduit_ir::{
 };
 use wasm_encoder::{BlockType, Ieee32, Ieee64, Instruction as I, MemArg, MemArgTarget, ValType};
 
+use crate::counts::{DropKey, Runtime, key_of};
 use crate::{ABORT, Cx, HANDLERS, HEAP, SITE, Storage, layout, val};
 
 /// A lowered function: the locals after its parameters, and its code.
@@ -124,19 +125,35 @@ pub(crate) fn lower_entry(cx: &mut Cx<'_>, f: FuncId, n: usize) -> Result<Body, 
     let (offsets, _) = layout(&sig.params[..n]);
     let rest = sig.params.len() - n;
     let mut code = Vec::new();
-    for &(at, s) in &offsets {
-        code.push(I::LocalGet(0));
-        code.push(load(s, at));
+    let mut locals = Vec::new();
+    if let Some(rt) = &cx.rt {
+        // `apply` takes the closure, and the function owns its captures:
+        // they're read out, each dupped, and the closure dropped.
+        let first = 1 + rest as u32;
+        for (j, (&(at, s), ty)) in offsets.iter().zip(&sig.params[..n]).enumerate() {
+            locals.push(val(ty));
+            code.extend([I::LocalGet(0), load(s, at), I::LocalTee(first + j as u32)]);
+            match key_of(ty) {
+                Some(_) => code.push(I::Call(rt.dup())),
+                None => code.push(I::Drop),
+            }
+        }
+        code.extend([I::LocalGet(0), I::Call(rt.drop(&DropKey::Closure))]);
+        for j in 0..n as u32 {
+            code.push(I::LocalGet(first + j));
+        }
+    } else {
+        for &(at, s) in &offsets {
+            code.push(I::LocalGet(0));
+            code.push(load(s, at));
+        }
     }
     for p in 0..rest as u32 {
         code.push(I::LocalGet(1 + p));
     }
     code.push(I::ReturnCall(cx.func_index(f)?));
     code.push(I::End);
-    Ok(Body {
-        locals: Vec::new(),
-        code,
-    })
+    Ok(Body { locals, code })
 }
 
 /// The wrapper of clause `i` of `h`, which `perform` calls with the frame
@@ -157,9 +174,13 @@ pub(crate) fn lower_wrapper(
     let n_ops = decl.ops.len();
     let env = &fields[2 + n_ops..2 + n_ops + decl.env.len()];
     let mut code = Vec::new();
-    for &(at, s) in env {
+    for (&(at, s), ty) in env.iter().zip(&decl.env) {
         code.push(I::LocalGet(0));
         code.push(load(s, at));
+        // The handler keeps its environment, and the clause gets its own.
+        if let (Some(rt), Some(_)) = (&cx.rt, key_of(ty)) {
+            code.extend([I::LocalGet(0), load(s, at), I::Call(rt.dup())]);
+        }
     }
     for p in 0..params {
         code.push(I::LocalGet(1 + p));
@@ -249,6 +270,30 @@ pub(crate) fn lower_alloc() -> Body {
 impl<'m> FuncCx<'_, 'm> {
     fn emit(&mut self, i: I<'static>) {
         self.code.push(i);
+    }
+
+    /// Calls a function of reference counting, if the module counts.
+    fn call_rt(&mut self, f: impl Fn(&Runtime) -> u32) -> bool {
+        match &self.cx.rt {
+            Some(rt) => {
+                let i = f(rt);
+                self.emit(I::Call(i));
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// How a value of type `ty` is dropped, if the module counts and it's
+    /// counted.
+    fn counted(&self, ty: &Ty) -> Option<DropKey> {
+        self.cx.rt.as_ref().and(key_of(ty))
+    }
+
+    /// Drops the reference in local `v`, of kind `k`.
+    fn drop_local(&mut self, v: u32, k: &DropKey) {
+        self.emit(I::LocalGet(v));
+        self.call_rt(|rt| rt.drop(k));
     }
 
     fn open(&mut self, i: I<'static>) {
@@ -620,9 +665,21 @@ impl<'m> FuncCx<'_, 'm> {
             }
             Op::Set(c, i) => {
                 let (at, s) = self.field(*c, *i)?;
+                let field = self.cx.fields(*c)?[*i as usize].clone();
+                let old = self.counted(&field).map(|k| {
+                    let old = self.new_local(ValType::I32);
+                    self.atom(&args[0]);
+                    self.emit(load(s, at));
+                    self.emit(I::LocalSet(old));
+                    (old, k)
+                });
                 self.atom(&args[0]);
                 self.atom(&args[1]);
                 self.emit(store(s, at));
+                // It drops the value it replaces.
+                if let Some((old, k)) = old {
+                    self.drop_local(old, &k);
+                }
             }
             Op::Const(id) => match self.cx.constant(*id)? {
                 Ok(addr) => self.emit(I::I32Const(addr as i32)),
@@ -653,6 +710,28 @@ impl<'m> FuncCx<'_, 'm> {
                 self.atom(&args[0]);
                 self.emit(I::LocalSet(n));
                 let p = self.alloc_array(n, s);
+                let elem = match self.var_ty(binds[0]) {
+                    Ty::Array(e, _) => self.counted(e),
+                    _ => None,
+                };
+                if *op == Op::ArrayFill
+                    && let Some(k) = elem
+                {
+                    // It holds its value once per element: it takes one
+                    // reference and adds the rest, or drops it for none.
+                    self.emit(I::LocalGet(n));
+                    self.emit(I::I32Eqz);
+                    self.open(I::If(BlockType::Empty));
+                    self.atom(&args[1]);
+                    self.call_rt(|rt| rt.drop(&k));
+                    self.emit(I::Else);
+                    self.atom(&args[1]);
+                    self.emit(I::LocalGet(n));
+                    self.emit(I::I32Const(1));
+                    self.emit(I::I32Sub);
+                    self.call_rt(|rt| rt.add());
+                    self.close();
+                }
                 if *op == Op::ArrayFill {
                     // Every element, from the last.
                     self.open(I::Block(BlockType::Empty));
@@ -679,10 +758,31 @@ impl<'m> FuncCx<'_, 'm> {
                 self.emit(load(s, 8));
             }
             Op::ArraySet => {
-                let s = self.elem_of(&self.atom_ty(&args[0]))?;
+                let ty = self.atom_ty(&args[0]);
+                let s = self.elem_of(&ty)?;
+                let elem = match &ty {
+                    Ty::Array(e, _) => self.counted(e),
+                    _ => None,
+                };
                 self.elem_addr(&args[0], &args[1], s);
-                self.atom(&args[2]);
-                self.emit(store(s, 8));
+                match elem {
+                    // It drops the element it replaces.
+                    Some(k) => {
+                        let (at, old) =
+                            (self.new_local(ValType::I32), self.new_local(ValType::I32));
+                        self.emit(I::LocalTee(at));
+                        self.emit(load(s, 8));
+                        self.emit(I::LocalSet(old));
+                        self.emit(I::LocalGet(at));
+                        self.atom(&args[2]);
+                        self.emit(store(s, 8));
+                        self.drop_local(old, &k);
+                    }
+                    None => {
+                        self.atom(&args[2]);
+                        self.emit(store(s, 8));
+                    }
+                }
             }
             Op::ArrayLen => {
                 self.atom(&args[0]);
@@ -707,14 +807,41 @@ impl<'m> FuncCx<'_, 'm> {
                     src_mem: 0,
                     dst_mem: 0,
                 });
+                // The new array shares the elements.
+                if let Ty::Array(e, _) = self.atom_ty(&args[0])
+                    && self.counted(&e).is_some()
+                {
+                    self.emit(I::LocalGet(p));
+                    self.emit(I::I32Const(8));
+                    self.emit(I::I32Add);
+                    self.emit(I::LocalGet(n));
+                    self.call_rt(|rt| rt.dup_range());
+                }
                 self.emit(I::LocalGet(p));
             }
             // Mutability doesn't exist at run time.
             Op::ArrayFreeze => self.atoms(args),
-            // Nothing is freed yet, and no object is unique, so code that
-            // specialized a `drop` takes the branch that only decrements.
-            Op::Dup | Op::Drop | Op::Free | Op::DecRef => {}
-            Op::IsUnique => self.emit(I::I32Const(0)),
+            // Without counting, nothing is freed, and no object is unique,
+            // so code that specialized a `drop` takes the branch that only
+            // decrements.
+            Op::Dup | Op::Drop | Op::Free | Op::DecRef => {
+                if let Some(k) = self.counted(&self.atom_ty(&args[0])) {
+                    self.atom(&args[0]);
+                    self.call_rt(|rt| match op {
+                        Op::Dup => rt.dup(),
+                        Op::Drop => rt.drop(&k),
+                        Op::Free => rt.free(&k),
+                        _ => rt.decref(),
+                    });
+                }
+            }
+            Op::IsUnique => {
+                self.atom(&args[0]);
+                if !self.call_rt(|rt| rt.is_unique()) {
+                    self.emit(I::Drop);
+                    self.emit(I::I32Const(0));
+                }
+            }
             Op::ArrayCopy => {
                 let s = self.elem_of(&self.atom_ty(&args[0]))?;
                 // Both ranges must fit, their starts and count read as
@@ -731,6 +858,7 @@ impl<'m> FuncCx<'_, 'm> {
                     self.emit(I::I64GtU);
                     self.trap_if();
                 }
+                let mut addrs = Vec::new();
                 for (array, start) in [(&args[0], &args[1]), (&args[2], &args[3])] {
                     self.atom(array);
                     self.emit(I::I32Const(8));
@@ -738,7 +866,23 @@ impl<'m> FuncCx<'_, 'm> {
                     self.atom(start);
                     self.scale(s);
                     self.emit(I::I32Add);
+                    let a = self.new_local(ValType::I32);
+                    self.emit(I::LocalSet(a));
+                    addrs.push(a);
                 }
+                // It dups what it copies, then drops what it overwrites.
+                if let Ty::Array(e, _) = self.atom_ty(&args[0])
+                    && let Some(k) = self.counted(&e)
+                {
+                    self.emit(I::LocalGet(addrs[1]));
+                    self.atom(&args[4]);
+                    self.call_rt(|rt| rt.dup_range());
+                    self.emit(I::LocalGet(addrs[0]));
+                    self.atom(&args[4]);
+                    self.call_rt(|rt| rt.drop_range(&k));
+                }
+                self.emit(I::LocalGet(addrs[0]));
+                self.emit(I::LocalGet(addrs[1]));
                 self.atom(&args[4]);
                 self.scale(s);
                 self.emit(I::MemoryCopy {
@@ -765,9 +909,38 @@ impl<'m> FuncCx<'_, 'm> {
                 let Ty::Ref(inner) = self.atom_ty(&args[0]) else {
                     return Err("ref set of something that isn't a ref".into());
                 };
+                let s = Storage::of(&inner);
+                let old = self.counted(&inner).map(|k| {
+                    let old = self.new_local(ValType::I32);
+                    self.atom(&args[0]);
+                    self.emit(load(s, 8));
+                    self.emit(I::LocalSet(old));
+                    (old, k)
+                });
                 self.atom(&args[0]);
                 self.atom(&args[1]);
-                self.emit(store(Storage::of(&inner), 8));
+                self.emit(store(s, 8));
+                if let Some((old, k)) = old {
+                    self.drop_local(old, &k);
+                }
+            }
+            // When counting, everything goes in a box, which holds the kind
+            // of what it holds, plus 1, or 0 for a scalar, so that dropping
+            // the box can drop it.
+            Op::Box(ty) if self.cx.rt.is_some() => {
+                let kind = key_of(ty).map_or(0, |k| self.cx.rt.as_ref().unwrap().number(&k) + 1);
+                let p = self.alloc_const(16);
+                self.emit(I::LocalGet(p));
+                self.emit(I::I32Const(kind as i32));
+                self.emit(store(Storage::I32, 4));
+                self.emit(I::LocalGet(p));
+                self.atom(&args[0]);
+                self.emit(store(Storage::of(ty), 8));
+                self.emit(I::LocalGet(p));
+            }
+            Op::Unbox(ty) if self.cx.rt.is_some() => {
+                self.atom(&args[0]);
+                self.emit(load(Storage::of(ty), 8));
             }
             // A reference is already an `any`; a scalar goes in a box.
             Op::Box(ty) => {
@@ -869,6 +1042,16 @@ impl<'m> FuncCx<'_, 'm> {
         Ok(self.bind(binds, false))
     }
 
+    /// Gives a handler's frame back when counting, once its `handle` is
+    /// done with it.
+    fn release_frame(&mut self, frame: u32, size: u32) {
+        if self.cx.rt.is_some() {
+            self.emit(I::LocalGet(frame));
+            self.emit(I::I32Const(size as i32));
+            self.call_rt(|rt| rt.release());
+        }
+    }
+
     /// Calls the closure `body` with no arguments, leaving its results.
     fn apply_body(&mut self, body: &Atom) -> Result<(), String> {
         let Ty::Fn(sig, _) = self.atom_ty(body) else {
@@ -963,12 +1146,34 @@ impl<'m> FuncCx<'_, 'm> {
         self.emit(I::GlobalSet(HANDLERS));
 
         if !aborting {
-            self.apply_body(&body[0])?;
-            for &r in results.iter().rev() {
-                self.emit(I::LocalSet(r));
+            if self.cx.rt.is_some() {
+                // When counting, an abort to a handler further out that
+                // unwinds through this one gives its frame back first.
+                self.open(I::Block(BlockType::Empty));
+                self.open(I::Block(BlockType::Result(ValType::Ref(
+                    wasm_encoder::RefType::EXNREF,
+                ))));
+                let catches = vec![wasm_encoder::Catch::AllRef { label: 0 }];
+                self.open(I::TryTable(BlockType::Empty, Cow::Owned(catches)));
+                self.apply_body(&body[0])?;
+                for &r in results.iter().rev() {
+                    self.emit(I::LocalSet(r));
+                }
+                self.close();
+                self.emit(I::Br(1));
+                self.close();
+                self.release_frame(frame, size);
+                self.emit(I::ThrowRef);
+                self.close();
+            } else {
+                self.apply_body(&body[0])?;
+                for &r in results.iter().rev() {
+                    self.emit(I::LocalSet(r));
+                }
             }
             self.emit(I::LocalGet(saved));
             self.emit(I::GlobalSet(HANDLERS));
+            self.release_frame(frame, size);
             self.atoms(env);
             for &r in &results {
                 self.emit(I::LocalGet(r));
@@ -1004,9 +1209,12 @@ impl<'m> FuncCx<'_, 'm> {
             self.emit(I::LocalSet(r));
         }
         self.close();
-        // The body returned: run the return clause outside the handler.
+        // The body returned: run the return clause outside the handler,
+        // done with the frame, since the clause can abort to a handler
+        // further out.
         self.emit(I::LocalGet(saved));
         self.emit(I::GlobalSet(HANDLERS));
+        self.release_frame(frame, size);
         self.atoms(env);
         for &r in &results {
             self.emit(I::LocalGet(r));
@@ -1022,6 +1230,7 @@ impl<'m> FuncCx<'_, 'm> {
         self.emit(I::LocalGet(frame));
         self.emit(I::I32Ne);
         self.open(I::If(BlockType::Empty));
+        self.release_frame(frame, size);
         self.emit(I::LocalGet(thrown));
         self.emit(I::Throw(ABORT));
         self.close();
@@ -1037,6 +1246,7 @@ impl<'m> FuncCx<'_, 'm> {
             self.emit(load(s, at));
             self.emit(I::LocalSet(o));
         }
+        self.release_frame(frame, size);
         self.close();
         for &o in &outs {
             self.emit(I::LocalGet(o));

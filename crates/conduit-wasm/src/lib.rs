@@ -1,9 +1,11 @@
 //! Lowers Conduit IR to WebAssembly, with objects in linear memory, so
 //! the output needs no GC: only tail calls and bulk memory, and exception
 //! handling for aborting handlers, all part of Wasm 3.0. See "Lowering"
-//! and "Operations per target" in `docs/ir.md`. Memory is never freed yet: every object comes from
-//! `alloc`, a bump allocator, so that freeing can come later by replacing
-//! it.
+//! and "Operations per target" in `docs/ir.md`. Every object comes from
+//! `alloc`. By default that's a bump allocator and memory is never freed;
+//! with [`Options::counts`], for a module whose reference counts are
+//! explicit, objects are freed onto free lists that `alloc` takes from
+//! (see `counts.rs`).
 //!
 //! Effect handlers whose clauses are all tail-resumptive or aborting (see
 //! [`conduit_ir::clause`]) are lowered directly: a
@@ -21,22 +23,25 @@
 //!
 //! The layouts, with every offset in bytes and every object 8-aligned:
 //!
-//! - **A data object** is a header word, kept for a reference count or a
-//!   mark, the index of its constructor at 4, and its fields from 8, each
-//!   at its natural alignment.
+//! - **A data object** is a header word, its reference count when
+//!   counting, the index of its constructor at 4, and its fields from 8,
+//!   each at its natural alignment.
 //! - **An array** is the header, its length at 4, and its elements from 8,
 //!   `i8` and `i16` packed.
 //! - **A closure** is the header, the table index of its wrapper at 4, and
 //!   what it captured from 8, laid out like fields. The wrapper takes the
 //!   closure, then the arguments.
 //! - **A ref** and **a boxed scalar** are the header, then the value at 8.
-//!   A boxed reference is the reference itself.
+//!   A boxed reference is the reference itself, except when counting:
+//!   then every `any` is a box, with the kind of what it holds at 4, so
+//!   that dropping it can drop what it holds.
 //!
 //! A reference is an `i32` address, and 0 is never one, so `undefined` is 0.
 //! Fresh memory is zero, which is what unset array elements are.
 //! Constants are laid out when the module is built, in a data segment
 //! starting at 16, and the heap starts after them.
 
+mod counts;
 mod func;
 mod switch;
 
@@ -88,7 +93,7 @@ const SITE: u32 = 2;
 const ABORT: u32 = 0;
 
 /// How a value is stored in memory.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum Storage {
     I8,
     I16,
@@ -197,6 +202,8 @@ pub(crate) struct Cx<'m> {
     pub disc_tag: Option<u32>,
     /// The function `discontinue E.i` performs with.
     thunks: BTreeMap<(EffectId, u32), FuncId>,
+    /// The functions of reference counting, if the module counts.
+    pub rt: Option<counts::Runtime>,
 }
 
 /// The functions, table slots and tables of a handler that switches
@@ -227,9 +234,24 @@ pub struct Options {
     /// handler is lowered by evidence passing, which runs anywhere but
     /// costs more.
     pub stack_switching: bool,
+    /// Whether the module's reference counts are explicit, as
+    /// `conduit_opt::ownership::insert_counts` makes them, so that memory
+    /// is freed: `dup`, `drop` and the ops that count for themselves count,
+    /// and an `any` is always a box. Otherwise those ops do nothing, and
+    /// memory is never freed. Effects must be lowered before counts are
+    /// inserted, if they're lowered by evidence passing. The module then
+    /// exports the global `conduit_live`, the number of objects allocated
+    /// and not yet freed, handler frames among them.
+    pub counts: bool,
 }
 
 impl Cx<'_> {
+    /// The index of the first function after `alloc` and reference
+    /// counting's.
+    pub fn after_alloc(&self) -> u32 {
+        self.alloc + 1 + self.rt.as_ref().map_or(0, |rt| rt.len())
+    }
+
     pub fn func_index(&self, f: FuncId) -> Result<u32, String> {
         self.funcs
             .get(&f)
@@ -415,6 +437,14 @@ pub fn emit_module_with(
 ) -> Result<Vec<u8>, Error> {
     let lowered;
     let mut thunks = BTreeMap::new();
+    if options.counts && !options.stack_switching && !direct_handlers(m) {
+        return Err(Error {
+            item: Item::Func(FuncId(0)),
+            message: "a module that counts references and has handlers that need evidence \
+                      passing must have its effects lowered before its counts are inserted"
+                .into(),
+        });
+    }
     let m = if !options.stack_switching && !direct_handlers(m) {
         let mut copy = m.clone();
         conduit_opt::effects::lower_effects(&mut copy).map_err(|message| Error {
@@ -492,7 +522,11 @@ pub fn emit_module_with(
         tags: BTreeMap::new(),
         disc_tag: None,
         thunks,
+        rt: None,
     };
+    if options.counts {
+        cx.rt = Some(counts::Runtime::new(m, cx.alloc + 1, 0));
+    }
     let mut switch_funcs = 0;
     if !switching.is_empty() {
         switch_funcs = plan_switching(&mut cx, &switching).map_err(|message| Error {
@@ -512,7 +546,12 @@ pub fn emit_module_with(
             cx.consts.insert(c, addr);
         }
     }
-    let heap_base = (data.len() as u32).next_multiple_of(8);
+    let mut heap_base = (data.len() as u32).next_multiple_of(8);
+    // The heads of the free lists, after the constants.
+    if let Some(rt) = &mut cx.rt {
+        rt.heads = heap_base;
+        heap_base += (4 * 33u32).next_multiple_of(8);
+    }
     let data = data[CONST_BASE as usize..].to_vec();
 
     let mut imports = Vec::new();
@@ -545,7 +584,10 @@ pub fn emit_module_with(
         params: vec![ValType::I32],
         results: vec![ValType::I32],
     });
-    let alloc = func::lower_alloc();
+    let alloc = match &cx.rt {
+        Some(rt) => counts::lower_alloc(rt.heads),
+        None => func::lower_alloc(),
+    };
 
     // The wrappers of clauses, which `perform` calls through the table.
     let mut clause_wrappers = Vec::new();
@@ -668,6 +710,24 @@ pub fn emit_module_with(
         entries.push((ty, body));
         k += 1;
     }
+    // Reference counting's functions, now that the closures are known: a
+    // closure's free function is at its wrapper's slot plus the number of
+    // wrappers, and a kind's drop after those.
+    let n_closures = cx.entries.len() as u32;
+    let mut runtime = Vec::new();
+    let mut closure_frees = Vec::new();
+    if let Some(rt) = cx.rt.take() {
+        let kinds = cx.wrapper_slots + 2 * n_closures;
+        runtime = rt.bodies(&mut cx, n_closures as i32, kinds as i32);
+        let one = cx.sig(FnSig {
+            params: vec![ValType::I32],
+            results: Vec::new(),
+        });
+        for &(f, n) in &cx.entries {
+            closure_frees.push((one, rt.closure_free(&cx, f, n)));
+        }
+        cx.rt = Some(rt);
+    }
 
     let mut types = TypeSection::new();
     for t in &cx.types {
@@ -701,9 +761,11 @@ pub fn emit_module_with(
         .iter()
         .map(|(ty, b)| (*ty, b))
         .chain(std::iter::once((alloc_ty, &alloc)))
+        .chain(runtime.iter().map(|(ty, b)| (*ty, b)))
         .chain(clause_wrappers.iter().map(|(ty, b)| (*ty, b)))
         .chain(switched.iter().map(|(ty, b)| (*ty, b)))
-        .chain(entries.iter().map(|(ty, b)| (*ty, b)));
+        .chain(entries.iter().map(|(ty, b)| (*ty, b)))
+        .chain(closure_frees.iter().map(|(ty, b)| (*ty, b)));
     for (ty, body) in bodies {
         functions.function(ty);
         let mut f = Function::new_with_locals_types(body.locals.iter().copied());
@@ -719,7 +781,14 @@ pub fn emit_module_with(
     module.section(&functions);
     // Always a table, even an empty one, since a `perform` with no handler
     // in the module still calls through it, after trapping.
-    let n_entries = u64::from(cx.wrapper_slots) + cx.entries.len() as u64;
+    let kinds = cx.rt.as_ref().map_or(0, |rt| rt.keys.len() as u64);
+    let n_entries = u64::from(cx.wrapper_slots)
+        + cx.entries.len() as u64
+        + if cx.rt.is_some() {
+            cx.entries.len() as u64 + kinds
+        } else {
+            0
+        };
     {
         let mut tables = TableSection::new();
         tables.table(TableType {
@@ -771,9 +840,14 @@ pub fn emit_module_with(
         module.section(&tags);
     }
     let mut globals = GlobalSection::new();
-    // The heap pointer, the handler stack, and the stack of the `perform`
-    // whose clause runs.
-    for init in [heap_base as i32, 0, 0] {
+    // The heap pointer, the handler stack, the stack of the `perform`
+    // whose clause runs, and, when counting, the live objects.
+    let inits: &[i32] = if cx.rt.is_some() {
+        &[heap_base as i32, 0, 0, 0]
+    } else {
+        &[heap_base as i32, 0, 0]
+    };
+    for &init in inits {
         globals.global(
             GlobalType {
                 val_type: ValType::I32,
@@ -793,17 +867,25 @@ pub fn emit_module_with(
         export_section.export(name, ExportKind::Func, idx);
     }
     export_section.export("memory", ExportKind::Memory, 0);
+    if cx.rt.is_some() {
+        export_section.export("conduit_live", ExportKind::Global, counts::LIVE);
+    }
     module.section(&export_section);
     // The function of each table slot: the clauses' wrappers, the
     // continuations' wrappers and discontinue functions, then the
     // closures' wrappers, which come after every other function.
-    let mut refs: Vec<u32> = (0..clause_slots).map(|s| cx.alloc + 1 + s).collect();
+    let mut refs: Vec<u32> = (0..clause_slots).map(|s| cx.after_alloc() + s).collect();
     for sw in cx.switches.values() {
         refs.extend(sw.kont_funcs.iter().copied());
         refs.extend(sw.disc_funcs.iter().copied());
     }
-    let first_entry = cx.alloc + 1 + clause_slots + switch_funcs;
+    let first_entry = cx.after_alloc() + clause_slots + switch_funcs;
     refs.extend((0..cx.entries.len() as u32).map(|k| first_entry + k));
+    if let Some(rt) = &cx.rt {
+        let first_free = first_entry + cx.entries.len() as u32;
+        refs.extend((0..cx.entries.len() as u32).map(|k| first_free + k));
+        refs.extend(rt.keys.iter().map(|k| rt.drop(k)));
+    }
     let mut elements = ElementSection::new();
     if !refs.is_empty() {
         elements.active(
@@ -909,7 +991,7 @@ fn with_thunks(m: &Module) -> (Module, BTreeMap<(EffectId, u32), FuncId>) {
 /// lowers them. Returns how many functions they take.
 fn plan_switching(cx: &mut Cx<'_>, switching: &BTreeSet<HandlerId>) -> Result<u32, String> {
     let disc = !cx.thunks.is_empty();
-    let first_func = cx.alloc + 1 + cx.wrapper_slots;
+    let first_func = cx.after_alloc() + cx.wrapper_slots;
     let mut func = first_func;
     let mut slot = cx.wrapper_slots;
     let mut table = 1;
@@ -1011,6 +1093,7 @@ fn lay_out_value(
             let elem = conduit_ir::verify::elem_ty(ty).unwrap();
             let size = Storage::of(&elem).size();
             let mut bytes = vec![0u8; 8 + size as usize * elems.len()];
+            bytes[0..4].copy_from_slice(&immortal(cx));
             bytes[4..8].copy_from_slice(&(elems.len() as u32).to_le_bytes());
             for (i, e) in elems.iter().enumerate() {
                 let b = slot(cx, data, e, &elem)?;
@@ -1027,6 +1110,7 @@ fn lay_out_value(
                 .collect();
             let (offsets, size) = layout(&tys);
             let mut bytes = vec![0u8; size as usize];
+            bytes[0..4].copy_from_slice(&immortal(cx));
             bytes[4..8].copy_from_slice(&c.index.to_le_bytes());
             for ((v, t), (at, s)) in fields.iter().zip(&tys).zip(&offsets) {
                 let b = slot(cx, data, v, t)?;
@@ -1040,6 +1124,12 @@ fn lay_out_value(
         }
         _ => Err(format!("a constant's value {value:?} isn't a {ty}")),
     }
+}
+
+/// A constant's header: immortal when counting, so that its count, its
+/// sign bit set, is never changed.
+fn immortal(cx: &Cx<'_>) -> [u8; 4] {
+    if cx.rt.is_some() { 0x8000_0000u32 } else { 0 }.to_le_bytes()
 }
 
 /// Puts an object's bytes at the next 8-aligned address of `data`.

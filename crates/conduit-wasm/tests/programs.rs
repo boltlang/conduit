@@ -7,6 +7,12 @@
 //! A program with a handler whose clauses aren't all tail-resumptive or
 //! aborting is lowered by evidence passing by default, and is lowered and
 //! run again with stack switching, which is then allowed.
+//!
+//! Each program is also lowered with its reference counts inserted and
+//! freeing on: its effects lowered by evidence passing first if it needs
+//! that, then counted and its drops specialized. Each run must then leave
+//! as many objects live as the evaluator's run of the same module does,
+//! not counting its continuations, which Wasm doesn't make.
 
 mod support;
 
@@ -35,6 +41,9 @@ fn test(p: &Program) -> Result<(), String> {
         p.snapshot("wat", &wat)?;
     }
     run(p, &m, &bytes, false)?;
+    if p.has_runs() && !p.has(|k| matches!(k, CheckKind::WasmError(_))) {
+        counted(p, &m)?;
+    }
     // A general handler is lowered by evidence passing without stack
     // switching, and by stack switching with it.
     if has_general_handler(&m) {
@@ -66,13 +75,24 @@ fn with(stack_switching: bool) -> &'static str {
 /// The Wasm of `m`, validated, with every function exported under its
 /// name, or `None` if lowering failed as the `wasm-error` checks expect.
 fn lower(p: &Program, m: &Module, stack_switching: bool) -> Result<Option<Vec<u8>>, String> {
+    lower_with(
+        p,
+        m,
+        Options {
+            stack_switching,
+            counts: false,
+        },
+    )
+}
+
+fn lower_with(p: &Program, m: &Module, options: Options) -> Result<Option<Vec<u8>>, String> {
+    let stack_switching = options.stack_switching;
     let names: Vec<(FuncId, String)> = m.funcs.keys().map(|&f| (f, f.to_string())).collect();
     let exports: Vec<(FuncId, &str)> = names.iter().map(|(f, n)| (*f, n.as_str())).collect();
     let expected = p.messages(|k| match k {
         CheckKind::WasmError(m) => Some(m),
         _ => None,
     });
-    let options = Options { stack_switching };
     let bytes = match conduit_wasm::emit_module_with(m, &exports, &options) {
         Ok(_) if !expected.is_empty() => {
             return Err(format!(
@@ -117,6 +137,64 @@ fn run(p: &Program, m: &Module, bytes: &[u8], stack_switching: bool) -> Result<(
         let got = call(&mut store, &instance, run.func, run.args, results);
         run.check(p, got)
             .map_err(|e| format!("{}: {e}", with(stack_switching)))?;
+    }
+    Ok(())
+}
+
+/// Runs `p` counted and with freeing: see the crate's tests' documentation.
+fn counted(p: &Program, m: &Module) -> Result<(), String> {
+    let mut c = m.clone();
+    if has_general_handler(&c) {
+        conduit_opt::effects::lower_effects(&mut c)?;
+    }
+    // A program counted by hand already has its counts.
+    if !p.has(|k| matches!(k, CheckKind::Counted)) {
+        conduit_opt::ownership::insert_counts(&mut c)?;
+        conduit_opt::ownership::specialize_drops(&mut c);
+    }
+    let options = Options {
+        stack_switching: false,
+        counts: true,
+    };
+    let bytes = lower_with(p, &c, options)?.expect("lowering with counts failed");
+    let (mut store, instance) = instantiate(&bytes, false)?;
+    let live = instance
+        .get_global(&mut store, "conduit_live")
+        .ok_or("no conduit_live global")?;
+    for run in p.runs(&c)? {
+        let results = c.funcs.get(&run.func).map_or(&[][..], |f| &f.results[..]);
+        let before = live.get(&mut store).unwrap_i32();
+        let got = call(&mut store, &instance, run.func, run.args, results);
+        let gave = matches!(got, Ok(conduit_test::Outcome::Values(_)));
+        run.check(p, got).map_err(|e| format!("with counts: {e}"))?;
+        if !gave {
+            continue;
+        }
+        let left = live.get(&mut store).unwrap_i32() - before;
+        let mut machine = conduit_eval::Machine::new(&c, conduit_test::eval::TestHost);
+        machine.counting = true;
+        let args = run
+            .args
+            .iter()
+            .map(|&l| conduit_eval::Value::from(l))
+            .collect();
+        machine.call(run.func, args).map_err(|e| e.to_string())?;
+        // A continuation is an object in the evaluator, but not in Wasm,
+        // which lowers what handlers are left directly.
+        let expected = machine
+            .objects()
+            .filter(|(id, o)| {
+                matches!(machine.count(*id), Some(conduit_eval::Count::Live(_)))
+                    && !matches!(o, conduit_eval::Object::Cont(_))
+            })
+            .count() as i32;
+        if left != expected {
+            return Err(format!(
+                "{}: {}: with counts, Wasm leaves {left} objects live, but the evaluator {expected}",
+                p.at(run.line),
+                run.name
+            ));
+        }
     }
     Ok(())
 }

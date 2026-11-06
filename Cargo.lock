@@ -230,6 +230,7 @@ dependencies = [
 name = "conduit-wasm"
 version = "0.1.0"
 dependencies = [
+ "conduit-eval",
  "conduit-ir",
  "conduit-opt",
  "conduit-test",

@@ -30,6 +30,7 @@ pub fn plain_call(f: &Func) -> Option<Func> {
         return None;
     };
     let mut plain = f.clone();
+    strip_counts(&mut plain.body, k);
     plain.params.pop();
     plain.results = sig.params.clone();
     plain.vars[k.0 as usize] = Ty::I32;
@@ -68,13 +69,42 @@ pub fn discontinues(f: &Func) -> bool {
 /// its own, and `k`'s variable is kept, unbound and of type `i32`.
 pub fn aborting(f: &Func) -> Option<Func> {
     let &k = f.params.last()?;
-    if !matches!(f.var_ty(k), Ty::Cont(_)) || uses(&f.body, k) {
+    if !matches!(f.var_ty(k), Ty::Cont(_)) {
         return None;
     }
     let mut plain = f.clone();
+    strip_counts(&mut plain.body, k);
+    if uses(&plain.body, k) {
+        return None;
+    }
     plain.params.pop();
     plain.vars[k.0 as usize] = Ty::I32;
     Some(plain)
+}
+
+/// `b` without the ops that count `k`'s references: without `k`, there's
+/// nothing to count, and what it held is lost, as when a continuation is
+/// dropped.
+fn strip_counts(b: &mut Block, k: Var) {
+    let mut todo = vec![b];
+    while let Some(b) = todo.pop() {
+        b.lets.retain(|l| {
+            // `is_unique` binds a variable, but is never of a continuation.
+            let counts = matches!(l.op, Op::Dup | Op::Drop | Op::Free | Op::DecRef);
+            !(counts && l.args == [Atom::Var(k)])
+        });
+        match &mut b.tail {
+            Tail::Join { defs, body, .. } => {
+                todo.extend(defs.iter_mut().map(|d| &mut d.body));
+                todo.push(body);
+            }
+            Tail::Case { arms, default, .. } => {
+                todo.extend(arms.iter_mut().map(|a| &mut a.body));
+                todo.extend(default.as_deref_mut());
+            }
+            Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
+        }
+    }
 }
 
 /// Whether `b` uses `v` anywhere.

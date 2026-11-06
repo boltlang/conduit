@@ -11,6 +11,7 @@ conduit-opt = { path = "../conduit-opt" }
 wasm-encoder = "0.263.0"
 
 [dev-dependencies]
+conduit-eval = { path = "../conduit-eval" }
 conduit-test = { path = "../conduit-test" }
 wasmparser = "0.263.0"
 wasmprinter = "0.263.0"

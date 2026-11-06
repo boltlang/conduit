@@ -1227,10 +1227,23 @@ in linear memory, from a Conduit allocator, so the output needs no GC
 from the engine: Wasm 2.0, with tail calls and, for aborting handlers,
 exception handling, both part of Wasm 3.0.
 
-- Every object starts with a header word, kept for a reference count or
-  a mark, and every allocation goes through one `alloc` function, a bump
-  allocator for now. Memory is never freed yet; freeing can come later by
-  replacing `alloc` and using the header, without changing layouts.
+- Every object starts with a header word, and every allocation goes
+  through one `alloc` function. By default, `alloc` bumps a pointer and
+  memory is never freed. With `Options::counts`, for a module whose counts
+  `conduit_opt::ownership::insert_counts` made explicit, the header is the
+  count, constants' with the sign bit set so they're never counted, and
+  freed objects go on free lists, one per multiple of 8 bytes up to 256
+  and one for bigger blocks, which `alloc` takes from before it bumps.
+  Each kind of object (a data type, arrays and refs of what they hold,
+  closures, `any`) has a drop function, which frees it at 0 and drops what
+  it held, tail-calling the drop of its last field so that dropping a
+  list is a loop. A closure's wrapper has a function next to it in the
+  table that frees it and drops its captures, and every `any` is then a
+  box that holds the kind of what it holds. Handler frames are freed when
+  their `handle` is done, also when an abort unwinds through it. A module
+  whose handlers need evidence passing must have it done before its
+  counts are inserted. The module exports `conduit_live`, the number of
+  objects not yet freed.
 - Handlers whose clauses are all tail-resumptive or aborting are lowered
   directly. For a module with any other clause, the consumer chooses with
   `Options::stack_switching`: stack switching, which isn't standard yet,
@@ -1267,13 +1280,15 @@ Status:
 | `RefNew` | allocate one slot and store, or a local if promoted | ✅ |
 | `RefGet`, `RefSet` | `*.load`, `*.store` | ✅ |
 | `Box` of a scalar | allocate and store | ✅ |
-| `Box` of a reference | nothing: it's already an address | ✅ |
+| `Box` of a reference | nothing: it's already an address; a box, as for a scalar, with `Options::counts` | ✅ |
 | `Unbox` to a scalar | `*.load` | ✅ |
 | `Unbox` to a reference | nothing | ✅ |
 | `Const` | the address of its object in a data segment, or its literal | ✅ |
 | `Undefined` | 0 | ✅ |
-| `Dup`, `Drop`, `Free`, `DecRef` | nothing yet: memory is never freed | ✅ |
-| `IsUnique` | 0 for now, since no object is ever counted | ✅ |
+| `Dup`, `DecRef` | a call that changes the header, unless the object is 0 or immortal | ✅ with `Options::counts`, else nothing |
+| `Drop` | a call of the drop function of the object's kind | ✅ with `Options::counts`, else nothing |
+| `IsUnique` | whether the header is 1 | ✅ with `Options::counts`, else 0 |
+| `Free` | a call that puts a data object or array on its free list | ✅ with `Options::counts`, else nothing |
 | `Handle`, `Perform` with tail-resumptive clauses | a handler stack in a global, and a `call_indirect` of the clause | ✅ |
 | `Handle`, `Perform` with aborting clauses | the same, then `throw`, caught by `try_table` | ✅ (exception handling, Wasm 3.0) |
 | `Discontinue` in a tail-resumptive clause | a `perform` under the handler stack of the `perform` the clause handles, kept in a second global | ✅ |
