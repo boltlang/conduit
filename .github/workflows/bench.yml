@@ -5,11 +5,17 @@
 # any went up by more than 2%. A pull request that makes something slower
 # on purpose can have the label `bench-ok`, which skips the failing.
 #
+# For each push to `main`, writes the README's badges (`--badges`) and
+# force-pushes them, as one commit, to the branch `badges`, which
+# shields.io reads them from.
+#
 # Times are too noisy on hosted runners to compare; see `conduit-bench`.
 
 name: Benchmarks
 
 on:
+  push:
+    branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
     types: [ opened, synchronize, reopened, labeled, unlabeled ]
@@ -20,6 +26,7 @@ env:
 jobs:
 
   fuel:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -50,3 +57,29 @@ jobs:
       run: |
         cargo run --release -p conduit-bench -- --fuel \
           --compare "$RUNNER_TEMP/base.json" --check 2
+
+  badges:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: badges
+      cancel-in-progress: true
+    steps:
+    - uses: actions/checkout@v4
+    - run: rustup update nightly && rustup default nightly
+    - uses: Swatinem/rust-cache@v2
+
+    - name: Make the badges
+      run: cargo run --release -p conduit-bench -- --fuel --badges "$RUNNER_TEMP/badges"
+
+    - name: Publish them to the badges branch
+      working-directory: ${{ runner.temp }}/badges
+      run: |
+        git init -q -b badges
+        git add .
+        git -c user.name="github-actions[bot]" \
+            -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -q -m "Badges for $GITHUB_SHA"
+        git push -f "https://x-access-token:${{ github.token }}@github.com/$GITHUB_REPOSITORY" badges

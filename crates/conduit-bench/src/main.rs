@@ -31,9 +31,14 @@
 //!   changed with `--compare`, as CI shows in a pull request's summary.
 //! - `--check PCT`: with `--compare`, fail if any fuel went up by more
 //!   than `PCT` percent, which CI does for a pull request.
+//! - `--badges DIR`: write badges for the README to `DIR`, in the JSON
+//!   that shields.io's endpoint badges read, which CI publishes for each
+//!   push to `main`. They summarize the benchmarks in `bench/`: what
+//!   counting costs in fuel, with everything on, over no counts, how many
+//!   fewer objects reuse allocates, and how many benchmarks there are.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use conduit_bench::{CONFIGS, Config, prepare};
@@ -52,6 +57,7 @@ struct Args {
     compare: Option<PathBuf>,
     markdown: bool,
     check: Option<f64>,
+    badges: Option<PathBuf>,
 }
 
 fn args() -> Result<Args, String> {
@@ -64,6 +70,7 @@ fn args() -> Result<Args, String> {
         compare: None,
         markdown: false,
         check: None,
+        badges: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -86,6 +93,7 @@ fn args() -> Result<Args, String> {
             "--json" => args.json = Some(value("--json")?.into()),
             "--compare" => args.compare = Some(value("--compare")?.into()),
             "--markdown" => args.markdown = true,
+            "--badges" => args.badges = Some(value("--badges")?.into()),
             "--check" => {
                 let pct = value("--check")?
                     .parse()
@@ -95,7 +103,7 @@ fn args() -> Result<Args, String> {
             "--help" | "-h" => {
                 return Err(
                     "usage: conduit-bench [--config NAME,..] [--fuel] [--time MS] \
-                            [--json FILE] [--compare FILE] [--markdown] [--check PCT] [filter]"
+                            [--json FILE] [--compare FILE] [--markdown] [--check PCT] [--badges DIR] [filter]"
                         .into(),
                 );
             }
@@ -135,6 +143,7 @@ fn run() -> Result<(), String> {
         None => None,
     };
     let mut results = Vec::new();
+    let mut benched = Vec::new();
     for p in conduit_test::programs() {
         let p = p.map_err(|(name, e)| format!("{name}: {e}"))?;
         if !p.has(|k| matches!(k, CheckKind::Bench))
@@ -147,6 +156,10 @@ fn run() -> Result<(), String> {
             continue;
         }
         results.extend(bench(&p, &args).map_err(|e| format!("{}: {e}", p.shown()))?);
+        benched.push(p);
+    }
+    if let Some(dir) = &args.badges {
+        badges(&results, &benched, dir)?;
     }
     if args.markdown {
         markdown(&results, baseline.as_ref());
@@ -478,4 +491,116 @@ fn commit() -> Option<String> {
     let commit = git(&["rev-parse", "--short", "HEAD"])?;
     let dirty = git(&["status", "--porcelain"]).is_some_and(|s| !s.is_empty());
     Some(if dirty { commit + "+dirty" } else { commit })
+}
+
+/// The programs the badges summarize: the benchmarks in the style of the
+/// Perceus paper's, not the test programs that also have a `bench` check.
+const BADGE_PROGRAMS: &str = "bench/";
+
+/// Writes the README's badges to `dir`, as shields.io endpoint JSON:
+/// `overhead.json`, the geometric mean over the benchmarks' runs of the
+/// fuel with everything on (`+cycles`) over the fuel without counts
+/// (`optimized`); `reuse.json`, how many fewer objects the evaluator
+/// allocates with reuse than with counts alone, over all the runs; and
+/// `benchmarks.json`, how many there are.
+fn badges(results: &[Result1], programs: &[Program], dir: &Path) -> Result<(), String> {
+    let fuel = |program: &str, run: &str, config: &str| {
+        (results.iter())
+            .find(|r| r.program == program && r.run == run && r.config == config)
+            .map(|r| r.fuel as f64)
+    };
+    let mut logs = Vec::new();
+    for r in results
+        .iter()
+        .filter(|r| r.program.starts_with(BADGE_PROGRAMS))
+    {
+        if r.config != "optimized" {
+            continue;
+        }
+        let counted = fuel(&r.program, &r.run, "+cycles")
+            .ok_or("the badges need the optimized and +cycles configs")?;
+        logs.push((counted / r.fuel as f64).ln());
+    }
+    if logs.is_empty() {
+        return Err(format!(
+            "no benchmarks in {BADGE_PROGRAMS} to make badges of"
+        ));
+    }
+    let overhead = (logs.iter().sum::<f64>() / logs.len() as f64).exp() - 1.0;
+
+    // Allocations, in the evaluator, which counts them.
+    let (mut without, mut with) = (0u64, 0u64);
+    let mut count = 0;
+    for p in programs
+        .iter()
+        .filter(|p| p.name.starts_with(BADGE_PROGRAMS))
+    {
+        count += 1;
+        let base = prepare(p.module()?)?;
+        let mut compiled = Vec::new();
+        for name in ["counts", "+reuse"] {
+            let mut m = base.clone();
+            Config::named(name).unwrap().apply(&mut m)?;
+            compiled.push(m);
+        }
+        for run in p.runs(&base)? {
+            let allocs = |m: &Module| {
+                let mut machine = conduit_eval::Machine::new(m, conduit_test::eval::TestHost);
+                machine.counting = true;
+                let args = run
+                    .args
+                    .iter()
+                    .map(|&l| conduit_eval::Value::from(l))
+                    .collect();
+                machine.call(run.func, args).map_err(|e| format!("{e:?}"))?;
+                Ok::<_, String>(machine.stats.allocs)
+            };
+            without += allocs(&compiled[0])?;
+            with += allocs(&compiled[1])?;
+        }
+    }
+    let saved = if without == 0 {
+        0.0
+    } else {
+        1.0 - with as f64 / without as f64
+    };
+
+    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let write = |name: &str, label: &str, message: String, color: &str| {
+        let badge = json!({
+            "schemaVersion": 1,
+            "label": label,
+            "message": message,
+            "color": color,
+        });
+        let path = dir.join(name);
+        std::fs::write(&path, badge.to_string() + "\n")
+            .map_err(|e| format!("{}: {e}", path.display()))
+    };
+    let pct = overhead * 100.0;
+    let color = match pct {
+        p if p < 20.0 => "brightgreen",
+        p if p < 50.0 => "yellow",
+        _ => "red",
+    };
+    write(
+        "overhead.json",
+        "counting overhead",
+        format!("{pct:+.0}% fuel"),
+        color,
+    )?;
+    let color = match saved * 100.0 {
+        s if s >= 50.0 => "brightgreen",
+        s if s >= 20.0 => "yellow",
+        _ => "lightgrey",
+    };
+    let message = format!("{:.0}% fewer allocations", saved * 100.0);
+    write("reuse.json", "reuse", message, color)?;
+    write(
+        "benchmarks.json",
+        "benchmarks",
+        format!("{count} programs"),
+        "blue",
+    )?;
+    Ok(())
 }

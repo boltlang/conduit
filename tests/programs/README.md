@@ -88,7 +88,9 @@ compiling, and a word picks the programs, like `nqueens`. CI does this for
 each pull request (`.github/workflows/bench.yml`): it compares the fuel
 with the base's, shows what changed in the job's summary
 (`--markdown`), and fails if any went up by more than 2% (`--check 2`),
-unless the pull request has the label `bench-ok`. Times are only
+unless the pull request has the label `bench-ok`. For each push to
+`main`, it also writes the README's badges (`--badges`) to the branch
+`badges`. Times are only
 worth comparing between runs on the same quiet machine, and within about
 5%: the ways of compiling take turns, a call each, so the machine slowing
 down slows them all, but two modules with the same code can still differ
