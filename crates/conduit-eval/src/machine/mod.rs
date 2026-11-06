@@ -937,7 +937,7 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
         let p = self.p;
         let handles = |frame: &Frame| match frame {
             Frame::Handler { handler, .. } => {
-                p.handler(*handler).is_some_and(|d| d.effect == effect)
+                p.handler(*handler).is_some_and(|d| d.handles(effect))
             }
             Frame::Code(_) => false,
         };
@@ -956,10 +956,9 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
         let decl = p
             .handler(*handler)
             .ok_or_else(|| unverified(format!("unknown handler {handler}")))?;
-        let clause = *decl
-            .ops
-            .get(op as usize)
-            .ok_or_else(|| unverified(format!("{handler} has no clause {op}")))?;
+        let clause = decl
+            .clause(effect, op)
+            .ok_or_else(|| unverified(format!("{handler} has no clause {effect}.{op}")))?;
         let mut clause_args = env.clone();
         // The handler keeps its environment, and the clause gets its own.
         self.dup_all(&clause_args)?;

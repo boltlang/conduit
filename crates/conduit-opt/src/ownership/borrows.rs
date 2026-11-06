@@ -50,7 +50,7 @@ pub fn borrows(m: &Module) -> Borrows {
         });
     }
     for h in m.handlers.values() {
-        always_owned.extend(h.ops.iter().copied());
+        always_owned.extend(h.clauses().map(|(_, _, c)| c));
         always_owned.insert(h.ret);
     }
     let reaches = reaches(m);

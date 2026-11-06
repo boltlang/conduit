@@ -99,11 +99,12 @@ enum Clause {
 
 /// What a `handle` that can run directly needs.
 struct Handled<'p> {
-    effect: EffectId,
     ret: FuncId,
     body: &'p Func,
     closure: Closure,
+    /// A clause for each operation the handler handles, as in `ops`.
     clauses: Vec<Clause>,
+    ops: Vec<(EffectId, u32)>,
 }
 
 struct Cx<'p> {
@@ -135,13 +136,13 @@ impl<'p> Cx<'p> {
         {
             return None;
         }
-        // Only the handled effect, and only performed by the body itself.
+        // Only the handled effects, and only performed by the body itself.
         let mut ok = true;
         let mut todo = vec![&body.body];
         while let Some(b) = todo.pop() {
             for l in &b.lets {
                 ok &= match l.op {
-                    Op::Perform(e, _) => e == decl.effect,
+                    Op::Perform(e, _) => decl.handles(e),
                     _ => l.row(self.p, body).is_nothing(),
                 };
             }
@@ -152,7 +153,7 @@ impl<'p> Cx<'p> {
         }
         let mut clauses = Vec::new();
         let mut copies = body.body.size();
-        for &c in &decl.ops {
+        for (_, _, c) in decl.clauses() {
             let cf = self.p.func(c)?;
             let clause = match plain_call(cf) {
                 Some(plain) if !discontinues(&plain) => Clause::Resumes(plain),
@@ -169,11 +170,11 @@ impl<'p> Cx<'p> {
             return None;
         }
         Some(Handled {
-            effect: decl.effect,
             ret: decl.ret,
             body,
             closure,
             clauses,
+            ops: decl.clauses().map(|(e, i, _)| (e, i)).collect(),
         })
     }
 
@@ -280,7 +281,7 @@ impl<'p> Cx<'p> {
         let body = r.block(&h.body.body, f);
         self.size += body.size();
         let mut clauses = Clauses {
-            effect: h.effect,
+            ops: &h.ops,
             clauses: &h.clauses,
             env: &env,
             after: after_label,
@@ -317,7 +318,7 @@ impl<'p> Cx<'p> {
 
 /// Replaces the `perform`s of a copied body with copies of their clauses.
 struct Clauses<'a> {
-    effect: EffectId,
+    ops: &'a [(EffectId, u32)],
     clauses: &'a [Clause],
     env: &'a [Atom],
     /// Where the `handle`'s results go, which an aborting clause gives.
@@ -335,7 +336,6 @@ impl Clauses<'_> {
                 lets.push(l);
                 continue;
             };
-            debug_assert_eq!(e, self.effect, "the body performs only the handled effect");
             let after = self.block(
                 Block {
                     lets: rest.collect(),
@@ -343,7 +343,7 @@ impl Clauses<'_> {
                 },
                 f,
             );
-            let copy = self.clause(i, l, after, f);
+            let copy = self.clause((e, i), l, after, f);
             lets.extend(copy.lets);
             return Block {
                 lets,
@@ -382,11 +382,21 @@ impl Clauses<'_> {
         Block { lets, tail }
     }
 
-    /// A copy of clause `i` for `perform`, with `rest` what follows it.
-    fn clause(&mut self, i: u32, perform: Let, rest: Block, f: &mut Func) -> Block {
+    /// A copy of the clause for `e.i` for `perform`, with `rest` what
+    /// follows it.
+    fn clause(
+        &mut self,
+        (e, i): (EffectId, u32),
+        perform: Let,
+        rest: Block,
+        f: &mut Func,
+    ) -> Block {
         let mut args = self.env.to_vec();
         args.extend(perform.args.iter().cloned());
-        let (cf, resumes) = match &self.clauses[i as usize] {
+        let slot = (self.ops.iter())
+            .position(|&op| op == (e, i))
+            .expect("the body performs only the handled effects");
+        let (cf, resumes) = match &self.clauses[slot] {
             Clause::Resumes(cf) => (cf, true),
             Clause::Aborts(cf) => (cf, false),
         };

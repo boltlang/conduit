@@ -339,12 +339,41 @@ impl Parser {
                         }
                         self.effect_params = effect_params;
                         self.keyword("for")?;
-                        let effect = EffectId(self.item("effect")?);
+                        let mut effects = vec![EffectId(self.item("effect")?)];
+                        while self.eat_punct(",") {
+                            effects.push(EffectId(self.item("effect")?));
+                        }
                         let row = self.row()?;
                         self.keyword("env")?;
                         let env = self.list(Self::ty)?;
                         self.keyword("ops")?;
-                        let ops = self.list(|p| p.item("fn").map(FuncId))?;
+                        // The clauses of each effect, the effects' apart by `;`.
+                        self.punct("(")?;
+                        let mut groups = vec![Vec::new()];
+                        loop {
+                            if !self.is_punct(";") && !self.is_punct(")") {
+                                groups.last_mut().unwrap().push(FuncId(self.item("fn")?));
+                            }
+                            if self.eat_punct(")") {
+                                break;
+                            }
+                            if self.eat_punct(";") {
+                                groups.push(Vec::new());
+                            } else if !self.eat_punct(",") {
+                                return self.unexpected("`,`, `;` or `)`");
+                            }
+                        }
+                        if groups.len() != effects.len() {
+                            return self.error_at(
+                                pos,
+                                format!(
+                                    "a handler for {} effects has clauses for {}, apart by `;`",
+                                    effects.len(),
+                                    groups.len()
+                                ),
+                            );
+                        }
+                        let ops = effects.into_iter().zip(groups).collect();
                         self.keyword("ret")?;
                         let ret = FuncId(self.item("fn")?);
                         let effect_params =
@@ -353,7 +382,6 @@ impl Parser {
                             .insert(
                                 id,
                                 HandlerDecl {
-                                    effect,
                                     effect_params,
                                     env,
                                     ops,

@@ -226,17 +226,19 @@ pub(super) fn module(m: &Module) -> String {
         items.push(s);
     }
     for (id, h) in &m.handlers {
-        let ops = h
-            .ops
-            .iter()
-            .map(|&f| names.func(f))
+        let ops = (h.ops.iter())
+            .map(|(_, clauses)| {
+                let clauses: Vec<String> = clauses.iter().map(|&f| names.func(f)).collect();
+                clauses.join(", ")
+            })
             .collect::<Vec<_>>()
-            .join(", ");
+            .join("; ");
+        let effects: Vec<String> = h.effects().map(|e| names.effect(e)).collect();
         items.push(format!(
             "handler {}{} for {}{} env({}) ops({ops}) ret {}",
             names.handler(*id),
             param_list(0, h.effect_params),
-            names.effect(h.effect),
+            effects.join(", "),
             names.does(&h.row),
             names.types(&h.env),
             names.func(h.ret)

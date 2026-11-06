@@ -1,0 +1,257 @@
+// Handlers of several effects, as a Bolt `match` with effect arms lowers
+// to: one handler for State and Log, whose clauses run outside it, so what
+// they perform goes to the handlers around it, even an operation of the
+// other effect it handles.
+effect State {
+  () -> (i32)
+  (i32) -> ()
+}
+
+effect Log {
+  (i32) -> ()
+}
+
+effect Fail {
+  () -> ()
+}
+
+// The state in the first ref, and what was logged, as digits, in the
+// second. Getting the state logs 100, to the next Log out.
+handler job for State, Log does Log env(ref i32, ref i32) ops(get, set; log) ret job_done
+
+// Adds what's logged to the ref.
+handler sum_log for Log env(ref i32) ops(add_log) ret sum_done
+
+// The state is always the value.
+handler fixed for State env(i32) ops(fixed_get, fixed_set) ret fixed_done
+
+// Logging reads the state, from the next State out, and logs it.
+handler log_state for State, Log does State env(ref i32, ref i32) ops(get_plain, set_plain; log_reads) ret job_done
+
+// Logging adds after the rest has run, so it isn't tail-resumptive.
+handler after for State, Log env(i32) ops(fixed_get, fixed_set; log_after) ret fixed_done
+
+// Fail gives -1, and Log records, as in job.
+handler fail_log for Fail, Log env(ref i32) ops(fail; record) ret sum_done
+
+fn get(%st: ref i32, %lg: ref i32, %k: cont(i32) -> (i32) does Log) -> (i32) does Log {
+  let = perform Log.0(100i32)
+  let %x: i32 = ref_get(%st)
+  let %r: i32 = resume(%k, %x)
+  jump ret(%r)
+}
+
+fn get_plain(%st: ref i32, %lg: ref i32, %k: cont(i32) -> (i32) does State) -> (i32) does State {
+  let %x: i32 = ref_get(%st)
+  let %r: i32 = resume(%k, %x)
+  jump ret(%r)
+}
+
+fn set(%st: ref i32, %lg: ref i32, %v: i32, %k: cont() -> (i32) does Log) -> (i32) does Log {
+  let = ref_set(%st, %v)
+  let %r: i32 = resume(%k)
+  jump ret(%r)
+}
+
+fn set_plain(%st: ref i32, %lg: ref i32, %v: i32, %k: cont() -> (i32) does State) -> (i32) does State {
+  let = ref_set(%st, %v)
+  let %r: i32 = resume(%k)
+  jump ret(%r)
+}
+
+fn log(%st: ref i32, %lg: ref i32, %m: i32, %k: cont() -> (i32) does Log) -> (i32) does Log {
+  let %old: i32 = ref_get(%lg)
+  let %old10: i32 = mul(%old, 10i32)
+  let %new: i32 = add(%old10, %m)
+  let = ref_set(%lg, %new)
+  let %r: i32 = resume(%k)
+  jump ret(%r)
+}
+
+fn log_reads(%st: ref i32, %lg: ref i32, %m: i32, %k: cont() -> (i32) does State) -> (i32) does State {
+  let %x: i32 = perform State.0()
+  let = ref_set(%lg, %x)
+  let %r: i32 = resume(%k)
+  jump ret(%r)
+}
+
+fn job_done(%st: ref i32, %lg: ref i32, %r: i32) -> (i32) {
+  jump ret(%r)
+}
+
+fn add_log(%cell: ref i32, %m: i32, %k: cont() -> (i32)) -> (i32) {
+  let %old: i32 = ref_get(%cell)
+  let %new: i32 = add(%old, %m)
+  let = ref_set(%cell, %new)
+  let %r: i32 = resume(%k)
+  jump ret(%r)
+}
+
+fn sum_done(%cell: ref i32, %r: i32) -> (i32) {
+  jump ret(%r)
+}
+
+fn fixed_get(%x: i32, %k: cont(i32) -> (i32)) -> (i32) {
+  let %r: i32 = resume(%k, %x)
+  jump ret(%r)
+}
+
+fn fixed_set(%x: i32, %v: i32, %k: cont() -> (i32)) -> (i32) {
+  let %r: i32 = resume(%k)
+  jump ret(%r)
+}
+
+fn fixed_done(%x: i32, %r: i32) -> (i32) {
+  jump ret(%r)
+}
+
+fn log_after(%x: i32, %m: i32, %k: cont() -> (i32)) -> (i32) {
+  let %r: i32 = resume(%k)
+  let %rm: i32 = add(%r, %m)
+  jump ret(%rm)
+}
+
+fn fail(%cell: ref i32, %k: cont() -> (i32)) -> (i32) {
+  jump ret(-1i32)
+}
+
+fn record(%cell: ref i32, %m: i32, %k: cont() -> (i32)) -> (i32) {
+  let = ref_set(%cell, %m)
+  let %r: i32 = resume(%k)
+  jump ret(%r)
+}
+
+// Logs 1, gets 5, sets 6, gets 6 and logs 2, under job, under sum_log.
+fn work() -> (i32) does State + Log {
+  let = perform Log.0(1i32)
+  let %x: i32 = perform State.0()
+  let %x1: i32 = add(%x, 1i32)
+  let = perform State.1(%x1)
+  let %y: i32 = perform State.0()
+  let = perform Log.0(2i32)
+  jump ret(%y)
+}
+
+// The body's logs go to job, 12, and the two gets' to sum_log, 200, with
+// the result 6: 200126.
+fn issue() -> (i32) {
+  let %outer: ref i32 = ref_new(0i32)
+  let %body: imm fn() -> (i32) does Log = closure in_job()
+  let %y: i32 = handle sum_log(%outer, %body)
+  let %sum: i32 = ref_get(%outer)
+  let %sum1000: i32 = mul(%sum, 1000i32)
+  let %r: i32 = add(%y, %sum1000)
+  jump ret(%r)
+}
+
+fn in_job() -> (i32) does Log {
+  let %st: ref i32 = ref_new(5i32)
+  let %lg: ref i32 = ref_new(0i32)
+  let %body: imm fn() -> (i32) does State + Log = closure work()
+  let %y: i32 = handle job(%st, %lg, %body)
+  let %logged: i32 = ref_get(%lg)
+  let %logged10: i32 = mul(%logged, 10i32)
+  let %r: i32 = add(%y, %logged10)
+  jump ret(%r)
+}
+
+// A Log reads the state from fixed 7, not from log_state's 5, which the
+// body's get reads: 7 * 10 + 5.
+fn log_reads_outer() -> (i32) {
+  let %body: imm fn() -> (i32) does State = closure in_log_state()
+  let %r: i32 = handle fixed(7i32, %body)
+  jump ret(%r)
+}
+
+fn in_log_state() -> (i32) does State {
+  let %st: ref i32 = ref_new(5i32)
+  let %lg: ref i32 = ref_new(0i32)
+  let %body: imm fn() -> (i32) does State + Log = closure log_then_get()
+  let %x: i32 = handle log_state(%st, %lg, %body)
+  let %logged: i32 = ref_get(%lg)
+  let %logged10: i32 = mul(%logged, 10i32)
+  let %r: i32 = add(%x, %logged10)
+  jump ret(%r)
+}
+
+fn log_then_get() -> (i32) does State + Log {
+  let = perform Log.0(0i32)
+  let %x: i32 = perform State.0()
+  jump ret(%x)
+}
+
+// Each Log's continuation runs a get after it: 10 + 1 + 2.
+fn log_afterwards() -> (i32) {
+  let %body: imm fn() -> (i32) does State + Log = closure logs_then_get()
+  let %r: i32 = handle after(10i32, %body)
+  jump ret(%r)
+}
+
+fn logs_then_get() -> (i32) does State + Log {
+  let = perform Log.0(1i32)
+  let = perform Log.0(2i32)
+  let %x: i32 = perform State.0()
+  jump ret(%x)
+}
+
+// Logs 5, then fails: -1, with 5 recorded: 5 * 10 - 1.
+fn log_then_fail() -> (i32) {
+  let %cell: ref i32 = ref_new(0i32)
+  let %body: imm fn() -> (i32) does Fail + Log = closure logs_then_fails()
+  let %r: i32 = handle fail_log(%cell, %body)
+  let %logged: i32 = ref_get(%cell)
+  let %logged10: i32 = mul(%logged, 10i32)
+  let %sum: i32 = add(%logged10, %r)
+  jump ret(%sum)
+}
+
+fn logs_then_fails() -> (i32) does Fail + Log {
+  let = perform Log.0(5i32)
+  let = perform Fail.0()
+  jump ret(1000i32)
+}
+
+// job inside job: the inner get's log of 100 goes to the outer job, and
+// the body's log of 3 to the inner one. The inner state is 2: 2 + 3 * 10
+// + 100 * 100.
+fn nested() -> (i32) {
+  let %outer: ref i32 = ref_new(0i32)
+  let %body: imm fn() -> (i32) does Log = closure outer_job()
+  let %r: i32 = handle sum_log(%outer, %body)
+  jump ret(%r)
+}
+
+fn outer_job() -> (i32) does Log {
+  let %st: ref i32 = ref_new(1i32)
+  let %lg: ref i32 = ref_new(0i32)
+  let %body: imm fn() -> (i32) does State + Log = closure inner_job()
+  let %x: i32 = handle job(%st, %lg, %body)
+  let %logged: i32 = ref_get(%lg)
+  let %logged100: i32 = mul(%logged, 100i32)
+  let %r: i32 = add(%x, %logged100)
+  jump ret(%r)
+}
+
+fn inner_job() -> (i32) does Log {
+  let %st: ref i32 = ref_new(2i32)
+  let %lg: ref i32 = ref_new(0i32)
+  let %body: imm fn() -> (i32) does State + Log = closure get_then_log()
+  let %x: i32 = handle job(%st, %lg, %body)
+  let %logged: i32 = ref_get(%lg)
+  let %logged10: i32 = mul(%logged, 10i32)
+  let %r: i32 = add(%x, %logged10)
+  jump ret(%r)
+}
+
+fn get_then_log() -> (i32) does State + Log {
+  let %x: i32 = perform State.0()
+  let = perform Log.0(3i32)
+  jump ret(%x)
+}
+
+//# wasm-skip: a handler of several effects isn't supported yet
+//# run issue() == 200126i32
+//# run log_reads_outer() == 75i32
+//# run log_afterwards() == 13i32
+//# run log_then_fail() == 49i32
+//# run nested() == 10032i32

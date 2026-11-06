@@ -669,10 +669,9 @@ fn generator(n: i32, clause: impl FnOnce(&mut Func, Var, Var, Var) -> Block) -> 
         SUM,
         HandlerDecl {
             debug_name: None,
-            effect: YIELD,
             effect_params: 0,
             env: vec![acc_ty.clone()],
-            ops: vec![CLAUSE],
+            ops: vec![(YIELD, vec![CLAUSE])],
             ret: RET_CLAUSE,
             row: Row::NOTHING,
         },

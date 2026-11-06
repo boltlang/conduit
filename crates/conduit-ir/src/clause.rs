@@ -46,9 +46,9 @@ pub fn plain_call(f: &Func) -> Option<Func> {
 /// backend can lower the handler without capturing a continuation.
 pub fn direct_handler(m: &Module, h: HandlerId) -> bool {
     m.handlers.get(&h).is_some_and(|decl| {
-        decl.ops.iter().all(|c| {
+        decl.clauses().all(|(_, _, c)| {
             m.funcs
-                .get(c)
+                .get(&c)
                 .is_some_and(|f| plain_call(f).is_some() || aborting(f).is_some())
         })
     })

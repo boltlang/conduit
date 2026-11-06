@@ -551,10 +551,9 @@ fn handler_module(body: impl FnOnce(&mut Func, Var) -> Block) -> Module {
         SUM,
         HandlerDecl {
             debug_name: None,
-            effect: YIELD,
             effect_params: 0,
             env: vec![],
-            ops: vec![CLAUSE],
+            ops: vec![(YIELD, vec![CLAUSE])],
             ret: RET_CLAUSE,
             row: Row::NOTHING,
         },
@@ -688,7 +687,7 @@ fn handler_clause_must_take_the_continuation() {
     m.funcs.insert(CLAUSE, clause);
     let errors = verify(&m);
     assert!(
-        errors.iter().any(|e| e.contains("clause fn3 for operation 0 has type (i32) -> (), but should have (i32, cont() -> ()) -> ()")),
+        errors.iter().any(|e| e.contains("clause fn3 for effect20.0 has type (i32) -> (), but should have (i32, cont() -> ()) -> ()")),
         "{errors:?}"
     );
 }

@@ -720,14 +720,20 @@ pub struct EffectDecl {
 }
 
 pub struct HandlerDecl {
-    effect: EffectId,
     env: Vec<Ty>,          // values the clauses share, like a closure's
-    ops: Vec<FuncId>,      // clause i: fn(env.., op params.., k: Cont) -> R
+    ops: Vec<(EffectId, Vec<FuncId>)>,
+                           // each effect it handles, once, with its clause i
+                           // for operation i: fn(env.., op params.., k: Cont) -> R
     ret: FuncId,           // return clause: fn(env.., body results..) -> R
 }
 ```
 
-`R` is the result of the whole `handle`. The continuation `k` has type
+`R` is the result of the whole `handle`. A handler can handle several
+effects, as one OCaml handler's `effc` or one Bolt `match` with effect
+arms does, with one return clause. Every operation of an effect it
+handles has a clause; a frontend whose `match` leaves some out gives
+those a clause that performs the operation again and resumes with what it
+gives, which is tail-resumptive and so cheap. The continuation `k` has type
 `Cont(op results -> R)`: resuming it with the operation's results runs the
 rest of the body, through the return clause, and gives back an `R`.
 
@@ -739,6 +745,12 @@ let x = perform E.op(args)      -- nearest enclosing handler of E (dynamic)
 let r = resume(k, vals)         -- continue a captured computation
 let r = discontinue F.op(k, args) -- continue it by performing F.op(args) there
 ```
+
+A clause runs outside its handler: what it performs goes to the handlers
+around the `handle`, even an operation of another effect the same
+handler handles. Nesting a handler for `E` in one for `F` instead isn't
+the same, since a clause of the inner one that performs `F` would be
+caught by the outer.
 
 `discontinue` continues `k` as if the `perform` it captured had been
 `perform F.op(args)` instead, under the handlers that were around it, so
@@ -869,9 +881,9 @@ let %3: imm fn(i32) -> (i32) does Effect20 = closure fn2()
   parameters: `compose[E1, E2]` of an `f` that does `E1` and a `g` that
   does `E2` does `E1 + E2`.
 - **A handler declares a row,** the effects its clauses can perform, and
-  `handle` takes its effect out of the body's row: the body can perform
-  `E` and what the handler's row allows, and the `handle` performs only the
-  handler's row.
+  `handle` takes its effects out of the body's row: the body can perform
+  them and what the handler's row allows, and the `handle` performs only
+  the handler's row.
 
 Polymorphism over effects is what effect parameters are for. A handler
 that runs a body which can also perform other effects passes those on.
@@ -1001,8 +1013,10 @@ What would take more:
 
 ### Lowering
 
-The Wasm backend lowers handlers whose clauses are all tail-resumptive or
-aborting without capturing a continuation:
+The Wasm backend doesn't lower a handler of several effects yet, unless
+the module's effects are lowered by evidence passing first. It lowers
+handlers whose clauses are all tail-resumptive or aborting without
+capturing a continuation:
 
 - A global holds a stack of handler frames. A frame holds its effect's
   number, the next frame, a reference to each clause, and the handler's
@@ -1408,7 +1422,9 @@ fn fn1(%0: i32) -> (i32) {
   A closure or continuation type with effects has them after its
   results, `imm fn() -> (i32) does effect20 + effect21`, and so does a
   function, `fn fn1() -> (i32) does effect20 {`, and a handler,
-  `handler handler30 for effect20 does effect21 env(..) ..`. Without
+  `handler handler30 for effect20 does effect21 env(..) ..`. A handler of
+  several effects lists them, and its clauses for each, apart by `;`:
+  `handler handler31 for effect20, effect21 env() ops(fn4, fn5; fn6) ret fn7`. Without
   `does` there are none, and `does Any` is anything.
   Mutabilities are `imm`, `mut`, `ro` and `inherit`. A data type gives its
   mutability arguments in brackets, `mut data10[imm, mut]`, and a

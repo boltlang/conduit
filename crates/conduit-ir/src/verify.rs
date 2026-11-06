@@ -182,7 +182,8 @@ fn check_handler<P: Program + ?Sized>(
     errors: &mut Vec<Error>,
 ) {
     let mut err = |message: String| errors.push(decl_error(Item::Handler(id), message));
-    for clause in h.ops.iter().chain([&h.ret]) {
+    let funcs: Vec<FuncId> = h.clauses().map(|(_, _, c)| c).chain([h.ret]).collect();
+    for clause in &funcs {
         if p.func_mut_params(*clause).is_some_and(|mp| mp.count > 0) {
             err(format!(
                 "clause {clause} has mutability parameters, which a handler can't give"
@@ -204,9 +205,6 @@ fn check_handler<P: Program + ?Sized>(
             err(format!("environment: {message}"));
         }
     }
-    let Some(effect) = p.effect(h.effect) else {
-        return err(format!("unknown effect {}", h.effect));
-    };
     if let Err(message) = row_ok(p, &h.row, h.effect_params) {
         err(message);
     }
@@ -225,43 +223,58 @@ fn check_handler<P: Program + ?Sized>(
             h.ret
         ));
     }
-    if h.ops.len() != effect.ops.len() {
-        return err(format!(
-            "has {} clauses, but {} has {} operations",
-            h.ops.len(),
-            h.effect,
-            effect.ops.len()
-        ));
-    }
-    for (i, (&clause, op)) in h.ops.iter().zip(&effect.ops).enumerate() {
-        let Some(sig) = p.func_sig(clause) else {
-            err(format!("unknown clause {clause} for operation {i}"));
+    let mut seen = Vec::new();
+    for (e, clauses) in &h.ops {
+        let Some(effect) = p.effect(*e) else {
+            err(format!("unknown effect {e}"));
             continue;
         };
-        // Resuming runs the rest of the body, which is still handled.
-        let k = Ty::Cont(Box::new(Sig {
-            row: h.row.clone(),
-            params: op.results.clone(),
-            results: ret.results.clone(),
-        }));
-        let mut params = h.env.clone();
-        params.extend(op.params.iter().cloned());
-        params.push(k);
-        let expected = Sig {
-            row: h.row.clone(),
-            params,
-            results: ret.results.clone(),
-        };
-        if sig.params != expected.params || sig.results != expected.results {
-            err(format!(
-                "clause {clause} for operation {i} has type {sig}, but should have {expected}"
-            ));
-        } else if !sig.row.is_in(&h.row) {
-            err(format!(
-                "clause {clause} for operation {i} does {}, which isn't in the handler's row {}",
-                sig.row, h.row
-            ));
+        if seen.contains(e) {
+            err(format!("handles {e} twice"));
+            continue;
         }
+        seen.push(*e);
+        if clauses.len() != effect.ops.len() {
+            err(format!(
+                "has {} clauses for {e}, but {e} has {} operations",
+                clauses.len(),
+                effect.ops.len()
+            ));
+            continue;
+        }
+        for (i, (&clause, op)) in clauses.iter().zip(&effect.ops).enumerate() {
+            let Some(sig) = p.func_sig(clause) else {
+                err(format!("unknown clause {clause} for {e}.{i}"));
+                continue;
+            };
+            // Resuming runs the rest of the body, which is still handled.
+            let k = Ty::Cont(Box::new(Sig {
+                row: h.row.clone(),
+                params: op.results.clone(),
+                results: ret.results.clone(),
+            }));
+            let mut params = h.env.clone();
+            params.extend(op.params.iter().cloned());
+            params.push(k);
+            let expected = Sig {
+                row: h.row.clone(),
+                params,
+                results: ret.results.clone(),
+            };
+            if sig.params != expected.params || sig.results != expected.results {
+                err(format!(
+                    "clause {clause} for {e}.{i} has type {sig}, but should have {expected}"
+                ));
+            } else if !sig.row.is_in(&h.row) {
+                err(format!(
+                    "clause {clause} for {e}.{i} does {}, which isn't in the handler's row {}",
+                    sig.row, h.row
+                ));
+            }
+        }
+    }
+    if h.ops.is_empty() {
+        err("handles no effects".into());
     }
 }
 

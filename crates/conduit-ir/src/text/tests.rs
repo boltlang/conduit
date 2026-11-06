@@ -292,6 +292,14 @@ fn long_functions_dont_need_a_deep_stack() {
 fn parse_errors() {
     let cases: &[(&str, &str)] = &[
         (
+            "handler handler1 for effect1, effect2 env() ops(fn1) ret fn2",
+            "1:1: a handler for 2 effects has clauses for 1, apart by `;`",
+        ),
+        (
+            "handler handler1 for effect1 env() ops(fn1 fn2) ret fn2",
+            "1:44: expected `,`, `;` or `)`, found `fn2`",
+        ),
+        (
             "data data1['m1, 'm1] { }",
             "1:17: `'m1` is declared more than once",
         ),

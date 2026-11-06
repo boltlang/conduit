@@ -285,8 +285,9 @@ row of `Any`. Mutability is unchanged. Only the type's own row can be
 bigger: rows inside it, in its parameters or results or in a data type's
 arguments, must be equal, like mutability arguments.
 
-**Handlers.** A handler `H` for `E` declares a row `R`, the effects its
-clauses can perform.
+**Handlers.** A handler `H` for effects `E` (one or more, each once, with
+a clause for each of their operations) declares a row `R`, the effects
+its clauses can perform.
 
 - Every clause and the return clause has the handler's effect parameters,
   in the same order, which `handle` gives them, and a row that's in `R`.
@@ -294,7 +295,7 @@ clauses can perform.
   the rest of the body, which is still handled by `H`.
 - `handle H[args](env.., body)` needs the body's row to be in `E + R`.
 
-So `handle` takes `E` out of what the body performs, and puts back what
+So `handle` takes the effects in `E` out of what the body performs, and puts back what
 the clauses perform.
 
 **Externs** have no effects: a host function can't perform a Conduit

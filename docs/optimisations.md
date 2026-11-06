@@ -180,13 +180,15 @@ can run on it.
   closure takes it too, so that a pure closure can go where an effectful
   one is expected. Each such function keeps its ID as a wrapper with its
   old signature, which makes the evidence and calls the new version.
-- **`handle`** makes a node for its handler: the effect, a fresh marker,
-  whether each clause is tail-resumptive, a closure for each that is, and
+- **`handle`** makes a node for its handler: a constant table, for each
+  effect, of where its clauses start among the handler's, or -1 for one
+  it doesn't handle; a fresh marker, whether each clause is tail-resumptive, a closure for each that is, and
   the evidence outside. It then calls the handler's `drive` function,
   which runs the body and then calls the return clause, or the clause the
   body yielded to, with a continuation, or wraps the continuation of a
   yield to a handler further out so that resuming it re-enters this one.
-- **`perform`** finds the nearest node of its effect. A tail-resumptive
+- **`perform`** finds the nearest node whose table has its effect, and
+  the clause there. A tail-resumptive
   clause is called directly, under the handlers outside it. Any other is
   yielded to: `perform` records the operation, its arguments and the rest
   of its function, and returns `undefined` results.
@@ -194,8 +196,8 @@ can run on it.
   and, if it's yielding, adds the rest of its function to the
   continuation, as a new function, and returns. Join points in scope
   there become functions first, since the rest jumps to them. An effect
-  may yield if one of its handlers has a clause that isn't
-  tail-resumptive, or performs an effect that may: rows say which calls
+  may yield if one of its handlers has a clause for it that isn't
+  tail-resumptive, or can perform an effect that may: rows say which calls
   can, so code that only performs effects that don't yield pays nothing
   for it.
 - **Continuations** are closures given a closure that gives what the

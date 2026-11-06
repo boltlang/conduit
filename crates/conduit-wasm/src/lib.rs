@@ -387,7 +387,7 @@ impl Cx<'_> {
             .get(&h)
             .ok_or_else(|| format!("unknown handler {h}"))?;
         let mut tys = vec![Ty::I32, Ty::I32];
-        tys.extend(std::iter::repeat_n(Ty::I32, decl.ops.len()));
+        tys.extend(std::iter::repeat_n(Ty::I32, crate::single(decl).1.len()));
         tys.extend(decl.env.iter().cloned());
         if self.aborting.contains(&h) {
             let ret = self
@@ -465,6 +465,12 @@ pub fn emit_module_with(
     } else {
         m
     };
+    if let Some((&h, _)) = m.handlers.iter().find(|(_, d)| d.ops.len() != 1) {
+        return Err(Error {
+            item: Item::Handler(h),
+            message: "a handler of several effects isn't supported yet".into(),
+        });
+    }
     let switching: BTreeSet<HandlerId> = m
         .handlers
         .keys()
@@ -482,7 +488,7 @@ pub fn emit_module_with(
         if switching.contains(&h) {
             continue;
         }
-        for &clause in &decl.ops {
+        for &clause in crate::single(decl).1 {
             let Some(f) = m.funcs.get(&clause) else {
                 continue;
             };
@@ -501,7 +507,7 @@ pub fn emit_module_with(
     for (&h, decl) in &m.handlers {
         if !switching.contains(&h) {
             wrappers.insert(h, wrapper_slots);
-            wrapper_slots += decl.ops.len() as u32;
+            wrapper_slots += crate::single(decl).1.len() as u32;
         }
     }
     let clause_slots = wrapper_slots;
@@ -599,13 +605,13 @@ pub fn emit_module_with(
         if switching.contains(&h) {
             continue;
         }
-        for i in 0..decl.ops.len() as u32 {
+        for i in 0..crate::single(decl).1.len() as u32 {
             let err = |message| Error {
                 item: Item::Handler(h),
                 message,
             };
-            let ty = cx.clause_sig(decl.effect, i).map_err(err)?;
-            let clause = decl.ops[i as usize];
+            let ty = cx.clause_sig(crate::single(decl).0, i).map_err(err)?;
+            let clause = crate::single(decl).1[i as usize];
             let plain = plain_clauses
                 .get(&clause)
                 .ok_or_else(|| err(format!("clause {clause} isn't tail-resumptive or aborting")))?;
@@ -621,7 +627,7 @@ pub fn emit_module_with(
             item: Item::Handler(h),
             message,
         };
-        let n = m.effects[&m.handlers[&h].effect].ops.len() as u32;
+        let n = m.effects[&crate::single(&m.handlers[&h]).0].ops.len() as u32;
         let disc = cx.disc_tag.is_some();
         let sig = cx.drive_sig(h, switch::Start::Body).map_err(err)?;
         let body = switch::lower_drive(&mut cx, h, switch::Start::Body).map_err(err)?;
@@ -640,7 +646,7 @@ pub fn emit_module_with(
         }
         let results = cx.handle_results(h).map_err(err)?;
         for i in 0..n {
-            let op = &m.effects[&m.handlers[&h].effect].ops[i as usize];
+            let op = &m.effects[&crate::single(&m.handlers[&h]).0].ops[i as usize];
             let ksig = conduit_ir::Sig::new(
                 op.results.clone(),
                 m.funcs[&m.handlers[&h].ret].results.clone(),
@@ -681,7 +687,7 @@ pub fn emit_module_with(
     // The tables of Wasm continuations, after the function table.
     let mut cont_tables = Vec::new();
     for &h in &switching {
-        let n = m.effects[&m.handlers[&h].effect].ops.len() as u32;
+        let n = m.effects[&crate::single(&m.handlers[&h]).0].ops.len() as u32;
         for i in 0..n {
             let err = |message| Error {
                 item: Item::Handler(h),
@@ -1008,7 +1014,7 @@ fn plan_switching(cx: &mut Cx<'_>, switching: &BTreeSet<HandlerId>) -> Result<u3
         range
     };
     for &h in switching {
-        let n = cx.m.effects[&cx.m.handlers[&h].effect].ops.len() as u32;
+        let n = cx.m.effects[&crate::single(&cx.m.handlers[&h]).0].ops.len() as u32;
         let start = take(&mut func, 1)[0];
         let tramp = take(&mut func, 1)[0];
         let drive = take(&mut func, n);
@@ -1042,7 +1048,10 @@ fn plan_switching(cx: &mut Cx<'_>, switching: &BTreeSet<HandlerId>) -> Result<u3
         cx.disc_tag = Some(tag);
         tag += 1;
     }
-    let effects: BTreeSet<EffectId> = switching.iter().map(|h| cx.m.handlers[h].effect).collect();
+    let effects: BTreeSet<EffectId> = switching
+        .iter()
+        .map(|h| crate::single(&cx.m.handlers[h]).0)
+        .collect();
     for e in effects {
         for i in 0..cx.m.effects[&e].ops.len() as u32 {
             cx.tags.insert((e, i), tag);
@@ -1182,3 +1191,10 @@ fn name_section(m: &Module, cx: &Cx<'_>) -> Option<NameSection> {
 
 #[cfg(test)]
 mod tests;
+
+/// The effect a handler handles, and its clauses: the backend handles one
+/// effect per handler so far, which [`lower`] checks.
+fn single(decl: &conduit_ir::HandlerDecl) -> (EffectId, &[FuncId]) {
+    let (e, clauses) = &decl.ops[0];
+    (*e, clauses)
+}

@@ -75,7 +75,7 @@ impl Cx<'_> {
     /// with the operation's results, it gives the body's.
     pub fn op_cont(&mut self, h: HandlerId, i: u32) -> Result<u32, String> {
         let decl = &self.m.handlers[&h];
-        let op = &self.m.effects[&decl.effect].ops[i as usize];
+        let op = &self.m.effects[&crate::single(decl).0].ops[i as usize];
         let sig = FnSig {
             params: op.results.iter().map(val).collect(),
             results: self.body_results(h)?,
@@ -113,7 +113,7 @@ impl Cx<'_> {
             Start::Body => params.push(ValType::I32),
             Start::Resume(i) => {
                 params.push(nullable(self.op_cont(h, i)?));
-                let op = &self.m.effects[&decl.effect].ops[i as usize];
+                let op = &self.m.effects[&crate::single(decl).0].ops[i as usize];
                 params.extend(op.results.iter().map(val));
             }
             Start::Throw(i) => {
@@ -165,7 +165,7 @@ pub(crate) fn lower_tramp(cx: &mut Cx<'_>, h: HandlerId) -> Result<Body, String>
 pub(crate) fn lower_drive(cx: &mut Cx<'_>, h: HandlerId, start: Start) -> Result<Body, String> {
     let m = cx.m;
     let decl = &m.handlers[&h];
-    let effect = &m.effects[&decl.effect];
+    let effect = &m.effects[&crate::single(decl).0];
     let n = effect.ops.len() as u32;
     let sig = cx.drive_sig(h, start)?;
     let env = decl.env.len() as u32;
@@ -178,7 +178,9 @@ pub(crate) fn lower_drive(cx: &mut Cx<'_>, h: HandlerId, start: Start) -> Result
     };
     let mut table = Vec::new();
     for i in 0..n {
-        let tag = cx.tag(decl.effect, i).ok_or("no tag for an operation")?;
+        let tag = cx
+            .tag(crate::single(decl).0, i)
+            .ok_or("no tag for an operation")?;
         table.push(Handle::OnLabel { tag, label: i });
     }
 
@@ -312,7 +314,9 @@ pub(crate) fn lower_drive(cx: &mut Cx<'_>, h: HandlerId, start: Start) -> Result
         let (at, s) = kont_fields[2 + env as usize];
         code.extend([I::LocalGet(obj), I::LocalGet(slot), store(s, at)]);
         code.push(I::LocalGet(obj));
-        code.push(I::ReturnCall(cx.func_index(decl.ops[i as usize])?));
+        code.push(I::ReturnCall(
+            cx.func_index(crate::single(decl).1[i as usize])?,
+        ));
     }
     code.push(I::End);
     // The body returned: the return clause, under the handlers outside.
@@ -360,7 +364,9 @@ pub(crate) fn lower_kont(
     let args = if disc {
         1
     } else {
-        m.effects[&decl.effect].ops[i as usize].results.len() as u32
+        m.effects[&crate::single(decl).0].ops[i as usize]
+            .results
+            .len() as u32
     };
     let (fields, _) = cx.kont_layout(h);
     let sw = cx.switch(h)?.clone();

@@ -150,25 +150,76 @@ pub struct EffectDecl {
     pub debug_name: Option<Box<str>>,
 }
 
-/// A deep handler of an effect.
+/// A deep handler of one or more effects. A `perform` goes to the nearest
+/// handler with a clause for its operation, and the clause runs outside
+/// the whole handler: what it performs goes to the handlers around it,
+/// even an operation of another effect this handler handles.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct HandlerDecl {
-    pub effect: EffectId,
     /// How many effect parameters its types and row can use, as `E1` to
     /// `En`. Each `handle` of it gives a row for each, and each clause has
     /// as many, which the `handle`'s rows are given to.
     pub effect_params: u32,
     /// The values the clauses share, like a closure's captures.
     pub env: Vec<Ty>,
-    /// Clause `i` handles operation `i`: `fn(env.., op params.., k) -> R`.
-    pub ops: Vec<FuncId>,
+    /// The effects it handles, each once, with their clauses: clause `i`
+    /// of an effect handles its operation `i`, as
+    /// `fn(env.., op params.., k) -> R`. Every operation has one.
+    pub ops: Vec<(EffectId, Vec<FuncId>)>,
     /// The return clause: `fn(env.., body results..) -> R`.
     pub ret: FuncId,
     /// The effects its clauses may perform, which a `handle` of it
-    /// performs instead of the handled effect.
+    /// performs instead of the handled effects.
     pub row: Row,
     /// A name to show it by. See [`FuncDebug`].
     pub debug_name: Option<Box<str>>,
+}
+
+impl HandlerDecl {
+    /// The effects it handles, in order.
+    pub fn effects(&self) -> impl Iterator<Item = EffectId> + '_ {
+        self.ops.iter().map(|(e, _)| *e)
+    }
+
+    /// Whether it has clauses for `e`.
+    pub fn handles(&self, e: EffectId) -> bool {
+        self.effects().any(|h| h == e)
+    }
+
+    /// The clause for operation `op` of `e`.
+    pub fn clause(&self, e: EffectId, op: u32) -> Option<FuncId> {
+        let (_, clauses) = self.ops.iter().find(|(h, _)| *h == e)?;
+        clauses.get(op as usize).copied()
+    }
+
+    /// Where the clause for operation `op` of `e` is among all of them, in
+    /// the order of [`clauses`](Self::clauses), as a backend numbers them.
+    pub fn slot(&self, e: EffectId, op: u32) -> Option<usize> {
+        let mut base = 0;
+        for (h, clauses) in &self.ops {
+            if *h == e {
+                return ((op as usize) < clauses.len()).then_some(base + op as usize);
+            }
+            base += clauses.len();
+        }
+        None
+    }
+
+    /// Every clause, with its effect and operation, in order.
+    pub fn clauses(&self) -> impl Iterator<Item = (EffectId, u32, FuncId)> + '_ {
+        (self.ops.iter())
+            .flat_map(|(e, clauses)| (clauses.iter().enumerate()).map(|(i, &c)| (*e, i as u32, c)))
+    }
+
+    /// How many clauses it has, not counting the return clause.
+    pub fn len(&self) -> usize {
+        self.ops.iter().map(|(_, clauses)| clauses.len()).sum()
+    }
+
+    /// Whether it has no clauses but the return clause.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 /// A constant: an `Imm` value that exists before the program runs, which

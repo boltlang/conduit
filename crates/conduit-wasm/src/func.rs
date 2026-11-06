@@ -167,11 +167,11 @@ pub(crate) fn lower_wrapper(
     plain: &Func,
 ) -> Result<Body, String> {
     let decl = &cx.m.handlers[&h];
-    let clause = decl.ops[i as usize];
-    let op = &cx.m.effects[&decl.effect].ops[i as usize];
+    let clause = crate::single(decl).1[i as usize];
+    let op = &cx.m.effects[&crate::single(decl).0].ops[i as usize];
     let params = op.params.len() as u32;
     let (fields, _) = cx.frame(h)?;
-    let n_ops = decl.ops.len();
+    let n_ops = crate::single(decl).1.len();
     let env = &fields[2 + n_ops..2 + n_ops + decl.env.len()];
     let mut code = Vec::new();
     for (&(at, s), ty) in env.iter().zip(&decl.env) {
@@ -1138,13 +1138,13 @@ impl<'m> FuncCx<'_, 'm> {
         let decl = &m.handlers[&h];
         let (env, body) = args.split_at(args.len() - 1);
         let (fields, size) = self.cx.frame(h)?;
-        let number = self.cx.effect_number(decl.effect)?;
+        let number = self.cx.effect_number(crate::single(decl).0)?;
         let ret = self.cx.func_index(decl.ret)?;
         let Ty::Fn(sig, _) = self.atom_ty(&body[0]) else {
             return Err(format!("the body of handle {h} isn't a closure"));
         };
         let results: Vec<u32> = sig.results.iter().map(|t| self.new_local(val(t))).collect();
-        let n_ops = decl.ops.len();
+        let n_ops = crate::single(decl).1.len();
         if self.cx.is_switching(h) {
             // A frame with -1 in every clause slot, which `start` links in
             // before it runs the body.

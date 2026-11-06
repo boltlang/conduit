@@ -22,6 +22,7 @@ handler handler32 for effect21 env(i32) ops(fn1, fn1) ret fn1
 handler handler33 for effect21 env() ops(fn1) ret fn1
 handler handler34 for effect21 env() ops(fn99, fn1) ret fn1
 handler handler35 for effect21 env(inherit data0) ops() ret fn1
+handler handler36 for effect21, effect21 env() ops(fn1, fn1; fn1, fn1) ret fn1
 
 fn fn1() -> () {
   jump ret()
@@ -37,9 +38,10 @@ fn fn2(%0: imm data97) -> (inherit data0) {
 //# verify-error: handler30: unknown effect effect99
 //# verify-error: handler31: unknown return clause fn99
 //# verify-error: handler32: return clause fn1 has type () -> (), which doesn't start with the environment
-//# verify-error: handler33: has 1 clauses, but effect21 has 2 operations
-//# verify-error: handler34: unknown clause fn99 for operation 0
-//# verify-error: handler34: clause fn1 for operation 1 has type () -> (), but should have (cont() -> ()) -> ()
+//# verify-error: handler33: has 1 clauses for effect21, but effect21 has 2 operations
+//# verify-error: handler34: unknown clause fn99 for effect21.0
+//# verify-error: handler34: clause fn1 for effect21.1 has type () -> (), but should have (cont() -> ()) -> ()
+//# verify-error: handler36: handles effect21 twice
 //# verify-error: handler35: environment: `inherit` in inherit data0 is only allowed in field types
 //# verify-error: fn2: type of %0: unknown data type data97
 //# verify-error: fn2: result type: `inherit` in inherit data0 is only allowed in field types

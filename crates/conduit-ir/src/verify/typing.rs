@@ -333,9 +333,9 @@ pub(crate) fn op_results<P: Program + ?Sized>(
                         .join(", ")
                 ));
             }
-            // The body's effect is handled, and what the clauses perform
+            // The body's effects are handled, and what the clauses perform
             // isn't.
-            let allowed = handler_row.union(&Row::one(decl.effect));
+            let allowed = handler_row.union(&Row::new(decl.effects()));
             if !body.row.is_in(&allowed) {
                 return Err(format!(
                     "the body of handle {h} does {}, which isn't in {allowed}",

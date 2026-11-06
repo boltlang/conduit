@@ -18,7 +18,7 @@
 //!   outside, and calls the handler's `drive` function. That runs the
 //!   body, then the return clause, or a clause the body yielded to, with a
 //!   continuation, or passes an outer yield on.
-//! - **`perform`** finds the nearest node of its effect. A tail-resumptive
+//! - **`perform`** finds the nearest node of a handler of its effect. A tail-resumptive
 //!   clause is called directly, under the handlers outside it. Any other
 //!   clause is yielded to: `perform` records the operation, its arguments
 //!   and the rest of its function, and returns undefined results.
@@ -39,8 +39,9 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use conduit_ir::clause::{discontinues, plain_call};
 use conduit_ir::{
-    Arm, Atom, Block, CtorDecl, CtorId, DataDecl, DataId, EffectId, Func, FuncId, HandlerId,
-    JoinDef, Label, Let, Lit, Module, Mutability, Op, Prim, Row, Sig, Tag, Tail, Ty, Var,
+    Arm, Atom, Block, ConstDecl, ConstId, ConstValue, CtorDecl, CtorId, DataDecl, DataId, EffectId,
+    Func, FuncId, HandlerId, JoinDef, Label, Let, Lit, Module, Mutability, Op, Prim, Row, Sig, Tag,
+    Tail, Ty, Var,
 };
 
 /// Removes effect handlers from `m`. See the module's documentation.
@@ -78,11 +79,15 @@ struct Runtime {
     ev_d: DataId,
     /// `Hs`: no handlers, or the innermost node.
     hs_d: DataId,
-    /// `Node`: a handler's effect's number, its marker, whether each
-    /// operation's clause is tail-resumptive, a closure for each that is,
-    /// and the evidence outside it, which is set each time it runs.
+    /// `Node`: its handler's table of where each effect's clauses start
+    /// among its own, by the effect's number, or -1 if it doesn't handle
+    /// it; its marker, whether each clause is tail-resumptive, a closure
+    /// for each that is, and the evidence outside it, which is set each
+    /// time it runs.
     node_d: DataId,
-    /// `lookup(ev, effect) -> node`, trapping if there's none.
+    /// `lookup(ev, effect) -> (node, start)`, the nearest node that
+    /// handles the effect and where the effect's clauses start among its
+    /// own, trapping if there's none.
     lookup: FuncId,
     /// `compose(prev, next, x, ev)`: a continuation that runs `prev`, then
     /// `next`.
@@ -141,9 +146,10 @@ fn any() -> Ty {
 
 /// The functions a handler is lowered to.
 struct HandlerFuncs {
-    /// The effect's number.
-    number: i32,
-    /// For each operation, the plain clause if it's tail-resumptive.
+    /// Its nodes' table: for each effect's number, where its clauses
+    /// start, or -1.
+    starts: ConstId,
+    /// For each clause, the plain clause if it's tail-resumptive.
     fast: Vec<Option<FuncId>>,
     /// `start_body(body, ev) -> any`.
     start_body: FuncId,
@@ -412,7 +418,7 @@ impl Lower {
         let node_decl = decl(
             "Node",
             vec![vec![
-                Ty::I32,
+                Ty::Array(Box::new(Ty::I32), Mutability::Imm),
                 Ty::I32,
                 Ty::Array(Box::new(Ty::I32), Mutability::Mut),
                 Ty::Array(Box::new(any()), Mutability::Mut),
@@ -430,6 +436,36 @@ impl Lower {
         self.src.effects.keys().position(|&k| k == e).unwrap_or(0) as i32 + 1
     }
 
+    /// A constant for the nodes of `h`: for each effect's number, where
+    /// its clauses start among those of `h`, or -1.
+    fn starts_table(&mut self, h: HandlerId) -> ConstId {
+        let decl = &self.src.handlers[&h];
+        let mut starts = vec![-1; self.src.effects.len() + 1];
+        let mut start = 0;
+        for (e, clauses) in &decl.ops {
+            starts[self.effect_number(*e) as usize] = start;
+            start += clauses.len() as i32;
+        }
+        let next = (self.src.consts.keys().map(|c| c.0 + 1).max().unwrap_or(0))
+            .max(self.out.consts.keys().map(|c| c.0 + 1).max().unwrap_or(0));
+        let id = ConstId(next);
+        let name = decl.debug_name.as_deref().unwrap_or("handler");
+        self.out.consts.insert(
+            id,
+            ConstDecl {
+                ty: Ty::Array(Box::new(Ty::I32), Mutability::Imm),
+                value: ConstValue::Array(
+                    starts
+                        .into_iter()
+                        .map(|s| ConstValue::Lit(Lit::I32(s)))
+                        .collect(),
+                ),
+                debug_name: Some(format!("{name}_starts").into()),
+            },
+        );
+        id
+    }
+
     /// Whether code that performs `row` may yield.
     fn row_yields(&self, row: &Row) -> bool {
         row.is_any()
@@ -437,9 +473,10 @@ impl Lower {
             || row.effects().iter().any(|e| self.yields.contains(e))
     }
 
-    /// Whether clause `i` of `h` is called directly, as a plain function.
+    /// Whether clause `i` of `h`, among all of them, is called directly, as
+    /// a plain function.
     fn is_fast(&self, h: HandlerId, i: usize) -> Option<Func> {
-        let clause = *self.src.handlers[&h].ops.get(i)?;
+        let (_, _, clause) = self.src.handlers[&h].clauses().nth(i)?;
         let plain = plain_call(self.src.funcs.get(&clause)?)?;
         (!discontinues(&plain)).then_some(plain)
     }
@@ -453,15 +490,21 @@ impl Lower {
             let ids: Vec<HandlerId> = self.src.handlers.keys().copied().collect();
             for h in ids {
                 let decl = &self.src.handlers[&h];
-                let effect = decl.effect;
-                if self.yields.contains(&effect) {
-                    continue;
+                let row_yields = self.row_yields(&decl.row);
+                let mut slot = 0;
+                let mut found = Vec::new();
+                for (e, clauses) in &decl.ops {
+                    let slots = slot..slot + clauses.len();
+                    slot += clauses.len();
+                    if self.yields.contains(e) {
+                        continue;
+                    }
+                    if row_yields || slots.into_iter().any(|i| self.is_fast(h, i).is_none()) {
+                        found.push(*e);
+                    }
                 }
-                let slow = (0..decl.ops.len()).any(|i| self.is_fast(h, i).is_none());
-                if slow || self.row_yields(&self.src.handlers[&h].row) {
-                    self.yields.insert(effect);
-                    changed = true;
-                }
+                changed |= !found.is_empty();
+                self.yields.extend(found);
             }
             if !changed {
                 break;
@@ -472,7 +515,7 @@ impl Lower {
         // with, are functions of the module like any other.
         let ids: Vec<HandlerId> = self.src.handlers.keys().copied().collect();
         for h in ids {
-            let n = self.src.handlers[&h].ops.len();
+            let n = self.src.handlers[&h].len();
             let mut fast = Vec::new();
             for i in 0..n {
                 match self.is_fast(h, i) {
@@ -484,9 +527,9 @@ impl Lower {
                     None => fast.push(None),
                 }
             }
-            let number = self.effect_number(self.src.handlers[&h].effect);
+            let starts = self.starts_table(h);
             let funcs = HandlerFuncs {
-                number,
+                starts,
                 fast,
                 start_body: self.fresh_func(),
                 drive: self.fresh_func(),
@@ -1050,9 +1093,12 @@ impl Lower {
         let rt_hs = Runtime::ctor(self.rt.hs_d, 1);
         let ev_c = Runtime::ctor(self.rt.ev_d, 0);
 
-        // lookup(ev, effect) -> node
+        // lookup(ev, effect) -> (node, start)
         let node_c = self.rt.node();
-        let mut f = new_func(vec![self.rt.ev_ty(), Ty::I32], vec![self.rt.node_ty()]);
+        let mut f = new_func(
+            vec![self.rt.ev_ty(), Ty::I32],
+            vec![self.rt.node_ty(), Ty::I32],
+        );
         f.debug.name = Some("lookup".into());
         let [ev, e] = [f.params[0], f.params[1]];
         let mut lets = Vec::new();
@@ -1073,19 +1119,26 @@ impl Lower {
             Op::Get(rt_hs, 0),
             vec![v(hs)],
         );
-        let eff = let1(
+        let starts = let1(
             &mut f,
             &mut found,
-            Ty::I32,
+            Ty::Array(Box::new(Ty::I32), Mutability::Imm),
             Op::Get(node_c, 0),
             vec![v(node)],
         );
-        let same = let1(
+        let start = let1(
             &mut f,
             &mut found,
             Ty::I32,
-            Op::Prim(Prim::Eq),
-            vec![v(eff), v(e)],
+            Op::ArrayGet,
+            vec![v(starts), v(e)],
+        );
+        let handles = let1(
+            &mut f,
+            &mut found,
+            Ty::I32,
+            Op::Prim(Prim::Ge(conduit_ir::Sign::Signed)),
+            vec![v(start), int(0)],
         );
         let mut next_lets = Vec::new();
         let outer = let1(
@@ -1105,7 +1158,7 @@ impl Lower {
         let found_block = block(
             found,
             case_zero(
-                same,
+                handles,
                 block(
                     next_lets,
                     Tail::Jump {
@@ -1114,7 +1167,7 @@ impl Lower {
                         source: None,
                     },
                 ),
-                block(vec![], ret(vec![v(node)])),
+                block(vec![], ret(vec![v(node), v(start)])),
             ),
         );
         let lp_body = block(
@@ -1497,11 +1550,11 @@ impl Lower {
             caps,
         );
         let mut arms = Vec::new();
-        for (i, &clause) in decl.ops.iter().enumerate() {
+        for (i, (e, j, clause)) in decl.clauses().enumerate() {
             if self.handlers[&h].fast[i].is_some() {
                 continue;
             }
-            let op = &self.src.effects[&decl.effect].ops[i];
+            let op = &self.src.effects[&e].ops[j as usize];
             let ptys = self.tys(&op.params);
             let mut arm = Vec::new();
             let ps: Vec<Var> = ptys.iter().map(|t| f.new_var(t.clone())).collect();
@@ -1988,7 +2041,7 @@ impl Lower {
     ) -> Block {
         let l = &b.lets[i];
         let ev = o.ev.expect("a perform has evidence");
-        let node = self.lookup(o, &mut lets, e);
+        let (node, slot) = self.lookup(o, &mut lets, e, op);
         let kinds = let1(
             &mut o.f,
             &mut lets,
@@ -2001,7 +2054,7 @@ impl Lower {
             &mut lets,
             Ty::I32,
             Op::ArrayGet,
-            vec![v(kinds), int(op as i32)],
+            vec![v(kinds), v(slot)],
         );
         let after = o.f.new_label();
         let site = self.site(o, b, i);
@@ -2016,7 +2069,7 @@ impl Lower {
         };
         // Tail-resumptive: call the clause under the handlers outside it.
         let mut fast = Vec::new();
-        let xs = self.fast_call(o, &mut fast, node, (e, op), l.args.clone(), None);
+        let xs = self.fast_call(o, &mut fast, (node, slot), (e, op), l.args.clone(), None);
         let fast = block(
             fast,
             Tail::Jump {
@@ -2043,7 +2096,7 @@ impl Lower {
             vec![v(node)],
         );
         let0(&mut slow, Op::Set(yc, 0), vec![v(st), v(mk)]);
-        let0(&mut slow, Op::Set(yc, 1), vec![v(st), int(op as i32)]);
+        let0(&mut slow, Op::Set(yc, 1), vec![v(st), v(slot)]);
         let ptys = self.tys(&self.src.effects[&e].ops[op as usize].params);
         let a = self.box_vals(&mut o.f, &mut slow, l.args.clone(), &ptys);
         let0(&mut slow, Op::Set(yc, 2), vec![v(st), a]);
@@ -2073,17 +2126,28 @@ impl Lower {
         )
     }
 
-    /// The nearest handler node of `e`.
-    fn lookup(&self, o: &mut Out<'_>, lets: &mut Vec<Let>, e: EffectId) -> Var {
+    /// The nearest handler node of `e`, and where the clause for `e.op` is
+    /// among its handler's.
+    fn lookup(&self, o: &mut Out<'_>, lets: &mut Vec<Let>, e: EffectId, op: u32) -> (Var, Var) {
         let ev = o.ev.expect("a perform has evidence");
         let n = self.effect_number(e);
-        let1(
+        let [node, start] = letn(
             &mut o.f,
             lets,
-            self.rt.node_ty(),
+            vec![self.rt.node_ty(), Ty::I32],
             Op::Call(self.rt.lookup, Vec::new(), Vec::new()),
             vec![v(ev), int(n)],
-        )
+        )[..] else {
+            unreachable!()
+        };
+        let slot = let1(
+            &mut o.f,
+            lets,
+            Ty::I32,
+            Op::Prim(Prim::Add),
+            vec![v(start), int(op as i32)],
+        );
+        (node, slot)
     }
 
     /// The type of a tail-resumptive clause's closure for `e.op`.
@@ -2097,13 +2161,14 @@ impl Lower {
         )
     }
 
-    /// Calls the tail-resumptive clause of `node` for `e.op` with `args`,
-    /// under the handlers outside it. Gives the results.
+    /// Calls the tail-resumptive clause of `node` for `e.op`, at `slot`
+    /// among its handler's, with `args`, under the handlers outside it.
+    /// Gives the results.
     fn fast_call(
         &self,
         o: &mut Out<'_>,
         lets: &mut Vec<Let>,
-        node: Var,
+        (node, slot): (Var, Var),
         (e, op): (EffectId, u32),
         mut args: Vec<Atom>,
         binds: Option<Vec<Var>>,
@@ -2116,13 +2181,7 @@ impl Lower {
             Op::Get(hs_c, 3),
             vec![v(node)],
         );
-        let c_any = let1(
-            &mut o.f,
-            lets,
-            any(),
-            Op::ArrayGet,
-            vec![v(arr), int(op as i32)],
-        );
+        let c_any = let1(&mut o.f, lets, any(), Op::ArrayGet, vec![v(arr), v(slot)]);
         let fty = self.fast_ty(e, op);
         let c = let1(&mut o.f, lets, fty.clone(), Op::Unbox(fty), vec![v(c_any)]);
         let outer = let1(
@@ -2171,7 +2230,7 @@ impl Lower {
             Op::Apply => (Op::Apply, with_ev(l.args.clone())),
             Op::Perform(e, op) => {
                 // Of an effect that never yields: always tail-resumptive.
-                let node = self.lookup(o, lets, *e);
+                let node = self.lookup(o, lets, *e, *op);
                 self.fast_call(
                     o,
                     lets,
@@ -2276,7 +2335,10 @@ impl Lower {
             vec![v(mk), int(1)],
         );
         let0(lets, Op::Set(yc, 4), vec![v(st), v(next)]);
-        let effect = self.src.handlers[&h].effect;
+        let ops: Vec<(EffectId, u32)> = self.src.handlers[&h]
+            .clauses()
+            .map(|(e, j, _)| (e, j))
+            .collect();
         let fast: Vec<Option<FuncId>> = self.handlers[&h].fast.clone();
         let kinds: Vec<Atom> = fast.iter().map(|f| int(i32::from(f.is_some()))).collect();
         let kinds = let1(
@@ -2291,7 +2353,8 @@ impl Lower {
             let b = match plain {
                 Some(plain) => {
                     let id = self.ev_version(*plain);
-                    let fty = self.fast_ty(effect, i as u32);
+                    let (e, j) = ops[i];
+                    let fty = self.fast_ty(e, j);
                     let c = let1(
                         &mut o.f,
                         lets,
@@ -2312,13 +2375,19 @@ impl Lower {
             Op::ArrayNew,
             closures,
         );
-        let number = self.handlers[&h].number;
+        let starts = let1(
+            &mut o.f,
+            lets,
+            Ty::Array(Box::new(Ty::I32), Mutability::Imm),
+            Op::Const(self.handlers[&h].starts),
+            vec![],
+        );
         let node = let1(
             &mut o.f,
             lets,
             self.rt.node_ty(),
             Op::New(self.rt.node()),
-            vec![int(number), v(mk), v(kinds), v(closures), v(ev)],
+            vec![v(starts), v(mk), v(kinds), v(closures), v(ev)],
         );
         let start = let1(
             &mut o.f,
