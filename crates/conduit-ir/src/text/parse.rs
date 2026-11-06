@@ -1032,6 +1032,8 @@ impl Parser {
                 Op::Perform(e, self.index()?)
             }
             "resume" => Op::Resume,
+            "dup" => Op::Dup,
+            "drop" => Op::Drop,
             "discontinue" => {
                 let e = EffectId(self.item("effect")?);
                 self.punct(".")?;

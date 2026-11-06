@@ -868,6 +868,17 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
         self.emit(Op::RefSet, vec![r.into(), value.into()], None);
     }
 
+    /// Adds 1 to the reference count of `object`: see [`Op::Dup`].
+    pub fn dup(&mut self, object: impl Into<Atom>) {
+        self.emit(Op::Dup, vec![object.into()], None);
+    }
+
+    /// Takes 1 from the reference count of `object`, freeing it at 0: see
+    /// [`Op::Drop`].
+    pub fn drop(&mut self, object: impl Into<Atom>) {
+        self.emit(Op::Drop, vec![object.into()], None);
+    }
+
     /// `value`, of type `ty`, as an `any`.
     pub fn boxed(&mut self, ty: Ty, value: impl Into<Atom>) -> Var {
         self.emit1(Op::Box(ty), vec![value.into()], None)

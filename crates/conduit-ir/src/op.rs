@@ -90,6 +90,14 @@ pub enum Op {
     /// gives is what the captured `perform` gives. Args: the continuation,
     /// then the operation's arguments.
     Discontinue(EffectId, u32),
+    /// Adds 1 to an object's reference count; binds nothing. Args: the
+    /// object. See "Reference counts" in `docs/ir.md`.
+    Dup,
+    /// Takes 1 from an object's reference count, and frees it when that
+    /// reaches 0, which drops what it holds; binds nothing. Args: the
+    /// object. Using the object after it's freed, or dropping it when its
+    /// count is already 0, is undefined behavior.
+    Drop,
 }
 
 /// What an op may do: to memory, and whether it may stop the program
@@ -148,6 +156,8 @@ impl Op {
             // Bounds checks and failed casts trap.
             Op::ArrayGet | Op::Unbox(_) => (Reads, true),
             Op::Set(..) | Op::RefSet => (Writes, false),
+            // They write the count, and `Drop` may free.
+            Op::Dup | Op::Drop => (Writes, false),
             Op::ArraySet | Op::ArrayCopy => (Writes, true),
             Op::Call(..) | Op::CallExtern(_) | Op::Apply => (Unknown, true),
             Op::Handle(..) | Op::Perform(..) | Op::Resume | Op::Discontinue(..) => (Unknown, true),

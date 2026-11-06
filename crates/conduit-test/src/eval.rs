@@ -3,7 +3,7 @@
 use conduit_eval::{ErrorKind, Host, Machine, Value};
 use conduit_ir::{Extern, ExternId, Lit, Module};
 
-use crate::{Outcome, Program};
+use crate::{CheckKind, Outcome, Program};
 
 /// How many steps a test program may take in the evaluator, so a program
 /// that loops forever fails instead of hanging.
@@ -22,20 +22,45 @@ pub fn check_runs_then(
     m: &Module,
     after: impl Fn(&Machine<'_, Module, TestHost>) -> Result<(), String>,
 ) -> Result<(), String> {
+    runs(p, m, false, after)
+}
+
+/// [`check_runs`], with reference counting on if `p` has a `counted`
+/// check, in which case every run must free everything but its results.
+/// Only for `p`'s own module: passes don't keep counts right.
+pub fn check_runs_counted(p: &Program, m: &Module) -> Result<(), String> {
+    let counting = p.has(|k| matches!(k, CheckKind::Counted));
+    runs(p, m, counting, |_| Ok(()))
+}
+
+fn runs(
+    p: &Program,
+    m: &Module,
+    counting: bool,
+    after: impl Fn(&Machine<'_, Module, TestHost>) -> Result<(), String>,
+) -> Result<(), String> {
     for run in p.runs(m)? {
         let mut machine = Machine::new(m, TestHost);
         machine.fuel = Some(FUEL);
+        machine.counting = counting;
         let args = run.args.iter().map(|&l| Value::from(l)).collect();
+        let mut leaks = None;
         let got = match machine.call(run.func, args) {
-            Ok(values) => values
-                .into_iter()
-                .map(lit)
-                .collect::<Result<_, _>>()
-                .map(Outcome::Values),
+            Ok(values) => {
+                leaks = Some(machine.leaks(&values));
+                values
+                    .into_iter()
+                    .map(lit)
+                    .collect::<Result<_, _>>()
+                    .map(Outcome::Values)
+            }
             Err(e) if is_trap(&e.kind) => Ok(Outcome::Trap(e.to_string())),
             Err(e) => Err(e.to_string()),
         };
         run.check(p, got)?;
+        if let Some(leaks) = leaks.filter(|l| counting && !l.is_empty()) {
+            return Err(format!("{}: {}: {leaks}", p.at(run.line), run.name));
+        }
         after(&machine)?;
     }
     Ok(())

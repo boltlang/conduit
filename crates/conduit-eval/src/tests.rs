@@ -1006,3 +1006,288 @@ fn using_undefined() {
     );
     assert!(machine.call(FuncId(0), vec![Value::I32(0)]).is_ok());
 }
+
+/// Runs `fn0` of a module with counting on, and gives its results and
+/// what it leaked, with the results as the roots.
+fn counted(src: &str, args: Vec<Value>) -> Result<(Vec<Value>, Leaks), Error> {
+    let m = conduit_ir::text::parse(src).unwrap();
+    verify_module(&m).unwrap();
+    let mut machine = Machine::new(&m, NoHost);
+    machine.counting = true;
+    let results = machine.call(FuncId(0), args)?;
+    let leaks = machine.leaks(&results);
+    Ok((results, leaks))
+}
+
+const LIST_TEXT: &str = "data List {
+  ()
+  (i32, inherit List)
+}
+";
+
+/// `fn0` builds a list of 1..=n, which `fn2` sums, consuming it. `nil_drop`
+/// is what the empty arm does with the list.
+fn sum_list_text(nil_drop: &str) -> String {
+    format!(
+        "{LIST_TEXT}
+fn fn0(%n: i32) -> (i32) {{
+  let %l: imm List = call fn1(%n)
+  let %r: i32 = call fn2(%l)
+  jump ret(%r)
+}}
+
+fn fn1(%n: i32) -> (imm List) {{
+  case %n {{
+    0 =>
+      let %nil: imm List = new List.0()
+      jump ret(%nil)
+    _ =>
+      let %n1: i32 = sub(%n, 1i32)
+      let %rest: imm List = call fn1(%n1)
+      let %list: imm List = new List.1(%n, %rest)
+      jump ret(%list)
+  }}
+}}
+
+fn fn2(%l: imm List) -> (i32) {{
+  case %l {{
+    List.0 =>
+      {nil_drop}
+      jump ret(0i32)
+    List.1 =>
+      let %head: i32 = get List.1.0(%l)
+      let %tail: imm List = get List.1.1(%l)
+      let = dup(%tail)
+      let = drop(%l)
+      let %rest: i32 = call fn2(%tail)
+      let %r: i32 = add(%head, %rest)
+      jump ret(%r)
+  }}
+}}"
+    )
+}
+
+/// A list consumed with a `drop` of every cell is freed whole.
+#[test]
+fn counted_list_is_freed() {
+    let (results, leaks) = counted(&sum_list_text("let = drop(%l)"), vec![Value::I32(4)]).unwrap();
+    assert_eq!(results, vec![Value::I32(10)]);
+    assert!(leaks.is_empty(), "{leaks}");
+}
+
+/// Without the `drop` of the empty list, it's reported, with nothing else.
+#[test]
+fn missing_drop_is_reported() {
+    let (_, leaks) = counted(&sum_list_text(""), vec![Value::I32(4)]).unwrap();
+    assert_eq!(leaks.to_string(), "undropped: #0 (+1)");
+}
+
+/// A `drop` too many frees the empty list too early, and the next use of it
+/// is undefined.
+#[test]
+fn use_after_free_is_undefined() {
+    let error = counted(
+        &sum_list_text("let = drop(%l)\n      let = drop(%l)"),
+        vec![Value::I32(4)],
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "fn2: undefined behavior: drop of a freed object"
+    );
+    let src = format!(
+        "{LIST_TEXT}
+fn fn0() -> (i32) {{
+  let %nil: imm List = new List.0()
+  let %l: imm List = new List.1(1i32, %nil)
+  let = drop(%l)
+  let %x: i32 = get List.1.0(%l)
+  jump ret(%x)
+}}"
+    );
+    let error = counted(&src, vec![]).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "fn0: undefined behavior: use of a freed object"
+    );
+}
+
+/// Two fields holding one object that was counted once: the object is
+/// dropped too often, and once the pair is freed, the root refers to a
+/// freed object.
+#[test]
+fn wrong_counts_are_reported() {
+    let src = format!(
+        "{LIST_TEXT}
+data Pair {{
+  (imm List, imm List)
+}}
+
+fn fn0() -> (imm Pair, imm List) {{
+  let %nil: imm List = new List.0()
+  let %pair: imm Pair = new Pair.0(%nil, %nil)
+  let %l: imm List = new List.0()
+  let = drop(%l)
+  jump ret(%pair, %l)
+}}"
+    );
+    let (_, leaks) = counted(&src, vec![]).unwrap();
+    assert_eq!(
+        leaks.to_string(),
+        "dropped too often: #0 (-1); freed but referred to: #2"
+    );
+}
+
+/// A ref that holds a box of itself is a cycle: its counts are right, but
+/// counting can't free it.
+#[test]
+fn cycles_are_reported_apart() {
+    let src = "fn fn0() -> () {
+  let %u: mut any = undefined()
+  let %r: ref mut any = ref_new(%u)
+  let = dup(%r)
+  let %a: mut any = box[ref mut any](%r)
+  let = ref_set(%r, %a)
+  let = drop(%r)
+  jump ret()
+}";
+    let (_, leaks) = counted(src, vec![]).unwrap();
+    assert!(leaks.counts_ok(), "{leaks}");
+    assert_eq!(leaks.cycles, vec![ObjId(0), ObjId(1)]);
+}
+
+/// Constants are never counted, and `dup` and `drop` of an undefined value
+/// do nothing.
+#[test]
+fn constants_and_undefined_arent_counted() {
+    let src = format!(
+        "{LIST_TEXT}
+const nil: imm List = List.0()
+
+fn fn0() -> () {{
+  let %c: imm List = const nil()
+  let = drop(%c)
+  let = drop(%c)
+  let %u: imm List = undefined()
+  let = dup(%u)
+  let = drop(%u)
+  jump ret()
+}}"
+    );
+    let (_, leaks) = counted(&src, vec![]).unwrap();
+    assert!(leaks.is_empty(), "{leaks}");
+}
+
+/// Without counting, `drop` does nothing, so dropping twice is fine.
+#[test]
+fn without_counting_nothing_is_freed() {
+    let m =
+        conduit_ir::text::parse(&sum_list_text("let = drop(%l)\n      let = drop(%l)")).unwrap();
+    let mut machine = Machine::new(&m, NoHost);
+    assert_eq!(
+        machine.call(FuncId(0), vec![Value::I32(3)]).unwrap(),
+        vec![Value::I32(6)]
+    );
+    assert_eq!(machine.objects().count(), 4);
+}
+
+/// The ops that put references into objects or take them out count them:
+/// `array_fill` holds its value once per element, `array_clone` shares its
+/// elements, `array_copy` and `array_set` drop what they overwrite.
+#[test]
+fn array_ops_count_their_elements() {
+    let src = format!(
+        "{LIST_TEXT}
+fn fn0() -> () {{
+  let %nil: imm List = new List.0()
+  let %xs: mut [imm List] = array_fill(3i32, %nil)
+  let %ys: mut [imm List] = array_clone(%xs)
+  let %one: imm List = new List.0()
+  let = array_set(%ys, 0i32, %one)
+  let = array_copy(%xs, 0i32, %ys, 0i32, 2i32)
+  let = dup(%nil)
+  let %none: mut [imm List] = array_fill(0i32, %nil)
+  let = drop(%xs)
+  let = drop(%ys)
+  let = drop(%none)
+  jump ret()
+}}"
+    );
+    // The empty `array_fill` takes a reference to `%nil` and drops it.
+    let (_, leaks) = counted(&src, vec![]).unwrap();
+    assert!(leaks.is_empty(), "{leaks}");
+}
+
+/// `ref_set` and `set` drop the value they replace.
+#[test]
+fn writes_drop_what_they_replace() {
+    let src = format!(
+        "{LIST_TEXT}
+data Box {{
+  (imm List)
+}}
+
+fn fn0() -> () {{
+  let %a: imm List = new List.0()
+  let %r: ref imm List = ref_new(%a)
+  let %b: imm List = new List.0()
+  let = ref_set(%r, %b)
+  let %c: imm List = new List.0()
+  let %box: mut Box = new Box.0(%c)
+  let %d: imm List = new List.0()
+  let = set Box.0.0(%box, %d)
+  let = drop(%r)
+  let = drop(%box)
+  jump ret()
+}}"
+    );
+    let (_, leaks) = counted(&src, vec![]).unwrap();
+    assert!(leaks.is_empty(), "{leaks}");
+}
+
+/// A handler's environment is the handler's, and each clause gets its own
+/// reference; `apply` and `handle` borrow the closure, and `resume` takes
+/// the continuation. With every owner
+/// dropping what it owns, a generator under a handler frees everything.
+#[test]
+fn handlers_count_their_environment() {
+    let src = "effect Yield {
+  (i32) -> ()
+}
+
+handler handler0 for Yield env(ref i32) ops(fn1) ret fn2
+
+fn fn0() -> (i32) {
+  let %acc: ref i32 = ref_new(0i32)
+  let %body: imm fn() -> () does Yield = closure fn3()
+  let = dup(%acc)
+  let = handle handler0(%acc, %body)
+  let = drop(%body)
+  let %total: i32 = ref_get(%acc)
+  let = drop(%acc)
+  jump ret(%total)
+}
+
+fn fn1(%acc: ref i32, %x: i32, %k: cont() -> ()) -> () {
+  let %old: i32 = ref_get(%acc)
+  let %new: i32 = add(%old, %x)
+  let = ref_set(%acc, %new)
+  let = drop(%acc)
+  let = resume(%k)
+  jump ret()
+}
+
+fn fn2(%acc: ref i32) -> () {
+  let = drop(%acc)
+  jump ret()
+}
+
+fn fn3() -> () does Yield {
+  let = perform Yield.0(1i32)
+  let = perform Yield.0(2i32)
+  jump ret()
+}";
+    let (results, leaks) = counted(src, vec![]).unwrap();
+    assert_eq!(results, vec![Value::I32(3)]);
+    assert!(leaks.is_empty(), "{leaks}");
+}

@@ -90,3 +90,83 @@ impl Continuation<'_> {
         self.frames.is_none()
     }
 }
+
+/// An object's reference count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Count {
+    /// How many references own the object. It starts at 1.
+    Live(u32),
+    /// Its count reached 0. Without [`counting`](crate::Machine::counting),
+    /// nothing is freed.
+    Freed,
+    /// Never counted: a constant's object.
+    Immortal,
+}
+
+/// What [`Machine::leaks`](crate::Machine::leaks) found. Each list is
+/// sorted by object.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Leaks {
+    /// Objects with more counts than references, and how many more:
+    /// something that owned a reference never dropped it.
+    pub undropped: Vec<(ObjId, u32)>,
+    /// Objects with fewer counts than references, and how many fewer:
+    /// something dropped a reference it didn't own.
+    pub overdropped: Vec<(ObjId, u32)>,
+    /// Freed objects that a live object or a root still refers to.
+    pub dangling: Vec<ObjId>,
+    /// Garbage whose counts are all right: only other garbage refers to
+    /// it, so it's in a cycle, or reachable only from one. Counting can't
+    /// free it, which is expected until there is a cycle collector.
+    pub cycles: Vec<ObjId>,
+}
+
+impl Leaks {
+    /// Whether every count is right and nothing is left but cycles.
+    pub fn counts_ok(&self) -> bool {
+        self.undropped.is_empty() && self.overdropped.is_empty() && self.dangling.is_empty()
+    }
+
+    /// Whether everything the run made that the roots don't own was freed.
+    pub fn is_empty(&self) -> bool {
+        self.counts_ok() && self.cycles.is_empty()
+    }
+}
+
+impl std::fmt::Display for Leaks {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let objs = |list: &mut dyn Iterator<Item = String>| list.collect::<Vec<_>>().join(", ");
+        let mut parts = Vec::new();
+        if !self.undropped.is_empty() {
+            let list = objs(
+                &mut self
+                    .undropped
+                    .iter()
+                    .map(|(o, n)| format!("#{} (+{n})", o.0)),
+            );
+            parts.push(format!("undropped: {list}"));
+        }
+        if !self.overdropped.is_empty() {
+            let list = objs(
+                &mut self
+                    .overdropped
+                    .iter()
+                    .map(|(o, n)| format!("#{} (-{n})", o.0)),
+            );
+            parts.push(format!("dropped too often: {list}"));
+        }
+        if !self.dangling.is_empty() {
+            let list = objs(&mut self.dangling.iter().map(|o| format!("#{}", o.0)));
+            parts.push(format!("freed but referred to: {list}"));
+        }
+        if !self.cycles.is_empty() {
+            let list = objs(&mut self.cycles.iter().map(|o| format!("#{}", o.0)));
+            parts.push(format!("kept alive by cycles: {list}"));
+        }
+        if parts.is_empty() {
+            write!(f, "no leaks")
+        } else {
+            write!(f, "{}", parts.join("; "))
+        }
+    }
+}

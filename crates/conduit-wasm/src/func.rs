@@ -711,6 +711,8 @@ impl<'m> FuncCx<'_, 'm> {
             }
             // Mutability doesn't exist at run time.
             Op::ArrayFreeze => self.atoms(args),
+            // Nothing is freed yet.
+            Op::Dup | Op::Drop => {}
             Op::ArrayCopy => {
                 let s = self.elem_of(&self.atom_ty(&args[0]))?;
                 // Both ranges must fit, their starts and count read as

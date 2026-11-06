@@ -111,6 +111,8 @@ pub enum Op {
     Perform(EffectId, u32),// run operation i of the nearest handler of the effect
     Resume,                // args[0] = continuation, rest = values to resume with
     Discontinue(EffectId, u32), // args[0] = continuation, rest = the operation's args
+    Dup,                   // args = an object; count + 1; binds nothing: see "Reference counts"
+    Drop,                  // args = an object; count - 1, freeing it at 0; binds nothing
 }
 
 impl Op {
@@ -503,6 +505,54 @@ that nothing else can see.
 removing copies is the main optimization (see "Optimizations"), and an
 analysis can only remove what it can recognize. Its effect is `Reads`: it
 allocates, but it writes nothing that existed before.
+
+### Reference counts
+
+Memory can be freed by reference counting, in the style of Perceus: a
+pass after optimization makes ownership explicit with **`Dup`**, which
+adds 1 to an object's count, and **`Drop`**, which takes 1 away and frees
+the object at 0, which drops what it holds. Neither binds anything, and
+both take one object: any value whose type isn't a scalar. Their effect
+is `Writes`, so passes keep them. Code without them is still valid; it
+just never frees.
+
+A new object has a count of 1, owned by the variable it binds. Each
+reference is owned by one variable, field, element, capture or frame,
+and an op either **takes** an argument's reference, moving it, or
+**borrows** it, leaving it with the variable. What the ops do:
+
+- They take: the fields of `New`, the elements of `ArrayNew`, the
+  captures of `Closure`, the value of `RefNew`, `Box`, `Set`, `ArraySet`
+  and `RefSet`, the array of `ArrayFreeze` (which gives it back), the
+  arguments of `Call`, `Apply`, `Perform`, `Resume` and `Discontinue`,
+  the environment of `Handle`, the continuation of `Resume` and
+  `Discontinue`, and what a jump passes or returns. A function owns its
+  parameters, unless a convention between it and its callers says one is
+  borrowed, which only changes where the `Drop`s go.
+- They borrow: what `Get`, `ArrayGet`, `ArrayLen`, `RefGet`, `Unbox`,
+  `ArrayClone`, `CallExtern` and `case` look at, and the closure of
+  `Apply` and `Handle`. What `Get`, `ArrayGet`, `RefGet` and `Unbox` give
+  is borrowed from the object it was read from: code that keeps it longer
+  `Dup`s it.
+- They count for themselves where a reference appears or goes away
+  without a variable: `Set`, `ArraySet` and `RefSet` drop the value they
+  replace; `ArrayCopy` dups what it copies and drops what it overwrites;
+  `ArrayClone` dups every element it shares; `ArrayFill` holds its value
+  once per element, so it takes one reference and adds the rest, or drops
+  it for a length of 0; `Apply` and `Handle` dup the captures they pass
+  to the function; and each `Perform` dups the handler's environment for
+  the clause, while the handler keeps its own, which its return clause
+  takes.
+
+Constants are never counted, and neither is `Undefined`: a `Dup` or `Drop`
+of either does nothing. Using an object after it's freed, or dropping one
+whose count is already 0, is undefined behavior. A continuation that's
+dropped without being resumed or discontinued loses what its frames hold.
+Cycles are never freed by counting alone.
+
+Passes that run before the counts are made don't need to know about any
+of this. A pass that runs after them must keep counts right, which most
+don't: `Dup` and `Drop` are meant to come last.
 
 ## Rules
 
@@ -1201,6 +1251,7 @@ Status:
 | `Unbox` to a reference | nothing | ✅ |
 | `Const` | the address of its object in a data segment, or its literal | ✅ |
 | `Undefined` | 0 | ✅ |
+| `Dup`, `Drop` | nothing yet: memory is never freed | ✅ |
 | `Handle`, `Perform` with tail-resumptive clauses | a handler stack in a global, and a `call_indirect` of the clause | ✅ |
 | `Handle`, `Perform` with aborting clauses | the same, then `throw`, caught by `try_table` | ✅ (exception handling, Wasm 3.0) |
 | `Discontinue` in a tail-resumptive clause | a `perform` under the handler stack of the `perform` the clause handles, kept in a second global | ✅ |
@@ -1312,8 +1363,8 @@ fn fn1(%0: i32) -> (i32) {
   `array_len`, `array_copy`,
   `array_clone`, `array_freeze`,
   `ref_new`, `ref_get`, `ref_set`, `box[i32](..)`, `unbox[i32](..)`,
-  `handle handler30(..)`, `perform effect20.0(..)`, `resume(..)` and
-  `discontinue effect20.0(..)`.
+  `handle handler30(..)`, `perform effect20.0(..)`, `resume(..)`,
+  `discontinue effect20.0(..)`, `dup(..)` and `drop(..)`.
 - **Literals** carry their type: `5i32`, `-1i64`, `1.5f32`, `1e300f64`.
   Finite floats are printed in the shortest form that reads back exactly.
   NaNs and infinities are written by their bits: `f32_bits(2143289344)`.
@@ -1373,7 +1424,17 @@ doesn't need a deep stack.
 - **Undefined behavior is an error,** like `Unbox` at the wrong type.
 - **Constants are made when first used,** and kept, so every use gets the
   same object.
-- **Objects are never freed** yet.
+- **Reference counts are checked** with `Machine::counting` on. Every
+  object has a count, which `Dup`, `Drop` and the ops that count for
+  themselves change (see "Reference counts"), and an object is freed at
+  0. A use of a freed object, or a `Drop` of one, is undefined behavior,
+  which stops the machine. After a run, `Machine::leaks` takes the values
+  that still own objects, like the results, and reports objects with more
+  counts than references (a missing `Drop`), with fewer (a `Drop` too
+  many), references to freed objects, and garbage that only cycles keep
+  alive. A test program with `//# counted` runs that way and must leave
+  nothing. Without counting, `Dup` and `Drop` do nothing, and objects are
+  never freed.
 
 ## Left out on purpose
 

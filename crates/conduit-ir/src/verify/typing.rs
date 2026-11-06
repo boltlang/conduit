@@ -260,6 +260,11 @@ pub(crate) fn op_results<P: Program + ?Sized>(
                 _ => Err("unbox needs one any".into()),
             }
         }
+        Op::Dup | Op::Drop => match tys {
+            [ty] if is_object(ty) => Ok(vec![]),
+            [ty] => Err(format!("{} of a {ty}, which isn't an object", op_word(op))),
+            _ => Err(format!("{} needs one object", op_word(op))),
+        },
         Op::ArrayClone => array_clone(p, mp, tys, out, false),
         Op::ArrayFreeze => array_clone(p, mp, tys, out, true),
         Op::Handle(h, rows) => {
@@ -484,5 +489,17 @@ pub(crate) fn op_row<P: Program + ?Sized>(p: &P, op: &Op, tys: &[Ty]) -> Row {
             .handler(*h)
             .map_or(Row::NOTHING, |decl| decl.row.subst(rows)),
         _ => Row::NOTHING,
+    }
+}
+
+/// Whether values of a type are objects, which have a reference count.
+fn is_object(ty: &Ty) -> bool {
+    !matches!(ty, Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::F32 | Ty::F64)
+}
+
+fn op_word(op: &Op) -> &'static str {
+    match op {
+        Op::Dup => "dup",
+        _ => "drop",
     }
 }

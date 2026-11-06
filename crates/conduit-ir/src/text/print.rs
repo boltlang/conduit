@@ -743,5 +743,7 @@ pub(crate) fn op_name(op: &Op) -> String {
         Op::Perform(e, i) => format!("perform {e}.{i}"),
         Op::Resume => "resume".into(),
         Op::Discontinue(e, i) => format!("discontinue {e}.{i}"),
+        Op::Dup => "dup".into(),
+        Op::Drop => "drop".into(),
     }
 }

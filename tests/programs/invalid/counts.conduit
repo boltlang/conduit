@@ -1,0 +1,12 @@
+// `dup` and `drop` take one object: not a scalar, and not two.
+
+fn fn1(%0: i32, %1: imm [i32]) -> () {
+  let = dup(%0)
+  let = drop(1.5f64)
+  let = drop(%1, %1)
+  jump ret()
+}
+
+//# verify-error: fn1: dup of a i32, which isn't an object
+//# verify-error: fn1: drop of a f64, which isn't an object
+//# verify-error: fn1: drop needs one object

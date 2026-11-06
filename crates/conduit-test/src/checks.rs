@@ -33,6 +33,10 @@ pub enum CheckKind {
     /// `<name>.opt.conduit`. `//# opt: dce, copies` runs only the passes
     /// with those names, in that order, instead of all of them.
     Opt(Option<Vec<String>>),
+    /// `//# counted`: the evaluator runs the program as written with
+    /// reference counting on, and each run must leave nothing behind but
+    /// its results: no leaks, no wrong counts, and no cycles.
+    Counted,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -81,9 +85,10 @@ fn check(s: &str) -> Result<CheckKind, String> {
         "wasm-skip" => Ok(CheckKind::WasmSkip(message(rest)?)),
         "wat" => none(CheckKind::Wat),
         "opt" => opt(rest),
+        "counted" => none(CheckKind::Counted),
         _ => Err(format!(
             "unknown check `{word}`: expected `run`, `verify-error`, `wasm-error`, \
-             `wasm-skip`, `wat` or `opt`"
+             `wasm-skip`, `wat`, `opt` or `counted`"
         )),
     }
 }

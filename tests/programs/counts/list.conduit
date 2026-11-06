@@ -1,0 +1,45 @@
+// A list counted by hand, as the `counts` pass will: `sum` owns its list,
+// so it drops each cell after reading it, and dups the tail it keeps.
+
+data List {
+  ()
+  (i32, inherit List)
+}
+
+fn build(%n: i32) -> (imm List) {
+  case %n {
+    0 =>
+      let %nil: imm List = new List.0()
+      jump ret(%nil)
+    _ =>
+      let %n1: i32 = sub(%n, 1i32)
+      let %rest: imm List = call build(%n1)
+      let %list: imm List = new List.1(%n, %rest)
+      jump ret(%list)
+  }
+}
+
+fn sum(%l: imm List) -> (i32) {
+  case %l {
+    List.0 =>
+      let = drop(%l)
+      jump ret(0i32)
+    List.1 =>
+      let %head: i32 = get List.1.0(%l)
+      let %tail: imm List = get List.1.1(%l)
+      let = dup(%tail)
+      let = drop(%l)
+      let %rest: i32 = call sum(%tail)
+      let %r: i32 = add(%head, %rest)
+      jump ret(%r)
+  }
+}
+
+fn sum_build(%n: i32) -> (i32) {
+  let %l: imm List = call build(%n)
+  let %r: i32 = call sum(%l)
+  jump ret(%r)
+}
+
+//# run sum_build(4i32) == 10i32
+//# counted

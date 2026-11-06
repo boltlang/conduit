@@ -13,9 +13,12 @@
 //!   moves every frame from the nearest handler of its effect up into a
 //!   continuation, and `resume` moves them back, so resuming twice finds no
 //!   frames and gives [`ErrorKind::ContinuationResumedTwice`].
-//! - **Objects** are in a heap and are never freed yet. Each one that can
-//!   be `Imm` or `Mut` knows which it is, so that a write to an `Imm` object
-//!   is an error ([`ErrorKind::WriteToImm`]) rather than going unnoticed.
+//! - **Objects** are in a heap. With [`Machine::counting`] on, each has a
+//!   reference count, `dup` and `drop` change it, and an object is freed
+//!   at 0; [`Machine::leaks`] reports what a run left behind. Otherwise
+//!   nothing is ever freed. Each object that can be `Imm` or `Mut` knows
+//!   which it is, so that a write to an `Imm` object is an error
+//!   ([`ErrorKind::WriteToImm`]) rather than going unnoticed.
 //! - **Numbers** follow Rust for now: integers wrap, shifts take the amount
 //!   modulo the width, and floats use Rust's operations and `as`
 //!   conversions, except that `min` and `max` follow Wasm (NaN if either
@@ -34,7 +37,7 @@ mod value;
 pub use error::{Error, ErrorKind};
 pub use machine::{Host, Machine, NoHost};
 pub use prim::fold;
-pub use value::{Continuation, ObjId, Object, Value};
+pub use value::{Continuation, Count, Leaks, ObjId, Object, Value};
 
 #[cfg(test)]
 mod tests;

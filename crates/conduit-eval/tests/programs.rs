@@ -11,5 +11,5 @@ fn applies(p: &Program) -> bool {
 }
 
 fn test(p: &Program) -> Result<(), String> {
-    conduit_test::eval::check_runs(p, &p.module()?)
+    conduit_test::eval::check_runs_counted(p, &p.module()?)
 }

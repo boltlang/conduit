@@ -155,6 +155,7 @@ an array, and `ref_new`.
 | `perform E.i` | what operation `i` of `E` takes | what it gives |
 | `resume` | a continuation, then what it takes | what it gives |
 | `discontinue F.i` | a continuation, then what operation `i` of `F` takes; what the operation gives must fit what the continuation takes | what the continuation gives |
+| `dup`, `drop` | an object: a value of any type but a scalar | nothing |
 
 Field accesses also follow rule 5: `get C.i` and `set C.i` on `x` need `x`
 to be known to be built by `C`: because `C`'s type has only one

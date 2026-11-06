@@ -9,7 +9,7 @@ use conduit_ir::{
 
 use crate::error::{Error, ErrorKind, unverified};
 use crate::prim;
-use crate::value::{Continuation, ObjId, Object, Value};
+use crate::value::{Continuation, Count, Leaks, ObjId, Object, Value};
 
 /// Provides the functions of [`Op::CallExtern`].
 pub trait Host {
@@ -81,6 +81,9 @@ pub struct Machine<'p, P: ?Sized, H> {
     p: &'p P,
     pub host: H,
     heap: Vec<Object<'p>>,
+    /// The count of each object in `heap`, kept even when the machine
+    /// doesn't count, so that nothing is ever freed then.
+    counts: Vec<Count>,
     stack: Vec<Frame<'p>>,
     labels: HashMap<FuncId, Labels<'p>>,
     /// The constants made so far, made the first time they're used, or
@@ -90,6 +93,11 @@ pub struct Machine<'p, P: ?Sized, H> {
     pub max_frames: usize,
     /// How many more steps the program can run, or `None` for no limit.
     pub fuel: Option<u64>,
+    /// Whether to count references: `dup` and `drop` change counts and
+    /// free, and the ops that make or remove references inside objects
+    /// count them (see "Reference counts" in `docs/ir.md`). Off, `dup` and
+    /// `drop` do nothing, and nothing is freed.
+    pub counting: bool,
     source: Option<SourceId>,
 }
 
@@ -99,11 +107,13 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
             p,
             host,
             heap: Vec::new(),
+            counts: Vec::new(),
             stack: Vec::new(),
             labels: HashMap::new(),
             consts: HashMap::new(),
             max_frames: 100_000,
             fuel: None,
+            counting: false,
             source: None,
         }
     }
@@ -141,17 +151,93 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
         })
     }
 
+    /// An object, unless it has been freed.
     pub fn object(&self, id: ObjId) -> Option<&Object<'p>> {
-        self.heap.get(id.0 as usize)
+        match self.counts.get(id.0 as usize)? {
+            Count::Freed => None,
+            _ => self.heap.get(id.0 as usize),
+        }
     }
 
-    /// Every object made so far. Nothing is ever freed, so after a run
-    /// this is everything the run made, which tests can inspect.
+    /// An object's reference count.
+    pub fn count(&self, id: ObjId) -> Option<Count> {
+        self.counts.get(id.0 as usize).copied()
+    }
+
+    /// Every object made so far that hasn't been freed. Without
+    /// [`counting`](Self::counting), nothing is freed, so after a run this
+    /// is everything the run made, which tests can inspect.
     pub fn objects(&self) -> impl Iterator<Item = (ObjId, &Object<'p>)> {
         self.heap
             .iter()
+            .zip(&self.counts)
             .enumerate()
-            .map(|(i, o)| (ObjId(i as u32), o))
+            .filter(|(_, (_, c))| **c != Count::Freed)
+            .map(|(i, (o, _))| (ObjId(i as u32), o))
+    }
+
+    /// What a counted run left behind: objects whose counts don't match the
+    /// references to them, references to freed objects, and garbage that
+    /// only cycles keep alive. `roots` are the values that still own an
+    /// object after the run, like its results. Only meaningful with
+    /// [`counting`](Self::counting) on, and once the machine has stopped.
+    ///
+    /// The values in a continuation's frames aren't counted as references,
+    /// since a frame keeps values it has already given away. So what a
+    /// continuation that's never resumed holds shows up as undropped.
+    pub fn leaks(&self, roots: &[Value]) -> Leaks {
+        let n = self.heap.len();
+        let live = |id: usize| matches!(self.counts[id], Count::Live(_));
+        let mut refs = vec![0u32; n];
+        let mut leaks = Leaks::default();
+        let point = |v: &Value, refs: &mut Vec<u32>, leaks: &mut Leaks| {
+            if let Value::Obj(t) = v {
+                match self.counts.get(t.0 as usize) {
+                    Some(Count::Freed) => leaks.dangling.push(*t),
+                    Some(_) => refs[t.0 as usize] += 1,
+                    None => {}
+                }
+            }
+        };
+        for v in roots {
+            point(v, &mut refs, &mut leaks);
+        }
+        for id in (0..n).filter(|&id| self.counts[id] != Count::Freed) {
+            for v in self.heap[id].values() {
+                point(v, &mut refs, &mut leaks);
+            }
+        }
+        for id in 0..n {
+            if let Count::Live(c) = self.counts[id] {
+                let o = ObjId(id as u32);
+                if c > refs[id] {
+                    leaks.undropped.push((o, c - refs[id]));
+                } else if c < refs[id] {
+                    leaks.overdropped.push((o, refs[id] - c));
+                }
+            }
+        }
+        // What the roots reach is in use, and what an undropped object
+        // reaches is lost through it. What's left, if live, only garbage
+        // holds, so cycles keep it alive.
+        let mut seen = vec![false; n];
+        let mut todo: Vec<ObjId> = roots.iter().filter_map(as_obj).collect();
+        todo.extend(leaks.undropped.iter().map(|(o, _)| *o));
+        while let Some(o) = todo.pop() {
+            let id = o.0 as usize;
+            if id >= n || seen[id] || !live(id) {
+                continue;
+            }
+            seen[id] = true;
+            todo.extend(self.heap[id].values().iter().filter_map(as_obj));
+        }
+        leaks.cycles = (0..n)
+            .filter(|&id| live(id) && !seen[id])
+            .map(|id| ObjId(id as u32))
+            .collect();
+        leaks.dangling.sort();
+        leaks.dangling.dedup();
+        leaks
     }
 
     /// Adds an object to the heap, for example to pass one to a function.
@@ -161,7 +247,62 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
 
     fn alloc_id(&mut self, object: Object<'p>) -> ObjId {
         self.heap.push(object);
+        self.counts.push(Count::Live(1));
         ObjId(self.heap.len() as u32 - 1)
+    }
+
+    /// Adds `n` to the count of `value`'s object, if it has one.
+    fn dup_n(&mut self, value: Value, n: u32) -> Step<()> {
+        let Value::Obj(id) = value else {
+            return Ok(());
+        };
+        if !self.counting || n == 0 {
+            return Ok(());
+        }
+        match self.counts.get_mut(id.0 as usize) {
+            Some(Count::Live(c)) => {
+                *c = c
+                    .checked_add(n)
+                    .ok_or_else(|| ErrorKind::Undefined("a reference count overflowed".into()))?;
+                Ok(())
+            }
+            Some(Count::Immortal) => Ok(()),
+            Some(Count::Freed) => Err(freed("dup")),
+            None => Err(unverified("dangling object")),
+        }
+    }
+
+    fn dup(&mut self, value: Value) -> Step<()> {
+        self.dup_n(value, 1)
+    }
+
+    /// Takes 1 from the count of `value`'s object, if it has one, and frees
+    /// it at 0, which drops what it holds, without recursion. A
+    /// continuation's frames aren't dropped: what they hold is lost.
+    fn drop_value(&mut self, value: Value) -> Step<()> {
+        if !self.counting {
+            return Ok(());
+        }
+        let mut todo = vec![value];
+        while let Some(value) = todo.pop() {
+            let Value::Obj(id) = value else { continue };
+            let i = id.0 as usize;
+            match self.counts.get_mut(i) {
+                Some(Count::Live(1)) => {
+                    self.counts[i] = Count::Freed;
+                    todo.extend_from_slice(self.heap[i].values());
+                }
+                Some(Count::Live(c)) => *c -= 1,
+                Some(Count::Immortal) => {}
+                Some(Count::Freed) => return Err(freed("drop")),
+                None => return Err(unverified("dangling object")),
+            }
+        }
+        Ok(())
+    }
+
+    fn dup_all(&mut self, values: &[Value]) -> Step<()> {
+        values.iter().try_for_each(|v| self.dup(*v))
     }
 
     /// The object of a constant, made the first time it's asked for, so
@@ -190,14 +331,14 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
             ConstValue::Lit(lit) => (*lit).into(),
             ConstValue::Array(elems) => {
                 let elems = all(self, elems)?;
-                self.alloc(Object::Array {
+                self.alloc_immortal(Object::Array {
                     elems,
                     is_mut: false,
                 })
             }
             ConstValue::New(c, fields) => {
                 let fields = all(self, fields)?;
-                self.alloc(Object::Data {
+                self.alloc_immortal(Object::Data {
                     ctor: *c,
                     fields,
                     is_mut: false,
@@ -205,6 +346,13 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
             }
             ConstValue::Const(id) => self.constant(*id)?,
         })
+    }
+
+    /// Allocates an object that's never counted, for a constant.
+    fn alloc_immortal(&mut self, object: Object<'p>) -> Value {
+        let id = self.alloc_id(object);
+        self.counts[id.0 as usize] = Count::Immortal;
+        Value::Obj(id)
     }
 
     fn error(&self, kind: ErrorKind) -> Error {
@@ -321,15 +469,25 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
     }
 
     fn object_ref(&self, id: ObjId) -> Step<&Object<'p>> {
+        self.live(id)?;
         self.heap
             .get(id.0 as usize)
             .ok_or_else(|| unverified("dangling object"))
     }
 
     fn object_mut(&mut self, id: ObjId) -> Step<&mut Object<'p>> {
+        self.live(id)?;
         self.heap
             .get_mut(id.0 as usize)
             .ok_or_else(|| unverified("dangling object"))
+    }
+
+    /// Fails if the object has been freed.
+    fn live(&self, id: ObjId) -> Step<()> {
+        match self.counts.get(id.0 as usize) {
+            Some(Count::Freed) => Err(freed("use")),
+            _ => Ok(()),
+        }
     }
 
     /// Pushes a frame for a call.
@@ -510,6 +668,9 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                     } => (*func, margs.clone(), captures.clone()),
                     _ => return Err(unverified("apply of something that isn't a closure")),
                 };
+                // The closure is borrowed, and the function owns its
+                // parameters, the captures among them.
+                self.dup_all(&all)?;
                 all.extend_from_slice(rest);
                 return self.call_from(func, margs, all, binds, next);
             }
@@ -551,7 +712,8 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                         let field = fields
                             .get_mut(*i as usize)
                             .ok_or_else(|| unverified(format!("{c} has no field {i}")))?;
-                        *field = value;
+                        let old = std::mem::replace(field, value);
+                        self.drop_value(old)?;
                     }
                     _ => {
                         return Err(unverified(format!(
@@ -579,6 +741,11 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                     return Err(out_of_bounds(len as u32 as usize, i32::MAX as usize));
                 }
                 let len = len as usize;
+                // It takes one reference to the value and holds `len`.
+                match len {
+                    0 => self.drop_value(value)?,
+                    n => self.dup_n(value, n as u32 - 1)?,
+                }
                 vec![self.alloc(Object::Array {
                     elems: vec![value; len],
                     is_mut,
@@ -644,7 +811,12 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                         if !*is_mut {
                             return Err(ErrorKind::WriteToImm);
                         }
+                        let old = range.to_vec();
                         range.copy_from_slice(&elems);
+                        // What it copies first, so that copying an
+                        // element over itself doesn't free it.
+                        self.dup_all(&elems)?;
+                        old.into_iter().try_for_each(|v| self.drop_value(v))?;
                     }
                     _ => return Err(unverified("array copy into something that isn't an array")),
                 }
@@ -658,9 +830,11 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                             return Err(ErrorKind::WriteToImm);
                         }
                         let len = elems.len();
-                        *elems
+                        let slot = elems
                             .get_mut(index)
-                            .ok_or_else(|| out_of_bounds(index, len))? = value;
+                            .ok_or_else(|| out_of_bounds(index, len))?;
+                        let old = std::mem::replace(slot, value);
+                        self.drop_value(old)?;
                     }
                     _ => return Err(unverified("array set on something that isn't an array")),
                 }
@@ -676,6 +850,8 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                     _ => return Err(unverified("array clone of something that isn't an array")),
                 };
                 let is_mut = self.binds_mut(binds)?;
+                // The array is borrowed, and the new one shares its elements.
+                self.dup_all(&elems)?;
                 vec![self.alloc(Object::Array { elems, is_mut })]
             }
             Op::ArrayFreeze => {
@@ -694,7 +870,10 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
             Op::RefSet => {
                 let value = arg(&args, 1)?;
                 match self.object_mut(obj(arg(&args, 0)?)?)? {
-                    Object::Ref(slot) => *slot = value,
+                    Object::Ref(slot) => {
+                        let old = std::mem::replace(slot, value);
+                        self.drop_value(old)?;
+                    }
                     _ => return Err(unverified("ref set on something that isn't a ref")),
                 }
                 vec![]
@@ -721,6 +900,14 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
             Op::Perform(e, i) => return self.perform(*e, *i, args, binds, next),
             Op::Resume => return self.resume(args, binds, next),
             Op::Discontinue(e, i) => return self.discontinue(*e, *i, args, binds, next),
+            Op::Dup => {
+                self.dup(arg(&args, 0)?)?;
+                vec![]
+            }
+            Op::Drop => {
+                self.drop_value(arg(&args, 0)?)?;
+                vec![]
+            }
         };
         let code = self.code()?;
         bind(code, binds, results)?;
@@ -747,6 +934,8 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
             } => (*func, margs.clone(), captures.clone()),
             _ => return Err(unverified("the body of a handle isn't a closure")),
         };
+        // As for `apply`: the closure is borrowed.
+        self.dup_all(&captures)?;
         self.code()?.waiting = Some((binds, next));
         self.stack.push(Frame::Handler { handler, env: args });
         self.enter(func, captures, margs)
@@ -787,6 +976,8 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
             .get(op as usize)
             .ok_or_else(|| unverified(format!("{handler} has no clause {op}")))?;
         let mut clause_args = env.clone();
+        // The handler keeps its environment, and the clause gets its own.
+        self.dup_all(&clause_args)?;
         clause_args.extend(args);
         clause_args.push(self.alloc(Object::Cont(Continuation {
             frames: Some(frames),
@@ -833,6 +1024,8 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                 .ok_or(ErrorKind::ContinuationResumedTwice)?,
             _ => return Err(unverified("resume of something that isn't a continuation")),
         };
+        // `resume` and `discontinue` take the continuation.
+        self.drop_value(*k)?;
         // The resumed computation returns, through the handler's return
         // clause, to this `let`.
         self.wait_or_leave(binds, next)?;
@@ -948,6 +1141,18 @@ fn erase_rows(ty: &Ty) -> Ty {
         Ty::Ref(inner) => Ty::Ref(Box::new(erase_rows(inner))),
         other => other.clone(),
     }
+}
+
+fn as_obj(value: &Value) -> Option<ObjId> {
+    match value {
+        Value::Obj(id) => Some(*id),
+        _ => None,
+    }
+}
+
+/// A `dup`, `drop` or other use of a freed object.
+fn freed(what: &str) -> ErrorKind {
+    ErrorKind::Undefined(format!("{what} of a freed object"))
 }
 
 /// Using a value that `undefined` made, or an array element that
