@@ -68,6 +68,28 @@ with others. Its `<name>.opt.conduit` then has a section for each check, in
 the order they appear, headed `// after dce` or `// after all passes`. With
 a single `opt` check there is no header.
 
+## Benchmarks
+
+The programs with a `bench` check are benchmarks too: `bench/` has some in
+the style of the Perceus paper's. Their `.bench` snapshots show what the
+evaluator does, which is the same every time. `conduit-bench` runs them as
+Wasm in Wasmtime, compiled each of the same ways, and measures fuel
+(about one per Wasm instruction run, also the same every time), time,
+code size and memory:
+
+```sh
+cargo run --release -p conduit-bench -- --json before.json
+# change something
+cargo run --release -p conduit-bench -- --compare before.json
+```
+
+`--fuel` skips the timing, `--config optimized,+reuse` picks the ways of
+compiling, and a word picks the programs, like `nqueens`. Times are only
+worth comparing between runs on the same quiet machine, and within about
+5%: the ways of compiling take turns, a call each, so the machine slowing
+down slows them all, but two modules with the same code can still differ
+that much.
+
 ## Host functions
 
 Programs can import these host functions, which every runner provides:
