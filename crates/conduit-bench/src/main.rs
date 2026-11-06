@@ -27,6 +27,10 @@
 //! - `--compare FILE`: compare with results `--json` wrote, and show what
 //!   changed: any change in fuel, and times more than 5% and more than
 //!   their spread apart.
+//! - `--markdown`: print a Markdown table instead, of only the fuel that
+//!   changed with `--compare`, as CI shows in a pull request's summary.
+//! - `--check PCT`: with `--compare`, fail if any fuel went up by more
+//!   than `PCT` percent, which CI does for a pull request.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -46,6 +50,8 @@ struct Args {
     time: Duration,
     json: Option<PathBuf>,
     compare: Option<PathBuf>,
+    markdown: bool,
+    check: Option<f64>,
 }
 
 fn args() -> Result<Args, String> {
@@ -56,6 +62,8 @@ fn args() -> Result<Args, String> {
         time: Duration::from_millis(300),
         json: None,
         compare: None,
+        markdown: false,
+        check: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -77,16 +85,26 @@ fn args() -> Result<Args, String> {
             }
             "--json" => args.json = Some(value("--json")?.into()),
             "--compare" => args.compare = Some(value("--compare")?.into()),
+            "--markdown" => args.markdown = true,
+            "--check" => {
+                let pct = value("--check")?
+                    .parse()
+                    .map_err(|e| format!("--check: {e}"))?;
+                args.check = Some(pct);
+            }
             "--help" | "-h" => {
                 return Err(
                     "usage: conduit-bench [--config NAME,..] [--fuel] [--time MS] \
-                            [--json FILE] [--compare FILE] [filter]"
+                            [--json FILE] [--compare FILE] [--markdown] [--check PCT] [filter]"
                         .into(),
                 );
             }
             _ if a.starts_with("--") => return Err(format!("unknown option {a}")),
             _ => args.filter = Some(a),
         }
+    }
+    if args.check.is_some() && args.compare.is_none() {
+        return Err("--check needs --compare".into());
     }
     Ok(args)
 }
@@ -130,7 +148,11 @@ fn run() -> Result<(), String> {
         }
         results.extend(bench(&p, &args).map_err(|e| format!("{}: {e}", p.shown()))?);
     }
-    print(&results, baseline.as_ref());
+    if args.markdown {
+        markdown(&results, baseline.as_ref());
+    } else {
+        print(&results, baseline.as_ref());
+    }
     if let Some(path) = &args.json {
         let json = json!({
             "commit": commit(),
@@ -148,7 +170,76 @@ fn run() -> Result<(), String> {
         let text = serde_json::to_string_pretty(&json).map_err(|e| e.to_string())?;
         std::fs::write(path, text + "\n").map_err(|e| format!("{}: {e}", path.display()))?;
     }
+    if let (Some(pct), Some(baseline)) = (args.check, &baseline) {
+        let worse: Vec<String> = (fuel_changes(&results, baseline).into_iter())
+            .filter(|(_, before, after)| *after as f64 > *before as f64 * (1.0 + pct / 100.0))
+            .map(|(r, before, after)| {
+                format!(
+                    "{} {} {}: fuel {before} -> {after} ({})",
+                    r.program,
+                    r.run,
+                    r.config,
+                    change(before as f64, after as f64)
+                )
+            })
+            .collect();
+        if !worse.is_empty() {
+            return Err(format!(
+                "fuel went up by more than {pct}%:\n{}",
+                worse.join("\n")
+            ));
+        }
+    }
     Ok(())
+}
+
+/// The results whose fuel differs from `baseline`'s, with the fuel before
+/// and after. Results the baseline doesn't have aren't changes.
+fn fuel_changes<'r>(results: &'r [Result1], baseline: &Baseline) -> Vec<(&'r Result1, u64, u64)> {
+    (results.iter())
+        .filter_map(|r| {
+            let key = (r.program.clone(), r.run.clone(), r.config.clone());
+            let &(before, _) = baseline.get(&key)?;
+            (before != r.fuel).then_some((r, before, r.fuel))
+        })
+        .collect()
+}
+
+/// The results as a Markdown table: with a baseline, only the fuel that
+/// changed, else all of them.
+fn markdown(results: &[Result1], baseline: Option<&Baseline>) {
+    match baseline {
+        Some(baseline) => {
+            let changes = fuel_changes(results, baseline);
+            println!("### Fuel\n");
+            if changes.is_empty() {
+                println!("No change in fuel in any benchmark.");
+                return;
+            }
+            println!("| Program | Run | Config | Before | After | Change |");
+            println!("|---|---|---|---:|---:|---:|");
+            for (r, before, after) in changes {
+                println!(
+                    "| `{}` | `{}` | `{}` | {before} | {after} | {} |",
+                    r.program,
+                    r.run,
+                    r.config,
+                    change(before as f64, after as f64)
+                );
+            }
+        }
+        None => {
+            println!("| Program | Run | Config | Fuel | Time | Code | Pages |");
+            println!("|---|---|---|---:|---:|---:|---:|");
+            for r in results {
+                let time = r.time.map_or("-".into(), |(t, _)| show(t));
+                println!(
+                    "| `{}` | `{}` | `{}` | {} | {time} | {} | {} |",
+                    r.program, r.run, r.config, r.fuel, r.code, r.pages
+                );
+            }
+        }
+    }
 }
 
 /// The modules of `p`, one for each config asked for, with the options to

@@ -1,0 +1,52 @@
+# Benchmarks, by Wasm fuel: what Wasmtime counts as it runs the code,
+# about one per Wasm instruction, which is the same every time, unlike
+# times. For each pull request, measures the benchmarks on the base and on
+# the pull request, shows what changed in the job's summary, and fails if
+# any went up by more than 2%. A pull request that makes something slower
+# on purpose can have the label `bench-ok`, which skips the failing.
+#
+# Times are too noisy on hosted runners to compare; see `conduit-bench`.
+
+name: Benchmarks
+
+on:
+  pull_request:
+    branches: [ "main" ]
+    types: [ opened, synchronize, reopened, labeled, unlabeled ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+
+  fuel:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - run: rustup update nightly && rustup default nightly
+    - uses: Swatinem/rust-cache@v2
+
+    - name: Fuel on the base
+      id: base
+      run: |
+        git worktree add ../base ${{ github.event.pull_request.base.sha }}
+        if [ -d ../base/crates/conduit-bench ]; then
+          (cd ../base && cargo run --release -p conduit-bench -- --fuel --json "$RUNNER_TEMP/base.json")
+          echo "found=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "The base has no benchmarks to compare with." >> "$GITHUB_STEP_SUMMARY"
+        fi
+
+    - name: Fuel on this pull request
+      if: steps.base.outputs.found == 'true'
+      run: |
+        cargo run --release -p conduit-bench -- --fuel \
+          --compare "$RUNNER_TEMP/base.json" --markdown >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Fail if fuel went up
+      if: steps.base.outputs.found == 'true' && !contains(github.event.pull_request.labels.*.name, 'bench-ok')
+      run: |
+        cargo run --release -p conduit-bench -- --fuel \
+          --compare "$RUNNER_TEMP/base.json" --check 2
