@@ -21,7 +21,3 @@ harness = false
 [[test]]
 name = "counts"
 harness = false
-
-[[test]]
-name = "bench"
-harness = false

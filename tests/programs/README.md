@@ -15,7 +15,7 @@ Every part of Conduit runs the checks that apply to it:
 | `conduit-opt` | Optimizes it, verifies the result, compares `opt` snapshots and runs its `run` checks on the result with the evaluator. With `opt: passes`, it does this both after all passes and after only those |
 | `conduit-effects` | Lowers its effects by evidence passing, checks that the result verifies and has no effects left, and runs its `run` checks with the evaluator, then again after optimizing |
 | `conduit-opt` (`counts`) | Inserts reuse and reference counts, as written, after optimizing, and after evidence passing, and runs its `run` checks with the evaluator counting and collecting cycles: every count must be right. Compares `counts` snapshots |
-| `conduit-opt` (`bench`) | Compares `bench` snapshots |
+| `conduit-bench` | Compares `bench` snapshots |
 
 
 So a `run` check is checked by the evaluator, by Wasm and after

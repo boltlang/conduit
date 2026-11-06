@@ -15,12 +15,13 @@
 //! - `+cycles`: cycles collected, and once more at the end.
 //!
 //! So the table shows what each one is worth. A program whose handlers
-//! need evidence passing has its effects lowered first.
+//! need evidence passing has its effects lowered first (see
+//! [`prepare`](conduit_bench::prepare)).
 
+use conduit_bench::{CONFIGS, prepare};
 use conduit_eval::{Machine, Stats, Value};
 use conduit_ir::verify::verify_module;
 use conduit_ir::{Atom, FuncId, Lit, Module, text};
-use conduit_opt::ownership::CONFIGS;
 use conduit_test::{CheckKind, Program};
 
 fn main() {
@@ -32,11 +33,7 @@ fn applies(p: &Program) -> bool {
 }
 
 fn test(p: &Program) -> Result<(), String> {
-    let mut optimized = p.module()?;
-    if !conduit_ir::clause::direct_handlers(&optimized) {
-        conduit_effects::lower_effects(&mut optimized)?;
-    }
-    conduit_opt::optimize_module(&mut optimized);
+    let optimized = prepare(p.module()?)?;
     let mut configs = Vec::new();
     for config in CONFIGS {
         let mut m = optimized.clone();

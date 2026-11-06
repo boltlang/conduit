@@ -1,7 +1,6 @@
 //! Runs the programs in `tests/programs` that have a `bench` check as Wasm,
 //! in Wasmtime, and measures each of their `run` checks, compiled each of
-//! the ways the `bench` snapshots compare (see `tests/bench.rs` in
-//! `conduit-opt`):
+//! the ways the `bench` snapshots compare ([`conduit_bench::CONFIGS`]):
 //!
 //! - **fuel**: what Wasmtime counts as it runs the code, about one per Wasm
 //!   instruction. It's the same every time, so it can be compared exactly.
@@ -33,8 +32,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use conduit_bench::{CONFIGS, Config, prepare};
 use conduit_ir::{Atom, FuncId, Module, Ty};
-use conduit_opt::ownership::{CONFIGS, Config};
 use conduit_test::{CheckKind, Program};
 use conduit_wasm::Options;
 use serde_json::{Value as Json, json};
@@ -155,11 +154,7 @@ fn run() -> Result<(), String> {
 /// The modules of `p`, one for each config asked for, with the options to
 /// lower it with.
 fn modules(p: &Program, configs: &[String]) -> Result<Vec<(String, Module, Options)>, String> {
-    let mut optimized = p.module()?;
-    if !conduit_ir::clause::direct_handlers(&optimized) {
-        conduit_effects::lower_effects(&mut optimized)?;
-    }
-    conduit_opt::optimize_module(&mut optimized);
+    let optimized = prepare(p.module()?)?;
     let mut out = Vec::new();
     for name in configs {
         let config = Config::named(name).ok_or_else(|| format!("unknown config {name}"))?;
