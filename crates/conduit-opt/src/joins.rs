@@ -26,7 +26,7 @@ use conduit_ir::{
 };
 
 use crate::Pass;
-use crate::inline::{MAX_CALLEE_SIZE, MAX_CALLER_SIZE};
+use crate::{MAX_CALLEE_SIZE, MAX_CALLER_SIZE};
 
 /// The join point inlining pass.
 pub struct Joins;

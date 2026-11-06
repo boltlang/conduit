@@ -46,7 +46,8 @@ use conduit_ir::{
 };
 
 use crate::Pass;
-use crate::inline::{MAX_CALLEE_SIZE, MAX_CALLER_SIZE, Rename, has_op};
+use crate::copy::{Rename, has_op};
+use crate::{MAX_CALLEE_SIZE, MAX_CALLER_SIZE};
 
 /// The pass that runs handlers directly.
 pub struct Direct;

@@ -15,6 +15,7 @@
 pub mod closures;
 mod compact;
 pub mod copies;
+mod copy;
 pub mod cse;
 pub mod dce;
 pub mod direct;
@@ -27,6 +28,14 @@ pub mod simplify;
 pub mod sroa;
 
 use conduit_ir::{Func, FuncId, Module, Program};
+
+/// The largest function a pass copies into another, like a callee that
+/// `inline` inlines, in `let`s and tails.
+pub const MAX_CALLEE_SIZE: usize = 20;
+
+/// A pass stops copying into a function once it's this big, in `let`s and
+/// tails, so that a cycle of calls can't make it grow without end.
+pub const MAX_CALLER_SIZE: usize = 1000;
 
 /// A rewrite of one function.
 pub trait Pass {
