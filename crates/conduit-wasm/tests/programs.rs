@@ -12,7 +12,8 @@
 //! freeing on: its effects lowered by evidence passing first if it needs
 //! that, then given reuse, counted and its drops specialized. Each run must then leave
 //! as many objects live as the evaluator's run of the same module does,
-//! not counting its continuations, which Wasm doesn't make.
+//! not counting its continuations, which Wasm doesn't make, both with
+//! cycles collected at the end.
 
 mod support;
 
@@ -81,6 +82,7 @@ fn lower(p: &Program, m: &Module, stack_switching: bool) -> Result<Option<Vec<u8
         Options {
             stack_switching,
             counts: false,
+            cycles: false,
         },
     )
 }
@@ -156,12 +158,16 @@ fn counted(p: &Program, m: &Module) -> Result<(), String> {
     let options = Options {
         stack_switching: false,
         counts: true,
+        cycles: true,
     };
     let bytes = lower_with(p, &c, options)?.expect("lowering with counts failed");
     let (mut store, instance) = instantiate(&bytes, false)?;
     let live = instance
         .get_global(&mut store, "conduit_live")
         .ok_or("no conduit_live global")?;
+    let collect = instance
+        .get_typed_func::<(), ()>(&mut store, "conduit_collect")
+        .map_err(|e| e.to_string())?;
     for run in p.runs(&c)? {
         let results = c.funcs.get(&run.func).map_or(&[][..], |f| &f.results[..]);
         let before = live.get(&mut store).unwrap_i32();
@@ -171,15 +177,18 @@ fn counted(p: &Program, m: &Module) -> Result<(), String> {
         if !gave {
             continue;
         }
+        collect.call(&mut store, ()).map_err(|e| e.to_string())?;
         let left = live.get(&mut store).unwrap_i32() - before;
         let mut machine = conduit_eval::Machine::new(&c, conduit_test::eval::TestHost);
         machine.counting = true;
+        machine.cycles = true;
         let args = run
             .args
             .iter()
             .map(|&l| conduit_eval::Value::from(l))
             .collect();
         machine.call(run.func, args).map_err(|e| e.to_string())?;
+        machine.collect_cycles();
         // A continuation is an object in the evaluator, but not in Wasm,
         // which lowers what handlers are left directly.
         let expected = machine

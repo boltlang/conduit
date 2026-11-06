@@ -16,7 +16,7 @@ use conduit_ir::{
 };
 use wasm_encoder::{BlockType, Ieee32, Ieee64, Instruction as I, MemArg, MemArgTarget, ValType};
 
-use crate::counts::{DropKey, Runtime, key_of};
+use crate::counts::{DropKey, Runtime, is_imm, key_of};
 use crate::{ABORT, Cx, HANDLERS, HEAP, SITE, Storage, layout, val};
 
 /// A lowered function: the locals after its parameters, and its code.
@@ -138,7 +138,7 @@ pub(crate) fn lower_entry(cx: &mut Cx<'_>, f: FuncId, n: usize) -> Result<Body, 
                 None => code.push(I::Drop),
             }
         }
-        code.extend([I::LocalGet(0), I::Call(rt.drop(&DropKey::Closure))]);
+        code.extend([I::LocalGet(0), I::Call(rt.drop(&DropKey::Closure, false))]);
         for j in 0..n as u32 {
             code.push(I::LocalGet(first + j));
         }
@@ -290,10 +290,11 @@ impl<'m> FuncCx<'_, 'm> {
         self.cx.rt.as_ref().and(key_of(ty))
     }
 
-    /// Drops the reference in local `v`, of kind `k`.
-    fn drop_local(&mut self, v: u32, k: &DropKey) {
+    /// Drops the reference in local `v`, of kind `k`, of a type that's
+    /// `imm` if `imm`.
+    fn drop_local(&mut self, v: u32, k: &DropKey, imm: bool) {
         self.emit(I::LocalGet(v));
-        self.call_rt(|rt| rt.drop(k));
+        self.call_rt(|rt| rt.drop(k, imm));
     }
 
     fn open(&mut self, i: I<'static>) {
@@ -709,7 +710,7 @@ impl<'m> FuncCx<'_, 'm> {
                 self.emit(store(s, at));
                 // It drops the value it replaces.
                 if let Some((old, k)) = old {
-                    self.drop_local(old, &k);
+                    self.drop_local(old, &k, is_imm(&field));
                 }
             }
             Op::Const(id) => match self.cx.constant(*id)? {
@@ -741,9 +742,9 @@ impl<'m> FuncCx<'_, 'm> {
                 self.atom(&args[0]);
                 self.emit(I::LocalSet(n));
                 let p = self.alloc_array(n, s);
-                let elem = match self.var_ty(binds[0]) {
-                    Ty::Array(e, _) => self.counted(e),
-                    _ => None,
+                let (elem, imm) = match self.var_ty(binds[0]) {
+                    Ty::Array(e, _) => (self.counted(e), is_imm(e)),
+                    _ => (None, false),
                 };
                 if *op == Op::ArrayFill
                     && let Some(k) = elem
@@ -754,7 +755,7 @@ impl<'m> FuncCx<'_, 'm> {
                     self.emit(I::I32Eqz);
                     self.open(I::If(BlockType::Empty));
                     self.atom(&args[1]);
-                    self.call_rt(|rt| rt.drop(&k));
+                    self.call_rt(|rt| rt.drop(&k, imm));
                     self.emit(I::Else);
                     self.atom(&args[1]);
                     self.emit(I::LocalGet(n));
@@ -791,9 +792,9 @@ impl<'m> FuncCx<'_, 'm> {
             Op::ArraySet => {
                 let ty = self.atom_ty(&args[0]);
                 let s = self.elem_of(&ty)?;
-                let elem = match &ty {
-                    Ty::Array(e, _) => self.counted(e),
-                    _ => None,
+                let (elem, imm) = match &ty {
+                    Ty::Array(e, _) => (self.counted(e), is_imm(e)),
+                    _ => (None, false),
                 };
                 self.elem_addr(&args[0], &args[1], s);
                 match elem {
@@ -807,7 +808,7 @@ impl<'m> FuncCx<'_, 'm> {
                         self.emit(I::LocalGet(at));
                         self.atom(&args[2]);
                         self.emit(store(s, 8));
-                        self.drop_local(old, &k);
+                        self.drop_local(old, &k, imm);
                     }
                     None => {
                         self.atom(&args[2]);
@@ -858,11 +859,13 @@ impl<'m> FuncCx<'_, 'm> {
             Op::Dup | Op::Drop | Op::Free | Op::DecRef => {
                 if let Some(k) = self.counted(&self.atom_ty(&args[0])) {
                     self.atom(&args[0]);
+                    // `decref` is a `drop` of a shared object, which may be
+                    // the root of a garbage cycle.
+                    let imm = is_imm(&self.atom_ty(&args[0]));
                     self.call_rt(|rt| match op {
                         Op::Dup => rt.dup(),
-                        Op::Drop => rt.drop(&k),
                         Op::Free => rt.free(&k),
-                        _ => rt.decref(),
+                        _ => rt.drop(&k, imm),
                     });
                 }
             }
@@ -910,7 +913,7 @@ impl<'m> FuncCx<'_, 'm> {
                     self.call_rt(|rt| rt.dup_range());
                     self.emit(I::LocalGet(addrs[0]));
                     self.atom(&args[4]);
-                    self.call_rt(|rt| rt.drop_range(&k));
+                    self.call_rt(|rt| rt.drop_range(&k, is_imm(&e)));
                 }
                 self.emit(I::LocalGet(addrs[0]));
                 self.emit(I::LocalGet(addrs[1]));
@@ -952,7 +955,7 @@ impl<'m> FuncCx<'_, 'm> {
                 self.atom(&args[1]);
                 self.emit(store(s, 8));
                 if let Some((old, k)) = old {
-                    self.drop_local(old, &k);
+                    self.drop_local(old, &k, is_imm(&inner));
                 }
             }
             // When counting, everything goes in a box, which holds the kind

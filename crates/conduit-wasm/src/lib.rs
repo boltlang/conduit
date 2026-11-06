@@ -243,6 +243,10 @@ pub struct Options {
     /// exports the global `conduit_live`, the number of objects allocated
     /// and not yet freed, handler frames among them.
     pub counts: bool,
+    /// With `counts`, whether to collect cycles too, by trial deletion
+    /// (see `counts.rs`). The module then exports `conduit_collect`, which
+    /// collects what's buffered so far.
+    pub cycles: bool,
 }
 
 impl Cx<'_> {
@@ -525,7 +529,7 @@ pub fn emit_module_with(
         rt: None,
     };
     if options.counts {
-        cx.rt = Some(counts::Runtime::new(m, cx.alloc + 1, 0));
+        cx.rt = Some(counts::Runtime::new(m, cx.alloc + 1, options.cycles));
     }
     let mut switch_funcs = 0;
     if !switching.is_empty() {
@@ -550,7 +554,7 @@ pub fn emit_module_with(
     // The heads of the free lists, after the constants.
     if let Some(rt) = &mut cx.rt {
         rt.heads = heap_base;
-        heap_base += (4 * 33u32).next_multiple_of(8);
+        heap_base += rt.memory();
     }
     let data = data[CONST_BASE as usize..].to_vec();
 
@@ -716,15 +720,36 @@ pub fn emit_module_with(
     let n_closures = cx.entries.len() as u32;
     let mut runtime = Vec::new();
     let mut closure_frees = Vec::new();
+    // The table, after the closures' wrappers: their free functions, the
+    // kinds' drops, the closures' children, the kinds' children, and the
+    // kinds' steps.
     if let Some(rt) = cx.rt.take() {
-        let kinds = cx.wrapper_slots + 2 * n_closures;
-        runtime = rt.bodies(&mut cx, n_closures as i32, kinds as i32);
+        let (w, e, k) = (
+            cx.wrapper_slots as i32,
+            n_closures as i32,
+            rt.keys.len() as i32,
+        );
+        let slots = counts::Slots {
+            closure_free: e,
+            kind_drop: w + 2 * e,
+            closure_children: 2 * e + k,
+            kind_children: w + 3 * e + k,
+            kind_step: w + 3 * e + 2 * k,
+        };
+        runtime = rt.bodies(&mut cx, slots);
         let one = cx.sig(FnSig {
             params: vec![ValType::I32],
             results: Vec::new(),
         });
+        let two = cx.sig(FnSig {
+            params: vec![ValType::I32, ValType::I32],
+            results: Vec::new(),
+        });
         for &(f, n) in &cx.entries {
             closure_frees.push((one, rt.closure_free(&cx, f, n)));
+        }
+        for &(f, n) in &cx.entries {
+            closure_frees.push((two, rt.closure_children(&cx, f, n)));
         }
         cx.rt = Some(rt);
     }
@@ -785,7 +810,7 @@ pub fn emit_module_with(
     let n_entries = u64::from(cx.wrapper_slots)
         + cx.entries.len() as u64
         + if cx.rt.is_some() {
-            cx.entries.len() as u64 + kinds
+            2 * cx.entries.len() as u64 + 3 * kinds
         } else {
             0
         };
@@ -843,7 +868,7 @@ pub fn emit_module_with(
     // The heap pointer, the handler stack, the stack of the `perform`
     // whose clause runs, and, when counting, the live objects.
     let inits: &[i32] = if cx.rt.is_some() {
-        &[heap_base as i32, 0, 0, 0]
+        &[heap_base as i32, 0, 0, 0, 0, 0]
     } else {
         &[heap_base as i32, 0, 0]
     };
@@ -867,8 +892,11 @@ pub fn emit_module_with(
         export_section.export(name, ExportKind::Func, idx);
     }
     export_section.export("memory", ExportKind::Memory, 0);
-    if cx.rt.is_some() {
+    if let Some(rt) = &cx.rt {
         export_section.export("conduit_live", ExportKind::Global, counts::LIVE);
+        if rt.cycles {
+            export_section.export("conduit_collect", ExportKind::Func, rt.collect());
+        }
     }
     module.section(&export_section);
     // The function of each table slot: the clauses' wrappers, the
@@ -882,9 +910,13 @@ pub fn emit_module_with(
     let first_entry = cx.after_alloc() + clause_slots + switch_funcs;
     refs.extend((0..cx.entries.len() as u32).map(|k| first_entry + k));
     if let Some(rt) = &cx.rt {
-        let first_free = first_entry + cx.entries.len() as u32;
-        refs.extend((0..cx.entries.len() as u32).map(|k| first_free + k));
-        refs.extend(rt.keys.iter().map(|k| rt.drop(k)));
+        let n = cx.entries.len() as u32;
+        let first_free = first_entry + n;
+        refs.extend((0..n).map(|k| first_free + k));
+        refs.extend(rt.keys.iter().map(|k| rt.drop(k, false)));
+        refs.extend((0..n).map(|k| first_free + n + k));
+        refs.extend(rt.keys.iter().map(|k| rt.children(k)));
+        refs.extend(rt.keys.iter().map(|k| rt.step(k)));
     }
     let mut elements = ElementSection::new();
     if !refs.is_empty() {

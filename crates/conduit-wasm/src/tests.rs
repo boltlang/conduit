@@ -43,6 +43,7 @@ fn general_handlers_switching() {
     let options = crate::Options {
         stack_switching: true,
         counts: false,
+        cycles: false,
     };
     let bytes = crate::emit_module_with(&m, &[], &options).unwrap();
     let wat = wasmprinter::print_bytes(&bytes).unwrap();
@@ -132,8 +133,9 @@ fn freed_big_blocks_are_reused() {
     );
 }
 
-/// Runs `main` of `src` with counts and freeing: it must give `expected`,
-/// stay in two pages of memory, and leave no object live.
+/// Runs `main` of `src` with counts, freeing and cycles collected: it must
+/// give `expected`, stay in two pages of memory, and leave no object live
+/// after a last collection.
 fn run_counted(src: &str, expected: i32) {
     let mut m = text::parse(src).unwrap();
     conduit_opt::ownership::insert_counts(&mut m).unwrap();
@@ -147,6 +149,7 @@ fn run_counted(src: &str, expected: i32) {
     let options = crate::Options {
         stack_switching: false,
         counts: true,
+        cycles: true,
     };
     let bytes = crate::emit_module_with(&m, &[(main, "main")], &options).unwrap();
     let mut config = wasmtime::Config::new();
@@ -161,6 +164,61 @@ fn run_counted(src: &str, expected: i32) {
     assert_eq!(f.call(&mut store, ()).unwrap(), expected);
     let memory = instance.get_memory(&mut store, "memory").unwrap();
     assert!(memory.size(&store) <= 2, "{} pages", memory.size(&store));
+    let collect = instance
+        .get_typed_func::<(), ()>(&mut store, "conduit_collect")
+        .unwrap();
+    collect.call(&mut store, ()).unwrap();
     let live = instance.get_global(&mut store, "conduit_live").unwrap();
     assert_eq!(live.get(&mut store).unwrap_i32(), 0);
+}
+
+/// A ref that holds a box of itself, built 1000 times, is a cycle each
+/// time, which the collector frees.
+#[test]
+fn cycles_are_collected() {
+    run_counted(
+        "fn main() -> (i32) {
+  join rec go(%i: i32) =
+    case %i {
+      0 => jump ret(%i)
+      _ =>
+        let %u: mut any = undefined()
+        let %r: ref mut any = ref_new(%u)
+        let %a: mut any = box[ref mut any](%r)
+        let = ref_set(%r, %a)
+        let %i1: i32 = sub(%i, 1i32)
+        jump go(%i1)
+    }
+  in jump go(1000i32)
+}",
+        0,
+    );
+}
+
+/// Two refs that hold boxes of each other, both buffered: marking gray from
+/// the first takes the second's count to 0, which mustn't free it before
+/// it's scanned.
+#[test]
+fn cycles_of_two_roots_are_collected() {
+    run_counted(
+        "fn main() -> (i32) {
+  join rec go(%i: i32) =
+    case %i {
+      0 => jump ret(%i)
+      _ =>
+        let %u: mut any = undefined()
+        let %r: ref mut any = ref_new(%u)
+        let %v: mut any = undefined()
+        let %s: ref mut any = ref_new(%v)
+        let %a: mut any = box[ref mut any](%s)
+        let %b: mut any = box[ref mut any](%r)
+        let = ref_set(%r, %a)
+        let = ref_set(%s, %b)
+        let %i1: i32 = sub(%i, 1i32)
+        jump go(%i1)
+    }
+  in jump go(1000i32)
+}",
+        0,
+    );
 }
