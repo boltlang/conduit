@@ -555,11 +555,12 @@ dropped without being resumed or discontinued loses what its frames hold.
 Cycles are never freed by counting alone.
 
 `conduit_opt::ownership::insert_counts` adds the `Dup`s and `Drop`s, after
-optimization: every variable that holds an object owns a reference, a
-use that takes one while the variable is still needed gets a `Dup`, and
-the last use that doesn't take it, or a branch that doesn't use it, gets
-a `Drop`. What `Get` and the other reads give is `Dup`ped right away, so
-that it's owned too. Passes that run before it don't need to know about
+optimization: every variable that holds an object owns a reference,
+except the parameters it finds are borrowed and what's read from them
+(see `docs/optimisations.md`), a use that takes one while the variable is
+still needed gets a `Dup`, and the last use that doesn't take it, or a
+branch that doesn't use it, gets a `Drop`. What `Get` and the other
+reads give is otherwise `Dup`ped right away, so that it's owned too. Passes that run before it don't need to know about
 any of this. A pass that runs after it must keep counts right, which
 most don't.
 

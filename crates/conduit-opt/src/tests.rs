@@ -133,3 +133,28 @@ fn inlining_reports_whether_it_changed_anything() {
     let mut g = m.funcs[&FuncId(0)].clone();
     assert!(!inline(&m, FuncId(0), &mut g));
 }
+
+/// What `borrows` infers for `tests/programs/counts/borrows.conduit`: see
+/// its comments.
+#[test]
+fn borrowed_parameters() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/programs/counts/borrows.conduit"
+    );
+    let m = parse(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let b = crate::ownership::borrows(&m);
+    let by_name = |name: &str| {
+        let (id, _) = m
+            .funcs
+            .iter()
+            .find(|(_, f)| f.debug.name.as_deref() == Some(name))
+            .unwrap();
+        b.params[id].clone()
+    };
+    assert_eq!(by_name("len"), vec![true]);
+    assert_eq!(by_name("sum_to"), vec![true, false]);
+    assert_eq!(by_name("skip_zeros"), vec![false]);
+    assert_eq!(by_name("add"), vec![false, false]);
+    assert_eq!(by_name("build"), vec![false]);
+}

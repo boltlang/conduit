@@ -37,6 +37,9 @@ pub enum CheckKind {
     /// reference counting on, and each run must leave nothing behind but
     /// its results: no leaks, no wrong counts, and no cycles.
     Counted,
+    /// `//# counts`: the program after `insert_counts` and
+    /// `specialize_drops` matches `<name>.counts.conduit`.
+    Counts,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -86,9 +89,10 @@ fn check(s: &str) -> Result<CheckKind, String> {
         "wat" => none(CheckKind::Wat),
         "opt" => opt(rest),
         "counted" => none(CheckKind::Counted),
+        "counts" => none(CheckKind::Counts),
         _ => Err(format!(
             "unknown check `{word}`: expected `run`, `verify-error`, `wasm-error`, \
-             `wasm-skip`, `wat`, `opt` or `counted`"
+             `wasm-skip`, `wat`, `opt`, `counted` or `counts`"
         )),
     }
 }

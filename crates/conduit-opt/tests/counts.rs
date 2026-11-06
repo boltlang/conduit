@@ -6,7 +6,9 @@
 //!
 //! It does so for the program as written, after the optimizer, and after
 //! lowering effects by evidence passing and then optimizing, each time with
-//! the counts as inserted and again with their `drop`s specialized.
+//! the counts as inserted and again with their `drop`s specialized. A
+//! program with a `counts` check must match its `<name>.counts.conduit`
+//! snapshot of the program as written, with counts and drops specialized.
 
 use conduit_eval::Leaks;
 use conduit_ir::Module;
@@ -19,11 +21,21 @@ fn main() {
 }
 
 fn applies(p: &Program) -> bool {
-    !p.has(|k| matches!(k, CheckKind::VerifyError(_) | CheckKind::Counted)) && p.has_runs()
+    !p.has(|k| matches!(k, CheckKind::VerifyError(_) | CheckKind::Counted))
+        && (p.has_runs() || p.has(|k| matches!(k, CheckKind::Counts)))
 }
 
 fn test(p: &Program) -> Result<(), String> {
     let m = p.module()?;
+    if p.has(|k| matches!(k, CheckKind::Counts)) {
+        let mut counted = m.clone();
+        conduit_opt::ownership::insert_counts(&mut counted)?;
+        conduit_opt::ownership::specialize_drops(&mut counted);
+        p.snapshot("counts.conduit", &text::print(&counted))?;
+    }
+    if !p.has_runs() {
+        return Ok(());
+    }
     check(p, m.clone(), "as written")?;
     let mut opt = m.clone();
     conduit_opt::optimize_module(&mut opt);

@@ -190,7 +190,8 @@ in Wasm without stack switching.
 Not one of the passes above either: a module-level pass, run once after
 optimization, that adds the `dup`s and `drop`s that free memory (see
 "Reference counts" in `ir.md`). Every variable that holds an object owns
-a reference to it, parameters of functions and join points included:
+a reference to it, parameters of functions and join points included,
+except what's borrowed (below):
 
 - A use that takes the reference, while the variable is still needed
   after it or is taken twice by the same op, gets a `dup` first.
@@ -204,7 +205,25 @@ a reference to it, parameters of functions and join points included:
   it hands over with its arguments.
 - What `const` and `undefined` give is never counted.
 
-There's no borrowing yet. `crates/conduit-opt/tests/counts.rs` runs
+**Borrowed parameters** (`ownership::borrows`, which `insert_counts`
+calls; a frontend can give its own with `insert_counts_with`). An object
+parameter is borrowed unless the function gives its reference away: to a
+use that takes it, like a field, a jump, a return or an owned parameter
+of a call. Then the caller keeps the reference, the function never drops
+it, and it `dup`s it for each use that takes one. What's read out of a
+borrowed `imm` object is borrowed too, since the object keeps it alive and
+unchanged for the whole call: a function that walks a list it borrows
+counts nothing. It's a fixpoint over the module, as Lean's is, with two
+rules that keep parameters owned:
+
+- A function made into a closure, or a handler's clause, owns all its
+  parameters, since `apply` and `perform` always give theirs away.
+- A tail call between functions that can call each other makes the
+  callee's parameter owned if the caller owns what it passes, so that the
+  caller needn't drop it after the call, which would grow the stack of a
+  loop written as tail calls. Other tail calls just lose being tail calls.
+
+`crates/conduit-opt/tests/counts.rs` runs
 every test program after it, as written, after optimizing, and after
 evidence passing, with the evaluator counting, and again after
 specializing drops: every count must be right.

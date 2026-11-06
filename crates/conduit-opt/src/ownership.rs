@@ -6,9 +6,10 @@
 //! It runs once, after optimization: the other passes don't keep counts
 //! right. Every variable that holds an object owns one reference to it:
 //!
-//! - **Parameters** are owned, of functions and of join points. (Borrowed
-//!   parameters can come later, as a convention between a function and its
-//!   callers.)
+//! - **Parameters** are owned, of functions and of join points, except the
+//!   function parameters that [`borrows`] finds are borrowed: the caller
+//!   keeps the reference, so the function never drops it, and `dup`s it
+//!   for each use that takes one.
 //! - **What an op gives** is owned, except what `get`, `array_get`,
 //!   `ref_get` and `unbox` read out of an object, which is borrowed from
 //!   it: a `dup` right after makes it owned, as Perceus does. Specializing
@@ -38,24 +39,233 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use conduit_ir::verify::resolve;
 use conduit_ir::{
-    Arm, Atom, Block, CtorId, DataDecl, DataId, Func, JoinDef, Label, Let, Module, Mutability, Op,
-    Tag, Tail, Ty, Var,
+    Arm, Atom, Block, CtorId, DataDecl, DataId, Func, FuncId, JoinDef, Label, Let, Module,
+    Mutability, Op, Tag, Tail, Ty, Var,
 };
 
 type Set = BTreeSet<Var>;
 
-/// Adds `dup`s and `drop`s to every function of `m`. Fails if a function
-/// has some already, since they would be counted twice.
+/// Which parameters of each function are borrowed: the caller keeps the
+/// reference it passes, so neither side counts it. It's a convention
+/// between a function and its callers, which [`borrows`] infers, and which
+/// a frontend can give instead, for example to fix it in a function's
+/// signature. Parameters it doesn't know are owned.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Borrows {
+    pub params: BTreeMap<FuncId, Vec<bool>>,
+}
+
+impl Borrows {
+    pub fn is_borrowed(&self, f: FuncId, i: usize) -> bool {
+        self.params
+            .get(&f)
+            .and_then(|ps| ps.get(i))
+            .copied()
+            .unwrap_or(false)
+    }
+}
+
+/// Infers which parameters are borrowed, as Lean does: an object parameter
+/// is borrowed unless the function gives its reference away, by passing it
+/// to a use that takes it (a jump, a field, an owned parameter of a call,
+/// ...). It's a fixpoint over the module, since a parameter passed on to
+/// another function's is borrowed only if that one is.
+///
+/// Two more rules keep parameters owned:
+///
+/// - A function that's made into a closure, or is a handler's clause, keeps
+///   every parameter owned: `apply` and `perform` don't know whom they
+///   call, so they always give their arguments away.
+/// - A recursive tail call keeps being one: a call `f(.., y, ..)` whose
+///   results the caller returns, where `f` can call the caller back, makes
+///   `f`'s parameter owned if `y` is, since otherwise the caller would drop
+///   `y` after the call, and a loop written as tail calls would grow the
+///   stack. Other tail calls can lose that: one frame more is cheaper than
+///   counting in every call of `f`.
+pub fn borrows(m: &Module) -> Borrows {
+    let mut always_owned: BTreeSet<FuncId> = BTreeSet::new();
+    for f in m.funcs.values() {
+        each_let(&f.body, &mut |l| {
+            if let Op::Closure(g, ..) = l.op {
+                always_owned.insert(g);
+            }
+        });
+    }
+    for h in m.handlers.values() {
+        always_owned.extend(h.ops.iter().copied());
+        always_owned.insert(h.ret);
+    }
+    let reaches = reaches(m);
+    let mut b = Borrows::default();
+    for (id, f) in &m.funcs {
+        let borrowed = f
+            .params
+            .iter()
+            .map(|p| is_object(f.var_ty(*p)) && !always_owned.contains(id))
+            .collect();
+        b.params.insert(*id, borrowed);
+    }
+    loop {
+        let mut owned: Vec<(FuncId, usize)> = Vec::new();
+        for (id, f) in &m.funcs {
+            let index = |v: &Var| f.params.iter().position(|p| p == v);
+            let all_lent = lent_vars(*id, f, &b);
+            let lent = |v: &Var| index(v).is_some_and(|i| b.is_borrowed(*id, i));
+            let give = |a: &Atom, owned: &mut Vec<(FuncId, usize)>| {
+                if let Atom::Var(v) = a
+                    && lent(v)
+                {
+                    owned.push((*id, index(v).unwrap()));
+                }
+            };
+            let mut todo = vec![&f.body];
+            while let Some(block) = todo.pop() {
+                for (n, l) in block.lets.iter().enumerate() {
+                    for (i, a) in l.args.iter().enumerate() {
+                        if takes_with(&b, &l.op, i) {
+                            give(a, &mut owned);
+                        }
+                    }
+                    let last = n + 1 == block.lets.len();
+                    if let Op::Call(g, ..) = l.op
+                        && last
+                        && returns(&block.tail, &l.binds)
+                        && reaches[&g].contains(id)
+                    {
+                        for (i, a) in l.args.iter().enumerate() {
+                            let Atom::Var(y) = a else { continue };
+                            if b.is_borrowed(g, i) && !all_lent.contains(y) {
+                                owned.push((g, i));
+                            }
+                        }
+                    }
+                }
+                if let Tail::Jump { args, .. } = &block.tail {
+                    for a in args {
+                        give(a, &mut owned);
+                    }
+                }
+                children(block, &mut todo);
+            }
+        }
+        let mut changed = false;
+        for (f, i) in owned {
+            if let Some(p) = b.params.get_mut(&f).and_then(|ps| ps.get_mut(i))
+                && *p
+            {
+                *p = false;
+                changed = true;
+            }
+        }
+        if !changed {
+            return b;
+        }
+    }
+}
+
+/// The variables of function `id` that are borrowed: its borrowed
+/// parameters, and what's read out of a borrowed `imm` object, which the
+/// object keeps alive, and unchanged, for as long as the caller does.
+fn lent_vars(id: FuncId, f: &Func, b: &Borrows) -> Set {
+    let mut lent: Set = (f.params.iter().enumerate())
+        .filter(|(i, _)| b.is_borrowed(id, *i))
+        .map(|(_, p)| *p)
+        .collect();
+    // Variables are bound before they're used, and outer blocks before
+    // inner ones, so one pass in that order finds them all.
+    let mut todo = vec![&f.body];
+    while let Some(block) = todo.pop() {
+        for l in &block.lets {
+            let reads = matches!(l.op, Op::Get(..) | Op::ArrayGet | Op::Unbox(_));
+            if let ([Atom::Var(x), ..], [y]) = (&l.args[..], &l.binds[..])
+                && reads
+                && lent.contains(x)
+                && f.var_ty(*x).mutability() == Some(Mutability::Imm)
+                && is_object(f.var_ty(*y))
+            {
+                lent.insert(*y);
+            }
+        }
+        children(block, &mut todo);
+    }
+    lent
+}
+
+/// The functions each function can call, directly or not.
+fn reaches(m: &Module) -> BTreeMap<FuncId, BTreeSet<FuncId>> {
+    let calls: BTreeMap<FuncId, BTreeSet<FuncId>> = m
+        .funcs
+        .iter()
+        .map(|(id, f)| {
+            let mut callees = BTreeSet::new();
+            each_let(&f.body, &mut |l| {
+                if let Op::Call(g, ..) = l.op {
+                    callees.insert(g);
+                }
+            });
+            (*id, callees)
+        })
+        .collect();
+    calls
+        .keys()
+        .map(|&id| {
+            let mut seen = BTreeSet::new();
+            let mut todo: Vec<FuncId> = calls[&id].iter().copied().collect();
+            while let Some(g) = todo.pop() {
+                if seen.insert(g) {
+                    todo.extend(calls.get(&g).into_iter().flatten());
+                }
+            }
+            (id, seen)
+        })
+        .collect()
+}
+
+/// Whether `tail` only returns `binds`.
+fn returns(tail: &Tail, binds: &[Var]) -> bool {
+    match tail {
+        Tail::Jump {
+            target: Label::RET,
+            args,
+            ..
+        } => args.len() == binds.len() && args.iter().zip(binds).all(|(a, b)| *a == Atom::Var(*b)),
+        _ => false,
+    }
+}
+
+fn each_let(b: &Block, f: &mut impl FnMut(&Let)) {
+    let mut todo = vec![b];
+    while let Some(b) = todo.pop() {
+        b.lets.iter().for_each(&mut *f);
+        children(b, &mut todo);
+    }
+}
+
+/// Adds `dup`s and `drop`s to every function of `m`, with the borrowed
+/// parameters [`borrows`] infers. Fails if a function has counts already,
+/// since they would be counted twice.
 pub fn insert_counts(m: &mut Module) -> Result<(), String> {
+    let b = borrows(m);
+    insert_counts_with(m, &b)
+}
+
+/// [`insert_counts`] with the borrowed parameters given.
+pub fn insert_counts_with(m: &mut Module, borrows: &Borrows) -> Result<(), String> {
     for (id, f) in &mut m.funcs {
-        count_func(f).map_err(|e| format!("{id}: {e}"))?;
+        count_func(*id, f, borrows).map_err(|e| format!("{id}: {e}"))?;
     }
     Ok(())
 }
 
-/// Adds `dup`s and `drop`s to one function.
-pub fn count_func(f: &mut Func) -> Result<(), String> {
+/// Adds `dup`s and `drop`s to one function, `id`.
+pub fn count_func(id: FuncId, f: &mut Func, borrows: &Borrows) -> Result<(), String> {
     let mut counted: Vec<bool> = f.vars.iter().map(is_object).collect();
+    // A borrowed variable isn't the function's to count: it only gets a
+    // `dup` for each use that takes a reference.
+    let lent = lent_vars(id, f, borrows);
+    for v in &lent {
+        counted[v.0 as usize] = false;
+    }
     let mut todo = vec![&f.body];
     while let Some(b) = todo.pop() {
         for l in &b.lets {
@@ -75,6 +285,8 @@ pub fn count_func(f: &mut Func) -> Result<(), String> {
     }
     let mut cx = Counts {
         counted,
+        lent,
+        borrows,
         free: BTreeMap::new(),
     };
     cx.find_free(&f.body);
@@ -84,15 +296,18 @@ pub fn count_func(f: &mut Func) -> Result<(), String> {
     Ok(())
 }
 
-struct Counts {
+struct Counts<'b> {
     /// Whether each variable holds an object that's counted.
     counted: Vec<bool>,
+    /// The borrowed parameters.
+    lent: Set,
+    borrows: &'b Borrows,
     /// What the body of each join point uses from outside: what a jump to
     /// it hands over besides its arguments.
     free: BTreeMap<Label, Set>,
 }
 
-impl Counts {
+impl Counts<'_> {
     fn is(&self, v: Var) -> bool {
         self.counted.get(v.0 as usize).copied().unwrap_or(false)
     }
@@ -213,6 +428,13 @@ impl Counts {
                     let keep = keeps.is_some_and(|k| k.contains(&v)) as u32;
                     dups(v, n + keep, &mut lets);
                 }
+                for a in &args {
+                    if let Atom::Var(v) = a
+                        && self.lent.contains(v)
+                    {
+                        lets.push(count(Op::Dup, *v));
+                    }
+                }
                 Tail::Jump {
                     target,
                     args,
@@ -260,12 +482,18 @@ impl Counts {
         let mut taken: BTreeMap<Var, u32> = BTreeMap::new();
         let mut borrowed = Set::new();
         for (i, a) in l.args.iter().enumerate() {
+            let takes = takes_with(self.borrows, &l.op, i);
             if let Some(v) = self.var(a) {
-                if takes(&l.op, i) {
+                if takes {
                     *taken.entry(v).or_default() += 1;
                 } else {
                     borrowed.insert(v);
                 }
+            } else if let Atom::Var(v) = a
+                && takes
+                && self.lent.contains(v)
+            {
+                out.push(count(Op::Dup, *v));
             }
         }
         // References each variable has to give, beyond the one it owns:
@@ -304,7 +532,16 @@ impl Counts {
 }
 
 /// Whether `op` takes the reference of its argument `i`, rather than
-/// borrowing it.
+/// borrowing it, with the borrowed parameters of calls in `b`.
+fn takes_with(b: &Borrows, op: &Op, i: usize) -> bool {
+    match op {
+        Op::Call(f, ..) => !b.is_borrowed(*f, i),
+        _ => takes(op, i),
+    }
+}
+
+/// Whether `op` takes the reference of its argument `i`, rather than
+/// borrowing it, if every parameter of a call is owned.
 fn takes(op: &Op, i: usize) -> bool {
     match op {
         Op::New(_)
