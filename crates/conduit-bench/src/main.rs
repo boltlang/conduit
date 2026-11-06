@@ -157,7 +157,7 @@ fn run() -> Result<(), String> {
 fn modules(p: &Program, configs: &[String]) -> Result<Vec<(String, Module, Options)>, String> {
     let mut optimized = p.module()?;
     if !conduit_ir::clause::direct_handlers(&optimized) {
-        conduit_opt::effects::lower_effects(&mut optimized)?;
+        conduit_effects::lower_effects(&mut optimized)?;
     }
     conduit_opt::optimize_module(&mut optimized);
     let mut out = Vec::new();

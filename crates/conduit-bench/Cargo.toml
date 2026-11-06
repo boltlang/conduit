@@ -6,6 +6,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+conduit-effects = { path = "../conduit-effects" }
 conduit-ir = { path = "../conduit-ir" }
 conduit-opt = { path = "../conduit-opt" }
 conduit-test = { path = "../conduit-test", features = ["wasmtime"] }

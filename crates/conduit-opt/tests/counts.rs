@@ -45,7 +45,7 @@ fn test(p: &Program) -> Result<(), String> {
     conduit_opt::optimize_module(&mut opt);
     check(p, opt, "after optimizing")?;
     let mut lowered = m;
-    conduit_opt::effects::lower_effects(&mut lowered)?;
+    conduit_effects::lower_effects(&mut lowered)?;
     conduit_opt::optimize_module(&mut lowered);
     check(p, lowered, "after lowering effects and optimizing")
 }

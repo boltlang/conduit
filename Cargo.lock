@@ -197,12 +197,23 @@ checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 name = "conduit-bench"
 version = "0.1.0"
 dependencies = [
+ "conduit-effects",
  "conduit-ir",
  "conduit-opt",
  "conduit-test",
  "conduit-wasm",
  "serde_json",
  "wasmtime",
+]
+
+[[package]]
+name = "conduit-effects"
+version = "0.1.0"
+dependencies = [
+ "conduit-eval",
+ "conduit-ir",
+ "conduit-opt",
+ "conduit-test",
 ]
 
 [[package]]
@@ -224,6 +235,7 @@ dependencies = [
 name = "conduit-opt"
 version = "0.1.0"
 dependencies = [
+ "conduit-effects",
  "conduit-eval",
  "conduit-ir",
  "conduit-test",
@@ -243,6 +255,7 @@ dependencies = [
 name = "conduit-wasm"
 version = "0.1.0"
 dependencies = [
+ "conduit-effects",
  "conduit-eval",
  "conduit-ir",
  "conduit-opt",

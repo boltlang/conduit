@@ -22,7 +22,7 @@ fn applies(p: &Program) -> bool {
 
 fn test(p: &Program) -> Result<(), String> {
     let mut m = p.module()?;
-    conduit_opt::effects::lower_effects(&mut m)?;
+    conduit_effects::lower_effects(&mut m)?;
     check(p, &m, "after lowering effects")?;
     conduit_opt::optimize_module(&mut m);
     check(p, &m, "after lowering effects and optimizing")

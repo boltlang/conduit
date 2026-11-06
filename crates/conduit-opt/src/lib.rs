@@ -18,7 +18,6 @@ pub mod copies;
 pub mod cse;
 pub mod dce;
 pub mod direct;
-pub mod effects;
 pub mod handlers;
 pub mod inline;
 pub mod joins;

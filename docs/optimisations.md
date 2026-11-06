@@ -162,11 +162,12 @@ so code only dead code uses goes too.
   shows this: the original's region doesn't escape the function, and none
   of its variables is live after the clone.
 
-## Evidence passing (`effects::lower_effects`)
+## Evidence passing (`conduit_effects::lower_effects`)
 
-Not one of the passes above, and not run by `optimize_func`: a module-level
-pass that frontends and backends run when they want effect handlers
-removed, so that a backend without them can run the program. It follows
+Not one of the passes above, and not run by `optimize_func`: a lowering
+of the whole module, in its own crate, `conduit-effects`, which frontends
+and backends run when they want effect handlers removed, so that a
+backend without them can run the program. It follows
 Koka (Xie and Leijen, "Generalized evidence passing for effect
 handlers"). Afterwards the module has no `handle`, `perform`, `resume` or
 `discontinue`, no continuation types and no rows, and the passes above

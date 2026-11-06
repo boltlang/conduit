@@ -1,0 +1,18 @@
+[package]
+name = "conduit-effects"
+description = "Lowers effect handlers by evidence passing, so that any backend can run them"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+conduit-ir = { path = "../conduit-ir" }
+
+[dev-dependencies]
+conduit-eval = { path = "../conduit-eval" }
+conduit-opt = { path = "../conduit-opt" }
+conduit-test = { path = "../conduit-test" }
+
+[[test]]
+name = "programs"
+harness = false

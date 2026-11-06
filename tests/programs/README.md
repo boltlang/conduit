@@ -13,7 +13,7 @@ Every part of Conduit runs the checks that apply to it:
 | `conduit-eval` | Runs its `run` checks |
 | `conduit-wasm` | Lowers it, validates the Wasm without the GC and stack switching proposals, compares `wat` snapshots and runs its `run` checks with Wasmtime. A program with a handler whose clauses aren't all tail-resumptive or aborting is lowered by evidence passing, and again with stack switching, which is then allowed |
 | `conduit-opt` | Optimizes it, verifies the result, compares `opt` snapshots and runs its `run` checks on the result with the evaluator. With `opt: passes`, it does this both after all passes and after only those |
-| `conduit-opt` (`effects`) | Lowers its effects by evidence passing, checks that the result verifies and has no effects left, and runs its `run` checks with the evaluator, then again after optimizing |
+| `conduit-effects` | Lowers its effects by evidence passing, checks that the result verifies and has no effects left, and runs its `run` checks with the evaluator, then again after optimizing |
 | `conduit-opt` (`counts`) | Inserts reuse and reference counts, as written, after optimizing, and after evidence passing, and runs its `run` checks with the evaluator counting and collecting cycles: every count must be right. Compares `counts` snapshots |
 | `conduit-opt` (`bench`) | Compares `bench` snapshots |
 

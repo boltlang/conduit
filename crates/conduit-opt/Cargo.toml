@@ -10,15 +10,13 @@ conduit-ir = { path = "../conduit-ir" }
 conduit-eval = { path = "../conduit-eval" }
 
 [dev-dependencies]
+conduit-effects = { path = "../conduit-effects" }
 conduit-test = { path = "../conduit-test" }
 
 [[test]]
 name = "programs"
 harness = false
 
-[[test]]
-name = "effects"
-harness = false
 
 [[test]]
 name = "counts"

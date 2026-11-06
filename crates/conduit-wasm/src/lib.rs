@@ -13,7 +13,7 @@
 //! nearest frame of its effect and calls its clause through the table, and
 //! an aborting clause throws an exception, from exception handling, part
 //! of Wasm 3.0. A module with any other clause is lowered by evidence
-//! passing first ([`conduit_opt::effects`]), so that it needs no stack
+//! passing first ([`conduit_effects`]), so that it needs no stack
 //! switching.
 //!
 //! A handler frame is the header, its effect's number at 8, the next frame
@@ -451,7 +451,7 @@ pub fn emit_module_with(
     }
     let m = if !options.stack_switching && !conduit_ir::clause::direct_handlers(m) {
         let mut copy = m.clone();
-        conduit_opt::effects::lower_effects(&mut copy).map_err(|message| Error {
+        conduit_effects::lower_effects(&mut copy).map_err(|message| Error {
             item: Item::Func(FuncId(0)),
             message: format!("lowering effects: {message}"),
         })?;

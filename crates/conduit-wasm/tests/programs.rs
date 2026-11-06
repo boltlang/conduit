@@ -136,7 +136,7 @@ fn run(p: &Program, m: &Module, bytes: &[u8], stack_switching: bool) -> Result<(
 fn counted(p: &Program, m: &Module) -> Result<(), String> {
     let mut c = m.clone();
     if !conduit_ir::clause::direct_handlers(&c) {
-        conduit_opt::effects::lower_effects(&mut c)?;
+        conduit_effects::lower_effects(&mut c)?;
     }
     // A program counted by hand already has its counts.
     if !p.has(|k| matches!(k, CheckKind::Counted)) {

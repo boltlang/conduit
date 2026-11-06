@@ -1052,7 +1052,7 @@ three ops.
   module with a handler of this kind needs the proposal, which isn't
   standard yet: Wasmtime has it on Linux and macOS on x86-64.
 - **Evidence passing** (Xie & Leijen, "Generalized evidence passing for
-  effect handlers"), which `conduit_opt::effects::lower_effects` does: a
+  effect handlers"), which `conduit_effects::lower_effects` does: a
   Conduit-to-Conduit pass over the whole module that removes the four
   ops, rows and continuation types. Functions that may perform, or that
   apply closures, handle or call such functions, take evidence: the
