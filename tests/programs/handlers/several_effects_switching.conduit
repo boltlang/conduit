@@ -1,0 +1,70 @@
+// A handler of several effects with a clause that isn't tail-resumptive,
+// which Wasm lowers by stack switching or evidence passing. It shares two
+// clauses with a handler whose clauses are, which then switches stacks
+// too, since a clause is lowered one way.
+effect State {
+  () -> (i32)
+  (i32) -> ()
+}
+
+effect Log {
+  (i32) -> ()
+}
+
+// The state is always the value.
+handler fixed for State env(i32) ops(fixed_get, fixed_set) ret fixed_done
+
+// The same, and logging adds after the rest has run.
+handler after for State, Log env(i32) ops(fixed_get, fixed_set; log_after) ret fixed_done
+
+fn fixed_get(%x: i32, %k: cont(i32) -> (i32)) -> (i32) {
+  let %r: i32 = resume(%k, %x)
+  jump ret(%r)
+}
+
+fn fixed_set(%x: i32, %v: i32, %k: cont() -> (i32)) -> (i32) {
+  let %r: i32 = resume(%k)
+  jump ret(%r)
+}
+
+fn fixed_done(%x: i32, %r: i32) -> (i32) {
+  jump ret(%r)
+}
+
+fn log_after(%x: i32, %m: i32, %k: cont() -> (i32)) -> (i32) {
+  let %r: i32 = resume(%k)
+  let %rm: i32 = add(%r, %m)
+  jump ret(%rm)
+}
+
+// Each Log's continuation runs a get after it: 10 + 1 + 2.
+fn log_afterwards() -> (i32) {
+  let %body: imm fn() -> (i32) does State + Log = closure logs_then_get()
+  let %r: i32 = handle after(10i32, %body)
+  jump ret(%r)
+}
+
+fn logs_then_get() -> (i32) does State + Log {
+  let = perform Log.0(1i32)
+  let = perform Log.0(2i32)
+  let %x: i32 = perform State.0()
+  jump ret(%x)
+}
+
+// Under fixed 7: what log_afterwards gives, then a get, which goes to
+// fixed: 13 + 7.
+fn both() -> (i32) {
+  let %body: imm fn() -> (i32) does State = closure after_then_get()
+  let %r: i32 = handle fixed(7i32, %body)
+  jump ret(%r)
+}
+
+fn after_then_get() -> (i32) does State {
+  let %a: i32 = call log_afterwards()
+  let %x: i32 = perform State.0()
+  let %r: i32 = add(%a, %x)
+  jump ret(%r)
+}
+
+//# run log_afterwards() == 13i32
+//# run both() == 20i32

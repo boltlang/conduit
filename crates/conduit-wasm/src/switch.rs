@@ -75,7 +75,7 @@ impl Cx<'_> {
     /// with the operation's results, it gives the body's.
     pub fn op_cont(&mut self, h: HandlerId, i: u32) -> Result<u32, String> {
         let decl = &self.m.handlers[&h];
-        let op = &self.m.effects[&crate::single(decl).0].ops[i as usize];
+        let op = crate::op_at(self.m, decl, i);
         let sig = FnSig {
             params: op.results.iter().map(val).collect(),
             results: self.body_results(h)?,
@@ -113,7 +113,7 @@ impl Cx<'_> {
             Start::Body => params.push(ValType::I32),
             Start::Resume(i) => {
                 params.push(nullable(self.op_cont(h, i)?));
-                let op = &self.m.effects[&crate::single(decl).0].ops[i as usize];
+                let op = crate::op_at(self.m, decl, i);
                 params.extend(op.results.iter().map(val));
             }
             Start::Throw(i) => {
@@ -165,8 +165,7 @@ pub(crate) fn lower_tramp(cx: &mut Cx<'_>, h: HandlerId) -> Result<Body, String>
 pub(crate) fn lower_drive(cx: &mut Cx<'_>, h: HandlerId, start: Start) -> Result<Body, String> {
     let m = cx.m;
     let decl = &m.handlers[&h];
-    let effect = &m.effects[&crate::single(decl).0];
-    let n = effect.ops.len() as u32;
+    let n = decl.len() as u32;
     let sig = cx.drive_sig(h, start)?;
     let env = decl.env.len() as u32;
     let sw = cx.switch(h)?.clone();
@@ -178,9 +177,8 @@ pub(crate) fn lower_drive(cx: &mut Cx<'_>, h: HandlerId, start: Start) -> Result
     };
     let mut table = Vec::new();
     for i in 0..n {
-        let tag = cx
-            .tag(crate::single(decl).0, i)
-            .ok_or("no tag for an operation")?;
+        let (e, j, _) = crate::clause_at(decl, i);
+        let tag = cx.tag(e, j).ok_or("no tag for an operation")?;
         table.push(Handle::OnLabel { tag, label: i });
     }
 
@@ -199,7 +197,8 @@ pub(crate) fn lower_drive(cx: &mut Cx<'_>, h: HandlerId, start: Start) -> Result
     });
     code.push(I::Block(BlockType::FunctionType(ret_block)));
     let mut op_params = Vec::new();
-    for op in &effect.ops {
+    for i in 0..n {
+        let op = crate::op_at(m, decl, i);
         op_params.push(op.params.iter().map(val).collect::<Vec<_>>());
     }
     for i in (0..n).rev() {
@@ -314,9 +313,7 @@ pub(crate) fn lower_drive(cx: &mut Cx<'_>, h: HandlerId, start: Start) -> Result
         let (at, s) = kont_fields[2 + env as usize];
         code.extend([I::LocalGet(obj), I::LocalGet(slot), store(s, at)]);
         code.push(I::LocalGet(obj));
-        code.push(I::ReturnCall(
-            cx.func_index(crate::single(decl).1[i as usize])?,
-        ));
+        code.push(I::ReturnCall(cx.func_index(crate::clause_at(decl, i).2)?));
     }
     code.push(I::End);
     // The body returned: the return clause, under the handlers outside.
@@ -364,9 +361,7 @@ pub(crate) fn lower_kont(
     let args = if disc {
         1
     } else {
-        m.effects[&crate::single(decl).0].ops[i as usize]
-            .results
-            .len() as u32
+        crate::op_at(m, decl, i).results.len() as u32
     };
     let (fields, _) = cx.kont_layout(h);
     let sw = cx.switch(h)?.clone();

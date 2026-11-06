@@ -1013,18 +1013,17 @@ What would take more:
 
 ### Lowering
 
-The Wasm backend doesn't lower a handler of several effects yet, unless
-the module's effects are lowered by evidence passing first. It lowers
-handlers whose clauses are all tail-resumptive or aborting without
-capturing a continuation:
+The Wasm backend lowers handlers whose clauses are all tail-resumptive or
+aborting without capturing a continuation:
 
-- A global holds a stack of handler frames. A frame holds its effect's
-  number, the next frame, a reference to each clause, and the handler's
-  environment.
+- A global holds a stack of handler frames. A frame holds its handler's
+  number, the next frame, a reference to each clause, those of each
+  effect it handles in turn, and the handler's environment.
 - `handle` pushes a frame, applies the body, pops the frame, and calls the
   return clause with the body's results.
-- `perform` walks the stack to the nearest frame of its effect, trapping
-  if there's none. It then calls that frame's clause directly, with the
+- `perform` walks the stack to the nearest frame of a handler of its
+  effect, trapping if there's none: it knows which handlers those are,
+  and where each keeps the clause. It then calls that frame's clause directly, with the
   stack set to the frames below while the clause runs, so that a
   `perform` in the clause goes to an outer handler, as it would with a
   captured continuation.
@@ -1045,11 +1044,13 @@ three ops.
 
 - **Wasm stack switching** (the typed-continuations proposal), which the
   Wasm backend does when `Options::stack_switching` asks for it. Each
-  operation of an effect such a handler handles has a control tag.
+  operation of an effect such a handler handles has a control tag. A
+  handler that shares a clause with such a handler switches stacks too,
+  since a clause is lowered one way.
   `handle` makes a frame with -1 in its clause slots and calls a function
   that links it onto the handler stack and runs the body as a Wasm
-  continuation, with a `resume` that has a label per operation. `perform`
-  finds the nearest frame of its effect as for any handler, and if its
+  continuation, with a `resume` that has a label per clause. `perform`
+  finds the nearest frame of a handler of its effect as for any handler, and if its
   slot is -1, `suspend`s with the operation's tag, putting its handler
   stack back once it's resumed. The `resume` then calls the clause,
   under the handlers outside, with a Conduit continuation: a closure that

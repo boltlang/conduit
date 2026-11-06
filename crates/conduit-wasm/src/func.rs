@@ -167,11 +167,11 @@ pub(crate) fn lower_wrapper(
     plain: &Func,
 ) -> Result<Body, String> {
     let decl = &cx.m.handlers[&h];
-    let clause = crate::single(decl).1[i as usize];
-    let op = &cx.m.effects[&crate::single(decl).0].ops[i as usize];
+    let (_, _, clause) = crate::clause_at(decl, i);
+    let op = crate::op_at(cx.m, decl, i);
     let params = op.params.len() as u32;
     let (fields, _) = cx.frame(h)?;
-    let n_ops = crate::single(decl).1.len();
+    let n_ops = decl.len();
     let env = &fields[2 + n_ops..2 + n_ops + decl.env.len()];
     let mut code = Vec::new();
     for (&(at, s), ty) in env.iter().zip(&decl.env) {
@@ -1138,13 +1138,13 @@ impl<'m> FuncCx<'_, 'm> {
         let decl = &m.handlers[&h];
         let (env, body) = args.split_at(args.len() - 1);
         let (fields, size) = self.cx.frame(h)?;
-        let number = self.cx.effect_number(crate::single(decl).0)?;
+        let number = self.cx.handler_number(h)?;
         let ret = self.cx.func_index(decl.ret)?;
         let Ty::Fn(sig, _) = self.atom_ty(&body[0]) else {
             return Err(format!("the body of handle {h} isn't a closure"));
         };
         let results: Vec<u32> = sig.results.iter().map(|t| self.new_local(val(t))).collect();
-        let n_ops = crate::single(decl).1.len();
+        let n_ops = decl.len();
         if self.cx.is_switching(h) {
             // A frame with -1 in every clause slot, which `start` links in
             // before it runs the body.
@@ -1309,14 +1309,21 @@ impl<'m> FuncCx<'_, 'm> {
         Ok(false)
     }
 
-    /// `perform e.i(args)`: finds the nearest frame of `e`, trapping if
-    /// there's none, and calls its clause with the handler stack below the
-    /// frame, so that a `perform` in the clause goes to an outer handler.
+    /// `perform e.i(args)`: finds the nearest frame of a handler of `e`,
+    /// trapping if there's none, and calls its clause with the handler
+    /// stack below the frame, so that a `perform` in the clause goes to an
+    /// outer handler, even of another effect the same handler handles.
     fn perform(&mut self, e: conduit_ir::EffectId, i: u32, args: &[Atom]) -> Result<(), String> {
-        let number = self.cx.effect_number(e)?;
+        let handlers = self.cx.handlers_of(e, i);
         let clause = self.cx.clause_sig(e, i)?;
         let saved = self.new_local(ValType::I32);
         let found = self.new_local(ValType::I32);
+        // Where the frame holds the clause: the same for every handler of
+        // `e` if there's one, or else set when it's found.
+        let slot = match handlers[..] {
+            [(_, at)] => Slot::At(at),
+            _ => Slot::Local(self.new_local(ValType::I32)),
+        };
         self.emit(I::GlobalGet(HANDLERS));
         self.emit(I::LocalTee(saved));
         self.emit(I::LocalSet(found));
@@ -1326,11 +1333,31 @@ impl<'m> FuncCx<'_, 'm> {
         self.emit(I::LocalGet(found));
         self.emit(I::I32Eqz);
         self.trap_if();
-        self.emit(I::LocalGet(found));
-        self.emit(load(Storage::I32, 8));
-        self.emit(I::I32Const(number));
-        self.emit(I::I32Eq);
-        self.emit(I::BrIf(1));
+        match slot {
+            Slot::At(_) => {
+                self.emit(I::LocalGet(found));
+                self.emit(load(Storage::I32, 8));
+                self.emit(I::I32Const(handlers[0].0));
+                self.emit(I::I32Eq);
+                self.emit(I::BrIf(1));
+            }
+            Slot::Local(local) => {
+                let number = self.new_local(ValType::I32);
+                self.emit(I::LocalGet(found));
+                self.emit(load(Storage::I32, 8));
+                self.emit(I::LocalSet(number));
+                for &(n, at) in &handlers {
+                    self.emit(I::LocalGet(number));
+                    self.emit(I::I32Const(n));
+                    self.emit(I::I32Eq);
+                    self.open(I::If(BlockType::Empty));
+                    self.emit(I::I32Const(at as i32));
+                    self.emit(I::LocalSet(local));
+                    self.emit(I::Br(2));
+                    self.close();
+                }
+            }
+        }
         self.emit(I::LocalGet(found));
         self.emit(load(Storage::I32, 12));
         self.emit(I::LocalSet(found));
@@ -1339,15 +1366,30 @@ impl<'m> FuncCx<'_, 'm> {
         self.close();
 
         if let Some(tag) = self.cx.tag(e, i) {
-            return self.perform_or_suspend(e, i, args, saved, found, tag, clause);
+            return self.perform_or_suspend(e, i, args, (saved, found, slot), tag, clause);
         }
-        self.call_clause(i, args, saved, found, clause);
+        self.call_clause(slot, args, saved, found, clause);
         Ok(())
     }
 
-    /// Calls clause `i` of the frame in local `found` with `args`, under
-    /// the frames below it, and puts the handler stack in `saved` back.
-    fn call_clause(&mut self, i: u32, args: &[Atom], saved: u32, found: u32, clause: u32) {
+    /// Puts the clause slot `slot` of the frame in local `found` on the
+    /// stack.
+    fn load_slot(&mut self, found: u32, slot: Slot) {
+        self.emit(I::LocalGet(found));
+        match slot {
+            Slot::At(at) => self.emit(load(Storage::I32, at)),
+            Slot::Local(at) => {
+                self.emit(I::LocalGet(at));
+                self.emit(I::I32Add);
+                self.emit(load(Storage::I32, 0));
+            }
+        }
+    }
+
+    /// Calls the clause at `slot` of the frame in local `found` with
+    /// `args`, under the frames below it, and puts the handler stack in
+    /// `saved` back.
+    fn call_clause(&mut self, slot: Slot, args: &[Atom], saved: u32, found: u32, clause: u32) {
         self.emit(I::LocalGet(found));
         self.emit(load(Storage::I32, 12));
         self.emit(I::GlobalSet(HANDLERS));
@@ -1362,8 +1404,7 @@ impl<'m> FuncCx<'_, 'm> {
         });
         self.emit(I::LocalGet(found));
         self.atoms(args);
-        self.emit(I::LocalGet(found));
-        self.emit(load(Storage::I32, 16 + 4 * i));
+        self.load_slot(found, slot);
         self.emit(I::CallIndirect {
             type_index: clause,
             table_index: 0,
@@ -1380,22 +1421,19 @@ impl<'m> FuncCx<'_, 'm> {
     /// frame found may be one, with -1 in its clause slots, which is
     /// suspended to, or else one whose clause is called. The results go
     /// through locals, as both ways give them.
-    #[allow(clippy::too_many_arguments)]
     fn perform_or_suspend(
         &mut self,
         e: conduit_ir::EffectId,
         i: u32,
         args: &[Atom],
-        saved: u32,
-        found: u32,
+        (saved, found, slot): (u32, u32, Slot),
         tag: u32,
         clause: u32,
     ) -> Result<(), String> {
         let m = self.cx.m;
         let op = &m.effects[&e].ops[i as usize];
         let results: Vec<u32> = op.results.iter().map(|t| self.new_local(val(t))).collect();
-        self.emit(I::LocalGet(found));
-        self.emit(load(Storage::I32, 16 + 4 * i));
+        self.load_slot(found, slot);
         self.emit(I::I32Const(-1));
         self.emit(I::I32Eq);
         self.open(I::If(BlockType::Empty));
@@ -1449,7 +1487,7 @@ impl<'m> FuncCx<'_, 'm> {
         self.emit(I::LocalGet(saved));
         self.emit(I::GlobalSet(HANDLERS));
         self.emit(I::Else);
-        self.call_clause(i, args, saved, found, clause);
+        self.call_clause(slot, args, saved, found, clause);
         for &r in results.iter().rev() {
             self.emit(I::LocalSet(r));
         }
@@ -1944,4 +1982,13 @@ fn zero(ty: ValType) -> I<'static> {
         ValType::V128 => I::V128Const(0),
         ValType::Ref(r) => I::RefNull(r.heap_type),
     }
+}
+
+/// Where a frame holds the clause a `perform` calls: at an offset known
+/// when lowering, or one in a local, when handlers of the effect keep it
+/// in different places.
+#[derive(Clone, Copy)]
+enum Slot {
+    At(u32),
+    Local(u32),
 }

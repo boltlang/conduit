@@ -1,7 +1,9 @@
 // Handlers of several effects, as a Bolt `match` with effect arms lowers
 // to: one handler for State and Log, whose clauses run outside it, so what
 // they perform goes to the handlers around it, even an operation of the
-// other effect it handles.
+// other effect it handles. Their clauses are all tail-resumptive or
+// aborting, so Wasm lowers them with frames; see several_effects_switching
+// for one that isn't.
 effect State {
   () -> (i32)
   (i32) -> ()
@@ -27,9 +29,6 @@ handler fixed for State env(i32) ops(fixed_get, fixed_set) ret fixed_done
 
 // Logging reads the state, from the next State out, and logs it.
 handler log_state for State, Log does State env(ref i32, ref i32) ops(get_plain, set_plain; log_reads) ret job_done
-
-// Logging adds after the rest has run, so it isn't tail-resumptive.
-handler after for State, Log env(i32) ops(fixed_get, fixed_set; log_after) ret fixed_done
 
 // Fail gives -1, and Log records, as in job.
 handler fail_log for Fail, Log env(ref i32) ops(fail; record) ret sum_done
@@ -105,12 +104,6 @@ fn fixed_done(%x: i32, %r: i32) -> (i32) {
   jump ret(%r)
 }
 
-fn log_after(%x: i32, %m: i32, %k: cont() -> (i32)) -> (i32) {
-  let %r: i32 = resume(%k)
-  let %rm: i32 = add(%r, %m)
-  jump ret(%rm)
-}
-
 fn fail(%cell: ref i32, %k: cont() -> (i32)) -> (i32) {
   jump ret(-1i32)
 }
@@ -180,20 +173,6 @@ fn log_then_get() -> (i32) does State + Log {
   jump ret(%x)
 }
 
-// Each Log's continuation runs a get after it: 10 + 1 + 2.
-fn log_afterwards() -> (i32) {
-  let %body: imm fn() -> (i32) does State + Log = closure logs_then_get()
-  let %r: i32 = handle after(10i32, %body)
-  jump ret(%r)
-}
-
-fn logs_then_get() -> (i32) does State + Log {
-  let = perform Log.0(1i32)
-  let = perform Log.0(2i32)
-  let %x: i32 = perform State.0()
-  jump ret(%x)
-}
-
 // Logs 5, then fails: -1, with 5 recorded: 5 * 10 - 1.
 fn log_then_fail() -> (i32) {
   let %cell: ref i32 = ref_new(0i32)
@@ -249,9 +228,8 @@ fn get_then_log() -> (i32) does State + Log {
   jump ret(%x)
 }
 
-//# wasm-skip: a handler of several effects isn't supported yet
 //# run issue() == 200126i32
 //# run log_reads_outer() == 75i32
-//# run log_afterwards() == 13i32
 //# run log_then_fail() == 49i32
 //# run nested() == 10032i32
+//# wat

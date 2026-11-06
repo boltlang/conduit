@@ -10,14 +10,16 @@
 //! Effect handlers whose clauses are all tail-resumptive or aborting (see
 //! [`conduit_ir::clause`]) are lowered directly: a
 //! global holds a stack of handler frames in memory, `perform` finds the
-//! nearest frame of its effect and calls its clause through the table, and
+//! nearest frame of a handler of its effect and calls its clause through
+//! the table, and
 //! an aborting clause throws an exception, from exception handling, part
 //! of Wasm 3.0. A module with any other clause is lowered by evidence
 //! passing first ([`conduit_effects`]), so that it needs no stack
 //! switching.
 //!
-//! A handler frame is the header, its effect's number at 8, the next frame
-//! at 12, a table slot for each clause's wrapper from 16, then the
+//! A handler frame is the header, its handler's number at 8, the next frame
+//! at 12, a table slot for each clause's wrapper from 16, the clauses of
+//! each effect it handles in turn, then the
 //! handler's environment, then, for a handler with an aborting clause, its
 //! results, which that clause sets before it throws.
 //!
@@ -312,14 +314,22 @@ impl Cx<'_> {
         self.wrapper_slots + k
     }
 
-    /// The number of an effect, which its frames hold.
-    pub fn effect_number(&self, e: EffectId) -> Result<i32, String> {
+    /// The number of a handler, which its frames hold.
+    pub fn handler_number(&self, h: HandlerId) -> Result<i32, String> {
         self.m
-            .effects
+            .handlers
             .keys()
-            .position(|&k| k == e)
+            .position(|&k| k == h)
             .map(|i| i as i32 + 1)
-            .ok_or_else(|| format!("unknown effect {e}"))
+            .ok_or_else(|| format!("unknown handler {h}"))
+    }
+
+    /// The handlers that handle `e`, by their number, with where each
+    /// keeps its clause for `e.i` in its frames.
+    pub fn handlers_of(&self, e: EffectId, i: u32) -> Vec<(i32, u32)> {
+        (self.m.handlers.values().zip(1..))
+            .filter_map(|(decl, n)| Some((n, 16 + 4 * decl.slot(e, i)? as u32)))
+            .collect()
     }
 
     /// The table slot of the wrapper of clause `i` of `h`.
@@ -378,7 +388,7 @@ impl Cx<'_> {
     }
 
     /// The layout of a frame of `h`: its fields' offsets and its size. The
-    /// fields are the effect's number, the next frame, a slot per clause,
+    /// fields are the handler's number, the next frame, a slot per clause,
     /// the environment, and the results if `h` has an aborting clause.
     pub fn frame(&self, h: HandlerId) -> Result<(Vec<(u32, Storage)>, u32), String> {
         let decl = self
@@ -387,7 +397,7 @@ impl Cx<'_> {
             .get(&h)
             .ok_or_else(|| format!("unknown handler {h}"))?;
         let mut tys = vec![Ty::I32, Ty::I32];
-        tys.extend(std::iter::repeat_n(Ty::I32, crate::single(decl).1.len()));
+        tys.extend(std::iter::repeat_n(Ty::I32, decl.len()));
         tys.extend(decl.env.iter().cloned());
         if self.aborting.contains(&h) {
             let ret = self
@@ -465,18 +475,29 @@ pub fn emit_module_with(
     } else {
         m
     };
-    if let Some((&h, _)) = m.handlers.iter().find(|(_, d)| d.ops.len() != 1) {
-        return Err(Error {
-            item: Item::Handler(h),
-            message: "a handler of several effects isn't supported yet".into(),
-        });
-    }
-    let switching: BTreeSet<HandlerId> = m
+    let mut switching: BTreeSet<HandlerId> = m
         .handlers
         .keys()
         .copied()
         .filter(|&h| !conduit_ir::clause::direct_handler(m, h))
         .collect();
+    // A clause is lowered one way, so a handler that shares one with a
+    // handler that switches stacks switches too.
+    loop {
+        let shared: BTreeSet<FuncId> = (switching.iter())
+            .flat_map(|h| m.handlers[h].clauses().map(|(_, _, c)| c))
+            .collect();
+        let more: Vec<HandlerId> = (m.handlers.iter())
+            .filter(|(h, d)| {
+                !switching.contains(h) && d.clauses().any(|(_, _, c)| shared.contains(&c))
+            })
+            .map(|(&h, _)| h)
+            .collect();
+        if more.is_empty() {
+            break;
+        }
+        switching.extend(more);
+    }
 
     // Tail-resumptive and aborting clauses are lowered as plain functions,
     // without their continuation.
@@ -488,7 +509,7 @@ pub fn emit_module_with(
         if switching.contains(&h) {
             continue;
         }
-        for &clause in crate::single(decl).1 {
+        for (_, _, clause) in decl.clauses() {
             let Some(f) = m.funcs.get(&clause) else {
                 continue;
             };
@@ -507,7 +528,7 @@ pub fn emit_module_with(
     for (&h, decl) in &m.handlers {
         if !switching.contains(&h) {
             wrappers.insert(h, wrapper_slots);
-            wrapper_slots += crate::single(decl).1.len() as u32;
+            wrapper_slots += decl.len() as u32;
         }
     }
     let clause_slots = wrapper_slots;
@@ -605,13 +626,13 @@ pub fn emit_module_with(
         if switching.contains(&h) {
             continue;
         }
-        for i in 0..crate::single(decl).1.len() as u32 {
+        for i in 0..decl.len() as u32 {
             let err = |message| Error {
                 item: Item::Handler(h),
                 message,
             };
-            let ty = cx.clause_sig(crate::single(decl).0, i).map_err(err)?;
-            let clause = crate::single(decl).1[i as usize];
+            let (e, j, clause) = clause_at(decl, i);
+            let ty = cx.clause_sig(e, j).map_err(err)?;
             let plain = plain_clauses
                 .get(&clause)
                 .ok_or_else(|| err(format!("clause {clause} isn't tail-resumptive or aborting")))?;
@@ -627,7 +648,7 @@ pub fn emit_module_with(
             item: Item::Handler(h),
             message,
         };
-        let n = m.effects[&crate::single(&m.handlers[&h]).0].ops.len() as u32;
+        let n = m.handlers[&h].len() as u32;
         let disc = cx.disc_tag.is_some();
         let sig = cx.drive_sig(h, switch::Start::Body).map_err(err)?;
         let body = switch::lower_drive(&mut cx, h, switch::Start::Body).map_err(err)?;
@@ -646,7 +667,7 @@ pub fn emit_module_with(
         }
         let results = cx.handle_results(h).map_err(err)?;
         for i in 0..n {
-            let op = &m.effects[&crate::single(&m.handlers[&h]).0].ops[i as usize];
+            let op = op_at(m, &m.handlers[&h], i);
             let ksig = conduit_ir::Sig::new(
                 op.results.clone(),
                 m.funcs[&m.handlers[&h].ret].results.clone(),
@@ -687,7 +708,7 @@ pub fn emit_module_with(
     // The tables of Wasm continuations, after the function table.
     let mut cont_tables = Vec::new();
     for &h in &switching {
-        let n = m.effects[&crate::single(&m.handlers[&h]).0].ops.len() as u32;
+        let n = m.handlers[&h].len() as u32;
         for i in 0..n {
             let err = |message| Error {
                 item: Item::Handler(h),
@@ -1014,7 +1035,7 @@ fn plan_switching(cx: &mut Cx<'_>, switching: &BTreeSet<HandlerId>) -> Result<u3
         range
     };
     for &h in switching {
-        let n = cx.m.effects[&crate::single(&cx.m.handlers[&h]).0].ops.len() as u32;
+        let n = cx.m.handlers[&h].len() as u32;
         let start = take(&mut func, 1)[0];
         let tramp = take(&mut func, 1)[0];
         let drive = take(&mut func, n);
@@ -1048,9 +1069,8 @@ fn plan_switching(cx: &mut Cx<'_>, switching: &BTreeSet<HandlerId>) -> Result<u3
         cx.disc_tag = Some(tag);
         tag += 1;
     }
-    let effects: BTreeSet<EffectId> = switching
-        .iter()
-        .map(|h| crate::single(&cx.m.handlers[h]).0)
+    let effects: BTreeSet<EffectId> = (switching.iter())
+        .flat_map(|h| cx.m.handlers[h].effects())
         .collect();
     for e in effects {
         for i in 0..cx.m.effects[&e].ops.len() as u32 {
@@ -1192,9 +1212,17 @@ fn name_section(m: &Module, cx: &Cx<'_>) -> Option<NameSection> {
 #[cfg(test)]
 mod tests;
 
-/// The effect a handler handles, and its clauses: the backend handles one
-/// effect per handler so far, which [`lower`] checks.
-fn single(decl: &conduit_ir::HandlerDecl) -> (EffectId, &[FuncId]) {
-    let (e, clauses) = &decl.ops[0];
-    (*e, clauses)
+/// The effect and operation of clause `slot` of `decl`, counting all its
+/// clauses in order, as frames and stack-switching functions number them,
+/// and the clause.
+fn clause_at(decl: &conduit_ir::HandlerDecl, slot: u32) -> (EffectId, u32, FuncId) {
+    decl.clauses()
+        .nth(slot as usize)
+        .expect("a clause for every slot")
+}
+
+/// The signature of the operation of clause `slot` of `decl`.
+fn op_at<'m>(m: &'m Module, decl: &conduit_ir::HandlerDecl, slot: u32) -> &'m conduit_ir::Sig {
+    let (e, i, _) = clause_at(decl, slot);
+    &m.effects[&e].ops[i as usize]
 }
