@@ -1,0 +1,124 @@
+// Constant folding over an expression tree, as in the Perceus paper: the
+// sums and products of constants become constants, and the rest is
+// rebuilt, in the memory of the node it replaces when that's unique.
+
+data Expr {
+  (i32)
+  (i32)
+  (inherit Expr, inherit Expr)
+  (inherit Expr, inherit Expr)
+}
+
+// A tree of depth n: constants and variables at the leaves, sums and
+// products above them.
+fn build(%n: i32, %k: i32) -> (imm Expr) {
+  case %n {
+    0 =>
+      let %m: i32 = rem.s(%k, 3i32)
+      case %m {
+        0 =>
+          let %v: imm Expr = new Expr.1(%k)
+          jump ret(%v)
+        _ =>
+          let %leaf: imm Expr = new Expr.0(%k)
+          jump ret(%leaf)
+      }
+    _ =>
+      let %n1: i32 = sub(%n, 1i32)
+      let %k2: i32 = mul(%k, 2i32)
+      let %k21: i32 = add(%k2, 1i32)
+      let %l: imm Expr = call build(%n1, %k2)
+      let %r: imm Expr = call build(%n1, %k21)
+      let %c: imm Expr = new Expr.0(%k)
+      let %prod: imm Expr = new Expr.3(%c, %r)
+      let %s: imm Expr = new Expr.2(%l, %prod)
+      jump ret(%s)
+  }
+}
+
+fn fold(%e: imm Expr) -> (imm Expr) {
+  case %e {
+    Expr.2 =>
+      let %sl: imm Expr = get Expr.2.0(%e)
+      let %sr: imm Expr = get Expr.2.1(%e)
+      let %sa: imm Expr = call fold(%sl)
+      let %sb: imm Expr = call fold(%sr)
+      join keep_sum() =
+        let %sum: imm Expr = new Expr.2(%sa, %sb)
+        jump ret(%sum)
+      in
+      case %sa {
+        Expr.0 =>
+          case %sb {
+            Expr.0 =>
+              let %sx: i32 = get Expr.0.0(%sa)
+              let %sy: i32 = get Expr.0.0(%sb)
+              let %sz: i32 = add(%sx, %sy)
+              let %sc: imm Expr = new Expr.0(%sz)
+              jump ret(%sc)
+            _ => jump keep_sum()
+          }
+        _ => jump keep_sum()
+      }
+    Expr.3 =>
+      let %pl: imm Expr = get Expr.3.0(%e)
+      let %pr: imm Expr = get Expr.3.1(%e)
+      let %pa: imm Expr = call fold(%pl)
+      let %pb: imm Expr = call fold(%pr)
+      join keep_prod() =
+        let %prod: imm Expr = new Expr.3(%pa, %pb)
+        jump ret(%prod)
+      in
+      case %pa {
+        Expr.0 =>
+          case %pb {
+            Expr.0 =>
+              let %px: i32 = get Expr.0.0(%pa)
+              let %py: i32 = get Expr.0.0(%pb)
+              let %pz: i32 = mul(%px, %py)
+              let %pc: imm Expr = new Expr.0(%pz)
+              jump ret(%pc)
+            _ => jump keep_prod()
+          }
+        _ => jump keep_prod()
+      }
+    _ => jump ret(%e)
+  }
+}
+
+// The value with every variable 1.
+fn eval(%e: imm Expr) -> (i32) {
+  case %e {
+    Expr.0 =>
+      let %x: i32 = get Expr.0.0(%e)
+      jump ret(%x)
+    Expr.1 => jump ret(1i32)
+    Expr.2 =>
+      let %sl: imm Expr = get Expr.2.0(%e)
+      let %sr: imm Expr = get Expr.2.1(%e)
+      let %sa: i32 = call eval(%sl)
+      let %sb: i32 = call eval(%sr)
+      let %s: i32 = add(%sa, %sb)
+      jump ret(%s)
+    Expr.3 =>
+      let %pl: imm Expr = get Expr.3.0(%e)
+      let %pr: imm Expr = get Expr.3.1(%e)
+      let %pa: i32 = call eval(%pl)
+      let %pb: i32 = call eval(%pr)
+      let %p: i32 = mul(%pa, %pb)
+      jump ret(%p)
+  }
+}
+
+// eval(e) - eval(fold(e)), which folding mustn't change: 0.
+fn cfold(%n: i32) -> (i32) {
+  let %e: imm Expr = call build(%n, 1i32)
+  let %before: i32 = call eval(%e)
+  let %f: imm Expr = call fold(%e)
+  let %after: i32 = call eval(%f)
+  let %d: i32 = sub(%before, %after)
+  jump ret(%d)
+}
+
+//# run cfold(8i32) == 0i32
+//# bench

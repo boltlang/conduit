@@ -1,9 +1,24 @@
 fac(0i32)
-  optimized: steps 4, allocs 0, frees 0, peak live 0, count ops 0, reused 0 of 0, collections 0
-  counted: steps 4, allocs 0, frees 0, peak live 0, count ops 0, reused 0 of 0, collections 0
+                     steps   allocs    frees   peak  count ops  reused  fresh cycles
+  optimized              4        0        0      0          0       0      0      0
+  counts                 4        0        0      0          0       0      0      0
+  +borrows               4        0        0      0          0       0      0      0
+  +reuse                 4        0        0      0          0       0      0      0
+  +specialized           4        0        0      0          0       0      0      0
+  +cycles                4        0        0      0          0       0      0      0
 fac(1i32)
-  optimized: steps 4, allocs 0, frees 0, peak live 0, count ops 0, reused 0 of 0, collections 0
-  counted: steps 4, allocs 0, frees 0, peak live 0, count ops 0, reused 0 of 0, collections 0
+                     steps   allocs    frees   peak  count ops  reused  fresh cycles
+  optimized              4        0        0      0          0       0      0      0
+  counts                 4        0        0      0          0       0      0      0
+  +borrows               4        0        0      0          0       0      0      0
+  +reuse                 4        0        0      0          0       0      0      0
+  +specialized           4        0        0      0          0       0      0      0
+  +cycles                4        0        0      0          0       0      0      0
 fac(5i32)
-  optimized: steps 28, allocs 0, frees 0, peak live 0, count ops 0, reused 0 of 0, collections 0
-  counted: steps 28, allocs 0, frees 0, peak live 0, count ops 0, reused 0 of 0, collections 0
+                     steps   allocs    frees   peak  count ops  reused  fresh cycles
+  optimized             28        0        0      0          0       0      0      0
+  counts                28        0        0      0          0       0      0      0
+  +borrows              28        0        0      0          0       0      0      0
+  +reuse                28        0        0      0          0       0      0      0
+  +specialized          28        0        0      0          0       0      0      0
+  +cycles               28        0        0      0          0       0      0      0

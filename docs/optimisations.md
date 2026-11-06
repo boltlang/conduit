@@ -253,7 +253,11 @@ specializing drops: every count must be right.
 **Reuse** (`ownership::insert_reuse`, before `insert_counts`). In an arm
 `C =>` of a `case` on `x`, where the arm's own block has `x`'s last use,
 a `drop_reuse(x)` goes right after it, and the first `new C'` after that,
-of a constructor of the same shape, becomes `reuse C'` of its token. When
+of a constructor of the same shape, becomes `reuse C'` of its token. If
+the block has no such `new`, or uses `x` in its tail, each branch after it
+that doesn't use `x` gets the same treatment from its start, so inserting
+into a tree, which rebuilds a node in one of the arms of a comparison,
+still reuses it. When
 `x` turns out to be unique, the new object is built in its memory instead
 of freeing one and allocating the other: `map` over a list it owns makes
 no new cells. The `drop_reuse` goes right after the last use, not at the
@@ -261,6 +265,8 @@ no new cells. The `drop_reuse` goes right after the last use, not at the
 recursive call on a field still finds it unique. Only within the arm's
 block, so the token is always used, and not where the last use gives `x`
 away. It makes `x` owned, since `drop_reuse` takes it.
+A `drop_reuse` in a branch isn't specialized yet, since the `dup`s of
+its fields are in the block before it (see `tests/programs/bench`).
 
 **Specialized drops** (`ownership::specialize_drops`, after
 `insert_counts`). A `drop(x)` of an `imm` data object, in a block where

@@ -1,6 +1,16 @@
 main(4i32)
-  optimized: steps 74, allocs 5, frees 0, peak live 5, count ops 0, reused 0 of 0, collections 0
-  counted: steps 75, allocs 5, frees 5, peak live 5, count ops 1, reused 0 of 0, collections 0
+                     steps   allocs    frees   peak  count ops  reused  fresh cycles
+  optimized             74        5        0      5          0       0      0      0
+  counts                93        5        5      5         19       0      0      0
+  +borrows              75        5        5      5          1       0      0      0
+  +reuse                75        5        5      5          1       0      0      0
+  +specialized          75        5        5      5          1       0      0      0
+  +cycles               75        5        5      5          1       0      0      0
 skipped()
-  optimized: steps 33, allocs 5, frees 0, peak live 5, count ops 0, reused 0 of 0, collections 0
-  counted: steps 45, allocs 5, frees 5, peak live 5, count ops 5, reused 0 of 0, collections 0
+                     steps   allocs    frees   peak  count ops  reused  fresh cycles
+  optimized             33        5        0      5          0       0      0      0
+  counts                42        5        5      5          9       0      0      0
+  +borrows              39        5        5      5          5       0      0      0
+  +reuse                39        5        5      5          5       0      0      0
+  +specialized          45        5        5      5          5       0      0      0
+  +cycles               45        5        5      5          5       0      0      0

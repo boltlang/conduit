@@ -1,0 +1,8 @@
+bst(200i32)
+                     steps   allocs    frees   peak  count ops  reused  fresh cycles
+  optimized          16369     1428        0   1428          0       0      0      0
+  counts             21047     1428     1428    173       4678       0      0      0
+  +borrows           20644     1428     1428    173       4274       0      0      0
+  +reuse             20644      173      173    173       4274    1255     71      0
+  +specialized       20644      173      173    173       4274    1255     71      0
+  +cycles            20644      173      173    173       4274    1255     71      0

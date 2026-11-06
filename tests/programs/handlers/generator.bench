@@ -1,3 +1,8 @@
 main()
-  optimized: steps 1, allocs 0, frees 0, peak live 0, count ops 0, reused 0 of 0, collections 0
-  counted: steps 1, allocs 0, frees 0, peak live 0, count ops 0, reused 0 of 0, collections 0
+                     steps   allocs    frees   peak  count ops  reused  fresh cycles
+  optimized              1        0        0      0          0       0      0      0
+  counts                 1        0        0      0          0       0      0      0
+  +borrows               1        0        0      0          0       0      0      0
+  +reuse                 1        0        0      0          0       0      0      0
+  +specialized           1        0        0      0          0       0      0      0
+  +cycles                1        0        0      0          0       0      0      0

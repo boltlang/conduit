@@ -1,18 +1,48 @@
 generator()
-  optimized: steps 297, allocs 54, frees 0, peak live 54, count ops 0, reused 0 of 0, collections 0
-  counted: steps 440, allocs 54, frees 54, peak live 19, count ops 143, reused 0 of 0, collections 1
+                     steps   allocs    frees   peak  count ops  reused  fresh cycles
+  optimized            297       54        0     54          0       0      0      0
+  counts               440       54       54     19        143       0      0      0
+  +borrows             440       54       54     19        143       0      0      0
+  +reuse               440       54       54     19        143       0      0      0
+  +specialized         440       54       54     19        143       0      0      0
+  +cycles              440       54       54     19        143       0      0      1
 resumed_elsewhere(4i32)
-  optimized: steps 189, allocs 49, frees 0, peak live 49, count ops 0, reused 0 of 0, collections 0
-  counted: steps 297, allocs 49, frees 49, peak live 34, count ops 108, reused 0 of 0, collections 1
+                     steps   allocs    frees   peak  count ops  reused  fresh cycles
+  optimized            189       49        0     49          0       0      0      0
+  counts               297       49       26     34        108       0      0      0
+  +borrows             297       49       26     34        108       0      0      0
+  +reuse               297       49       26     34        108       0      0      0
+  +specialized         297       49       26     34        108       0      0      0
+  +cycles              297       49       49     34        108       0      0      1
 cancel_inside(0i32)
-  optimized: steps 178, allocs 40, frees 0, peak live 40, count ops 0, reused 0 of 0, collections 0
-  counted: steps 267, allocs 40, frees 40, peak live 25, count ops 89, reused 0 of 0, collections 1
+                     steps   allocs    frees   peak  count ops  reused  fresh cycles
+  optimized            178       40        0     40          0       0      0      0
+  counts               267       40       40     25         89       0      0      0
+  +borrows             267       40       40     25         89       0      0      0
+  +reuse               267       40       40     25         89       0      0      0
+  +specialized         267       40       40     25         89       0      0      0
+  +cycles              267       40       40     25         89       0      0      1
 cancel_inside(1i32)
-  optimized: steps 205, allocs 42, frees 0, peak live 42, count ops 0, reused 0 of 0, collections 0
-  counted: steps 301, allocs 42, frees 42, peak live 25, count ops 96, reused 0 of 0, collections 1
+                     steps   allocs    frees   peak  count ops  reused  fresh cycles
+  optimized            205       42        0     42          0       0      0      0
+  counts               301       42       42     25         96       0      0      0
+  +borrows             301       42       42     25         96       0      0      0
+  +reuse               301       42       42     25         96       0      0      0
+  +specialized         301       42       42     25         96       0      0      0
+  +cycles              301       42       42     25         96       0      0      1
 cancel_outside(0i32)
-  optimized: steps 126, allocs 33, frees 0, peak live 33, count ops 0, reused 0 of 0, collections 0
-  counted: steps 187, allocs 33, frees 33, peak live 22, count ops 61, reused 0 of 0, collections 1
+                     steps   allocs    frees   peak  count ops  reused  fresh cycles
+  optimized            126       33        0     33          0       0      0      0
+  counts               187       33       33     22         61       0      0      0
+  +borrows             187       33       33     22         61       0      0      0
+  +reuse               187       33       33     22         61       0      0      0
+  +specialized         187       33       33     22         61       0      0      0
+  +cycles              187       33       33     22         61       0      0      1
 cancel_outside(1i32)
-  optimized: steps 171, allocs 37, frees 0, peak live 37, count ops 0, reused 0 of 0, collections 0
-  counted: steps 245, allocs 37, frees 37, peak live 23, count ops 74, reused 0 of 0, collections 1
+                     steps   allocs    frees   peak  count ops  reused  fresh cycles
+  optimized            171       37        0     37          0       0      0      0
+  counts               245       37       37     23         74       0      0      0
+  +borrows             245       37       37     23         74       0      0      0
+  +reuse               245       37       37     23         74       0      0      0
+  +specialized         245       37       37     23         74       0      0      0
+  +cycles              245       37       37     23         74       0      0      1

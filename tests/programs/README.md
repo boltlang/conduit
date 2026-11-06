@@ -40,7 +40,7 @@ checks apply to that crate.
 | `//# opt: dce, copies` | The same, but after only those passes, in that order, each run until nothing changes. |
 | `//# counted` | The program counts its references by hand: the evaluator runs its `run` checks counting, and each run must free everything but its results. |
 | `//# counts` | The program with reuse and counts inserted and drops specialized matches `<name>.counts.conduit`. |
-| `//# bench` | What each `run` check does in the evaluator matches `<name>.bench`: steps, allocations, frees, the most objects live at once, count ops, reuse and cycle collections, after the optimizer (`optimized`), and with reuse and counts too, cycles collected (`counted`). These are the same every time, so a pass that makes a program do more shows up as a diff. |
+| `//# bench` | What each `run` check does in the evaluator matches `<name>.bench`: steps, allocations, frees, the most objects live at once, count ops, reuse and cycle collections. A row for each way of compiling it, each adding one thing after the optimizer: no counts (`optimized`), `counts` with every parameter owned, `+borrows`, `+reuse`, `+specialized` drops, and `+cycles` collected. These are the same every time, so a pass that makes a program do more shows up as a diff. `bench/` has benchmarks from the Perceus paper's set. |
 
 Arguments and results are literals as the text format writes them: `5i32`,
 `-1i64`, `1.5f32`, `1e300f64`, `f32_bits(2143289344)`. Floats are compared

@@ -1,0 +1,70 @@
+// N-queens, counting the solutions, with the queens placed so far in a
+// list, as in the Perceus paper's benchmarks. Lists are shared between
+// the tries of a row, so little is unique.
+
+data List {
+  ()
+  (i32, inherit List)
+}
+
+// Whether a queen in column q is safe from the queens in qs, the nearest d
+// rows up.
+fn safe(%q: i32, %d: i32, %qs: imm List) -> (i32) {
+  case %qs {
+    List.0 => jump ret(1i32)
+    List.1 =>
+      let %h: i32 = get List.1.0(%qs)
+      let %t: imm List = get List.1.1(%qs)
+      let %same: i32 = eq(%q, %h)
+      let %hd: i32 = add(%h, %d)
+      let %up: i32 = eq(%q, %hd)
+      let %hm: i32 = sub(%h, %d)
+      let %down: i32 = eq(%q, %hm)
+      let %a: i32 = or(%same, %up)
+      let %bad: i32 = or(%a, %down)
+      case %bad {
+        1 => jump ret(0i32)
+        _ =>
+          let %d1: i32 = add(%d, 1i32)
+          let %r: i32 = call safe(%q, %d1, %t)
+          jump ret(%r)
+      }
+  }
+}
+
+// The solutions with qs in the rows above row.
+fn place(%n: i32, %row: i32, %qs: imm List) -> (i32) {
+  let %full: i32 = eq(%row, %n)
+  case %full {
+    1 => jump ret(1i32)
+    _ =>
+      join rec cols(%c: i32, %acc: i32) =
+        let %end: i32 = eq(%c, %n)
+        case %end {
+          1 => jump ret(%acc)
+          _ =>
+            let %ok: i32 = call safe(%c, 1i32, %qs)
+            let %c1: i32 = add(%c, 1i32)
+            case %ok {
+              1 =>
+                let %qs1: imm List = new List.1(%c, %qs)
+                let %row1: i32 = add(%row, 1i32)
+                let %k: i32 = call place(%n, %row1, %qs1)
+                let %acc1: i32 = add(%acc, %k)
+                jump cols(%c1, %acc1)
+              _ => jump cols(%c1, %acc)
+            }
+        }
+      in jump cols(0i32, 0i32)
+  }
+}
+
+fn queens(%n: i32) -> (i32) {
+  let %nil: imm List = new List.0()
+  let %r: i32 = call place(%n, 0i32, %nil)
+  jump ret(%r)
+}
+
+//# run queens(6i32) == 4i32
+//# run queens(8i32) == 92i32
+//# bench

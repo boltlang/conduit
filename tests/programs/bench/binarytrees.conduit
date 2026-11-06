@@ -1,0 +1,53 @@
+// Binary trees: build complete trees and count their nodes, over and over,
+// which is all allocation and freeing.
+
+data Tree {
+  ()
+  (inherit Tree, inherit Tree)
+}
+
+fn make(%d: i32) -> (imm Tree) {
+  case %d {
+    0 =>
+      let %leaf: imm Tree = new Tree.0()
+      jump ret(%leaf)
+    _ =>
+      let %d1: i32 = sub(%d, 1i32)
+      let %l: imm Tree = call make(%d1)
+      let %r: imm Tree = call make(%d1)
+      let %t: imm Tree = new Tree.1(%l, %r)
+      jump ret(%t)
+  }
+}
+
+fn check(%t: imm Tree) -> (i32) {
+  case %t {
+    Tree.0 => jump ret(1i32)
+    Tree.1 =>
+      let %l: imm Tree = get Tree.1.0(%t)
+      let %r: imm Tree = get Tree.1.1(%t)
+      let %a: i32 = call check(%l)
+      let %b: i32 = call check(%r)
+      let %ab: i32 = add(%a, %b)
+      let %n: i32 = add(%ab, 1i32)
+      jump ret(%n)
+  }
+}
+
+// The nodes of n trees of depth d.
+fn trees(%d: i32, %n: i32) -> (i32) {
+  join rec go(%i: i32, %acc: i32) =
+    case %i {
+      0 => jump ret(%acc)
+      _ =>
+        let %t: imm Tree = call make(%d)
+        let %c: i32 = call check(%t)
+        let %acc1: i32 = add(%acc, %c)
+        let %i1: i32 = sub(%i, 1i32)
+        jump go(%i1, %acc1)
+    }
+  in jump go(%n, 0i32)
+}
+
+//# run trees(6i32, 20i32) == 2540i32
+//# bench

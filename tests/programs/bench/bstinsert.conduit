@@ -1,0 +1,75 @@
+// Inserting keys into a binary search tree, without balancing: each insert
+// copies the path to its key, which is unique, so reuse rebuilds it in
+// place.
+
+data Tree {
+  ()
+  (inherit Tree, i32, inherit Tree)
+}
+
+fn insert(%t: imm Tree, %k: i32) -> (imm Tree) {
+  case %t {
+    Tree.0 =>
+      let %leaf: imm Tree = new Tree.0()
+      let %leaf2: imm Tree = new Tree.0()
+      let %node: imm Tree = new Tree.1(%leaf, %k, %leaf2)
+      jump ret(%node)
+    Tree.1 =>
+      let %l: imm Tree = get Tree.1.0(%t)
+      let %x: i32 = get Tree.1.1(%t)
+      let %r: imm Tree = get Tree.1.2(%t)
+      let %less: i32 = lt.s(%k, %x)
+      case %less {
+        1 =>
+          let %l1: imm Tree = call insert(%l, %k)
+          let %left: imm Tree = new Tree.1(%l1, %x, %r)
+          jump ret(%left)
+        _ =>
+          let %more: i32 = gt.s(%k, %x)
+          case %more {
+            1 =>
+              let %r1: imm Tree = call insert(%r, %k)
+              let %right: imm Tree = new Tree.1(%l, %x, %r1)
+              jump ret(%right)
+            _ => jump ret(%t)
+          }
+      }
+  }
+}
+
+fn sum(%t: imm Tree) -> (i32) {
+  case %t {
+    Tree.0 => jump ret(0i32)
+    Tree.1 =>
+      let %l: imm Tree = get Tree.1.0(%t)
+      let %x: i32 = get Tree.1.1(%t)
+      let %r: imm Tree = get Tree.1.2(%t)
+      let %a: i32 = call sum(%l)
+      let %b: i32 = call sum(%r)
+      let %ab: i32 = add(%a, %b)
+      let %s: i32 = add(%ab, %x)
+      jump ret(%s)
+  }
+}
+
+// The sum of the distinct keys (i * 37) % 101 for i in 0..n.
+fn bst(%n: i32) -> (i32) {
+  let %empty: imm Tree = new Tree.0()
+  join rec go(%i: i32, %t: imm Tree) =
+    let %done: i32 = eq(%i, %n)
+    case %done {
+      1 =>
+        let %s: i32 = call sum(%t)
+        jump ret(%s)
+      _ =>
+        let %m: i32 = mul(%i, 37i32)
+        let %k: i32 = rem.s(%m, 101i32)
+        let %t1: imm Tree = call insert(%t, %k)
+        let %i1: i32 = add(%i, 1i32)
+        jump go(%i1, %t1)
+    }
+  in jump go(0i32, %empty)
+}
+
+//# run bst(200i32) == 5050i32
+//# bench

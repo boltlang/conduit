@@ -1,6 +1,16 @@
 run(10i32)
-  optimized: steps 45, allocs 0, frees 0, peak live 0, count ops 0, reused 0 of 0, collections 0
-  counted: steps 45, allocs 0, frees 0, peak live 0, count ops 0, reused 0 of 0, collections 0
+                     steps   allocs    frees   peak  count ops  reused  fresh cycles
+  optimized             45        0        0      0          0       0      0      0
+  counts                45        0        0      0          0       0      0      0
+  +borrows              45        0        0      0          0       0      0      0
+  +reuse                45        0        0      0          0       0      0      0
+  +specialized          45        0        0      0          0       0      0      0
+  +cycles               45        0        0      0          0       0      0      0
 run(0i32)
-  optimized: steps 5, allocs 0, frees 0, peak live 0, count ops 0, reused 0 of 0, collections 0
-  counted: steps 5, allocs 0, frees 0, peak live 0, count ops 0, reused 0 of 0, collections 0
+                     steps   allocs    frees   peak  count ops  reused  fresh cycles
+  optimized              5        0        0      0          0       0      0      0
+  counts                 5        0        0      0          0       0      0      0
+  +borrows               5        0        0      0          0       0      0      0
+  +reuse                 5        0        0      0          0       0      0      0
+  +specialized           5        0        0      0          0       0      0      0
+  +cycles                5        0        0      0          0       0      0      0

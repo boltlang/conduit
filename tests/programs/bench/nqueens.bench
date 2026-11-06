@@ -1,0 +1,16 @@
+queens(6i32)
+                     steps   allocs    frees   peak  count ops  reused  fresh cycles
+  optimized          28795      153        0    153          0       0      0      0
+  counts             34304      153      153      7       5509       0      0      0
+  +borrows           29100      153      153      7        305       0      0      0
+  +reuse             29100      153      153      7        305       0      0      0
+  +specialized       29100      153      153      7        305       0      0      0
+  +cycles            29100      153      153      7        305       0      0      0
+queens(8i32)
+                     steps   allocs    frees   peak  count ops  reused  fresh cycles
+  optimized         630691     2057        0   2057          0       0      0      0
+  counts            746808     2057     2057      9     116117       0      0      0
+  +borrows          634804     2057     2057      9       4113       0      0      0
+  +reuse            634804     2057     2057      9       4113       0      0      0
+  +specialized      634804     2057     2057      9       4113       0      0      0
+  +cycles           634804     2057     2057      9       4113       0      0      0
