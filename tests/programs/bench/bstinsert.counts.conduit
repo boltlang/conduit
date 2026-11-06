@@ -1,0 +1,97 @@
+data Tree {
+  ()
+  (inherit Tree, i32, inherit Tree)
+}
+
+fn insert(%t: imm Tree, %k: i32) -> (imm Tree) {
+  case %t {
+    Tree.0 =>
+      let %14: reuse Tree.0 = drop_reuse(%t)
+      let %leaf: imm Tree = reuse Tree.0(%14)
+      let %leaf2: imm Tree = new Tree.0()
+      let %node: imm Tree = new Tree.1(%leaf, %k, %leaf2)
+      jump ret(%node)
+    Tree.1 =>
+      let %l: imm Tree = get Tree.1.0(%t)
+      let %x: i32 = get Tree.1.1(%t)
+      let %r: imm Tree = get Tree.1.2(%t)
+      let %less: i32 = lt.s(%k, %x)
+      case %less {
+        1 =>
+          let %17: i32 = is_unique(%t)
+          join j1(%15: reuse Tree.1) =
+            let %l1: imm Tree = call insert(%l, %k)
+            let %left: imm Tree = reuse Tree.1(%15, %l1, %x, %r)
+            jump ret(%left)
+          in
+          case %17 {
+            1 =>
+              let %18: reuse Tree.1 = reuse_token(%t)
+              jump j1(%18)
+            _ =>
+              let = dup(%l)
+              let = dup(%r)
+              let = decref(%t)
+              let %19: reuse Tree.1 = undefined()
+              jump j1(%19)
+          }
+        _ =>
+          let %more: i32 = gt.s(%k, %x)
+          case %more {
+            1 =>
+              let %20: i32 = is_unique(%t)
+              join j2(%16: reuse Tree.1) =
+                let %r1: imm Tree = call insert(%r, %k)
+                let %right: imm Tree = reuse Tree.1(%16, %l, %x, %r1)
+                jump ret(%right)
+              in
+              case %20 {
+                1 =>
+                  let %21: reuse Tree.1 = reuse_token(%t)
+                  jump j2(%21)
+                _ =>
+                  let = dup(%l)
+                  let = dup(%r)
+                  let = decref(%t)
+                  let %22: reuse Tree.1 = undefined()
+                  jump j2(%22)
+              }
+            _ => jump ret(%t)
+          }
+      }
+  }
+}
+
+fn sum(%t: imm Tree) -> (i32) {
+  case %t {
+    Tree.0 => jump ret(0i32)
+    Tree.1 =>
+      let %l: imm Tree = get Tree.1.0(%t)
+      let %x: i32 = get Tree.1.1(%t)
+      let %r: imm Tree = get Tree.1.2(%t)
+      let %a: i32 = call sum(%l)
+      let %b: i32 = call sum(%r)
+      let %ab: i32 = add(%a, %b)
+      let %s: i32 = add(%ab, %x)
+      jump ret(%s)
+  }
+}
+
+fn bst(%n: i32) -> (i32) {
+  let %empty: imm Tree = new Tree.0()
+  join rec go(%i: i32, %t: imm Tree) =
+    let %done: i32 = eq(%i, %n)
+    case %done {
+      1 =>
+        let %s: i32 = call sum(%t)
+        let = drop(%t)
+        jump ret(%s)
+      _ =>
+        let %m: i32 = mul(%i, 37i32)
+        let %k: i32 = rem.s(%m, 101i32)
+        let %t1: imm Tree = call insert(%t, %k)
+        let %i1: i32 = add(%i, 1i32)
+        jump go(%i1, %t1)
+    }
+  in jump go(0i32, %empty)
+}

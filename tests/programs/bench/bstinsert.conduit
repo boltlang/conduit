@@ -73,3 +73,4 @@ fn bst(%n: i32) -> (i32) {
 
 //# run bst(200i32) == 5050i32
 //# bench
+//# counts

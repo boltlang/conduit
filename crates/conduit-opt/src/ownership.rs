@@ -638,8 +638,20 @@ pub fn specialize_drops(m: &mut Module) {
 /// have changed since they were read, and only where a `dup` cancels: a
 /// `drop` with nothing to cancel is as fast as its expansion.
 pub fn specialize_func(data: &BTreeMap<DataId, DataDecl>, f: &mut Func) {
+    let mut reads = BTreeMap::new();
+    let mut todo = vec![&f.body];
+    while let Some(b) = todo.pop() {
+        for l in &b.lets {
+            if let (Op::Get(c, i), [Atom::Var(x)], [y]) = (&l.op, &l.args[..], &l.binds[..])
+                && matches!(f.var_ty(*x), Ty::Data(_, Mutability::Imm, ..))
+            {
+                reads.insert(*y, (*x, *c, *i));
+            }
+        }
+        children(b, &mut todo);
+    }
     let body = std::mem::replace(&mut f.body, Tail::Unreachable.into());
-    f.body = Specialize { data, f }.block(body);
+    f.body = Specialize { data, f, reads }.block(body);
 }
 
 /// A `dup` of a field that can move into the branches of a specialized
@@ -654,10 +666,17 @@ struct Sink {
 struct Specialize<'a> {
     data: &'a BTreeMap<DataId, DataDecl>,
     f: &'a mut Func,
+    /// What each variable was read from by `get`, of an `imm` object,
+    /// whose fields don't change: the object, the constructor and the
+    /// field. A variable is bound once, before its uses, so this holds
+    /// wherever it's used.
+    reads: BTreeMap<Var, (Var, CtorId, u32)>,
 }
 
 impl Specialize<'_> {
     fn block(&mut self, mut b: Block) -> Block {
+        self.push_dups(&mut b);
+        cancel_dups(&mut b.lets);
         for d in 0..b.lets.len() {
             if let Some(clone) = self.freezes(&b.lets, d) {
                 let mut rest_lets = b.lets.split_off(clone + 1);
@@ -720,6 +739,51 @@ impl Specialize<'_> {
             tail => tail,
         };
         b
+    }
+
+    /// Moves the `dup`s at the end of `b` of fields read from an object that
+    /// a branch of its `case` drops into the start of every branch, so that
+    /// the `drop` there can be specialized: the `dup` is then in its block.
+    /// Only a `dup` that nothing after it counts or gives away, neither the
+    /// field nor the object, since a `drop` of the object could free the
+    /// field.
+    fn push_dups(&self, b: &mut Block) {
+        let Tail::Case { arms, default, .. } = &mut b.tail else {
+            return;
+        };
+        let mut dropped = Set::new();
+        for body in arms.iter().map(|a| &a.body).chain(default.as_deref()) {
+            dropped_in(body, &mut dropped);
+        }
+        let mut moved = Vec::new();
+        for s in (0..b.lets.len()).rev() {
+            let (Op::Dup, [Atom::Var(y)]) = (&b.lets[s].op, &b.lets[s].args[..]) else {
+                continue;
+            };
+            let Some(&(x, ..)) = self.reads.get(y) else {
+                continue;
+            };
+            let touched = b.lets[s + 1..].iter().any(|l| {
+                (l.args.iter().enumerate()).any(|(p, a)| {
+                    (*a == Atom::Var(*y) || *a == Atom::Var(x))
+                        && (is_count(&l.op) || takes(&l.op, p))
+                })
+            });
+            if dropped.contains(&x) && !touched {
+                moved.push(b.lets.remove(s));
+            }
+        }
+        if moved.is_empty() {
+            return;
+        }
+        moved.reverse();
+        for body in arms
+            .iter_mut()
+            .map(|a| &mut a.body)
+            .chain(default.as_deref_mut())
+        {
+            body.lets.splice(0..0, moved.iter().cloned());
+        }
     }
 
     /// If `lets[d]` is a `drop(a)` whose array was last used by an
@@ -820,34 +884,29 @@ impl Specialize<'_> {
         if !matches!(self.f.var_ty(*x), Ty::Data(_, Mutability::Imm, ..)) {
             return None;
         }
-        // What each variable was read from, in this block.
-        let mut reads: BTreeMap<Var, (CtorId, u32)> = BTreeMap::new();
         let mut ctor = None;
         let mut sinks: Vec<Sink> = Vec::new();
         for (s, l) in lets[..d].iter().enumerate() {
-            match (&l.op, &l.args[..], &l.binds[..]) {
-                (Op::Get(c, i), [Atom::Var(o)], [y]) if o == x => {
-                    reads.insert(*y, (*c, *i));
-                }
-                (Op::Dup, [Atom::Var(y)], []) => {
-                    let Some(&(c, i)) = reads.get(y) else {
-                        continue;
-                    };
-                    let used_later = lets[s + 1..d].iter().any(|l| {
-                        l.args.iter().enumerate().any(|(p, a)| {
-                            *a == Atom::Var(*y) && (is_count(&l.op) || takes(&l.op, p))
-                        })
-                    });
-                    if !used_later && !sinks.iter().any(|sink| sink.field == i) {
-                        ctor = Some(c);
-                        sinks.push(Sink {
-                            field: i,
-                            at: s,
-                            var: *y,
-                        });
-                    }
-                }
-                _ => {}
+            let (Op::Dup, [Atom::Var(y)], []) = (&l.op, &l.args[..], &l.binds[..]) else {
+                continue;
+            };
+            let Some(&(o, c, i)) = self.reads.get(y) else {
+                continue;
+            };
+            if o != *x {
+                continue;
+            }
+            let used_later = lets[s + 1..d].iter().any(|l| {
+                (l.args.iter().enumerate())
+                    .any(|(p, a)| *a == Atom::Var(*y) && (is_count(&l.op) || takes(&l.op, p)))
+            });
+            if !used_later && !sinks.iter().any(|sink| sink.field == i) {
+                ctor = Some(c);
+                sinks.push(Sink {
+                    field: i,
+                    at: s,
+                    var: *y,
+                });
             }
         }
         ctor.map(|c| (c, sinks))
@@ -1101,4 +1160,39 @@ fn reuse_arm(
             source: None,
         },
     );
+}
+
+/// The variables a `drop` or `drop_reuse` in `b` takes, in its own block or
+/// in the branches of its `case`s.
+fn dropped_in(b: &Block, out: &mut Set) {
+    for l in &b.lets {
+        if let (Op::Drop | Op::DropReuse, [Atom::Var(x)]) = (&l.op, &l.args[..]) {
+            out.insert(*x);
+        }
+    }
+    if let Tail::Case { arms, default, .. } = &b.tail {
+        for body in arms.iter().map(|a| &a.body).chain(default.as_deref()) {
+            dropped_in(body, out);
+        }
+    }
+}
+
+/// Removes each `dup(y)` that a `drop(y)` follows in `lets` with no use of
+/// `y` in between: together, they change nothing.
+fn cancel_dups(lets: &mut Vec<Let>) {
+    let mut s = 0;
+    while s < lets.len() {
+        if let (Op::Dup, [y]) = (&lets[s].op, &lets[s].args[..]) {
+            let next = (s + 1..lets.len()).find(|&d| lets[d].args.contains(y));
+            if let Some(d) = next
+                && lets[d].op == Op::Drop
+                && lets[d].args.len() == 1
+            {
+                lets.remove(d);
+                lets.remove(s);
+                continue;
+            }
+        }
+        s += 1;
+    }
 }

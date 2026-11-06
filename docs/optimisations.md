@@ -265,8 +265,6 @@ no new cells. The `drop_reuse` goes right after the last use, not at the
 recursive call on a field still finds it unique. Only within the arm's
 block, so the token is always used, and not where the last use gives `x`
 away. It makes `x` owned, since `drop_reuse` takes it.
-A `drop_reuse` in a branch isn't specialized yet, since the `dup`s of
-its fields are in the block before it (see `tests/programs/bench`).
 
 **Specialized drops** (`ownership::specialize_drops`, after
 `insert_counts`). A `drop(x)` of an `imm` data object, in a block where
@@ -282,6 +280,13 @@ with nothing to cancel is already as fast as its expansion. A
 taking the token: `reuse_token(x)` when `x` is unique, so that `map`
 rebuilds a unique cell with no counts at all, and `undefined`, which is no
 memory, after the `decref` when it's shared.
+
+The `dup`s at the end of a block, of fields read from an object that a
+branch of the block's `case` drops, move into the start of every branch
+first, when nothing after them counts or gives away the field or the
+object, so that the `drop` in a branch can cancel them, as in a search
+tree's insert. A `dup(y)` that a `drop(y)` then follows with no use of `y`
+between goes, with the `drop`.
 
 It also **freezes in place**: an `array_clone` to `imm` that is its
 array's last use, followed by the array's `drop`, becomes a branch on
