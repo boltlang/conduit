@@ -38,3 +38,4 @@ fn produce() -> () does Yield {
 
 //# run main() == 6i32
 //# wat
+//# bench

@@ -52,3 +52,4 @@ fn is_nil(%n: i32) -> (i32) {
 //# run sum_build(10i32) == 55i32
 //# run is_nil(0i32) == 1i32
 //# run is_nil(3i32) == 0i32
+//# bench

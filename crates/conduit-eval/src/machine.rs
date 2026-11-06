@@ -9,7 +9,7 @@ use conduit_ir::{
 
 use crate::error::{Error, ErrorKind, unverified};
 use crate::prim;
-use crate::value::{Continuation, Count, Leaks, ObjId, Object, Value};
+use crate::value::{Continuation, Count, Leaks, ObjId, Object, Stats, Value};
 
 /// Provides the functions of [`Op::CallExtern`].
 pub trait Host {
@@ -115,6 +115,11 @@ pub struct Machine<'p, P: ?Sized, H> {
     buffered: Vec<bool>,
     /// The objects that may be the roots of garbage cycles.
     roots: Vec<ObjId>,
+    /// What the machine has done so far, for benchmarks. Every number is
+    /// the same each time a program runs.
+    pub stats: Stats,
+    /// How many objects are allocated and not freed.
+    live: u64,
     source: Option<SourceId>,
 }
 
@@ -136,6 +141,8 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
             colors: Vec::new(),
             buffered: Vec::new(),
             roots: Vec::new(),
+            stats: Stats::default(),
+            live: 0,
             source: None,
         }
     }
@@ -306,6 +313,9 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
     }
 
     fn alloc_id(&mut self, object: Object<'p>) -> ObjId {
+        self.stats.allocs += 1;
+        self.live += 1;
+        self.stats.peak_live = self.stats.peak_live.max(self.live);
         self.heap.push(object);
         self.counts.push(Count::Live(1));
         self.colors.push(Color::Black);
@@ -355,6 +365,7 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
             match self.counts.get_mut(i) {
                 Some(Count::Live(1)) => {
                     self.counts[i] = Count::Freed;
+                    self.freed();
                     todo.extend_from_slice(self.heap[i].values());
                 }
                 Some(Count::Live(c)) => {
@@ -415,7 +426,10 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
             return Ok(());
         }
         match self.counts.get_mut(id.0 as usize) {
-            Some(c @ Count::Live(1)) => *c = Count::Freed,
+            Some(c @ Count::Live(1)) => {
+                *c = Count::Freed;
+                self.freed();
+            }
             Some(Count::Freed | Count::Reserved) => return Err(freed("free")),
             Some(_) => return Err(ErrorKind::Undefined("free of a shared object".into())),
             None => return Err(unverified("dangling object")),
@@ -480,6 +494,9 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
     /// roots, and empties the buffer.
     pub fn collect_cycles(&mut self) {
         let roots = std::mem::take(&mut self.roots);
+        if !roots.is_empty() {
+            self.stats.collections += 1;
+        }
         // Mark gray from each root that's still purple, taking away the
         // counts its subgraph gives itself.
         let mut kept = Vec::new();
@@ -562,7 +579,14 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
         // Freed only once found, so that the traversal sees them live.
         for u in white {
             self.counts[u.0 as usize] = Count::Freed;
+            self.freed();
         }
+    }
+
+    /// Counts an object freed.
+    fn freed(&mut self) {
+        self.stats.frees += 1;
+        self.live -= 1;
     }
 
     fn dup_all(&mut self, values: &[Value]) -> Step<()> {
@@ -615,6 +639,9 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
     /// Allocates an object that's never counted, for a constant.
     fn alloc_immortal(&mut self, object: Object<'p>) -> Value {
         let id = self.alloc_id(object);
+        // A constant isn't allocated by the program.
+        self.stats.allocs -= 1;
+        self.live -= 1;
         self.counts[id.0 as usize] = Count::Immortal;
         Value::Obj(id)
     }
@@ -639,6 +666,7 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                 }
                 *fuel -= 1;
             }
+            self.stats.steps += 1;
             if let Some(results) = self.step()? {
                 return Ok(results);
             }
@@ -896,6 +924,18 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
     }
 
     fn op(&mut self, op: &'p Op, args: Vec<Value>, binds: &'p [Var], next: At<'p>) -> Step<()> {
+        if matches!(
+            op,
+            Op::Dup
+                | Op::Drop
+                | Op::IsUnique
+                | Op::Free
+                | Op::DecRef
+                | Op::DropReuse
+                | Op::ReuseToken
+        ) {
+            self.stats.count_ops += 1;
+        }
         let results = match op {
             Op::Prim(prim) => vec![prim::eval(prim, &args)?],
             Op::Call(f, margs, _) => {
@@ -1214,8 +1254,12 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                     is_mut,
                 };
                 match *token {
-                    Value::Unset => vec![self.alloc(object)],
+                    Value::Unset => {
+                        self.stats.fresh += 1;
+                        vec![self.alloc(object)]
+                    }
                     Value::Obj(id) if self.counts.get(id.0 as usize) == Some(&Count::Reserved) => {
+                        self.stats.reused += 1;
                         self.heap[id.0 as usize] = object;
                         self.counts[id.0 as usize] = Count::Live(1);
                         self.colors[id.0 as usize] = Color::Black;

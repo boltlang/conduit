@@ -1,0 +1,6 @@
+main(4i32)
+  optimized: steps 82, allocs 9, frees 0, peak live 9, count ops 0, reused 0 of 0, collections 0
+  counted: steps 104, allocs 5, frees 5, peak live 5, count ops 9, reused 4 of 4, collections 0
+frozen(5i32)
+  optimized: steps 6, allocs 1, frees 0, peak live 1, count ops 0, reused 0 of 0, collections 0
+  counted: steps 7, allocs 1, frees 1, peak live 1, count ops 1, reused 0 of 0, collections 0

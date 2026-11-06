@@ -69,3 +69,4 @@ fn frozen(%n: i32) -> (i32) {
 //# run main(4i32) == 14i32
 //# run frozen(5i32) == 10i32
 //# counts
+//# bench

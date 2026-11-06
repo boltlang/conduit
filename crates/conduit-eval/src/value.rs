@@ -181,3 +181,43 @@ impl std::fmt::Display for Leaks {
         }
     }
 }
+
+/// What a [`Machine`](crate::Machine) has done, for benchmarks: numbers that
+/// are the same each time a program runs, unlike its time, so a change in
+/// them is a change in the program or in what compiled it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Stats {
+    /// `let`s and tails run.
+    pub steps: u64,
+    /// Objects allocated, constants not among them.
+    pub allocs: u64,
+    /// Objects freed, by counting or by the cycle collector.
+    pub frees: u64,
+    /// The most objects allocated and not freed at once.
+    pub peak_live: u64,
+    /// Ops that only count references, run: `dup`, `drop`, `is_unique`,
+    /// `free`, `decref`, `drop_reuse` and `reuse_token`.
+    pub count_ops: u64,
+    /// `reuse`s that built in a token's memory, and those that allocated.
+    pub reused: u64,
+    pub fresh: u64,
+    /// Cycle collections that had something to look at.
+    pub collections: u64,
+}
+
+impl std::fmt::Display for Stats {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "steps {}, allocs {}, frees {}, peak live {}, count ops {}, reused {} of {}, collections {}",
+            self.steps,
+            self.allocs,
+            self.frees,
+            self.peak_live,
+            self.count_ops,
+            self.reused,
+            self.reused + self.fresh,
+            self.collections
+        )
+    }
+}

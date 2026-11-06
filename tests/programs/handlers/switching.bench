@@ -1,0 +1,18 @@
+generator()
+  optimized: steps 297, allocs 54, frees 0, peak live 54, count ops 0, reused 0 of 0, collections 0
+  counted: steps 440, allocs 54, frees 54, peak live 19, count ops 143, reused 0 of 0, collections 1
+resumed_elsewhere(4i32)
+  optimized: steps 189, allocs 49, frees 0, peak live 49, count ops 0, reused 0 of 0, collections 0
+  counted: steps 297, allocs 49, frees 49, peak live 34, count ops 108, reused 0 of 0, collections 1
+cancel_inside(0i32)
+  optimized: steps 178, allocs 40, frees 0, peak live 40, count ops 0, reused 0 of 0, collections 0
+  counted: steps 267, allocs 40, frees 40, peak live 25, count ops 89, reused 0 of 0, collections 1
+cancel_inside(1i32)
+  optimized: steps 205, allocs 42, frees 0, peak live 42, count ops 0, reused 0 of 0, collections 0
+  counted: steps 301, allocs 42, frees 42, peak live 25, count ops 96, reused 0 of 0, collections 1
+cancel_outside(0i32)
+  optimized: steps 126, allocs 33, frees 0, peak live 33, count ops 0, reused 0 of 0, collections 0
+  counted: steps 187, allocs 33, frees 33, peak live 22, count ops 61, reused 0 of 0, collections 1
+cancel_outside(1i32)
+  optimized: steps 171, allocs 37, frees 0, peak live 37, count ops 0, reused 0 of 0, collections 0
+  counted: steps 245, allocs 37, frees 37, peak live 23, count ops 74, reused 0 of 0, collections 1

@@ -18,3 +18,4 @@ fn fac(%n: i32) -> (i32) {
 //# run fac(0i32) == 1i32
 //# run fac(1i32) == 1i32
 //# run fac(5i32) == 120i32
+//# bench

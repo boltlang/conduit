@@ -1,0 +1,6 @@
+main(4i32)
+  optimized: steps 74, allocs 5, frees 0, peak live 5, count ops 0, reused 0 of 0, collections 0
+  counted: steps 75, allocs 5, frees 5, peak live 5, count ops 1, reused 0 of 0, collections 0
+skipped()
+  optimized: steps 33, allocs 5, frees 0, peak live 5, count ops 0, reused 0 of 0, collections 0
+  counted: steps 45, allocs 5, frees 5, peak live 5, count ops 5, reused 0 of 0, collections 0

@@ -40,6 +40,10 @@ pub enum CheckKind {
     /// `//# counts`: the program after `insert_reuse`, `insert_counts` and
     /// `specialize_drops` matches `<name>.counts.conduit`.
     Counts,
+    /// `//# bench`: what each `run` check does in the evaluator, after the
+    /// optimizer and with counts, matches `<name>.bench`: steps,
+    /// allocations and so on, which are the same every time.
+    Bench,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -90,9 +94,10 @@ fn check(s: &str) -> Result<CheckKind, String> {
         "opt" => opt(rest),
         "counted" => none(CheckKind::Counted),
         "counts" => none(CheckKind::Counts),
+        "bench" => none(CheckKind::Bench),
         _ => Err(format!(
             "unknown check `{word}`: expected `run`, `verify-error`, `wasm-error`, \
-             `wasm-skip`, `wat`, `opt`, `counted` or `counts`"
+             `wasm-skip`, `wat`, `opt`, `counted`, `counts` or `bench`"
         )),
     }
 }

@@ -210,3 +210,4 @@ fn cancel_outside(%mode: i32) -> (i32) {
 //# run cancel_inside(1i32) == 90i32
 //# run cancel_outside(0i32) == 12i32
 //# run cancel_outside(1i32) == -1i32
+//# bench

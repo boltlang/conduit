@@ -95,3 +95,4 @@ fn main(%n: i32) -> (i32) {
 //# run main(4i32) == 118i32
 //# run skipped() == 2i32
 //# counts
+//# bench

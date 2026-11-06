@@ -1,0 +1,12 @@
+sum_build(0i32)
+  optimized: steps 7, allocs 1, frees 0, peak live 1, count ops 0, reused 0 of 0, collections 0
+  counted: steps 9, allocs 1, frees 1, peak live 1, count ops 1, reused 0 of 0, collections 0
+sum_build(10i32)
+  optimized: steps 117, allocs 11, frees 0, peak live 11, count ops 0, reused 0 of 0, collections 0
+  counted: steps 119, allocs 11, frees 11, peak live 11, count ops 1, reused 0 of 0, collections 0
+is_nil(0i32)
+  optimized: steps 6, allocs 1, frees 0, peak live 1, count ops 0, reused 0 of 0, collections 0
+  counted: steps 7, allocs 1, frees 1, peak live 1, count ops 1, reused 0 of 0, collections 0
+is_nil(3i32)
+  optimized: steps 21, allocs 4, frees 0, peak live 4, count ops 0, reused 0 of 0, collections 0
+  counted: steps 22, allocs 4, frees 4, peak live 4, count ops 1, reused 0 of 0, collections 0

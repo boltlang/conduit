@@ -1364,3 +1364,18 @@ fn fn0() -> (imm List) {{
     };
     assert_eq!(machine.count(kept), Some(Count::Live(1)));
 }
+
+/// The stats of a counted run: what it allocated and freed, the most live
+/// at once, and the count ops it ran.
+#[test]
+fn stats_count_what_a_run_does() {
+    let m = conduit_ir::text::parse(&sum_list_text("let = drop(%l)")).unwrap();
+    let mut machine = Machine::new(&m, NoHost);
+    machine.counting = true;
+    machine.call(FuncId(0), vec![Value::I32(3)]).unwrap();
+    let stats = machine.stats;
+    assert_eq!((stats.allocs, stats.frees, stats.peak_live), (4, 4, 4));
+    // A drop per cell, and a dup per tail kept.
+    assert_eq!(stats.count_ops, 4 + 3);
+    assert!(stats.steps > 0);
+}

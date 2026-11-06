@@ -50,3 +50,4 @@ fn run(%n: i32) -> (i32) {
 //# run run(10i32) == 10i32
 //# run run(0i32) == 0i32
 //# opt
+//# bench
