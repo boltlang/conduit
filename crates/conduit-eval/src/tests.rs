@@ -582,7 +582,7 @@ fn host_functions() {
             _: &Extern,
             args: &[Value],
             _: &mut Arrays<'_, '_>,
-        ) -> Result<Vec<Value>, String> {
+        ) -> Result<Vec<Value>, HostError> {
             match args {
                 [Value::I32(x)] => Ok(vec![Value::I32(x * 2)]),
                 _ => Err("bad arguments".into()),
@@ -910,6 +910,7 @@ fn error_messages() {
         (ErrorKind::WriteToImm, "write to an imm object"),
         (ErrorKind::Undefined("x".into()), "undefined behavior: x"),
         (ErrorKind::Host("x".into()), "host function failed: x"),
+        (ErrorKind::Exit(3), "exited with code 3"),
         (ErrorKind::Unverified("x".into()), "invalid IR: x"),
     ];
     for (kind, message) in kinds {
@@ -1364,4 +1365,56 @@ fn stats_count_what_a_run_does() {
     // A drop per cell, and a dup per tail kept.
     assert_eq!(stats.count_ops, 4 + 3);
     assert!(stats.steps > 0);
+}
+
+/// A host function can end the program with an exit code, which no
+/// handler catches, and which ends the run whatever is below it.
+#[test]
+fn hosts_can_exit() {
+    struct Exits;
+    impl Host for Exits {
+        fn call(
+            &mut self,
+            name: &str,
+            _: &Extern,
+            args: &[Value],
+            _: &mut Arrays<'_, '_>,
+        ) -> Result<Vec<Value>, HostError> {
+            match (name, args) {
+                ("exit", [Value::I32(code)]) => Err(HostError::Exit(*code)),
+                _ => Err("no such function".into()),
+            }
+        }
+    }
+    let m = conduit_ir::text::parse(
+        "effect Fail {
+  () -> ()
+}
+#[link(emu)]
+extern exit(i32) -> ()
+handler caught for Fail env() ops(fail) ret done
+fn fail(%k: cont() -> (i32)) -> (i32) {
+  jump ret(-1i32)
+}
+fn done(%r: i32) -> (i32) {
+  jump ret(%r)
+}
+fn body(%n: i32) -> (i32) does Fail {
+  let = call_extern exit(%n)
+  let = perform Fail.0()
+  jump ret(0i32)
+}
+fn main(%n: i32) -> (i32) {
+  let %b: imm fn() -> (i32) does Fail = closure body(%n)
+  let %r: i32 = handle caught(%b)
+  jump ret(%r)
+}",
+    )
+    .unwrap();
+    verify_module(&m).unwrap();
+    let main = conduit_ir::text::find_func(&m, "main").unwrap();
+    let error = Machine::new(&m, Exits)
+        .call(main, vec![Value::I32(3)])
+        .unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Exit(3));
 }

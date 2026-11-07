@@ -37,6 +37,9 @@ pub enum ErrorKind {
     Undefined(String),
     /// A host function failed.
     Host(String),
+    /// A host function ended the program with an exit code, as a process's
+    /// `exit` does: see [`HostError::Exit`].
+    Exit(i32),
     /// IR that the verifier would have rejected.
     Unverified(String),
 }
@@ -68,12 +71,44 @@ impl fmt::Display for Error {
             ErrorKind::WriteToImm => write!(f, "write to an imm object"),
             ErrorKind::Undefined(message) => write!(f, "undefined behavior: {message}"),
             ErrorKind::Host(message) => write!(f, "host function failed: {message}"),
+            ErrorKind::Exit(code) => write!(f, "exited with code {code}"),
             ErrorKind::Unverified(message) => write!(f, "invalid IR: {message}"),
         }
     }
 }
 
 impl std::error::Error for Error {}
+
+/// Why a host function gives no results.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostError {
+    /// It failed, which ends the run with [`ErrorKind::Host`].
+    Failed(String),
+    /// It ends the program with this exit code, unwinding no handlers, which
+    /// ends the run with [`ErrorKind::Exit`].
+    Exit(i32),
+}
+
+impl From<String> for HostError {
+    fn from(message: String) -> HostError {
+        HostError::Failed(message)
+    }
+}
+
+impl From<&str> for HostError {
+    fn from(message: &str) -> HostError {
+        HostError::Failed(message.into())
+    }
+}
+
+impl From<HostError> for ErrorKind {
+    fn from(e: HostError) -> ErrorKind {
+        match e {
+            HostError::Failed(message) => ErrorKind::Host(message),
+            HostError::Exit(code) => ErrorKind::Exit(code),
+        }
+    }
+}
 
 pub(crate) fn unverified(message: impl Into<String>) -> ErrorKind {
     ErrorKind::Unverified(message.into())

@@ -34,7 +34,7 @@ mod machine;
 mod prim;
 mod value;
 
-pub use error::{Error, ErrorKind};
+pub use error::{Error, ErrorKind, HostError};
 pub use machine::{Arrays, Count, Host, Leaks, Machine, NoHost, Stats};
 pub use prim::fold;
 pub use value::{Continuation, ObjId, Object, Value};

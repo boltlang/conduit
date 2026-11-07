@@ -8,7 +8,7 @@ use conduit_ir::{
     Mutability, Op, Program, Row, Sig, SourceId, Tag, Tail, Ty, Var,
 };
 
-use crate::error::{Error, ErrorKind, unverified};
+use crate::error::{Error, ErrorKind, HostError, unverified};
 use crate::prim;
 use crate::value::{Continuation, ObjId, Object, Value};
 
@@ -24,14 +24,15 @@ use cycles::Color;
 pub trait Host {
     /// Calls the function named `name`, extern `decl`, with `args`.
     /// Through `arrays` it can read the arrays it's given, and write to the
-    /// `mut` ones.
+    /// `mut` ones. A message converts to [`HostError::Failed`], so `?` on
+    /// one works.
     fn call(
         &mut self,
         name: &str,
         decl: &Extern,
         args: &[Value],
         arrays: &mut Arrays<'_, '_>,
-    ) -> Result<Vec<Value>, String>;
+    ) -> Result<Vec<Value>, HostError>;
 }
 
 /// The arrays of the heap, as a host function sees them.
@@ -77,8 +78,8 @@ impl Host for NoHost {
         _: &Extern,
         _: &[Value],
         _: &mut Arrays<'_, '_>,
-    ) -> Result<Vec<Value>, String> {
-        Err(format!("no host function {name}"))
+    ) -> Result<Vec<Value>, HostError> {
+        Err(format!("no host function {name}").into())
     }
 }
 
@@ -633,7 +634,7 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                 };
                 (self.host)
                     .call(name, decl, &args, &mut arrays)
-                    .map_err(ErrorKind::Host)?
+                    .map_err(ErrorKind::from)?
             }
             Op::Closure(f, margs, _) => {
                 let is_mut = self.binds_mut(binds)?;

@@ -1,6 +1,6 @@
 //! Running `run` checks with the evaluator.
 
-use conduit_eval::{Arrays, ErrorKind, Host, Leaks, Machine, Value};
+use conduit_eval::{Arrays, ErrorKind, Host, HostError, Leaks, Machine, Value};
 use conduit_ir::{Extern, Lit, Module};
 
 use crate::{CheckKind, Outcome, Program};
@@ -144,7 +144,7 @@ impl Host for TestHost {
         _: &Extern,
         args: &[Value],
         arrays: &mut Arrays<'_, '_>,
-    ) -> Result<Vec<Value>, String> {
+    ) -> Result<Vec<Value>, HostError> {
         let bytes = |arrays: &Arrays<'_, '_>, v: &Value| -> Result<i32, String> {
             let elems = arrays.get(v).ok_or("not an array")?;
             elems.iter().try_fold(0i32, |sum, e| match e {
@@ -181,9 +181,7 @@ impl Host for TestHost {
                 Value::I64(i64::from(*n) * 1_000_000_000_000),
             ]),
             ("byte", [Value::I8(b)]) => Ok(vec![Value::I32(i32::from(*b as u8))]),
-            _ => Err(format!(
-                "no test host function {name:?} taking these arguments"
-            )),
+            _ => Err(format!("no test host function {name:?} taking these arguments").into()),
         }
     }
 }
