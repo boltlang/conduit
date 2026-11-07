@@ -205,8 +205,11 @@ pub(super) fn module(m: &Module) -> String {
             Abi::Conduit => "",
             Abi::Flat => "#[abi(flat)]\n",
         };
-        // The name only if it isn't the extern's own.
-        let name = if ext.debug_name.as_deref() == Some(&*ext.name) {
+        // The name only if it isn't the extern's own, as written: one
+        // written by number has none.
+        let spelled = names.extern_(*id);
+        let own = spelled.split('#').next() == Some(&*ext.name);
+        let name = if own && ext.debug_name.as_deref() == Some(&*ext.name) {
             String::new()
         } else {
             format!(", name = {}", string(&ext.name))
@@ -226,7 +229,7 @@ pub(super) fn module(m: &Module) -> String {
         items.push(format!(
             "#[link(wasm, module = {}{name})]\n{abi}extern {}({}) -> ({}){}",
             string(&ext.module),
-            names.extern_(*id),
+            spelled,
             params.join(", "),
             names.types(&ext.sig.results),
             names.does(&ext.sig.row)

@@ -831,3 +831,19 @@ fn effects_named_like_parameters() {
     m.effects.get_mut(&EffectId(3)).unwrap().debug_name = None;
     assert_eq!(parse(&text).unwrap(), m);
 }
+
+/// An extern whose name can't be written as one is written by number, so
+/// its link says its name.
+#[test]
+fn unwritable_extern_names_round_trip() {
+    for name in ["my-fn", "ret"] {
+        let mut m = crate::Module::default();
+        let mut e = crate::Extern::new("env", name, crate::Sig::new(vec![], vec![]));
+        e.debug_name = Some(name.into());
+        m.externs.insert(ExternId(1), e);
+        let text = print(&m);
+        let back = parse(&text).unwrap();
+        assert_eq!(&*back.externs[&ExternId(1)].name, name, "{text}");
+        assert_eq!(print(&back), text);
+    }
+}
