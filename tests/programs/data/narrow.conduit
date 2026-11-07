@@ -1,5 +1,5 @@
 // i8 and i16 outside arithmetic: conversions, case, box, arrays and data
-// fields. Each function first adds the smallest value to its argument
+// fields. Some functions first add the smallest value to their argument
 // twice, which gives it back but leaves the high bits of its Wasm i32 set.
 
 data Small {

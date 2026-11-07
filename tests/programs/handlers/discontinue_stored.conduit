@@ -2,7 +2,8 @@
 // discontinues it through the ref. The verifier only counts direct uses,
 // so it's the evaluator that finds the second use and traps, and in Wasm,
 // the second use of a continuation traps too. The clause isn't
-// tail-resumptive, so the Wasm backend switches stacks.
+// tail-resumptive, so Wasm lowers it by evidence passing, or by switching
+// stacks when that's allowed.
 effect Wait {
   () -> (i32)
 }

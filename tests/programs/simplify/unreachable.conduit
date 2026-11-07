@@ -42,6 +42,14 @@ fn kind(%s: imm Shape) -> (i32) {
   }
 }
 
+// Every arm is `unreachable`, so the `case` is too.
+fn never(%x: i32) -> (i32) {
+  case %x {
+    0 => unreachable
+    _ => unreachable
+  }
+}
+
 //# run positive(4i32) == 5i32
 //# run checked(4i32) == 5i32
 //# run checked(0i32) traps

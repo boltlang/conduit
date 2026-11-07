@@ -20,11 +20,14 @@ const hi: imm [i8] = b"hi"
 handler summing for Gen does io env() ops(sum_yield) ret sum_done
 
 // Resumes first, then calls an extern with an out-parameter, back on the
-// stack the `handle` runs on.
+// stack the `handle` runs on: x comes back as x * 10^12, and is divided
+// back, so a wrong out-parameter shows in the result.
 fn sum_yield(%x: i32, %k: cont() -> (i32) does io) -> (i32) does io {
   let %rest: i32 = resume(%k)
   let %e: i32, %v: i64 = call_extern scale(%x)
-  let %r: i32 = add(%rest, %x)
+  let %v1: i64 = div.s(%v, 1000000000000i64)
+  let %x1: i32 = convert.s[i32](%v1)
+  let %r: i32 = add(%rest, %x1)
   let %r1: i32 = add(%r, %e)
   jump ret(%r1)
 }

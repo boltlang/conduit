@@ -1,5 +1,6 @@
-// Arrays at their edges: empty arrays, every element type, negative and
-// out-of-range indices and lengths, and writes that later reads see.
+// Arrays at their edges: empty arrays, float elements, arrays of arrays,
+// negative and out-of-range indices and lengths, and writes that later
+// reads see. Arrays of i8 and i16 are in narrow.conduit.
 
 fn empty() -> (i32) {
   let %xs: imm [i32] = array_new()

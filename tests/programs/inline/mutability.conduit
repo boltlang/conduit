@@ -1,6 +1,6 @@
 // A callee with a mutability parameter, inlined at `mut` and at `imm`:
-// its types, the mutability arguments of its calls, and its `unbox` get
-// the call's mutability.
+// its types and the mutability arguments of its calls get the call's
+// mutability. `round_trip`, which boxes at its parameter, isn't inlined.
 fn fill7['m1](%n: i32) -> ('m1 [i32]) {
   let %xs: 'm1 [i32] = array_fill(%n, 7i32)
   let %ys: 'm1 [i32] = call round_trip['m1](%xs)

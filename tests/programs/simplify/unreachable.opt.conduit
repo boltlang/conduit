@@ -29,3 +29,7 @@ fn side(%s: imm Shape) -> (f64) {
 fn kind(%s: imm Shape) -> (i32) {
   jump ret(0i32)
 }
+
+fn never(%x: i32) -> (i32) {
+  unreachable
+}

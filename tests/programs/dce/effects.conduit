@@ -1,6 +1,6 @@
 // Unused `new`s, closures and refs are pure and go, and so do unused
-// reads, which never trap, and unsigned divisions and remainders, which
-// don't trap even by zero. Calls, writes, array accesses and signed
+// reads, which never trap, and unsigned divisions and every remainder,
+// which don't trap, even by zero. Calls, writes, array accesses and signed
 // divisions, which can trap, stay, and so does the `new` whose object is
 // written.
 

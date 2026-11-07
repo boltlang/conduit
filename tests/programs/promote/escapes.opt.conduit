@@ -14,7 +14,11 @@ fn passed() -> (i32) {
 }
 
 fn stored() -> (i32) {
-  jump ret(5i32)
+  let %local: ref i32 = ref_new(1i32)
+  let %outer: ref ref i32 = ref_new(%local)
+  let = call write5_through(%outer)
+  let %r: i32 = ref_get(%local)
+  jump ret(%r)
 }
 
 fn jumped() -> (i32) {
@@ -37,6 +41,12 @@ fn boxed() -> (i32) {
 fn read(%cell: ref i32) -> (i32) {
   let %x: i32 = ref_get(%cell)
   jump ret(%x)
+}
+
+fn write5_through(%outer: ref ref i32) -> () {
+  let %inner: ref i32 = ref_get(%outer)
+  let = ref_set(%inner, 5i32)
+  jump ret()
 }
 
 fn write9(%cell: ref i32) -> () {

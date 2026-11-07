@@ -1,8 +1,8 @@
 // Functional but in-place: `map` takes its list apart and builds one of
 // the same shape, so each new cell goes in the memory of the old one when
-// that's unique, as it is here, since `main` gives its list away. The last
-// use of `%l`, a borrowed list, is an `array_clone` to `imm`, which freezes
-// the array in place when it's unique.
+// that's unique, as it is here, since `main` gives its list away. In
+// `frozen`, the last use of `%a`, a fresh array, is an `array_clone` to
+// `imm`, which freezes it in place when it's unique.
 
 data List {
   ()

@@ -1,6 +1,8 @@
 // An `apply` of a closure made here is a call of its function, with the
 // captures first. With all passes, the call is then inlined and the
-// closure is dead. A closure that comes into a join point stays applied.
+// closure is dead. The `closures` pass alone leaves the `apply` of a
+// closure that comes into a join point; all passes inline the join point
+// first, and then it goes too.
 
 fn times(%n: i32, %x: i32) -> (i32) {
   let %product: i32 = mul(%x, %n)

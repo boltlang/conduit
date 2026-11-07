@@ -67,6 +67,19 @@ fn rebuilt() -> (i32) {
   jump ret(%r)
 }
 
+// Through a `mut` struct that owns its array and the array's cells, the
+// cells are `mut`: a write to one is seen through the cell itself.
+fn owned(%x: i32) -> (i32) {
+  let %cell: mut Cell = new Cell.0(%x)
+  let %cells: mut [inherit Cell] = array_new(%cell)
+  let %o: mut Owner = new Owner.0(%cells)
+  let %cells2: mut [inherit Cell] = get Owner.0.0(%o)
+  let %cell2: mut Cell = array_get(%cells2, 0i32)
+  let = set Cell.0.0(%cell2, 6i32)
+  let %r: i32 = get Cell.0.0(%cell)
+  jump ret(%r)
+}
+
 // An `imm` array of cells it owns is made of `imm` cells.
 fn imm_cells() -> (i32) {
   let %cell: imm Cell = new Cell.0(2i32)
@@ -82,3 +95,4 @@ fn imm_cells() -> (i32) {
 //# run shared_cells() == 5i32
 //# run rebuilt() == 31i32
 //# run imm_cells() == 4i32
+//# run owned(1i32) == 6i32

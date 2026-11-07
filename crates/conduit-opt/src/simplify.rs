@@ -333,6 +333,7 @@ impl<'f> Cx<'f> {
                 let live = arms.iter().filter(|a| !dead(&a.body)).count()
                     + usize::from(default.as_deref().is_some_and(|d| !dead(d)));
                 if live == 0 {
+                    self.changed = true;
                     return Ok(Tail::Unreachable);
                 }
                 if live == 1 && total > 1 {

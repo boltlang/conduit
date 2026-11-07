@@ -9,34 +9,34 @@ effect effect21 {
   (i32) -> (i32)
 }
 
-fn fn0(%0: i32) -> (i32) {
+fn fn0(%0: i32) -> (i32) does effect21 {
   let %1: i32 = discontinue effect21.0(%0, 1i32)
   jump ret(%1)
 }
 
-fn fn1(%0: cont(i32) -> (i32)) -> (i32) {
+fn fn1(%0: cont(i32) -> (i32)) -> (i32) does effect20 {
   let %1: i32 = discontinue effect20.0(%0)
   jump ret(%1)
 }
 
-fn fn2(%0: cont(i32) -> (i32)) -> (i32) {
+fn fn2(%0: cont(i32) -> (i32)) -> (i32) does effect21 {
   let %1: i32 = discontinue effect21.0(%0, 1i64)
   jump ret(%1)
 }
 
-fn fn3(%0: cont(i32) -> (i32)) -> (i32) {
+fn fn3(%0: cont(i32) -> (i32)) -> (i32) does effect21 {
   let %1: i32 = discontinue effect21.3(%0, 1i32)
   jump ret(%1)
 }
 
-fn fn4(%0: cont(i32) -> (i32)) -> (i32) {
+fn fn4(%0: cont(i32) -> (i32)) -> (i32) does effect21 {
   let %1: i32 = resume(%0, 1i32)
   let %2: i32 = discontinue effect21.0(%0, %1)
   jump ret(%2)
 }
 
 // It gives what the continuation gives, not what the operation gives.
-fn fn5(%0: cont(i32) -> (i64)) -> (i32) {
+fn fn5(%0: cont(i32) -> (i64)) -> (i32) does effect21 {
   let %1: i32 = discontinue effect21.0(%0, 1i32)
   jump ret(%1)
 }
