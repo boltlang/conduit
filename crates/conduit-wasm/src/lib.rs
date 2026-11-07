@@ -256,6 +256,11 @@ pub struct Options {
     /// A call that needs more traps. A module without such externs has no
     /// shadow stack.
     pub shadow_stack: u32,
+    /// The bytes of the shadow stack of each continuation, with
+    /// `stack_switching`: a segment of its own, taken from a free list or
+    /// the heap when the continuation starts, and given back when its body
+    /// returns or throws. A call that needs more traps.
+    pub continuation_stack: u32,
 }
 
 impl Default for Options {
@@ -265,6 +270,7 @@ impl Default for Options {
             counts: false,
             cycles: false,
             shadow_stack: 64 * 1024,
+            continuation_stack: 4 * 1024,
         }
     }
 }
@@ -277,6 +283,22 @@ pub(crate) struct ShadowStack {
     /// Where the region starts: a push below it traps.
     pub base: u32,
     pub top: u32,
+    /// The segments of continuations, if some handler switches stacks.
+    pub segments: Option<Segments>,
+}
+
+/// With stack switching, each Wasm stack has a shadow stack of its own:
+/// the main stack the region at [`ShadowStack::base`], and each
+/// continuation a segment of `size` bytes. The first word of a segment
+/// holds its pointer while it's suspended, or the next segment while it's
+/// free, and the rest is the stack.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Segments {
+    /// The global holding the lowest address the current stack can use.
+    pub limit: u32,
+    /// The global holding the first free segment, or 0.
+    pub free: u32,
+    pub size: u32,
 }
 
 impl Cx<'_> {
@@ -435,7 +457,18 @@ impl Cx<'_> {
                 .ok_or_else(|| format!("unknown return clause {}", decl.ret))?;
             tys.extend(ret.results.iter().cloned());
         }
+        // A handler that switches stacks keeps its continuation's segment
+        // last.
+        if self.segment_field(h) {
+            tys.push(Ty::I32);
+        }
         Ok(layout(&tys))
+    }
+
+    /// Whether `h`'s frame ends with its continuation's shadow stack
+    /// segment.
+    pub fn segment_field(&self, h: HandlerId) -> bool {
+        self.is_switching(h) && self.stack.is_some_and(|s| s.segments.is_some())
     }
 
     /// The fields of constructor `c`.
@@ -639,10 +672,16 @@ pub fn emit_module_with(
     if m.externs.values().any(|e| e.abi == Abi::Flat) {
         let base = heap_base;
         heap_base += options.shadow_stack.next_multiple_of(8);
+        let global = if cx.rt.is_some() { 9 } else { 3 };
         cx.stack = Some(ShadowStack {
-            global: if cx.rt.is_some() { 9 } else { 3 },
+            global,
             base,
             top: heap_base,
+            segments: (!cx.switches.is_empty()).then(|| Segments {
+                limit: global + 1,
+                free: global + 2,
+                size: options.continuation_stack.max(16).next_multiple_of(8),
+            }),
         });
     }
     let data = data[CONST_BASE as usize..].to_vec();
@@ -1021,6 +1060,9 @@ pub fn emit_module_with(
     if let Some(stack) = cx.stack {
         debug_assert_eq!(stack.global as usize, inits.len());
         inits.push(stack.top as i32);
+        if stack.segments.is_some() {
+            inits.extend([stack.base as i32, 0]);
+        }
     }
     for init in inits {
         globals.global(

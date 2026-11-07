@@ -891,7 +891,10 @@ let %3: imm fn(i32) -> (i32) does Effect20 = closure fn2()
   `imm` parameter is the host's promise not to write it. Iovec lists and
   out-parameters go on a shadow stack in memory, which
   `Options::shadow_stack` sizes, 64 KiB by default: a call that needs
-  more traps. To the optimizer, every `call_extern` borrows its arguments
+  more traps. With stack switching, each continuation has a shadow stack
+  of its own, of `Options::continuation_stack` bytes, 4 KiB by default,
+  taken from a free list when it starts and given back when its body
+  returns or throws. To the optimizer, every `call_extern` borrows its arguments
   and may touch any memory, whatever the ABI.
 - **Exports start with no handlers.** The host calling an exported
   function grants it the effects without operations in its row. An

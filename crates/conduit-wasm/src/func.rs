@@ -1524,7 +1524,9 @@ impl<'m> FuncCx<'_, 'm> {
     /// Out-parameters and iovec lists go on the shadow stack, 8 bytes
     /// each, popped after the call. Nothing can unwind past the call while
     /// they're there: the host can only call back into exports, which
-    /// start with no handlers, so the pointer is always put back.
+    /// start with no handlers, so the pointer is always put back. With
+    /// stack switching, the stack is the current Wasm stack's: see
+    /// [`crate::Segments`].
     fn call_flat(
         &mut self,
         idx: u32,
@@ -1557,7 +1559,10 @@ impl<'m> FuncCx<'_, 'm> {
             // Trap if it doesn't fit above the base.
             self.emit(I::GlobalGet(stack.global));
             self.emit(I::LocalTee(old));
-            self.emit(I::I32Const(stack.base as i32));
+            match stack.segments {
+                Some(seg) => self.emit(I::GlobalGet(seg.limit)),
+                None => self.emit(I::I32Const(stack.base as i32)),
+            }
             self.emit(I::I32Sub);
             self.emit(I::LocalGet(size));
             self.emit(I::I32LtU);

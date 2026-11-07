@@ -1,0 +1,71 @@
+// `abi flat` externs under a handler that switches stacks: with stack
+// switching, the body's calls use its continuation's shadow stack, and the
+// clause's, after it resumes, the outer stack's.
+
+effect io {}
+
+effect Gen {
+  (i32) -> ()
+}
+
+extern gather "test" "gather" abi flat (imm [imm [i8]]) -> (i32, i32) does io
+extern scale "test" "scale" abi flat (i32) -> (i32, i64) does io
+
+const hi: imm [i8] = b"hi"
+
+handler summing for Gen does io env() ops(sum_yield) ret sum_done
+
+// Resumes first, then calls an extern with an out-parameter, back on the
+// stack the `handle` runs on.
+fn sum_yield(%x: i32, %k: cont() -> (i32) does io) -> (i32) does io {
+  let %rest: i32 = resume(%k)
+  let %e: i32, %v: i64 = call_extern scale(%x)
+  let %r: i32 = add(%rest, %x)
+  let %r1: i32 = add(%r, %e)
+  jump ret(%r1)
+}
+
+fn sum_done(%r: i32) -> (i32) {
+  jump ret(%r)
+}
+
+// Gathers `n` copies of "hi" (209 each) twice, yielding the total and the
+// count in between: 209n + n + 209n.
+fn gen_body(%n: i32) -> (i32) does Gen + io {
+  let %h: imm [i8] = const hi()
+  let %list: imm [imm [i8]] = array_fill(%n, %h)
+  let %c: i32, %t: i32 = call_extern gather(%list)
+  let = perform Gen.0(%t)
+  let %c2: i32, %t2: i32 = call_extern gather(%list)
+  let = perform Gen.0(%c2)
+  jump ret(%t2)
+}
+
+fn generator(%n: i32) -> (i32) does io {
+  let %body: imm fn() -> (i32) does Gen + io = closure gen_body(%n)
+  let %r: i32 = handle summing(%body)
+  jump ret(%r)
+}
+
+// A continuation whose body runs another: two segments in use at once.
+fn outer_body(%n: i32) -> (i32) does Gen + io {
+  let %inner: imm fn() -> (i32) does Gen + io = closure gen_body(%n)
+  let %r: i32 = handle summing(%inner)
+  let = perform Gen.0(%r)
+  let %h: imm [i8] = const hi()
+  let %list: imm [imm [i8]] = array_fill(%n, %h)
+  let %c: i32, %t: i32 = call_extern gather(%list)
+  jump ret(%t)
+}
+
+// The inner 419n, yielded, plus 209n.
+fn nested(%n: i32) -> (i32) does io {
+  let %body: imm fn() -> (i32) does Gen + io = closure outer_body(%n)
+  let %r: i32 = handle summing(%body)
+  jump ret(%r)
+}
+
+//# run generator(3i32) == 1257i32
+//# run generator(0i32) == 0i32
+//# run nested(3i32) == 1884i32
+//# run generator(100i32) == 41900i32

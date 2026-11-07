@@ -301,3 +301,140 @@ fn main(%n: i32) -> (i32) {
     let trap = main.call(&mut store, 8).unwrap_err();
     assert!(trap.downcast_ref::<wasmtime::Trap>().is_some(), "{trap:?}");
 }
+
+/// Externs in continuations, with stack switching: `gen` runs `body` in a
+/// continuation, whose segment fits 3 slots of 8 bytes, while the main
+/// stack fits 8. `failing` aborts out of its continuation, which must put
+/// the main stack's pointer and limit back.
+const SEGMENTS: &str = r#"effect io {}
+effect Gen {
+  (i32) -> ()
+}
+effect Fail {
+  () -> ()
+}
+extern gather "test" "gather" abi flat (imm [imm [i8]]) -> (i32, i32) does io
+const hi: imm [i8] = b"hi"
+handler summing for Gen does io + Fail env() ops(sum_yield) ret sum_done
+handler or_default for Fail env(i32) ops(fail) ret or_default_done
+fn sum_yield(%x: i32, %k: cont() -> (i32) does io + Fail) -> (i32) does io + Fail {
+  let %rest: i32 = resume(%k)
+  let %r: i32 = add(%rest, %x)
+  jump ret(%r)
+}
+fn sum_done(%r: i32) -> (i32) {
+  jump ret(%r)
+}
+fn fail(%d: i32, %k: cont() -> (i32)) -> (i32) {
+  jump ret(%d)
+}
+fn or_default_done(%d: i32, %r: i32) -> (i32) {
+  jump ret(%r)
+}
+fn total(%n: i32) -> (i32) does io {
+  let %h: imm [i8] = const hi()
+  let %list: imm [imm [i8]] = array_fill(%n, %h)
+  let %c: i32, %t: i32 = call_extern gather(%list)
+  jump ret(%t)
+}
+fn body(%n: i32) -> (i32) does Gen + io + Fail {
+  let %t: i32 = call total(%n)
+  let = perform Gen.0(%t)
+  jump ret(0i32)
+}
+fn failing_body(%n: i32) -> (i32) does Gen + io + Fail {
+  let %t: i32 = call total(%n)
+  let = perform Gen.0(%t)
+  let = perform Fail.0()
+  jump ret(0i32)
+}
+fn gen(%n: i32) -> (i32) does io + Fail {
+  let %b: imm fn() -> (i32) does Gen + io + Fail = closure body(%n)
+  let %r: i32 = handle summing(%b)
+  jump ret(%r)
+}
+fn gen_failing(%n: i32) -> (i32) does io + Fail {
+  let %b: imm fn() -> (i32) does Gen + io + Fail = closure failing_body(%n)
+  let %r: i32 = handle summing(%b)
+  jump ret(%r)
+}
+fn main(%n: i32) -> (i32) does io {
+  let %b: imm fn() -> (i32) does io + Fail = closure gen(%n)
+  let %r: i32 = handle or_default(-1i32, %b)
+  jump ret(%r)
+}
+fn failing(%n: i32, %after: i32) -> (i32) does io {
+  let %b: imm fn() -> (i32) does io + Fail = closure gen_failing(%n)
+  let %r: i32 = handle or_default(-1i32, %b)
+  let %t: i32 = call total(%after)
+  let %r1: i32 = add(%r, %t)
+  jump ret(%r1)
+}"#;
+
+fn instantiate_segments(continuation_stack: u32) -> (wasmtime::Store<()>, wasmtime::Instance) {
+    let m = conduit_ir::text::parse(SEGMENTS).unwrap();
+    let options = crate::Options {
+        stack_switching: true,
+        shadow_stack: 64,
+        continuation_stack,
+        ..Default::default()
+    };
+    let exports: Vec<_> = ["main", "failing"]
+        .iter()
+        .map(|&n| (text::find_func(&m, n).unwrap(), n))
+        .collect();
+    let bytes = crate::emit_module_with(&m, &exports, &options).unwrap();
+    let mut config = conduit_test::wasm::config();
+    config
+        .wasm_gc(true)
+        .wasm_function_references(true)
+        .wasm_stack_switching(true);
+    let engine = wasmtime::Engine::new(&config).unwrap();
+    let module = wasmtime::Module::new(&engine, &bytes).unwrap();
+    let linker = conduit_test::wasm::linker(&engine).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = linker.instantiate(&mut store, &module).unwrap();
+    (store, instance)
+}
+
+#[test]
+fn continuations_have_their_own_shadow_stacks() {
+    let (mut store, instance) = instantiate_segments(32);
+    let main = instance
+        .get_typed_func::<i32, i32>(&mut store, "main")
+        .unwrap();
+    let failing = instance
+        .get_typed_func::<(i32, i32), i32>(&mut store, "failing")
+        .unwrap();
+    for _ in 0..3 {
+        // 2 buffers and the out slot fill the segment.
+        assert_eq!(main.call(&mut store, 2).unwrap(), 2 * 209);
+        // After an abort out of a continuation, the main stack's 8 slots.
+        assert_eq!(failing.call(&mut store, (2, 7)).unwrap(), -1 + 7 * 209);
+    }
+    let trap = main.call(&mut store, 3).unwrap_err();
+    assert!(trap.downcast_ref::<wasmtime::Trap>().is_some(), "{trap:?}");
+}
+
+/// A continuation's segment goes back on the free list when its body
+/// returns or throws: with 64 KiB segments, many runs would otherwise grow
+/// the memory by much more than the few objects they allocate.
+#[test]
+fn segments_are_reused() {
+    let (mut store, instance) = instantiate_segments(64 * 1024);
+    let main = instance
+        .get_typed_func::<i32, i32>(&mut store, "main")
+        .unwrap();
+    let failing = instance
+        .get_typed_func::<(i32, i32), i32>(&mut store, "failing")
+        .unwrap();
+    let memory = instance.get_memory(&mut store, "memory").unwrap();
+    main.call(&mut store, 1).unwrap();
+    let before = memory.data_size(&store);
+    for _ in 0..1000 {
+        main.call(&mut store, 1).unwrap();
+        failing.call(&mut store, (1, 1)).unwrap();
+    }
+    let grown = memory.data_size(&store) - before;
+    assert!(grown < 4 << 20, "the memory grew by {grown} bytes");
+}

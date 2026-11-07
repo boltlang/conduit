@@ -20,12 +20,19 @@
 //! - `discontinue F.j(k, args)` makes a closure that performs `F.j(args)`
 //!   and throws its address into `k` with `resume_throw`, which the
 //!   `perform` catches and calls, under its own handlers.
+//! - With `abi flat` externs, each continuation has a shadow stack
+//!   segment of its own (see [`Segments`]), which `start` takes and
+//!   keeps in the frame. `start`, `drive` and `throw` switch to it, and
+//!   back to the outer stack's when the body suspends, returns or throws,
+//!   giving it back in the last two cases. A continuation that's never
+//!   resumed again keeps its segment, as it keeps its table slot.
 
 use conduit_ir::HandlerId;
-use wasm_encoder::{BlockType, Handle, HeapType, Instruction as I, RefType, ValType};
+use wasm_encoder::{BlockType, Catch, Handle, HeapType, Instruction as I, RefType, ValType};
 
+use crate::counts::LIVE;
 use crate::func::{Body, load, store};
-use crate::{Cx, FnSig, HANDLERS, Storage, layout, val};
+use crate::{Cx, FnSig, HANDLERS, Segments, Storage, layout, val};
 
 /// How a handler's `start`, `drive` or `throw` function runs its body.
 #[derive(Clone, Copy)]
@@ -175,11 +182,25 @@ pub(crate) fn lower_drive(cx: &mut Cx<'_>, h: HandlerId, start: Start) -> Result
         locals.push(ty);
         first_local + locals.len() as u32 - 1
     };
+    // With a shadow stack, the continuation runs on a segment of its
+    // own, and the resume is in a `try_table`, one more label in.
+    let segments = cx.stack.and_then(|s| Some((s.global, s.segments?)));
+    let shadow = segments.map(|seg| {
+        let (fields, _) = cx.frame(h).expect("a handler's frame");
+        Shadow {
+            seg,
+            field: fields.last().expect("a segment field").0,
+            outer_sp: new_local(&mut locals, ValType::I32),
+            outer_limit: new_local(&mut locals, ValType::I32),
+            segment: new_local(&mut locals, ValType::I32),
+        }
+    });
     let mut table = Vec::new();
     for i in 0..n {
         let (e, j, _) = crate::clause_at(decl, i);
         let tag = cx.tag(e, j).ok_or("no tag for an operation")?;
-        table.push(Handle::OnLabel { tag, label: i });
+        let label = i + u32::from(shadow.is_some());
+        table.push(Handle::OnLabel { tag, label });
     }
 
     // The frame goes on top of the handlers around this run.
@@ -190,6 +211,11 @@ pub(crate) fn lower_drive(cx: &mut Cx<'_>, h: HandlerId, start: Start) -> Result
         I::LocalGet(0),
         I::GlobalSet(HANDLERS),
     ];
+    if let Some(sh) = &shadow {
+        code.extend(sh.enter(start, cx.alloc, cx.rt.is_some()));
+        // An exception that escapes the body ends it.
+        code.push(I::Block(BlockType::Result(ValType::Ref(RefType::EXNREF))));
+    }
     let body_results = cx.body_results(h)?;
     let ret_block = cx.sig(FnSig {
         params: Vec::new(),
@@ -209,6 +235,14 @@ pub(crate) fn lower_drive(cx: &mut Cx<'_>, h: HandlerId, start: Start) -> Result
             results,
         });
         code.push(I::Block(BlockType::FunctionType(ty)));
+    }
+    if shadow.is_some() {
+        // A catch's label is counted from outside the `try_table`.
+        let catches = vec![Catch::AllRef { label: n + 1 }];
+        code.push(I::TryTable(
+            BlockType::FunctionType(ret_block),
+            catches.into(),
+        ));
     }
     match start {
         Start::Body => {
@@ -247,6 +281,9 @@ pub(crate) fn lower_drive(cx: &mut Cx<'_>, h: HandlerId, start: Start) -> Result
             });
         }
     }
+    if shadow.is_some() {
+        code.push(I::End);
+    }
     code.push(I::Br(n));
     let (kont_fields, kont_size) = cx.kont_layout(h);
     for i in 0..n {
@@ -276,6 +313,9 @@ pub(crate) fn lower_drive(cx: &mut Cx<'_>, h: HandlerId, start: Start) -> Result
             I::Unreachable,
             I::End,
         ]);
+        if let Some(sh) = &shadow {
+            code.extend(sh.suspend());
+        }
         code.extend(outside());
         for j in 0..env {
             code.push(I::LocalGet(1 + j));
@@ -324,6 +364,9 @@ pub(crate) fn lower_drive(cx: &mut Cx<'_>, h: HandlerId, start: Start) -> Result
     for &r in results.iter().rev() {
         code.push(I::LocalSet(r));
     }
+    if let Some(sh) = &shadow {
+        code.extend(sh.leave());
+    }
     code.extend(outside());
     for j in 0..env {
         code.push(I::LocalGet(1 + j));
@@ -332,8 +375,125 @@ pub(crate) fn lower_drive(cx: &mut Cx<'_>, h: HandlerId, start: Start) -> Result
         code.push(I::LocalGet(r));
     }
     code.push(I::ReturnCall(cx.func_index(decl.ret)?));
+    if let Some(sh) = &shadow {
+        // The exception, after the body's segment is given back.
+        code.push(I::End);
+        code.extend(sh.leave());
+        code.push(I::ThrowRef);
+    }
     code.push(I::End);
     Ok(Body { locals, code })
+}
+
+/// The shadow stack of a continuation, in its `start`, `drive` or `throw`
+/// function: the segment and the outer stack's pointer and limit, which
+/// it puts back when the continuation suspends, returns or throws.
+struct Shadow {
+    seg: (u32, Segments),
+    /// Where the frame holds the segment.
+    field: u32,
+    outer_sp: u32,
+    outer_limit: u32,
+    segment: u32,
+}
+
+impl Shadow {
+    /// Saves the outer stack's pointer and limit, and switches to the
+    /// continuation's segment: a new one for `start`, taken from the free
+    /// list or else from the heap, which isn't an object.
+    fn enter(&self, start: Start, alloc: u32, counts: bool) -> Vec<I<'static>> {
+        let ((sp, seg), at) = (self.seg, self.field);
+        let mut code = vec![
+            I::GlobalGet(sp),
+            I::LocalSet(self.outer_sp),
+            I::GlobalGet(seg.limit),
+            I::LocalSet(self.outer_limit),
+        ];
+        match start {
+            Start::Body => {
+                code.extend([
+                    I::GlobalGet(seg.free),
+                    I::LocalTee(self.segment),
+                    I::If(BlockType::Empty),
+                    I::LocalGet(self.segment),
+                    load(Storage::I32, 0),
+                    I::GlobalSet(seg.free),
+                    I::Else,
+                    I::I32Const(seg.size as i32),
+                    I::Call(alloc),
+                    I::LocalSet(self.segment),
+                ]);
+                if counts {
+                    code.extend([
+                        I::GlobalGet(LIVE),
+                        I::I32Const(1),
+                        I::I32Sub,
+                        I::GlobalSet(LIVE),
+                    ]);
+                }
+                code.extend([
+                    I::End,
+                    I::LocalGet(0),
+                    I::LocalGet(self.segment),
+                    store(Storage::I32, at),
+                    I::LocalGet(self.segment),
+                    I::I32Const(seg.size as i32),
+                    I::I32Add,
+                    I::GlobalSet(sp),
+                ]);
+            }
+            Start::Resume(_) | Start::Throw(_) => code.extend([
+                I::LocalGet(0),
+                load(Storage::I32, at),
+                I::LocalTee(self.segment),
+                load(Storage::I32, 0),
+                I::GlobalSet(sp),
+            ]),
+        }
+        code.extend([
+            I::LocalGet(self.segment),
+            I::I32Const(8),
+            I::I32Add,
+            I::GlobalSet(seg.limit),
+        ]);
+        code
+    }
+
+    /// The outer stack's pointer and limit again.
+    fn restore(&self) -> [I<'static>; 4] {
+        let (sp, seg) = self.seg;
+        [
+            I::LocalGet(self.outer_sp),
+            I::GlobalSet(sp),
+            I::LocalGet(self.outer_limit),
+            I::GlobalSet(seg.limit),
+        ]
+    }
+
+    /// Suspended: the segment keeps the continuation's pointer.
+    fn suspend(&self) -> Vec<I<'static>> {
+        let mut code = vec![
+            I::LocalGet(self.segment),
+            I::GlobalGet(self.seg.0),
+            store(Storage::I32, 0),
+        ];
+        code.extend(self.restore());
+        code
+    }
+
+    /// Returned or thrown: the segment goes on the free list.
+    fn leave(&self) -> Vec<I<'static>> {
+        let free = self.seg.1.free;
+        let mut code = vec![
+            I::LocalGet(self.segment),
+            I::GlobalGet(free),
+            store(Storage::I32, 0),
+            I::LocalGet(self.segment),
+            I::GlobalSet(free),
+        ];
+        code.extend(self.restore());
+        code
+    }
 }
 
 /// Sets the handler stack to what's outside the frame in local 0.
