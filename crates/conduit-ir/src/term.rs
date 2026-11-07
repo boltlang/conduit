@@ -113,6 +113,16 @@ impl Block {
     pub fn size(&self) -> usize {
         self.blocks().map(|b| b.lets.len() + 1).sum()
     }
+
+    /// Whether [`size`](Self::size) is over `n`, found without looking
+    /// further than that.
+    pub fn is_bigger_than(&self, n: usize) -> bool {
+        let mut size = 0;
+        self.blocks().any(|b| {
+            size += b.lets.len() + 1;
+            size > n
+        })
+    }
 }
 
 /// The blocks of [`Block::blocks`].

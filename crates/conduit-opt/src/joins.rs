@@ -93,7 +93,9 @@ pub fn inline_joins(p: &dyn Program, f: &mut Func) -> bool {
             return;
         };
         for d in defs {
-            if jumps.get(&d.label).copied().unwrap_or(0) < 2 || d.body.size() > MAX_CALLEE_SIZE {
+            if jumps.get(&d.label).copied().unwrap_or(0) < 2
+                || d.body.is_bigger_than(MAX_CALLEE_SIZE)
+            {
                 continue;
             }
             let scrutinized: Vec<usize> = (0..d.params.len())

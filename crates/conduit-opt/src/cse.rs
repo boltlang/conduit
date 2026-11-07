@@ -75,6 +75,7 @@ pub fn cse(p: &dyn Program, f: &mut Func) -> bool {
         vars: &f.vars,
         subst: HashMap::new(),
         fixed: HashMap::new(),
+        fixed_order: Vec::new(),
         changing: HashMap::new(),
         read_only: RefCell::new(HashMap::new()),
         changed: false,
@@ -92,6 +93,10 @@ struct Cx<'f> {
     subst: HashMap<Var, Atom>,
     /// Ops whose result can't change, and the variable that holds it.
     fixed: HashMap<Key, Var>,
+    /// The keys of `fixed`, in the order they went in, so that a block
+    /// can take out what it put in when it ends, which copying `fixed`
+    /// for each block of a deep nest would make quadratic.
+    fixed_order: Vec<Key>,
     /// Reads of what can change, and what they give, until something may
     /// write: an earlier read's variable, or what was written.
     changing: HashMap<Key, Atom>,
@@ -154,7 +159,7 @@ impl Cx<'_> {
     }
 
     fn block(&mut self, b: &mut Block) {
-        let (fixed, changing) = (self.fixed.clone(), self.changing.clone());
+        let (fixed, changing) = (self.fixed_order.len(), self.changing.clone());
         let mut lets = Vec::with_capacity(b.lets.len());
         for mut l in std::mem::take(&mut b.lets) {
             self.atoms(&mut l.args);
@@ -191,7 +196,9 @@ impl Cx<'_> {
             }
             Tail::Unreachable | Tail::Trap => {}
         }
-        self.fixed = fixed;
+        for key in self.fixed_order.drain(fixed..) {
+            self.fixed.remove(&key);
+        }
         self.changing = changing;
     }
 
@@ -226,9 +233,14 @@ impl Cx<'_> {
             Some(_) => false,
             None => {
                 match self.kind(l) {
-                    Kind::Fixed => self.fixed.insert(key, bind),
-                    _ => self.changing.insert(key, Atom::Var(bind)).map(|_| bind),
-                };
+                    Kind::Fixed => {
+                        self.fixed_order.push(key.clone());
+                        self.fixed.insert(key, bind);
+                    }
+                    _ => {
+                        self.changing.insert(key, Atom::Var(bind));
+                    }
+                }
                 false
             }
         }

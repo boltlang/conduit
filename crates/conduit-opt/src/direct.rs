@@ -131,7 +131,7 @@ impl<'p> Cx<'p> {
         let closure = self.closures.get(c)?.clone();
         let body = self.p.func(closure.0)?;
         if body.params.len() != closure.3.len()
-            || body.body.size() > MAX_CALLEE_SIZE
+            || body.body.is_bigger_than(MAX_CALLEE_SIZE)
             || (body.mut_params.count > 0 && has_op(&body.body, &|op| matches!(op, Op::Box(_))))
         {
             return None;
@@ -160,7 +160,7 @@ impl<'p> Cx<'p> {
                 _ => Clause::Aborts(aborting(cf)?),
             };
             let (Clause::Resumes(cf) | Clause::Aborts(cf)) = &clause;
-            if cf.body.size() > MAX_CALLEE_SIZE {
+            if cf.body.is_bigger_than(MAX_CALLEE_SIZE) {
                 return None;
             }
             copies += cf.body.size();
