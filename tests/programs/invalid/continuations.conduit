@@ -1,0 +1,61 @@
+// Continuations that may be used more than once on some path: resumed
+// twice, in every round of a loop, before a jump and again in the join
+// point, captured and then resumed, and on two branches that test the same
+// value, which the verifier doesn't know.
+
+fn fn1(%0: cont() -> ()) -> () {
+  let = resume(%0)
+  let = resume(%0)
+  jump ret()
+}
+
+fn fn2(%0: cont() -> ()) -> () {
+  join rec j1() =
+    let = resume(%0)
+    jump j1()
+  in jump j1()
+}
+
+fn fn3(%0: cont() -> ()) -> () {
+  join j1() =
+    let = resume(%0)
+    jump ret()
+  in
+  let = resume(%0)
+  jump j1()
+}
+
+fn fn4(%0: cont() -> ()) -> () {
+  let %1: mut fn() -> () = closure fn10(%0)
+  let = resume(%0)
+  jump ret()
+}
+
+// Every run resumes %1 at most once, since both `case`s test %0.
+fn fn5(%0: i32, %1: cont() -> ()) -> () {
+  join j1() =
+    case %0 {
+      0 =>
+        let = resume(%1)
+        jump ret()
+      _ => jump ret()
+    }
+  in
+  case %0 {
+    1 =>
+      let = resume(%1)
+      jump j1()
+    _ => jump j1()
+  }
+}
+
+fn fn10(%0: cont() -> ()) -> () {
+  let = resume(%0)
+  jump ret()
+}
+
+//# verify-error: fn1: continuation %0 may be used more than once
+//# verify-error: fn2: continuation %0 may be used more than once
+//# verify-error: fn3: continuation %0 may be used more than once
+//# verify-error: fn4: continuation %0 may be used more than once
+//# verify-error: fn5: continuation %1 may be used more than once

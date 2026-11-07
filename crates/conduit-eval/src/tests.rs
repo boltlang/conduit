@@ -7,7 +7,6 @@ use Mutability::{Imm, Mut};
 
 const MAIN: FuncId = FuncId(1);
 const G: FuncId = FuncId(2);
-const H: FuncId = FuncId(3);
 
 /// `data Point = Point(i32, i32)`
 const POINT: DataId = DataId(10);
@@ -792,32 +791,6 @@ fn clause_that_doesnt_resume_aborts() {
         )
     });
     assert_eq!(run(&m, vec![]), Ok(vec![Value::I32(1)]));
-}
-
-#[test]
-fn resuming_twice_is_an_error() {
-    // The clause captures k in a closure of H, which resumes it, and applies
-    // the closure twice. The verifier can't see this; the machine can.
-    let mut m = generator(4, |f, _, _, k| {
-        let c = f.new_var(Ty::Fn(Box::new(unit_sig()), Mut));
-        let_(
-            vec![c],
-            Op::Closure(H, vec![], vec![]),
-            vec![v(k)],
-            let_(
-                vec![],
-                Op::Apply,
-                vec![v(c)],
-                let_(vec![], Op::Apply, vec![v(c)], ret(vec![])),
-            ),
-        )
-    });
-    let mut h = Func::new(vec![Ty::Cont(Box::new(unit_sig()))], vec![]);
-    let k = h.params[0];
-    h.body = let_(vec![], Op::Resume, vec![v(k)], ret(vec![]));
-    m.funcs.insert(H, h);
-    let error = run(&m, vec![]).unwrap_err();
-    assert_eq!(error.kind, ErrorKind::ContinuationResumedTwice);
 }
 
 #[test]

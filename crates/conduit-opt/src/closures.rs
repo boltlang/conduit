@@ -7,10 +7,14 @@
 //! It works forward in one pass: variables are SSA, so a closure's `let` is
 //! seen before every use of it. A closure that comes in as a parameter or
 //! through a join point isn't known.
+//!
+//! Nor is one that captures a continuation: the verifier counts the uses
+//! of a continuation along each path, and leaves those through a closure to
+//! run time, so two calls passing it would look like two uses of it.
 
 use std::collections::HashMap;
 
-use conduit_ir::{Atom, Block, Func, FuncId, Mutability, Op, Program, Row, Tail, Var};
+use conduit_ir::{Atom, Block, Func, FuncId, Mutability, Op, Program, Row, Tail, Ty, Var};
 
 use crate::Pass;
 
@@ -31,6 +35,7 @@ impl Pass for KnownClosures {
 /// anything changed.
 pub fn known_closures(f: &mut Func) -> bool {
     let mut cx = Cx {
+        vars: &f.vars,
         closures: HashMap::new(),
         changed: false,
     };
@@ -46,13 +51,14 @@ struct Made {
     captures: Vec<Atom>,
 }
 
-struct Cx {
+struct Cx<'f> {
+    vars: &'f [Ty],
     /// The closures made so far.
     closures: HashMap<Var, Made>,
     changed: bool,
 }
 
-impl Cx {
+impl Cx<'_> {
     fn block(&mut self, b: &mut Block) {
         for l in &mut b.lets {
             if l.op == Op::Apply
@@ -63,7 +69,12 @@ impl Cx {
                 l.args.splice(..1, made.captures.iter().cloned());
                 self.changed = true;
             }
-            if let (Op::Closure(g, margs, rows), [v]) = (&l.op, &l.binds[..]) {
+            let captures_cont = l.args.iter().any(|a| {
+                matches!(a, Atom::Var(v) if matches!(self.vars.get(v.0 as usize), Some(Ty::Cont(_))))
+            });
+            if let (Op::Closure(g, margs, rows), [v]) = (&l.op, &l.binds[..])
+                && !captures_cont
+            {
                 let made = Made {
                     func: *g,
                     margs: margs.clone(),

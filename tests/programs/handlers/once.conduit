@@ -1,0 +1,93 @@
+// Continuations used at most once on every path, which the verifier
+// accepts: in different arms, and on paths that meet at a join point. One
+// resumed loop is in corners.conduit. And one used twice through a
+// closure, which the verifier can't see: the second resume traps.
+
+effect Ask {
+  () -> (i32)
+}
+
+// Ask gives 1 for 0, or else 2, each from its own arm.
+handler by_arm for Ask env(i32) ops(ask_by_arm) ret done
+
+// Ask gives 20 for 0, from an arm, or else 10, from a join point the
+// other arm jumps to.
+handler by_join for Ask env(i32) ops(ask_by_join) ret done
+
+// Ask resumes with 3 through a closure, which it applies twice.
+handler twice for Ask env() ops(ask_twice) ret done_plain
+
+fn ask_by_arm(%x: i32, %k: cont(i32) -> (i32)) -> (i32) {
+  case %x {
+    0 =>
+      let %r: i32 = resume(%k, 1i32)
+      jump ret(%r)
+    _ =>
+      let %r2: i32 = resume(%k, 2i32)
+      jump ret(%r2)
+  }
+}
+
+fn ask_by_join(%x: i32, %k: cont(i32) -> (i32)) -> (i32) {
+  join other() =
+    let %r: i32 = resume(%k, 10i32)
+    jump ret(%r)
+  in
+  case %x {
+    0 =>
+      let %r2: i32 = resume(%k, 20i32)
+      jump ret(%r2)
+    _ => jump other()
+  }
+}
+
+fn ask_twice(%k: cont(i32) -> (i32)) -> (i32) {
+  let %again: mut fn() -> (i32) = closure resume_with_3(%k)
+  let %a: i32 = apply(%again)
+  let %b: i32 = apply(%again)
+  let %r: i32 = add(%a, %b)
+  jump ret(%r)
+}
+
+fn resume_with_3(%k: cont(i32) -> (i32)) -> (i32) {
+  let %r: i32 = resume(%k, 3i32)
+  jump ret(%r)
+}
+
+fn done(%x: i32, %r: i32) -> (i32) {
+  jump ret(%r)
+}
+
+fn done_plain(%r: i32) -> (i32) {
+  jump ret(%r)
+}
+
+fn ask_plus_100() -> (i32) does Ask {
+  let %x: i32 = perform Ask.0()
+  let %r: i32 = add(%x, 100i32)
+  jump ret(%r)
+}
+
+fn by_arm_main(%x: i32) -> (i32) {
+  let %body: imm fn() -> (i32) does Ask = closure ask_plus_100()
+  let %r: i32 = handle by_arm(%x, %body)
+  jump ret(%r)
+}
+
+fn by_join_main(%x: i32) -> (i32) {
+  let %body: imm fn() -> (i32) does Ask = closure ask_plus_100()
+  let %r: i32 = handle by_join(%x, %body)
+  jump ret(%r)
+}
+
+fn twice_main() -> (i32) {
+  let %body: imm fn() -> (i32) does Ask = closure ask_plus_100()
+  let %r: i32 = handle twice(%body)
+  jump ret(%r)
+}
+
+//# run by_arm_main(0i32) == 101i32
+//# run by_arm_main(5i32) == 102i32
+//# run by_join_main(0i32) == 120i32
+//# run by_join_main(5i32) == 110i32
+//# run twice_main() traps

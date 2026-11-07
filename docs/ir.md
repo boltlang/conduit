@@ -1172,7 +1172,10 @@ IR is so small, the classic simplifications are local rewrites:
   argument lists together. The result is a plain `Call`, so inlining
   applies to it, and if `c` has no uses left, dead-code elimination removes
   the allocation. The `closures` pass does this, first among the passes,
-  so that inlining sees the calls it makes in the same round.
+  so that inlining sees the calls it makes in the same round. Not for a
+  closure that captures a continuation: the verifier leaves its uses
+  through the closure to run time, and two calls passing it would be two
+  uses it can see.
 - **Common subexpressions.** A `Let` with the same op and arguments as
   one on every path before it gives the same result, if the op only
   computes, reads what can't change (an `Imm` object or array, an array's

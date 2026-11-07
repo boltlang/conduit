@@ -1,0 +1,28 @@
+// What `imm` and `ro` rule out: an `imm` closure capturing a ref, which
+// can change, and an `ro` object passed where a `mut` one is needed.
+
+data data0 {
+  (i32, i32)
+}
+
+fn fn1() -> () {
+  let %0: ref i32 = ref_new(0i32)
+  let %1: imm fn() -> () = closure fn10(%0)
+  jump ret()
+}
+
+fn fn2(%0: ro data0) -> () {
+  let = call fn11(%0)
+  jump ret()
+}
+
+fn fn10(%0: ref i32) -> () {
+  jump ret()
+}
+
+fn fn11(%0: mut data0) -> () {
+  jump ret()
+}
+
+//# verify-error: fn1: an imm closure can't capture a ref i32
+//# verify-error: fn2: call of fn11: value 0 has type ro data0, but should have mut data0

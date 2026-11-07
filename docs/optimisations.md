@@ -29,7 +29,10 @@ which then performs it inside the body, under `H`.
 function becomes `call f(captures.., args..)`. Lifted functions take their
 captures first, so this only puts two argument lists together. The call
 skips the closure's wrapper and can be inlined. If nothing else uses the
-closure, dead code removes it.
+closure, dead code removes it. A closure that captures a continuation
+stays applied: the verifier counts a continuation's uses on each path but
+leaves those through a closure to run time, so turning two applies into
+two calls that pass it would give code it rejects.
 
 ## Inlining (`inline`)
 
