@@ -28,9 +28,9 @@
 //! - `discontinue F.j(k, args)` makes a closure that performs `F.j(args)`
 //!   and throws its address into `k` with `resume_throw`, which the
 //!   `perform` catches and calls, under its own handlers.
-//! - With `#[abi(flat)]` externs, each continuation has a shadow stack
-//!   segment of its own (see [`Segments`]), which `start` takes and
-//!   keeps in the frame. `start`, `drive` and `throw` switch to it, and
+//! - With a shadow stack, each continuation has segments of its own (see
+//!   [`ShadowStack`]), the first of which `start` takes and keeps in the
+//!   frame. `start`, `drive` and `throw` switch to it, and
 //!   back to the outer stack's when the body suspends, returns or throws,
 //!   giving it back in the last two cases. Without counts, a continuation
 //!   that's never resumed again keeps its segment and its table slot.
@@ -40,7 +40,7 @@ use wasm_encoder::{BlockType, Catch, Handle, HeapType, Instruction as I, RefType
 
 use crate::counts::{DropKey, LIVE, key_of};
 use crate::func::{Body, load, store};
-use crate::{Cx, FnSig, HANDLERS, Segments, Storage, layout, val};
+use crate::{Cx, FnSig, HANDLERS, HEADER, ShadowStack, Storage, layout, shadow, val};
 
 /// How a handler's `start`, `drive` or `throw` function runs its body.
 #[derive(Clone, Copy)]
@@ -279,11 +279,10 @@ pub(crate) fn lower_drive(cx: &mut Cx<'_>, h: HandlerId, start: Start) -> Result
     };
     // With a shadow stack, the continuation runs on a segment of its
     // own, and the resume is in a `try_table`, one more label in.
-    let segments = cx.stack.and_then(|s| Some((s.global, s.segments?)));
-    let shadow = segments.map(|seg| {
+    let shadow = cx.stack.filter(|s| s.continuations).map(|stack| {
         let (fields, _) = cx.frame(h).expect("a handler's frame");
         Shadow {
-            seg,
+            stack,
             field: fields.last().expect("a segment field").0,
             outer_sp: new_local(&mut locals, ValType::I32),
             outer_limit: new_local(&mut locals, ValType::I32),
@@ -322,7 +321,7 @@ pub(crate) fn lower_drive(cx: &mut Cx<'_>, h: HandlerId, start: Start) -> Result
         I::GlobalSet(HANDLERS),
     ];
     if let Some(sh) = &shadow {
-        code.extend(sh.enter(start, cx.alloc, cx.rt.is_some()));
+        code.extend(sh.enter(start));
     }
     if catching {
         // An exception that escapes the body ends it.
@@ -505,10 +504,10 @@ pub(crate) fn lower_drive(cx: &mut Cx<'_>, h: HandlerId, start: Start) -> Result
 }
 
 /// The shadow stack of a continuation, in its `start`, `drive` or `throw`
-/// function: the segment and the outer stack's pointer and limit, which
-/// it puts back when the continuation suspends, returns or throws.
+/// function: its first segment and the outer stack's pointer and limit,
+/// which it puts back when the continuation suspends, returns or throws.
 struct Shadow {
-    seg: (u32, Segments),
+    stack: ShadowStack,
     /// Where the frame holds the segment.
     field: u32,
     outer_sp: u32,
@@ -518,98 +517,73 @@ struct Shadow {
 
 impl Shadow {
     /// Saves the outer stack's pointer and limit, and switches to the
-    /// continuation's segment: a new one for `start`, taken from the free
-    /// list or else from the heap, which isn't an object.
-    fn enter(&self, start: Start, alloc: u32, counts: bool) -> Vec<I<'static>> {
-        let ((sp, seg), at) = (self.seg, self.field);
-        let mut code = vec![
-            I::GlobalGet(sp),
-            I::LocalSet(self.outer_sp),
-            I::GlobalGet(seg.limit),
-            I::LocalSet(self.outer_limit),
-        ];
+    /// continuation's: a new segment for `start`, or else where it was
+    /// suspended, which its first segment's header holds.
+    fn enter(&self, start: Start) -> Vec<I<'static>> {
+        let (stack, at) = (self.stack, self.field);
+        let mut code = shadow::save(stack, self.outer_sp, self.outer_limit).to_vec();
         match start {
-            Start::Body => {
-                code.extend([
-                    I::GlobalGet(seg.free),
-                    I::LocalTee(self.segment),
-                    I::If(BlockType::Empty),
-                    I::LocalGet(self.segment),
-                    load(Storage::I32, 0),
-                    I::GlobalSet(seg.free),
-                    I::Else,
-                    I::I32Const(seg.size as i32),
-                    I::Call(alloc),
-                    I::LocalSet(self.segment),
-                ]);
-                if counts {
-                    code.extend([
-                        I::GlobalGet(LIVE),
-                        I::I32Const(1),
-                        I::I32Sub,
-                        I::GlobalSet(LIVE),
-                    ]);
-                }
-                code.extend([
-                    I::End,
-                    I::LocalGet(0),
-                    I::LocalGet(self.segment),
-                    store(Storage::I32, at),
-                    I::LocalGet(self.segment),
-                    I::I32Const(seg.size as i32),
-                    I::I32Add,
-                    I::GlobalSet(sp),
-                ]);
-            }
+            Start::Body => code.extend([
+                I::I32Const((stack.segment - HEADER) as i32),
+                I::Call(stack.grow),
+                I::GlobalGet(stack.limit),
+                I::I32Const(HEADER as i32),
+                I::I32Sub,
+                I::LocalSet(self.segment),
+                I::LocalGet(0),
+                I::LocalGet(self.segment),
+                store(Storage::I32, at),
+            ]),
             Start::Resume(_) | Start::Throw(_) => code.extend([
                 I::LocalGet(0),
                 load(Storage::I32, at),
                 I::LocalTee(self.segment),
                 load(Storage::I32, 0),
-                I::GlobalSet(sp),
+                I::GlobalSet(stack.sp),
+                I::LocalGet(self.segment),
+                load(Storage::I32, 4),
+                I::GlobalSet(stack.limit),
             ]),
         }
-        code.extend([
-            I::LocalGet(self.segment),
-            I::I32Const(8),
-            I::I32Add,
-            I::GlobalSet(seg.limit),
-        ]);
         code
     }
 
     /// The outer stack's pointer and limit again.
     fn restore(&self) -> [I<'static>; 4] {
-        let (sp, seg) = self.seg;
         [
             I::LocalGet(self.outer_sp),
-            I::GlobalSet(sp),
+            I::GlobalSet(self.stack.sp),
             I::LocalGet(self.outer_limit),
-            I::GlobalSet(seg.limit),
+            I::GlobalSet(self.stack.limit),
         ]
     }
 
-    /// Suspended: the segment keeps the continuation's pointer.
+    /// Suspended: the first segment keeps the continuation's pointer and
+    /// limit, which may be another segment's.
     fn suspend(&self) -> Vec<I<'static>> {
         let mut code = vec![
             I::LocalGet(self.segment),
-            I::GlobalGet(self.seg.0),
+            I::GlobalGet(self.stack.sp),
             store(Storage::I32, 0),
+            I::LocalGet(self.segment),
+            I::GlobalGet(self.stack.limit),
+            store(Storage::I32, 4),
         ];
         code.extend(self.restore());
         code
     }
 
-    /// Returned or thrown: the segment goes on the free list.
+    /// Returned or thrown: the segments chained since go back, which a
+    /// throw can leave, then the first one.
     fn leave(&self) -> Vec<I<'static>> {
-        let free = self.seg.1.free;
         let mut code = vec![
+            I::GlobalGet(self.stack.limit),
             I::LocalGet(self.segment),
-            I::GlobalGet(free),
-            store(Storage::I32, 0),
-            I::LocalGet(self.segment),
-            I::GlobalSet(free),
+            I::I32Const(HEADER as i32),
+            I::I32Add,
+            I::Call(self.stack.release),
         ];
+        code.extend(shadow::free_segment(self.stack, self.segment));
         code.extend(self.restore());
         code
     }
@@ -733,9 +707,11 @@ fn unused_kont(
         I::I32Eqz,
         I::If(BlockType::Empty),
     ];
-    if let Some(seg) = cx.stack.and_then(|st| st.segments)
+    if let Some(stack) = cx.stack.filter(|s| s.continuations)
         && cx.segment_field(h)
     {
+        // Its segments, from the one it was suspended on back to its
+        // first, then that one.
         let at = frame_fields.last().expect("a segment field").0;
         let segment = [
             I::LocalGet(0),
@@ -743,9 +719,17 @@ fn unused_kont(
             load(Storage::I32, at),
         ];
         code.extend(segment.clone());
-        code.extend([I::GlobalGet(seg.free), store(Storage::I32, 0)]);
+        code.push(load(Storage::I32, 4));
+        code.extend(segment.clone());
+        code.extend([
+            I::I32Const(HEADER as i32),
+            I::I32Add,
+            I::Call(stack.release),
+        ]);
+        code.extend(segment.clone());
+        code.extend([I::GlobalGet(stack.free), store(Storage::I32, 0)]);
         code.extend(segment);
-        code.push(I::GlobalSet(seg.free));
+        code.push(I::GlobalSet(stack.free));
     }
     code.extend([
         I::LocalGet(0),

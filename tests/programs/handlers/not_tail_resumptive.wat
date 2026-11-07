@@ -6,14 +6,19 @@
   (type (;4;) (func (param i32 i32 i32) (result i32)))
   (type (;5;) (func (param i32 i32) (result i32)))
   (type (;6;) (func (param i32 i32 i32 i32 i32) (result i32)))
+  (type (;7;) (func (param i32)))
+  (type (;8;) (func (param i32 i32)))
   (table (;0;) 9 9 funcref)
-  (memory (;0;) 1)
-  (global (;0;) (mut i32) i32.const 32)
+  (memory (;0;) 2)
+  (global (;0;) (mut i32) i32.const 65568)
   (global (;1;) (mut i32) i32.const 0)
   (global (;2;) (mut i32) i32.const 0)
+  (global (;3;) (mut i32) i32.const 65568)
+  (global (;4;) (mut i32) i32.const 32)
+  (global (;5;) (mut i32) i32.const 0)
   (export "fn3" (func $main))
   (export "memory" (memory 0))
-  (elem (;0;) (table 0) (i32.const 0) func 18 19 20 21 22 23 24 25 26)
+  (elem (;0;) (table 0) (i32.const 0) func 20 21 22 23 24 25 26 27 28)
   (func $ask (;0;) (type 0) (param i32) (result i32)
     (local i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32)
     i32.const 16
@@ -585,20 +590,35 @@
     unreachable
   )
   (func $doubler_reprompt (;9;) (type 3) (param i32 i32 i32 i32) (result i32)
-    (local i32 i32 i32 i32 i32 i32 i32 i32 i32)
-    i32.const 16
-    call $alloc
+    (local i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32)
+    global.get 3
     local.set 11
-    local.get 11
+    global.get 4
+    local.set 12
+    global.get 3
+    global.get 4
+    i32.sub
+    i32.const 16
+    i32.lt_u
+    if ;; label = @1
+      i32.const 16
+      call 18
+    end
+    global.get 3
+    i32.const 16
+    i32.sub
+    local.tee 13
+    global.set 3
+    local.get 13
     i32.const 3
     i32.store offset=4
-    local.get 11
+    local.get 13
     local.get 1
     i32.store offset=8
-    local.get 11
+    local.get 13
     local.get 2
     i32.store offset=12
-    local.get 11
+    local.get 13
     local.set 4
     local.get 3
     local.get 0
@@ -625,18 +645,42 @@
       end
       i32.const 16
       call $alloc
-      local.set 12
-      local.get 12
+      local.set 14
+      local.get 14
       local.get 5
       i32.store offset=8
-      local.get 12
+      local.get 14
       local.set 9
       local.get 9
+      global.get 4
+      local.get 12
+      i32.ne
+      if ;; label = @2
+        global.get 4
+        local.get 12
+        call 19
+        local.get 12
+        global.set 4
+      end
+      local.get 11
+      global.set 3
       return
     end
     i32.const 0
     local.set 10
     local.get 10
+    global.get 4
+    local.get 12
+    i32.ne
+    if ;; label = @1
+      global.get 4
+      local.get 12
+      call 19
+      local.get 12
+      global.set 4
+    end
+    local.get 11
+    global.set 3
     return
   )
   (func $doubler_k (;10;) (type 6) (param i32 i32 i32 i32 i32) (result i32)
@@ -1127,7 +1171,84 @@
     global.set 0
     local.get 1
   )
-  (func (;18;) (type 4) (param i32 i32 i32) (result i32)
+  (func (;18;) (type 7) (param i32)
+    (local i32 i32)
+    local.get 0
+    i32.const 23
+    i32.add
+    i32.const -8
+    i32.and
+    local.tee 1
+    i32.const 4096
+    local.get 1
+    i32.const 4096
+    i32.gt_u
+    select
+    local.set 1
+    global.get 5
+    local.tee 2
+    if (result i32) ;; label = @1
+      local.get 2
+      i32.load offset=8
+      local.get 1
+      i32.ge_u
+    else
+      i32.const 0
+    end
+    if ;; label = @1
+      local.get 2
+      i32.load
+      global.set 5
+      local.get 2
+      i32.load offset=8
+      local.set 1
+    else
+      local.get 1
+      call $alloc
+      local.set 2
+    end
+    local.get 2
+    global.get 3
+    i32.store
+    local.get 2
+    global.get 4
+    i32.store offset=4
+    local.get 2
+    local.get 1
+    i32.store offset=8
+    local.get 2
+    i32.const 16
+    i32.add
+    global.set 4
+    local.get 2
+    local.get 1
+    i32.add
+    global.set 3
+  )
+  (func (;19;) (type 8) (param i32 i32)
+    (local i32)
+    block ;; label = @1
+      loop ;; label = @2
+        local.get 0
+        local.get 1
+        i32.eq
+        br_if 1 (;@1;)
+        local.get 0
+        i32.const 16
+        i32.sub
+        local.tee 2
+        i32.load offset=4
+        local.set 0
+        local.get 2
+        global.get 5
+        i32.store
+        local.get 2
+        global.set 5
+        br 0 (;@2;)
+      end
+    end
+  )
+  (func (;20;) (type 4) (param i32 i32 i32) (result i32)
     local.get 0
     i32.load offset=8
     local.get 0
@@ -1136,7 +1257,7 @@
     local.get 2
     return_call $compose
   )
-  (func (;19;) (type 4) (param i32 i32 i32) (result i32)
+  (func (;21;) (type 4) (param i32 i32 i32) (result i32)
     local.get 0
     i32.load offset=8
     local.get 0
@@ -1145,7 +1266,7 @@
     local.get 2
     return_call $doubler_reprompt
   )
-  (func (;20;) (type 4) (param i32 i32 i32) (result i32)
+  (func (;22;) (type 4) (param i32 i32 i32) (result i32)
     local.get 0
     i32.load offset=8
     local.get 0
@@ -1156,7 +1277,7 @@
     local.get 2
     return_call $doubler_k
   )
-  (func (;21;) (type 5) (param i32 i32) (result i32)
+  (func (;23;) (type 5) (param i32 i32) (result i32)
     local.get 0
     i32.load offset=8
     local.get 0
@@ -1164,20 +1285,20 @@
     local.get 1
     return_call $start_resume
   )
-  (func (;22;) (type 5) (param i32 i32) (result i32)
+  (func (;24;) (type 5) (param i32 i32) (result i32)
     local.get 0
     i32.load offset=8
     local.get 1
     return_call $resume_with
   )
-  (func (;23;) (type 4) (param i32 i32 i32) (result i32)
+  (func (;25;) (type 4) (param i32 i32 i32) (result i32)
     local.get 0
     i32.load offset=8
     local.get 1
     local.get 2
     return_call $ask_plus_10_rest
   )
-  (func (;24;) (type 4) (param i32 i32 i32) (result i32)
+  (func (;26;) (type 4) (param i32 i32 i32) (result i32)
     local.get 0
     i32.load offset=8
     local.get 0
@@ -1186,11 +1307,11 @@
     local.get 2
     return_call $force
   )
-  (func (;25;) (type 5) (param i32 i32) (result i32)
+  (func (;27;) (type 5) (param i32 i32) (result i32)
     local.get 1
     return_call $ask_plus_10_ev
   )
-  (func (;26;) (type 5) (param i32 i32) (result i32)
+  (func (;28;) (type 5) (param i32 i32) (result i32)
     local.get 0
     i32.load offset=8
     local.get 1

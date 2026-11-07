@@ -17,7 +17,7 @@ use conduit_ir::{
 use wasm_encoder::{BlockType, Ieee32, Ieee64, Instruction as I, MemArg, MemArgTarget, ValType};
 
 use crate::counts::{DropKey, Runtime, is_imm, key_of};
-use crate::{ABORT, Cx, HANDLERS, HEAP, SITE, Storage, layout, val};
+use crate::{ABORT, Cx, HANDLERS, HEAP, SITE, Storage, layout, shadow, val};
 
 /// A lowered function: the locals after its parameters, and its code.
 pub(crate) struct Body {
@@ -42,6 +42,9 @@ struct FuncCx<'a, 'm> {
     labels: Vec<Option<Target>>,
     depth: u32,
     code: Vec<I<'static>>,
+    /// Whether the object of the `let` being lowered goes on the shadow
+    /// stack, which its allocation takes.
+    on_stack: bool,
 }
 
 /// Case arms on a dense range of `i32` tags dispatch with `br_table` when
@@ -108,12 +111,50 @@ pub(crate) fn lower_func<'m>(cx: &mut Cx<'m>, f: &'m Func) -> Result<Body, Strin
         labels: vec![None; f.labels.max(1) as usize],
         depth: 0,
         code: Vec::new(),
+        on_stack: false,
     };
+    // A function with objects on the shadow stack pops them when it
+    // returns, or makes a tail call: it saves the pointer and limit, and
+    // puts them back before each.
+    let stack = fcx.cx.stack.filter(|_| {
+        (f.body.blocks()).any(|b| {
+            (b.lets.iter()).any(|l| {
+                fcx.cx
+                    .stack_objects
+                    .contains(&(l as *const conduit_ir::Let))
+            })
+        })
+    });
+    let frame = stack.map(|stack| {
+        let (sp, limit) = (fcx.new_local(ValType::I32), fcx.new_local(ValType::I32));
+        fcx.code.extend(shadow::save(stack, sp, limit));
+        (stack, sp, limit)
+    });
     fcx.block(&f.body)?;
     fcx.code.push(I::End);
+    let code = match frame {
+        Some((stack, sp, limit)) => {
+            let restore = shadow::restore(stack, sp, limit);
+            let mut code = Vec::with_capacity(fcx.code.len());
+            for i in fcx.code {
+                if matches!(
+                    i,
+                    I::Return
+                        | I::ReturnCall(_)
+                        | I::ReturnCallIndirect { .. }
+                        | I::ReturnCallRef(_)
+                ) {
+                    code.extend(restore.iter().cloned());
+                }
+                code.push(i);
+            }
+            code
+        }
+        None => fcx.code,
+    };
     Ok(Body {
         locals: fcx.extra,
-        code: fcx.code,
+        code,
     })
 }
 
@@ -599,6 +640,8 @@ impl<'m> FuncCx<'_, 'm> {
     ) -> Result<bool, String> {
         conduit_ir::deep(|| {
             let tail = self.is_tail(binds, block, next)?;
+            self.on_stack = (self.cx.stack_objects)
+                .contains(&(&block.lets[next - 1] as *const conduit_ir::Let));
             match op {
                 Op::Prim(p) => self.prim(p, args)?,
                 Op::Call(f, ..) => {
@@ -774,7 +817,7 @@ impl<'m> FuncCx<'_, 'm> {
                     let n = self.new_local(ValType::I32);
                     self.atom(&args[0]);
                     self.emit(I::LocalSet(n));
-                    let p = self.alloc_array(n, s);
+                    let p = self.alloc_array(n, s, *op == Op::ArrayAlloc);
                     let (elem, imm) = match self.var_ty(binds[0]) {
                         Ty::Array(e, _) => (self.counted(e), is_imm(e)),
                         _ => (None, false),
@@ -859,7 +902,7 @@ impl<'m> FuncCx<'_, 'm> {
                     self.atom(&args[0]);
                     self.emit(load(Storage::I32, 4));
                     self.emit(I::LocalSet(n));
-                    let p = self.alloc_array(n, s);
+                    let p = self.alloc_array(n, s, false);
                     self.emit(I::LocalGet(p));
                     self.emit(I::I32Const(8));
                     self.emit(I::I32Add);
@@ -1265,6 +1308,15 @@ impl<'m> FuncCx<'_, 'm> {
             .map(|t| self.new_local(val(t)))
             .collect();
         let thrown = self.new_local(ValType::I32);
+        // What the body pushes on the shadow stack, the frames an abort
+        // unwinds don't pop.
+        let stack = self.cx.stack.map(|stack| {
+            let (sp, limit) = (self.new_local(ValType::I32), self.new_local(ValType::I32));
+            for i in shadow::save(stack, sp, limit) {
+                self.emit(i);
+            }
+            (stack, sp, limit)
+        });
         self.open(I::Block(BlockType::Empty));
         self.open(I::Block(BlockType::Result(ValType::I32)));
         // A catch's label is counted from outside the `try_table`.
@@ -1303,6 +1355,11 @@ impl<'m> FuncCx<'_, 'm> {
         self.emit(I::LocalGet(thrown));
         self.emit(I::Throw(ABORT));
         self.close();
+        if let Some((stack, sp, limit)) = stack {
+            for i in shadow::restore(stack, sp, limit) {
+                self.emit(i);
+            }
+        }
         self.emit(I::LocalGet(saved));
         self.emit(I::GlobalSet(HANDLERS));
         if let Some(site) = site {
@@ -1535,7 +1592,7 @@ impl<'m> FuncCx<'_, 'm> {
     /// they're there: the host can only call back into exports, which
     /// start with no handlers, so the pointer is always put back. With
     /// stack switching, the stack is the current Wasm stack's: see
-    /// [`crate::Segments`].
+    /// [`crate::ShadowStack`].
     fn call_flat(
         &mut self,
         idx: u32,
@@ -1551,7 +1608,8 @@ impl<'m> FuncCx<'_, 'm> {
         let mut scratch = None;
         if outs > 0 || !lists.is_empty() {
             let stack = self.cx.stack.ok_or("a flat extern needs a shadow stack")?;
-            let (size, old, at) = (
+            let (size, old, old_limit, at) = (
+                self.new_local(ValType::I32),
                 self.new_local(ValType::I32),
                 self.new_local(ValType::I32),
                 self.new_local(ValType::I32),
@@ -1565,26 +1623,16 @@ impl<'m> FuncCx<'_, 'm> {
                 self.emit(I::I32Add);
             }
             self.emit(I::LocalSet(size));
-            // Trap if it doesn't fit above the base.
-            self.emit(I::GlobalGet(stack.global));
-            self.emit(I::LocalTee(old));
-            match stack.segments {
-                Some(seg) => self.emit(I::GlobalGet(seg.limit)),
-                None => self.emit(I::I32Const(stack.base as i32)),
+            for i in shadow::save(stack, old, old_limit) {
+                self.emit(i);
             }
-            self.emit(I::I32Sub);
-            self.emit(I::LocalGet(size));
-            self.emit(I::I32LtU);
-            self.trap_if();
-            self.emit(I::LocalGet(old));
-            self.emit(I::LocalGet(size));
-            self.emit(I::I32Sub);
-            self.emit(I::LocalTee(at));
-            self.emit(I::GlobalSet(stack.global));
-            scratch = Some((stack, old, at));
+            for i in shadow::push(stack, &[I::LocalGet(size)], at) {
+                self.emit(i);
+            }
+            scratch = Some((stack, old, old_limit, at));
         }
         let mut iovecs = Vec::new();
-        if let Some((_, _, at)) = scratch {
+        if let Some((_, _, _, at)) = scratch {
             let cursor = self.new_local(ValType::I32);
             self.emit(I::LocalGet(at));
             self.emit(I::I32Const(8 * outs as i32));
@@ -1669,7 +1717,7 @@ impl<'m> FuncCx<'_, 'm> {
                 }
             }
         }
-        if let Some((_, _, at)) = scratch {
+        if let Some((_, _, _, at)) = scratch {
             for k in 0..outs {
                 self.emit(I::LocalGet(at));
                 self.emit(I::I32Const(8 * k as i32));
@@ -1677,40 +1725,90 @@ impl<'m> FuncCx<'_, 'm> {
             }
         }
         self.emit(I::Call(idx));
-        if let Some((stack, old, at)) = scratch {
+        if let Some((stack, old, old_limit, at)) = scratch {
             for (k, ty) in ext.sig.results.iter().skip(1).enumerate() {
                 self.emit(I::LocalGet(at));
                 self.emit(load(Storage::of(ty), 8 * k as u32));
             }
-            self.emit(I::LocalGet(old));
-            self.emit(I::GlobalSet(stack.global));
+            for i in shadow::restore(stack, old, old_limit) {
+                self.emit(i);
+            }
         }
         Ok(())
     }
 
-    /// Allocates `size` bytes, into a new local.
+    /// Allocates `size` bytes, into a new local: on the shadow stack if
+    /// the `let` being lowered says so.
     fn alloc_const(&mut self, size: u32) -> u32 {
         let p = self.new_local(ValType::I32);
+        if self.push_object(&[I::I32Const(size.next_multiple_of(8) as i32)], p) {
+            return p;
+        }
         self.emit(I::I32Const(size as i32));
         self.emit(I::Call(self.cx.alloc));
         self.emit(I::LocalSet(p));
         p
     }
 
+    /// Pushes the object of the `let` being lowered, of the bytes `size`
+    /// gives, a multiple of 8, into local `p`, if it goes on the shadow
+    /// stack. When counting, its count is 1, and it's marked buffered, so
+    /// that a count of 0 drops what it holds but keeps its memory, and
+    /// nothing reuses it.
+    fn push_object(&mut self, size: &[I<'static>], p: u32) -> bool {
+        let Some(stack) = self.cx.stack.filter(|_| std::mem::take(&mut self.on_stack)) else {
+            return false;
+        };
+        for i in shadow::push(stack, size, p) {
+            self.emit(i);
+        }
+        if self.cx.rt.is_some() {
+            self.emit(I::LocalGet(p));
+            self.emit(I::I32Const(1 | 0x4000_0000));
+            self.emit(store(Storage::I32, 0));
+        }
+        true
+    }
+
     /// Allocates an array of the length in local `n`, with its length set,
     /// into a new local. A negative or too big length traps.
-    fn alloc_array(&mut self, n: u32, s: Storage) -> u32 {
+    fn alloc_array(&mut self, n: u32, s: Storage, unset: bool) -> u32 {
         self.emit(I::LocalGet(n));
         self.emit(I::I32Const(MAX_BYTES / s.size() as i32));
         self.emit(I::I32GtU);
         self.trap_if();
         let p = self.new_local(ValType::I32);
-        self.emit(I::LocalGet(n));
-        self.scale(s);
-        self.emit(I::I32Const(8));
-        self.emit(I::I32Add);
-        self.emit(I::Call(self.cx.alloc));
-        self.emit(I::LocalTee(p));
+        if self.on_stack {
+            let bytes = self.new_local(ValType::I32);
+            self.emit(I::LocalGet(n));
+            self.scale(s);
+            self.emit(I::I32Const(8 + 7));
+            self.emit(I::I32Add);
+            self.emit(I::I32Const(-8));
+            self.emit(I::I32And);
+            self.emit(I::LocalSet(bytes));
+            self.push_object(&[I::LocalGet(bytes)], p);
+            // The heap's memory is zeroed, which elements not set yet read
+            // as no object; the stack's isn't.
+            if unset {
+                self.emit(I::LocalGet(p));
+                self.emit(I::I32Const(8));
+                self.emit(I::I32Add);
+                self.emit(I::I32Const(0));
+                self.emit(I::LocalGet(bytes));
+                self.emit(I::I32Const(8));
+                self.emit(I::I32Sub);
+                self.emit(I::MemoryFill(0));
+            }
+            self.emit(I::LocalGet(p));
+        } else {
+            self.emit(I::LocalGet(n));
+            self.scale(s);
+            self.emit(I::I32Const(8));
+            self.emit(I::I32Add);
+            self.emit(I::Call(self.cx.alloc));
+            self.emit(I::LocalTee(p));
+        }
         self.emit(I::LocalGet(n));
         self.emit(store(Storage::I32, 4));
         p

@@ -268,10 +268,12 @@ fn deep_cycles_are_collected() {
 }
 
 /// An iovec list takes 8 bytes a buffer on the shadow stack, and the
-/// second result 8 more: with 64 bytes, a call with 7 buffers fits, every
-/// time, since each call pops what it pushed, and one with 8 traps.
+/// second result 8 more: with a main stack of 64 bytes, a call with 7
+/// buffers fits, and bigger ones chain segments, also bigger than the
+/// usual one. Each call pops what it pushed, list included, which doesn't
+/// escape, so calling again takes no more memory.
 #[test]
-fn shadow_stack_overflow_traps() {
+fn shadow_stack_grows() {
     let m = conduit_ir::text::parse(
         r#"#[link(wasm, module = "test")]
 #[abi(flat)]
@@ -299,17 +301,24 @@ fn main(%n: i32) -> (i32) {
     let main = instance
         .get_typed_func::<i32, i32>(&mut store, "main")
         .unwrap();
-    for _ in 0..3 {
-        assert_eq!(main.call(&mut store, 7).unwrap(), 7 * (104 + 105));
+    for n in [7, 8, 100, 10_000] {
+        assert_eq!(main.call(&mut store, n).unwrap(), n * (104 + 105));
     }
-    let trap = main.call(&mut store, 8).unwrap_err();
-    assert!(trap.downcast_ref::<wasmtime::Trap>().is_some(), "{trap:?}");
+    let memory = instance.get_memory(&mut store, "memory").unwrap();
+    let before = memory.data_size(&store);
+    for n in [7, 8, 100, 10_000].repeat(100) {
+        assert_eq!(main.call(&mut store, n).unwrap(), n * (104 + 105));
+    }
+    assert_eq!(memory.data_size(&store), before);
 }
 
 /// Externs in continuations, with stack switching: `gen` runs `body` in a
-/// continuation, whose segment fits 3 slots of 8 bytes, while the main
-/// stack fits 8. `failing` aborts out of its continuation, which must put
-/// the main stack's pointer and limit back.
+/// continuation, whose first segment fits 2 slots of 8 bytes, while the
+/// main stack fits 8, and more chains segments. `failing` aborts out of
+/// its continuation, which must put the main stack's pointer and limit
+/// back, and give back the continuation's segments. Counted, so that the
+/// heap frees what each round makes: the memory then only grows if the
+/// shadow stack does.
 const SEGMENTS: &str = r#"effect io {}
 effect Gen {
   (i32) -> ()
@@ -377,12 +386,23 @@ fn failing(%n: i32, %after: i32) -> (i32) does io {
   jump ret(%r1)
 }"#;
 
-fn instantiate_segments(continuation_stack: u32) -> (wasmtime::Store<()>, wasmtime::Instance) {
-    let m = conduit_ir::text::parse(SEGMENTS).unwrap();
+/// [`SEGMENTS`] with segments of `continuation_stack` bytes, counting if
+/// `counts` says so, which frees what the heap holds.
+fn instantiate_segments(
+    continuation_stack: u32,
+    counts: bool,
+) -> (wasmtime::Store<()>, wasmtime::Instance) {
+    let mut m = conduit_ir::text::parse(SEGMENTS).unwrap();
+    if counts {
+        conduit_opt::ownership::insert_counts(&mut m).unwrap();
+        conduit_opt::ownership::specialize_drops(&mut m);
+    }
     let options = crate::Options {
         stack_switching: true,
         shadow_stack: 64,
         continuation_stack,
+        counts,
+        cycles: counts,
         ..Default::default()
     };
     let exports: Vec<_> = ["main", "failing"]
@@ -404,22 +424,32 @@ fn instantiate_segments(continuation_stack: u32) -> (wasmtime::Store<()>, wasmti
 }
 
 #[test]
-fn continuations_have_their_own_shadow_stacks() {
-    let (mut store, instance) = instantiate_segments(32);
+fn continuations_grow_their_own_shadow_stacks() {
+    let (mut store, instance) = instantiate_segments(32, true);
     let main = instance
         .get_typed_func::<i32, i32>(&mut store, "main")
         .unwrap();
     let failing = instance
         .get_typed_func::<(i32, i32), i32>(&mut store, "failing")
         .unwrap();
-    for _ in 0..3 {
-        // 2 buffers and the out slot fill the segment.
-        assert_eq!(main.call(&mut store, 2).unwrap(), 2 * 209);
-        // After an abort out of a continuation, the main stack's 8 slots.
-        assert_eq!(failing.call(&mut store, (2, 7)).unwrap(), -1 + 7 * 209);
+    let rounds = |store: &mut wasmtime::Store<()>| {
+        for n in [1, 3, 100] {
+            assert_eq!(main.call(&mut *store, n).unwrap(), n * 209);
+            for after in [7, 100] {
+                assert_eq!(
+                    failing.call(&mut *store, (n, after)).unwrap(),
+                    -1 + after * 209
+                );
+            }
+        }
+    };
+    rounds(&mut store);
+    let memory = instance.get_memory(&mut store, "memory").unwrap();
+    let before = memory.data_size(&store);
+    for _ in 0..100 {
+        rounds(&mut store);
     }
-    let trap = main.call(&mut store, 3).unwrap_err();
-    assert!(trap.downcast_ref::<wasmtime::Trap>().is_some(), "{trap:?}");
+    assert_eq!(memory.data_size(&store), before);
 }
 
 /// A continuation's segment goes back on the free list when its body
@@ -427,7 +457,7 @@ fn continuations_have_their_own_shadow_stacks() {
 /// the memory by much more than the few objects they allocate.
 #[test]
 fn segments_are_reused() {
-    let (mut store, instance) = instantiate_segments(64 * 1024);
+    let (mut store, instance) = instantiate_segments(64 * 1024, false);
     let main = instance
         .get_typed_func::<i32, i32>(&mut store, "main")
         .unwrap();
@@ -591,4 +621,99 @@ fn dropped_continuations_give_their_segments_back() {
     assert_eq!(main.call(&mut store, 1000).unwrap(), dropped_total(1000));
     let grown = memory.data_size(&store) - before;
     assert!(grown < 4 << 20, "the memory grew by {grown} bytes");
+}
+
+/// An abort skips the pops of the frames it unwinds, so the `handle` that
+/// catches it pops back to where it started: else each of these, whose
+/// body pushes a 4 KB array and aborts, would leave the array pushed.
+#[test]
+fn aborts_pop_the_shadow_stack() {
+    let m = conduit_ir::text::parse(
+        "effect Fail {
+  () -> ()
+}
+handler or_default for Fail env(i32) ops(fail) ret done
+fn fail(%d: i32, %k: cont() -> (i32)) -> (i32) {
+  jump ret(%d)
+}
+fn done(%d: i32, %r: i32) -> (i32) {
+  jump ret(%r)
+}
+fn body(%n: i32) -> (i32) does Fail {
+  let %xs: mut [i32] = array_fill(%n, 7i32)
+  let %x: i32 = array_get(%xs, 0i32)
+  let = perform Fail.0()
+  jump ret(%x)
+}
+fn main(%n: i32) -> (i32) {
+  let %b: imm fn() -> (i32) does Fail = closure body(%n)
+  let %r: i32 = handle or_default(-1i32, %b)
+  jump ret(%r)
+}",
+    )
+    .unwrap();
+    let main = text::find_func(&m, "main").unwrap();
+    let bytes = crate::emit_module(&m, &[(main, "main")]).unwrap();
+    let engine = wasmtime::Engine::new(&conduit_test::wasm::config()).unwrap();
+    let module = wasmtime::Module::new(&engine, &bytes).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+    let main = instance
+        .get_typed_func::<i32, i32>(&mut store, "main")
+        .unwrap();
+    let memory = instance.get_memory(&mut store, "memory").unwrap();
+    assert_eq!(main.call(&mut store, 1000).unwrap(), -1);
+    let before = memory.data_size(&store);
+    for _ in 0..1000 {
+        assert_eq!(main.call(&mut store, 1000).unwrap(), -1);
+    }
+    let grown = memory.data_size(&store) - before;
+    assert!(grown < 1 << 20, "the memory grew by {grown} bytes");
+}
+
+/// An array that doesn't escape goes on the shadow stack, and is popped
+/// when its function returns: without counts, the heap never frees, so
+/// 1000 of these 40 KB arrays would take 40 MB of it. The call isn't in
+/// tail position, which would keep the array.
+#[test]
+fn objects_that_dont_escape_go_on_the_stack() {
+    let m = conduit_ir::text::parse(
+        "fn sum(%xs: ro [i32]) -> (i32) {
+  let %n: i32 = array_len(%xs)
+  join rec go(%i: i32, %acc: i32) =
+    let %done: i32 = ge.s(%i, %n)
+    case %done {
+      1 => jump ret(%acc)
+      _ =>
+        let %x: i32 = array_get(%xs, %i)
+        let %acc1: i32 = add(%acc, %x)
+        let %i1: i32 = add(%i, 1i32)
+        jump go(%i1, %acc1)
+    }
+  in jump go(0i32, 0i32)
+}
+fn main(%n: i32) -> (i32) {
+  let %xs: mut [i32] = array_fill(%n, 2i32)
+  let %r: i32 = call sum(%xs)
+  let %r1: i32 = add(%r, 0i32)
+  jump ret(%r1)
+}",
+    )
+    .unwrap();
+    let main = text::find_func(&m, "main").unwrap();
+    let bytes = crate::emit_module(&m, &[(main, "main")]).unwrap();
+    let engine = wasmtime::Engine::new(&conduit_test::wasm::config()).unwrap();
+    let module = wasmtime::Module::new(&engine, &bytes).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+    let main = instance
+        .get_typed_func::<i32, i32>(&mut store, "main")
+        .unwrap();
+    let memory = instance.get_memory(&mut store, "memory").unwrap();
+    assert_eq!(main.call(&mut store, 10_000).unwrap(), 20_000);
+    let before = memory.data_size(&store);
+    for _ in 0..1000 {
+        assert_eq!(main.call(&mut store, 10_000).unwrap(), 20_000);
+    }
+    assert_eq!(memory.data_size(&store), before);
 }

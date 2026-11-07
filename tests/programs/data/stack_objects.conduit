@@ -1,0 +1,208 @@
+// Objects that never outlive the function that makes them go on the
+// shadow stack in Wasm, and the others on the heap: what each run gives
+// is the same either way, counted or not, and with stack switching too.
+
+data Pair {
+  (i32, i32)
+}
+
+data List {
+  ()
+  (i32, inherit List)
+}
+
+effect Gen {
+  (i32) -> ()
+}
+
+// Only read here: on the stack.
+fn local_pair(%x: i32) -> (i32) {
+  let %p: imm Pair = new Pair.0(%x, 2i32)
+  let %a: i32 = get Pair.0.0(%p)
+  let %b: i32 = get Pair.0.1(%p)
+  let %r: i32 = add(%a, %b)
+  jump ret(%r)
+}
+
+fn first(%p: imm Pair) -> (i32) {
+  let %a: i32 = get Pair.0.0(%p)
+  jump ret(%a)
+}
+
+// Given to a function that only reads it: on the stack, unless the call
+// is in tail position, which pops the frame first.
+fn passed(%x: i32) -> (i32) {
+  let %p: imm Pair = new Pair.0(%x, 3i32)
+  let %r: i32 = call first(%p)
+  let %r1: i32 = add(%r, 1i32)
+  jump ret(%r1)
+}
+
+fn passed_last(%x: i32) -> (i32) {
+  let %p: imm Pair = new Pair.0(%x, 3i32)
+  let %r: i32 = call first(%p)
+  jump ret(%r)
+}
+
+fn made(%x: i32) -> (imm Pair) {
+  let %p: imm Pair = new Pair.0(%x, 4i32)
+  jump ret(%p)
+}
+
+// Returned: on the heap.
+fn returned(%x: i32) -> (i32) {
+  let %p: imm Pair = call made(%x)
+  let %b: i32 = get Pair.0.1(%p)
+  jump ret(%b)
+}
+
+// The empty list is stored in the cell, so it's on the heap, and the cell
+// is only read, so it's on the stack: x + 1.
+fn stored(%x: i32) -> (i32) {
+  let %nil: imm List = new List.0()
+  let %l: imm List = new List.1(%x, %nil)
+  case %l {
+    List.0 => jump ret(0i32)
+    List.1 =>
+      let %h: i32 = get List.1.0(%l)
+      let %r: i32 = add(%h, 1i32)
+      jump ret(%r)
+  }
+}
+
+// Through a join point, from either arm.
+fn joined(%c: i32) -> (i32) {
+  join j(%p: imm Pair) =
+    let %a: i32 = get Pair.0.0(%p)
+    let %b: i32 = get Pair.0.1(%p)
+    let %r: i32 = mul(%a, %b)
+    jump ret(%r)
+  in
+  case %c {
+    0 =>
+      let %p1: imm Pair = new Pair.0(2i32, 3i32)
+      jump j(%p1)
+    _ =>
+      let %p2: imm Pair = new Pair.0(4i32, 5i32)
+      jump j(%p2)
+  }
+}
+
+// Made in a loop: on the heap, since the stack would hold one for each
+// time around.
+fn looped(%n: i32) -> (i32) {
+  join rec go(%i: i32, %acc: i32) =
+    let %done: i32 = ge.s(%i, %n)
+    case %done {
+      1 => jump ret(%acc)
+      _ =>
+        let %p: imm Pair = new Pair.0(%i, %i)
+        let %a: i32 = get Pair.0.0(%p)
+        let %acc1: i32 = add(%acc, %a)
+        let %i1: i32 = add(%i, 1i32)
+        jump go(%i1, %acc1)
+    }
+  in jump go(0i32, 0i32)
+}
+
+// An array of 100 in each of n + 1 frames, which chains segments: the sum
+// of n down to 0.
+fn deep(%n: i32) -> (i32) {
+  let %xs: mut [i32] = array_fill(100i32, %n)
+  case %n {
+    0 =>
+      let %x: i32 = array_get(%xs, 99i32)
+      jump ret(%x)
+    _ =>
+      let %n1: i32 = sub(%n, 1i32)
+      let %r: i32 = call deep(%n1)
+      let %x2: i32 = array_get(%xs, 99i32)
+      let %s: i32 = add(%r, %x2)
+      jump ret(%s)
+  }
+}
+
+// Written and read, with an element of an array of lists that's on the
+// stack, and lists that aren't.
+fn written(%n: i32) -> (i32) {
+  let %xs: mut [i32] = array_fill(3i32, 0i32)
+  let = array_set(%xs, 1i32, %n)
+  let %x: i32 = array_get(%xs, 1i32)
+  let %nil: imm List = new List.0()
+  let %ls: mut [imm List] = array_alloc(2i32)
+  let = array_set(%ls, 0i32, %nil)
+  let %l: imm List = array_get(%ls, 0i32)
+  case %l {
+    List.0 => jump ret(%x)
+    List.1 => jump ret(-1i32)
+  }
+}
+
+fn add_to(%n: i32, %x: i32) -> (i32) {
+  let %r: i32 = add(%n, %x)
+  jump ret(%r)
+}
+
+// A closure applied here, not in tail position.
+fn applied(%x: i32) -> (i32) {
+  let %f: imm fn(i32) -> (i32) = closure add_to(%x)
+  let %r: i32 = apply(%f, 10i32)
+  let %r2: i32 = mul(%r, 2i32)
+  jump ret(%r2)
+}
+
+fn frozen_of(%n: i32) -> (imm [i32]) {
+  let %xs: mut [i32] = array_fill(%n, 1i32)
+  let %ys: imm [i32] = array_freeze(%xs)
+  jump ret(%ys)
+}
+
+// Frozen and returned, which is the same array: on the heap.
+fn frozen(%n: i32) -> (i32) {
+  let %ys: imm [i32] = call frozen_of(%n)
+  let %len: i32 = array_len(%ys)
+  jump ret(%len)
+}
+
+handler summing for Gen env() ops(sum_yield) ret sum_done
+
+fn sum_yield(%x: i32, %k: cont() -> (i32)) -> (i32) {
+  let %rest: i32 = resume(%k)
+  let %r: i32 = add(%x, %rest)
+  jump ret(%r)
+}
+
+fn sum_done(%r: i32) -> (i32) {
+  jump ret(%r)
+}
+
+// An array on the stack while the body yields twice: 5 + 3 + 5.
+fn gen_body(%n: i32) -> (i32) does Gen {
+  let %xs: mut [i32] = array_fill(%n, 5i32)
+  let %x: i32 = array_get(%xs, 0i32)
+  let = perform Gen.0(%x)
+  let %len: i32 = array_len(%xs)
+  let = perform Gen.0(%len)
+  let %y: i32 = array_get(%xs, 1i32)
+  jump ret(%y)
+}
+
+fn yields(%n: i32) -> (i32) {
+  let %body: imm fn() -> (i32) does Gen = closure gen_body(%n)
+  let %r: i32 = handle summing(%body)
+  jump ret(%r)
+}
+
+//# run local_pair(5i32) == 7i32
+//# run passed(6i32) == 7i32
+//# run passed_last(6i32) == 6i32
+//# run returned(1i32) == 4i32
+//# run stored(9i32) == 10i32
+//# run joined(0i32) == 6i32
+//# run joined(1i32) == 20i32
+//# run looped(10i32) == 45i32
+//# run deep(1000i32) == 500500i32
+//# run written(8i32) == 8i32
+//# run applied(5i32) == 30i32
+//# run frozen(4i32) == 4i32
+//# run yields(3i32) == 13i32

@@ -44,7 +44,9 @@
 //! starting at 16, and the heap starts after them.
 
 mod counts;
+mod escape;
 mod func;
+mod shadow;
 mod switch;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -206,8 +208,11 @@ pub(crate) struct Cx<'m> {
     thunks: BTreeMap<(EffectId, u32), FuncId>,
     /// The functions of reference counting, if the module counts.
     pub rt: Option<counts::Runtime>,
-    /// The shadow stack, if the module has `#[abi(flat)]` externs.
+    /// The shadow stack, if the module has `#[abi(flat)]` externs or
+    /// objects that go on it.
     pub stack: Option<ShadowStack>,
+    /// The `let`s whose objects go on the shadow stack, by address.
+    pub stack_objects: std::collections::HashSet<*const conduit_ir::Let>,
     /// The free lists of continuations' table slots, when counting.
     pub slot_lists: Option<SlotLists>,
 }
@@ -268,16 +273,21 @@ pub struct Options {
     /// (see `counts.rs`). The module then exports `conduit_collect`, which
     /// collects what's buffered so far.
     pub cycles: bool,
-    /// The bytes of the shadow stack, which holds what an `#[abi(flat)]`
-    /// extern call passes through memory: out-parameters and iovec lists.
-    /// A call that needs more traps. A module without such externs has no
-    /// shadow stack.
+    /// The bytes of the main stack's first segment of the shadow stack,
+    /// which holds what an `#[abi(flat)]` extern call passes through
+    /// memory, out-parameters and iovec lists, and objects that don't
+    /// outlive their function. A module with neither has no shadow stack.
     pub shadow_stack: u32,
-    /// The bytes of the shadow stack of each continuation, with
-    /// `stack_switching`: a segment of its own, taken from a free list or
-    /// the heap when the continuation starts, and given back when its body
-    /// returns or throws. A call that needs more traps.
+    /// The bytes of a segment of the shadow stack, which each
+    /// continuation starts on with `stack_switching`, and which a push
+    /// that doesn't fit chains another one of, or a bigger one for what
+    /// doesn't fit in one. Segments go back on a free list when what's on
+    /// them is popped, and a continuation's when its body returns or
+    /// throws, or when it's freed unused.
     pub continuation_stack: u32,
+    /// Whether objects that never outlive the function that makes them go
+    /// on the shadow stack instead of the heap (see `escape.rs`).
+    pub stack_objects: bool,
 }
 
 impl Default for Options {
@@ -288,40 +298,55 @@ impl Default for Options {
             cycles: false,
             shadow_stack: 64 * 1024,
             continuation_stack: 4 * 1024,
+            stack_objects: true,
         }
     }
 }
 
-/// The shadow stack: a region of memory that grows down from its top,
-/// with a global holding the lowest address in use.
+/// The shadow stack: memory that grows down, in segments. The main stack
+/// starts on a region of its own, from [`base`](Self::base) to
+/// [`top`](Self::top), and each continuation on a segment of
+/// [`segment`](Self::segment) bytes. A push that doesn't fit in the
+/// current segment chains a new one, from the free list or the heap.
+///
+/// A segment starts with a header of [`HEADER`] bytes: the pointer and
+/// limit to go back to when it's popped, and its size. A continuation's
+/// first segment holds the continuation's own pointer and limit there
+/// instead while it's suspended, and a free segment the next free one.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ShadowStack {
-    pub global: u32,
-    /// Where the region starts: a push below it traps.
+    /// The globals: the lowest address in use, the lowest the current
+    /// segment has, and the first free segment, or 0.
+    pub sp: u32,
+    pub limit: u32,
+    pub free: u32,
     pub base: u32,
     pub top: u32,
-    /// The segments of continuations, if some handler switches stacks.
-    pub segments: Option<Segments>,
+    /// The bytes of a segment, its header's included.
+    pub segment: u32,
+    /// Whether each continuation has a segment of its own: whether some
+    /// handler switches stacks.
+    pub continuations: bool,
+    /// `grow(n)`, which chains a segment that `n` more bytes fit in, and
+    /// `release(from, to)`, which gives back the segments from the one
+    /// whose limit is `from` until the one whose limit is `to`.
+    pub grow: u32,
+    pub release: u32,
 }
 
-/// With stack switching, each Wasm stack has a shadow stack of its own:
-/// the main stack the region at [`ShadowStack::base`], and each
-/// continuation a segment of `size` bytes. The first word of a segment
-/// holds its pointer while it's suspended, or the next segment while it's
-/// free, and the rest is the stack.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct Segments {
-    /// The global holding the lowest address the current stack can use.
-    pub limit: u32,
-    /// The global holding the first free segment, or 0.
-    pub free: u32,
-    pub size: u32,
-}
+/// The bytes of a segment's header.
+pub(crate) const HEADER: u32 = 16;
 
 impl Cx<'_> {
     /// The index of the first function after `alloc` and reference
     /// counting's.
     pub fn after_alloc(&self) -> u32 {
+        self.shadow_funcs() + u32::from(self.stack.is_some()) * 2
+    }
+
+    /// The index of the shadow stack's functions, if there is one: after
+    /// reference counting's.
+    pub fn shadow_funcs(&self) -> u32 {
         self.alloc + 1 + self.rt.as_ref().map_or(0, |rt| rt.len())
     }
 
@@ -485,7 +510,7 @@ impl Cx<'_> {
     /// Whether `h`'s frame ends with its continuation's shadow stack
     /// segment.
     pub fn segment_field(&self, h: HandlerId) -> bool {
-        self.is_switching(h) && self.stack.is_some_and(|s| s.segments.is_some())
+        self.is_switching(h) && self.stack.is_some_and(|s| s.continuations)
     }
 
     /// The fields of constructor `c`.
@@ -656,10 +681,34 @@ pub fn emit_module_with(
         thunks,
         rt: None,
         stack: None,
+        stack_objects: Default::default(),
         slot_lists: None,
     };
     if options.counts {
         cx.rt = Some(counts::Runtime::new(m, cx.alloc + 1, options.cycles));
+    }
+    if options.stack_objects {
+        cx.stack_objects = escape::stack_objects(m);
+    }
+    // A shadow stack, where it's laid out later, but whose functions need
+    // their indices now. Its globals come after the others.
+    if m.externs.values().any(|e| e.abi == Abi::Flat) || !cx.stack_objects.is_empty() {
+        let sp = if cx.rt.is_some() { 9 } else { 3 };
+        let grow = cx.shadow_funcs();
+        cx.stack = Some(ShadowStack {
+            sp,
+            limit: sp + 1,
+            free: sp + 2,
+            base: 0,
+            top: 0,
+            segment: options
+                .continuation_stack
+                .max(2 * HEADER)
+                .next_multiple_of(8),
+            continuations: !switching.is_empty(),
+            grow,
+            release: grow + 1,
+        });
     }
     let mut switch_funcs = 0;
     if !switching.is_empty() {
@@ -687,25 +736,15 @@ pub fn emit_module_with(
         heap_base += rt.memory();
     }
     // The shadow stack, after them, and its pointer after the other globals.
-    if m.externs.values().any(|e| e.abi == Abi::Flat) {
-        let base = heap_base;
+    if let Some(stack) = &mut cx.stack {
+        stack.base = heap_base;
         heap_base += options.shadow_stack.next_multiple_of(8);
-        let global = if cx.rt.is_some() { 9 } else { 3 };
-        cx.stack = Some(ShadowStack {
-            global,
-            base,
-            top: heap_base,
-            segments: (!cx.switches.is_empty()).then(|| Segments {
-                limit: global + 1,
-                free: global + 2,
-                size: options.continuation_stack.max(16).next_multiple_of(8),
-            }),
-        });
+        stack.top = heap_base;
     }
     // The free lists of slots, after the shadow stack's globals.
     if cx.rt.is_some() && !cx.switches.is_empty() {
         let next = match cx.stack {
-            Some(stack) => stack.global + 1 + if stack.segments.is_some() { 2 } else { 0 },
+            Some(stack) => stack.free + 1,
             None => 9,
         };
         let tables: usize = cx.switches.values().map(|sw| sw.conts.len()).sum();
@@ -940,6 +979,10 @@ pub fn emit_module_with(
         }
         cx.rt = Some(rt);
     }
+    // The shadow stack's functions, after reference counting's.
+    if let Some(stack) = cx.stack {
+        runtime.extend(shadow::bodies(&mut cx, stack));
+    }
 
     let mut types = TypeSection::new();
     for t in &cx.types {
@@ -1112,11 +1155,8 @@ pub fn emit_module_with(
         vec![heap_base as i32, 0, 0]
     };
     if let Some(stack) = cx.stack {
-        debug_assert_eq!(stack.global as usize, inits.len());
-        inits.push(stack.top as i32);
-        if stack.segments.is_some() {
-            inits.extend([stack.base as i32, 0]);
-        }
+        debug_assert_eq!(stack.sp as usize, inits.len());
+        inits.extend([stack.top as i32, stack.base as i32, 0]);
     }
     if let Some(lists) = &cx.slot_lists {
         debug_assert_eq!(lists.spare as usize, inits.len());

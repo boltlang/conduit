@@ -889,12 +889,8 @@ let %3: imm fn(i32) -> (i32) does Effect20 = closure fn2()
 
   The host may write only to `mut` arrays, and only during the call. An
   `imm` parameter is the host's promise not to write it. Iovec lists and
-  out-parameters go on a shadow stack in memory, which
-  `Options::shadow_stack` sizes, 64 KiB by default: a call that needs
-  more traps. With stack switching, each continuation has a shadow stack
-  of its own, of `Options::continuation_stack` bytes, 4 KiB by default,
-  taken from a free list when it starts and given back when its body
-  returns or throws. To the optimizer, every `call_extern` borrows its arguments
+  out-parameters go on the shadow stack, popped after the call (see the
+  Wasm backend below). To the optimizer, every `call_extern` borrows its arguments
   and may touch any memory, whatever the ABI.
 - **Exports start with no handlers.** The host calling an exported
   function grants it the effects without operations in its row. An
@@ -1300,8 +1296,35 @@ in linear memory, from a Conduit allocator, so the output needs no GC
 from the engine: Wasm 2.0, with tail calls and, for aborting handlers,
 exception handling, both part of Wasm 3.0.
 
+- **The shadow stack** is memory that grows down, in segments: the main
+  stack starts on a region of `Options::shadow_stack` bytes, 64 KiB by
+  default, and with stack switching each continuation on a segment of
+  `Options::continuation_stack` bytes, 4 KiB by default. A push that
+  doesn't fit chains another segment, from a free list or the heap, or a
+  bigger one for what doesn't fit in one, and popping gives the segments
+  chained since back to the free list. A continuation keeps its pointer
+  and limit in its first segment while it's suspended, and gives its
+  segments back when its body returns or throws, or when it's freed
+  unused. It holds what an `#[abi(flat)]` extern call passes through
+  memory, and objects that don't escape.
+- **Objects that don't escape** go on the shadow stack instead of the
+  heap, with `Options::stack_objects`, on by default: those a function
+  makes with `new`, `array_new`, `array_fill`, `array_alloc`,
+  `array_clone`, `ref_new` or `closure` that nothing can still refer to
+  once it returns (see `crates/conduit-wasm/src/escape.rs`). An object
+  escapes if it's returned, stored in an object, captured, boxed,
+  performed or handled, given to an `apply`, to a call in tail position,
+  or to a call whose parameter escapes, which a fixpoint over the module
+  finds. One made inside a recursive join point stays on the heap, since
+  a loop would push one each time around. A function with stack objects
+  pops them when it returns and before each tail call, and an aborting
+  `handle` pops back to where it started when it catches its abort,
+  since the frames the abort unwinds don't. When counting, a stack
+  object is counted as any other, but marked buffered, so that its count
+  reaching 0 drops what it holds without giving its memory to the heap,
+  and `drop_reuse` doesn't reuse it.
 - Every object starts with a header word, and every allocation goes
-  through one `alloc` function. By default, `alloc` bumps a pointer and
+  through one `alloc` function, but a stack object's. By default, `alloc` bumps a pointer and
   memory is never freed. With `Options::counts`, for a module whose counts
   `conduit_opt::ownership::insert_counts` made explicit, the header is the
   count, constants' with the sign bit set so they're never counted, and
