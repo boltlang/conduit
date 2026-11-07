@@ -208,6 +208,8 @@ pub(crate) struct Cx<'m> {
     pub rt: Option<counts::Runtime>,
     /// The shadow stack, if the module has `#[abi(flat)]` externs.
     pub stack: Option<ShadowStack>,
+    /// The free lists of continuations' table slots, when counting.
+    pub slot_lists: Option<SlotLists>,
 }
 
 /// The functions, table slots and tables of a handler that switches
@@ -226,6 +228,20 @@ pub(crate) struct Switch {
     pub conts: Vec<u32>,
     kont_funcs: Vec<u32>,
     disc_funcs: Vec<u32>,
+    /// With counts, for each operation: the functions that free its
+    /// Conduit continuations and step through what they hold.
+    kont_frees: Vec<u32>,
+    kont_children: Vec<u32>,
+}
+
+/// With counts and handlers that switch stacks, the free lists of table
+/// slots: the global holding each continuation table's list, by table
+/// minus 1, and the one holding the spare nodes. A node is 8 bytes: the
+/// next node, then the slot.
+#[derive(Debug, Clone)]
+pub(crate) struct SlotLists {
+    pub heads: Vec<u32>,
+    pub spare: u32,
 }
 
 /// How [`emit_module_with`] lowers a module.
@@ -243,9 +259,10 @@ pub struct Options {
     /// is freed: `dup`, `drop` and the ops that count for themselves count,
     /// and an `any` is always a box. Otherwise those ops do nothing, and
     /// memory is never freed. Effects must be lowered before counts are
-    /// inserted, if they're lowered by evidence passing. The module then
-    /// exports the global `conduit_live`, the number of objects allocated
-    /// and not yet freed, handler frames among them.
+    /// inserted, if they're lowered by evidence passing; with
+    /// `stack_switching`, they needn't be. The module then exports the
+    /// global `conduit_live`, the number of objects allocated and not yet
+    /// freed, handler frames and continuations among them.
     pub counts: bool,
     /// With `counts`, whether to collect cycles too, by trial deletion
     /// (see `counts.rs`). The module then exports `conduit_collect`, which
@@ -639,6 +656,7 @@ pub fn emit_module_with(
         thunks,
         rt: None,
         stack: None,
+        slot_lists: None,
     };
     if options.counts {
         cx.rt = Some(counts::Runtime::new(m, cx.alloc + 1, options.cycles));
@@ -682,6 +700,18 @@ pub fn emit_module_with(
                 free: global + 2,
                 size: options.continuation_stack.max(16).next_multiple_of(8),
             }),
+        });
+    }
+    // The free lists of slots, after the shadow stack's globals.
+    if cx.rt.is_some() && !cx.switches.is_empty() {
+        let next = match cx.stack {
+            Some(stack) => stack.global + 1 + if stack.segments.is_some() { 2 } else { 0 },
+            None => 9,
+        };
+        let tables: usize = cx.switches.values().map(|sw| sw.conts.len()).sum();
+        cx.slot_lists = Some(SlotLists {
+            spare: next,
+            heads: (next + 1..next + 1 + tables as u32).collect(),
         });
     }
     let data = data[CONST_BASE as usize..].to_vec();
@@ -795,6 +825,24 @@ pub fn emit_module_with(
                 switched.push((ty, body));
             }
         }
+        if cx.rt.is_some() {
+            let one = cx.sig(FnSig {
+                params: vec![ValType::I32],
+                results: Vec::new(),
+            });
+            let two = cx.sig(FnSig {
+                params: vec![ValType::I32, ValType::I32],
+                results: Vec::new(),
+            });
+            for i in 0..n {
+                let body = switch::lower_kont_free(&mut cx, h, i).map_err(err)?;
+                switched.push((one, body));
+            }
+            for i in 0..n {
+                let body = switch::lower_kont_children(&mut cx, h, i).map_err(err)?;
+                switched.push((two, body));
+            }
+        }
     }
     // Tag types, after the abort's.
     let disc_tag_ty = cx.disc_tag.map(|_| {
@@ -862,8 +910,14 @@ pub fn emit_module_with(
             n_closures as i32,
             rt.keys.len() as i32,
         );
+        // After the kinds' steps, a continuation's free function for each
+        // continuation slot, then its children.
+        let end = w + 3 * e + 3 * k;
+        let (first, konts) = (clause_slots as i32, w - clause_slots as i32);
         let slots = counts::Slots {
             closure_free: e,
+            kont_free: end - first,
+            kont_children: end + konts - first,
             kind_drop: w + 2 * e,
             closure_children: 2 * e + k,
             kind_children: w + 3 * e + k,
@@ -995,7 +1049,7 @@ pub fn emit_module_with(
     let n_entries = u64::from(cx.wrapper_slots)
         + cx.entries.len() as u64
         + if cx.rt.is_some() {
-            2 * cx.entries.len() as u64 + 3 * kinds
+            2 * cx.entries.len() as u64 + 3 * kinds + 2 * u64::from(cx.wrapper_slots - clause_slots)
         } else {
             0
         };
@@ -1064,6 +1118,10 @@ pub fn emit_module_with(
             inits.extend([stack.base as i32, 0]);
         }
     }
+    if let Some(lists) = &cx.slot_lists {
+        debug_assert_eq!(lists.spare as usize, inits.len());
+        inits.extend(std::iter::repeat_n(0, 1 + lists.heads.len()));
+    }
     for init in inits {
         globals.global(
             GlobalType {
@@ -1112,6 +1170,17 @@ pub fn emit_module_with(
         refs.extend((0..n).map(|k| first_free + n + k));
         refs.extend(rt.keys.iter().map(|k| rt.children(k)));
         refs.extend(rt.keys.iter().map(|k| rt.step(k)));
+        // Each continuation slot's free function, then its children, the
+        // discontinue slots' too, which nothing calls.
+        let lists: [fn(&Switch) -> &Vec<u32>; 2] = [|sw| &sw.kont_frees, |sw| &sw.kont_children];
+        for pick in lists {
+            for sw in cx.switches.values() {
+                refs.extend(pick(sw).iter().copied());
+                if !sw.disc_slots.is_empty() {
+                    refs.extend(pick(sw).iter().copied());
+                }
+            }
+        }
     }
     let mut elements = ElementSection::new();
     if !refs.is_empty() {
@@ -1213,6 +1282,11 @@ fn plan_switching(cx: &mut Cx<'_>, switching: &BTreeSet<HandlerId>) -> Result<u3
         } else {
             (Vec::new(), Vec::new())
         };
+        let (kont_frees, kont_children) = if cx.rt.is_some() {
+            (take(&mut func, n), take(&mut func, n))
+        } else {
+            (Vec::new(), Vec::new())
+        };
         let kont_slots = take(&mut slot, n);
         let disc_slots = if disc { take(&mut slot, n) } else { Vec::new() };
         let conts = take(&mut table, n);
@@ -1228,6 +1302,8 @@ fn plan_switching(cx: &mut Cx<'_>, switching: &BTreeSet<HandlerId>) -> Result<u3
                 conts,
                 kont_funcs,
                 disc_funcs,
+                kont_frees,
+                kont_children,
             },
         );
     }

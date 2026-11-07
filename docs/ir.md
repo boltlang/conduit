@@ -1315,7 +1315,11 @@ exception handling, both part of Wasm 3.0.
   box that holds the kind of what it holds. Handler frames are freed when
   their `handle` is done, also when an abort unwinds through it. A module
   whose handlers need evidence passing must have it done before its
-  counts are inserted. The module exports `conduit_live`, the number of
+  counts are inserted. With stack switching, they needn't be: a captured
+  continuation is counted, holds a reference to the handler's
+  environment, and gives back its table slot when it's used, or its slot,
+  the handler's frame and its shadow stack segment when it's freed
+  unused. The module exports `conduit_live`, the number of
   objects not yet freed.
 - With `Options::cycles` too, cycles are collected by trial deletion.
   The header's count is then 28 bits, with the collector's color and a

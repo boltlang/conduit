@@ -10,13 +10,21 @@
 //!   resumes it with a label per operation.
 //! - A Wasm continuation is a reference, which memory can't hold, so a
 //!   captured one goes in a table of its type, one per operation, and the
-//!   Conduit continuation holds its slot. Slots are never freed, as memory
-//!   isn't.
+//!   Conduit continuation holds its slot.
 //! - A Conduit continuation is a closure: the header, its wrapper's table
 //!   slot at 4, then, laid out from 8, the slot of the function that
-//!   discontinues it, the frame, the handler's environment and the slot of
-//!   the Wasm continuation. Its wrapper resumes it under the handler again
-//!   through `drive`, so the handler is deep, and a second resume traps.
+//!   discontinues it, the frame, the handler's environment, the slot of
+//!   the Wasm continuation, and when counting, whether it was used. Its
+//!   wrapper resumes it under the handler again through `drive`, so the
+//!   handler is deep, and a second resume traps.
+//! - When counting, a Conduit continuation is counted, and holds a
+//!   reference to the environment. Resuming or discontinuing it takes it:
+//!   it's marked used, what it holds is dupped for `drive`, its slot goes
+//!   on its table's free list, which `drive` takes slots from before it
+//!   grows the table, and it's dropped. Freed without being used, it gives
+//!   back the handler's frame, the frame's segment and its slot; what its
+//!   own stack holds is lost. Otherwise `drive` gives the frame back when
+//!   the body returns or throws.
 //! - `discontinue F.j(k, args)` makes a closure that performs `F.j(args)`
 //!   and throws its address into `k` with `resume_throw`, which the
 //!   `perform` catches and calls, under its own handlers.
@@ -24,13 +32,13 @@
 //!   segment of its own (see [`Segments`]), which `start` takes and
 //!   keeps in the frame. `start`, `drive` and `throw` switch to it, and
 //!   back to the outer stack's when the body suspends, returns or throws,
-//!   giving it back in the last two cases. A continuation that's never
-//!   resumed again keeps its segment, as it keeps its table slot.
+//!   giving it back in the last two cases. Without counts, a continuation
+//!   that's never resumed again keeps its segment and its table slot.
 
 use conduit_ir::HandlerId;
 use wasm_encoder::{BlockType, Catch, Handle, HeapType, Instruction as I, RefType, ValType};
 
-use crate::counts::LIVE;
+use crate::counts::{DropKey, LIVE, key_of};
 use crate::func::{Body, load, store};
 use crate::{Cx, FnSig, HANDLERS, Segments, Storage, layout, val};
 
@@ -101,13 +109,100 @@ impl Cx<'_> {
 
     /// The layout of a Conduit continuation of `h`'s clause `i`, from 8:
     /// the slot of its discontinue function, the frame, the environment,
-    /// and the slot of the Wasm continuation.
+    /// the slot of the Wasm continuation, and when counting, whether it
+    /// was used.
     pub fn kont_layout(&self, h: HandlerId) -> (Vec<(u32, Storage)>, u32) {
         let decl = &self.m.handlers[&h];
         let mut tys = vec![conduit_ir::Ty::I32, conduit_ir::Ty::I32];
         tys.extend(decl.env.iter().cloned());
         tys.push(conduit_ir::Ty::I32);
+        if self.rt.is_some() {
+            tys.push(conduit_ir::Ty::I32);
+        }
         layout(&tys)
+    }
+
+    /// Puts the Wasm continuation in local `k` in a slot of table `t`,
+    /// into local `slot`: a free one, with the free list's node in local
+    /// `node` going back to the spares, or else a new one.
+    fn take_slot(&self, t: u32, k: u32, slot: u32, node: u32) -> Vec<I<'static>> {
+        let grow = [
+            I::LocalGet(k),
+            I::I32Const(1),
+            I::TableGrow(t),
+            I::LocalTee(slot),
+            I::I32Const(-1),
+            I::I32Eq,
+            I::If(BlockType::Empty),
+            I::Unreachable,
+            I::End,
+        ];
+        let Some(lists) = &self.slot_lists else {
+            return grow.to_vec();
+        };
+        let (head, spare) = (lists.heads[t as usize - 1], lists.spare);
+        let mut code = vec![
+            I::GlobalGet(head),
+            I::LocalTee(node),
+            I::If(BlockType::Empty),
+            I::LocalGet(node),
+            load(Storage::I32, 0),
+            I::GlobalSet(head),
+            I::LocalGet(node),
+            load(Storage::I32, 4),
+            I::LocalSet(slot),
+            I::LocalGet(node),
+            I::GlobalGet(spare),
+            store(Storage::I32, 0),
+            I::LocalGet(node),
+            I::GlobalSet(spare),
+            I::LocalGet(slot),
+            I::LocalGet(k),
+            I::TableSet(t),
+            I::Else,
+        ];
+        code.extend(grow);
+        code.push(I::End);
+        code
+    }
+
+    /// Empties the slot of table `t`, of continuations of type `cont`,
+    /// that `slot` gives, and puts it on its free list, with a spare node
+    /// in local `node`, or else a new one, which isn't an object.
+    fn free_slot(&self, t: u32, cont: u32, slot: &[I<'static>], node: u32) -> Vec<I<'static>> {
+        let lists = self.slot_lists.as_ref().expect("free lists of slots");
+        let (head, spare) = (lists.heads[t as usize - 1], lists.spare);
+        let mut code = slot.to_vec();
+        code.extend([
+            I::RefNull(HeapType::Concrete(cont)),
+            I::TableSet(t),
+            I::GlobalGet(spare),
+            I::LocalTee(node),
+            I::If(BlockType::Empty),
+            I::LocalGet(node),
+            load(Storage::I32, 0),
+            I::GlobalSet(spare),
+            I::Else,
+            I::I32Const(8),
+            I::Call(self.alloc),
+            I::LocalSet(node),
+            I::GlobalGet(LIVE),
+            I::I32Const(1),
+            I::I32Sub,
+            I::GlobalSet(LIVE),
+            I::End,
+            I::LocalGet(node),
+        ]);
+        code.extend(slot.iter().cloned());
+        code.extend([
+            store(Storage::I32, 4),
+            I::LocalGet(node),
+            I::GlobalGet(head),
+            store(Storage::I32, 0),
+            I::LocalGet(node),
+            I::GlobalSet(head),
+        ]);
+        code
     }
 
     /// The parameters of `h`'s `start`, `drive` or `throw` function, and
@@ -195,11 +290,26 @@ pub(crate) fn lower_drive(cx: &mut Cx<'_>, h: HandlerId, start: Start) -> Result
             segment: new_local(&mut locals, ValType::I32),
         }
     });
+    // When counting, the frame is given back once the body is done, also
+    // when an exception escapes it, so the resume is in a `try_table` then
+    // too.
+    let counts = cx.rt.as_ref().map(|rt| (rt.release(), rt.dup()));
+    let frame_size = cx.frame(h)?.1;
+    let release_frame = |code: &mut Vec<I<'static>>| {
+        if let Some((release, _)) = counts {
+            code.extend([
+                I::LocalGet(0),
+                I::I32Const(frame_size as i32),
+                I::Call(release),
+            ]);
+        }
+    };
+    let catching = shadow.is_some() || counts.is_some();
     let mut table = Vec::new();
     for i in 0..n {
         let (e, j, _) = crate::clause_at(decl, i);
         let tag = cx.tag(e, j).ok_or("no tag for an operation")?;
-        let label = i + u32::from(shadow.is_some());
+        let label = i + u32::from(catching);
         table.push(Handle::OnLabel { tag, label });
     }
 
@@ -213,6 +323,8 @@ pub(crate) fn lower_drive(cx: &mut Cx<'_>, h: HandlerId, start: Start) -> Result
     ];
     if let Some(sh) = &shadow {
         code.extend(sh.enter(start, cx.alloc, cx.rt.is_some()));
+    }
+    if catching {
         // An exception that escapes the body ends it.
         code.push(I::Block(BlockType::Result(ValType::Ref(RefType::EXNREF))));
     }
@@ -236,7 +348,7 @@ pub(crate) fn lower_drive(cx: &mut Cx<'_>, h: HandlerId, start: Start) -> Result
         });
         code.push(I::Block(BlockType::FunctionType(ty)));
     }
-    if shadow.is_some() {
+    if catching {
         // A catch's label is counted from outside the `try_table`.
         let catches = vec![Catch::AllRef { label: n + 1 }];
         code.push(I::TryTable(
@@ -281,7 +393,7 @@ pub(crate) fn lower_drive(cx: &mut Cx<'_>, h: HandlerId, start: Start) -> Result
             });
         }
     }
-    if shadow.is_some() {
+    if catching {
         code.push(I::End);
     }
     code.push(I::Br(n));
@@ -300,19 +412,10 @@ pub(crate) fn lower_drive(cx: &mut Cx<'_>, h: HandlerId, start: Start) -> Result
         for &p in params.iter().rev() {
             code.push(I::LocalSet(p));
         }
-        // The Wasm continuation goes in a new slot of its table.
+        // The Wasm continuation goes in a slot of its table.
         let slot = new_local(&mut locals, ValType::I32);
-        code.extend([
-            I::LocalGet(k),
-            I::I32Const(1),
-            I::TableGrow(sw.conts[i as usize]),
-            I::LocalTee(slot),
-            I::I32Const(-1),
-            I::I32Eq,
-            I::If(BlockType::Empty),
-            I::Unreachable,
-            I::End,
-        ]);
+        let node = new_local(&mut locals, ValType::I32);
+        code.extend(cx.take_slot(sw.conts[i as usize], k, slot, node));
         if let Some(sh) = &shadow {
             code.extend(sh.suspend());
         }
@@ -346,12 +449,23 @@ pub(crate) fn lower_drive(cx: &mut Cx<'_>, h: HandlerId, start: Start) -> Result
             I::LocalGet(0),
             store(Storage::I32, kont_fields[1].0),
         ]);
+        // The clause takes the environment, and the continuation keeps
+        // its own.
         for j in 0..env as usize {
             let (at, s) = kont_fields[2 + j];
             code.extend([I::LocalGet(obj), I::LocalGet(1 + j as u32), store(s, at)]);
+            if let Some((_, dup)) = counts
+                && key_of(&decl.env[j]).is_some()
+            {
+                code.extend([I::LocalGet(1 + j as u32), I::Call(dup)]);
+            }
         }
         let (at, s) = kont_fields[2 + env as usize];
         code.extend([I::LocalGet(obj), I::LocalGet(slot), store(s, at)]);
+        if counts.is_some() {
+            let (at, s) = kont_fields[3 + env as usize];
+            code.extend([I::LocalGet(obj), I::I32Const(0), store(s, at)]);
+        }
         code.push(I::LocalGet(obj));
         code.push(I::ReturnCall(cx.func_index(crate::clause_at(decl, i).2)?));
     }
@@ -368,6 +482,7 @@ pub(crate) fn lower_drive(cx: &mut Cx<'_>, h: HandlerId, start: Start) -> Result
         code.extend(sh.leave());
     }
     code.extend(outside());
+    release_frame(&mut code);
     for j in 0..env {
         code.push(I::LocalGet(1 + j));
     }
@@ -375,10 +490,14 @@ pub(crate) fn lower_drive(cx: &mut Cx<'_>, h: HandlerId, start: Start) -> Result
         code.push(I::LocalGet(r));
     }
     code.push(I::ReturnCall(cx.func_index(decl.ret)?));
-    if let Some(sh) = &shadow {
-        // The exception, after the body's segment is given back.
+    if catching {
+        // The exception, after the body's segment and frame are given
+        // back.
         code.push(I::End);
-        code.extend(sh.leave());
+        if let Some(sh) = &shadow {
+            code.extend(sh.leave());
+        }
+        release_frame(&mut code);
         code.push(I::ThrowRef);
     }
     code.push(I::End);
@@ -525,20 +644,51 @@ pub(crate) fn lower_kont(
     };
     let (fields, _) = cx.kont_layout(h);
     let sw = cx.switch(h)?.clone();
+    let t = sw.conts[i as usize];
+    let cont = cx.op_cont(h, i)?;
+    // When counting, it takes the continuation: a used one traps, and
+    // otherwise it's marked used, what it holds dupped, its slot freed,
+    // and itself dropped.
+    let counted = cx
+        .rt
+        .as_ref()
+        .map(|rt| (rt.dup(), rt.drop(&DropKey::Cont, false)));
+    let node = 1 + args;
     let mut code = Vec::new();
+    if counted.is_some() {
+        let (at, s) = fields[3 + env];
+        code.extend([
+            I::LocalGet(0),
+            load(s, at),
+            I::If(BlockType::Empty),
+            I::Unreachable,
+            I::End,
+            I::LocalGet(0),
+            I::I32Const(1),
+            store(s, at),
+        ]);
+    }
     // The frame and the environment.
-    for &(at, s) in &fields[1..2 + env] {
+    for (j, &(at, s)) in fields[1..2 + env].iter().enumerate() {
         code.push(I::LocalGet(0));
         code.push(load(s, at));
+        if let Some((dup, _)) = counted
+            && j > 0
+            && key_of(&decl.env[j - 1]).is_some()
+        {
+            code.extend([I::LocalGet(0), load(s, at), I::Call(dup)]);
+        }
     }
     let (at, s) = fields[2 + env];
-    code.extend([
-        I::LocalGet(0),
-        load(s, at),
-        I::TableGet(sw.conts[i as usize]),
-    ]);
+    code.extend([I::LocalGet(0), load(s, at), I::TableGet(t)]);
+    if counted.is_some() {
+        code.extend(cx.free_slot(t, cont, &[I::LocalGet(0), load(s, at)], node));
+    }
     for a in 0..args {
         code.push(I::LocalGet(1 + a));
+    }
+    if let Some((_, drop)) = counted {
+        code.extend([I::LocalGet(0), I::Call(drop)]);
     }
     let target = if disc {
         sw.throw[i as usize]
@@ -547,8 +697,99 @@ pub(crate) fn lower_kont(
     };
     code.push(I::ReturnCall(target));
     code.push(I::End);
-    Ok(Body {
-        locals: Vec::new(),
-        code,
-    })
+    let locals = if counted.is_some() {
+        vec![ValType::I32]
+    } else {
+        Vec::new()
+    };
+    Ok(Body { locals, code })
+}
+
+/// What a Conduit continuation of `h`'s clause `i` that was never used
+/// gives back when it's freed: the handler's frame, the shadow stack
+/// segment the frame holds, and the slot of its Wasm continuation, with
+/// local `node` for the slot's free list. What the continuation's own
+/// stack holds is lost.
+fn unused_kont(
+    cx: &mut Cx<'_>,
+    h: HandlerId,
+    i: u32,
+    node: u32,
+) -> Result<Vec<I<'static>>, String> {
+    let env = cx.m.handlers[&h].env.len();
+    let (fields, _) = cx.kont_layout(h);
+    let (frame_fields, frame_size) = cx.frame(h)?;
+    let t = cx.switch(h)?.conts[i as usize];
+    let cont = cx.op_cont(h, i)?;
+    let rt = cx
+        .rt
+        .as_ref()
+        .ok_or("a continuation is only freed when counting")?;
+    let frame = fields[1].0;
+    let (used, s) = fields[3 + env];
+    let mut code = vec![
+        I::LocalGet(0),
+        load(s, used),
+        I::I32Eqz,
+        I::If(BlockType::Empty),
+    ];
+    if let Some(seg) = cx.stack.and_then(|st| st.segments)
+        && cx.segment_field(h)
+    {
+        let at = frame_fields.last().expect("a segment field").0;
+        let segment = [
+            I::LocalGet(0),
+            load(Storage::I32, frame),
+            load(Storage::I32, at),
+        ];
+        code.extend(segment.clone());
+        code.extend([I::GlobalGet(seg.free), store(Storage::I32, 0)]);
+        code.extend(segment);
+        code.push(I::GlobalSet(seg.free));
+    }
+    code.extend([
+        I::LocalGet(0),
+        load(Storage::I32, frame),
+        I::I32Const(frame_size as i32),
+        I::Call(rt.release()),
+    ]);
+    let (slot, s) = fields[2 + env];
+    code.extend(cx.free_slot(t, cont, &[I::LocalGet(0), load(s, slot)], node));
+    code.push(I::End);
+    Ok(code)
+}
+
+/// The environment's fields of a Conduit continuation of `h`, which it
+/// holds a reference to each of.
+fn kont_env(cx: &Cx<'_>, h: HandlerId) -> (Vec<(u32, conduit_ir::Ty)>, u32) {
+    let decl = &cx.m.handlers[&h];
+    let (fields, size) = cx.kont_layout(h);
+    let env = (decl.env.iter().enumerate())
+        .map(|(j, t)| (fields[2 + j].0, t.clone()))
+        .collect();
+    (env, size)
+}
+
+/// The function that frees a Conduit continuation of `h`'s clause `i`,
+/// whose count is 0, and drops what it holds.
+pub(crate) fn lower_kont_free(cx: &mut Cx<'_>, h: HandlerId, i: u32) -> Result<Body, String> {
+    let first = unused_kont(cx, h, i, 1)?;
+    let (env, size) = kont_env(cx, h);
+    let rt = cx
+        .rt
+        .as_ref()
+        .ok_or("a continuation is only freed when counting")?;
+    Ok(rt.free_fields(&env, size, first, vec![ValType::I32]))
+}
+
+/// `children(p, op)` of a Conduit continuation of `h`'s clause `i`, for
+/// collecting cycles: what its environment holds.
+pub(crate) fn lower_kont_children(cx: &mut Cx<'_>, h: HandlerId, i: u32) -> Result<Body, String> {
+    let freeing = unused_kont(cx, h, i, 2)?;
+    let (env, size) = kont_env(cx, h);
+    let rt = cx
+        .rt
+        .as_ref()
+        .ok_or("a continuation is only freed when counting")?;
+    Ok(rt.children_of_fields(&env, size, freeing, vec![ValType::I32]))
 }

@@ -14,11 +14,11 @@
 //!   bumps the heap, zeroes it, and sets its count to 1.
 //! - **Dropping** goes through functions for each kind of object, a
 //!   [`DropKey`]: a data type, arrays and refs of what they hold,
-//!   closures, and `any`. At 0, `drop` frees the object and drops what it
-//!   held, tail-calling the drop of its last field, so that dropping a
-//!   list is a loop. A closure's own function frees it, found in the table
-//!   from its wrapper's slot, and an `any` is always a box, which holds the
-//!   number of the kind of what it holds.
+//!   closures, continuations and `any`. At 0, `drop` frees the object and
+//!   drops what it held, tail-calling the drop of its last field, so that
+//!   dropping a list is a loop. A closure's or continuation's own function
+//!   frees it, found in the table from its wrapper's slot, and an `any` is
+//!   always a box, which holds the number of the kind of what it holds.
 //! - **Cycles** are collected by trial deletion (Bacon and Rajan,
 //!   synchronous). A `drop` that leaves an object above 0 buffers it, if
 //!   its kind can be in a cycle: if the kinds' graph, without the fields
@@ -111,16 +111,20 @@ pub(crate) enum DropKey {
     Array(Storage, Option<Box<DropKey>>, bool),
     Ref(Storage, Option<Box<DropKey>>, bool),
     Closure,
+    /// A Conduit continuation, of a handler that switches stacks: a
+    /// closure-like object whose own functions free it and step through
+    /// it, found in the table from its wrapper's slot (see `switch.rs`).
+    Cont,
     Any,
 }
 
 /// How a value of type `ty` is dropped, or `None` if it isn't counted.
-/// Continuations aren't: what they hold is lost when they're dropped.
 pub(crate) fn key_of(ty: &Ty) -> Option<DropKey> {
     Some(match ty {
-        Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::F32 | Ty::F64 | Ty::Cont(_) | Ty::Reuse(_) => {
+        Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::F32 | Ty::F64 | Ty::Reuse(_) => {
             return None;
         }
+        Ty::Cont(_) => DropKey::Cont,
         Ty::Data(d, ..) => DropKey::Data(*d),
         Ty::Array(e, _) => DropKey::Array(Storage::of(e), key_of(e).map(Box::new), is_imm(e)),
         Ty::Ref(t) => DropKey::Ref(Storage::of(t), key_of(t).map(Box::new), is_imm(t)),
@@ -141,6 +145,10 @@ pub(crate) fn is_imm(ty: &Ty) -> bool {
 #[derive(Clone, Copy)]
 pub(crate) struct Slots {
     pub closure_free: i32,
+    /// Added to a continuation's wrapper's slot: the slots of its free
+    /// function and of its children.
+    pub kont_free: i32,
+    pub kont_children: i32,
     pub closure_children: i32,
     pub kind_drop: i32,
     pub kind_children: i32,
@@ -231,7 +239,7 @@ impl Runtime {
                     vec![rt.index[e.as_ref()] as usize]
                 }
                 DropKey::Array(..) | DropKey::Ref(..) => Vec::new(),
-                DropKey::Closure | DropKey::Any => (0..n).collect(),
+                DropKey::Closure | DropKey::Cont | DropKey::Any => (0..n).collect(),
             })
             .collect();
         rt.cyclic = (0..n)
@@ -1021,11 +1029,15 @@ impl Runtime {
                     None => code.push(I::ReturnCall(self.release_obj())),
                 }
             }
-            DropKey::Closure => code.extend([
+            DropKey::Closure | DropKey::Cont => code.extend([
                 I::LocalGet(p),
                 I::LocalGet(p),
                 load(Storage::I32, 4),
-                I::I32Const(slots.closure_free),
+                I::I32Const(if *k == DropKey::Cont {
+                    slots.kont_free
+                } else {
+                    slots.closure_free
+                }),
                 I::I32Add,
                 I::ReturnCallIndirect {
                     type_index: one,
@@ -1105,8 +1117,8 @@ impl Runtime {
                 I::ReturnCall(self.release_obj()),
             ]),
             // A closure's size is its wrapper's to know, and nothing frees
-            // one without dropping it.
-            DropKey::Closure => code.push(I::Unreachable),
+            // one without dropping it, nor a continuation.
+            DropKey::Closure | DropKey::Cont => code.push(I::Unreachable),
         }
         code.push(I::End);
         Body {
@@ -1363,12 +1375,16 @@ impl Runtime {
                 }
                 release(&mut code, vec![I::I32Const(16)]);
             }
-            DropKey::Closure => code.extend([
+            DropKey::Closure | DropKey::Cont => code.extend([
                 I::LocalGet(p),
                 I::LocalGet(op),
                 I::LocalGet(p),
                 load(Storage::I32, 4),
-                I::I32Const(slots.closure_children),
+                I::I32Const(if *k == DropKey::Cont {
+                    slots.kont_children
+                } else {
+                    slots.closure_children
+                }),
                 I::I32Add,
                 I::ReturnCallIndirect {
                     type_index: two,
@@ -1407,17 +1423,33 @@ impl Runtime {
     pub fn closure_free(&self, cx: &Cx<'_>, f: FuncId, n: usize) -> Body {
         let tys = &cx.m.funcs[&f].sig().params[..n];
         let (offsets, size) = layout(tys);
-        let held: Vec<(u32, u32)> = (tys.iter().zip(&offsets))
-            .filter_map(|(t, &(at, _))| self.drop_of(t).map(|d| (at, d)))
+        let fields: Vec<(u32, Ty)> = (offsets.iter().zip(tys))
+            .map(|(&(at, _), t)| (at, t.clone()))
             .collect();
-        let mut code = Vec::new();
-        let mut locals = Vec::new();
+        self.free_fields(&fields, size, Vec::new(), Vec::new())
+    }
+
+    /// The function that frees an object of `size` bytes and drops its
+    /// `fields`, at their offsets, after running `first`, which can use
+    /// `locals` from local 1.
+    pub fn free_fields(
+        &self,
+        fields: &[(u32, Ty)],
+        size: u32,
+        first: Vec<I<'static>>,
+        mut locals: Vec<ValType>,
+    ) -> Body {
+        let held: Vec<(u32, u32)> = (fields.iter())
+            .filter_map(|(at, t)| self.drop_of(t).map(|d| (*at, d)))
+            .collect();
+        let mut code = first;
+        let base = 1 + locals.len() as u32;
         for (j, (at, _)) in held.iter().enumerate() {
             locals.push(ValType::I32);
             code.extend([
                 I::LocalGet(0),
                 load(Storage::I32, *at),
-                I::LocalSet(1 + j as u32),
+                I::LocalSet(base + j as u32),
             ]);
         }
         code.extend([
@@ -1426,7 +1458,7 @@ impl Runtime {
             I::Call(self.release_obj()),
         ]);
         for (j, (_, d)) in held.iter().enumerate() {
-            code.push(I::LocalGet(1 + j as u32));
+            code.push(I::LocalGet(base + j as u32));
             code.push(if j + 1 == held.len() {
                 I::ReturnCall(*d)
             } else {
@@ -1439,16 +1471,33 @@ impl Runtime {
 
     /// `children(p, op)` of a closure of `f` with `n` captures.
     pub fn closure_children(&self, cx: &Cx<'_>, f: FuncId, n: usize) -> Body {
-        let (p, op) = (0, 1);
         let tys = &cx.m.funcs[&f].sig().params[..n];
         let (offsets, size) = layout(tys);
+        let fields: Vec<(u32, Ty)> = (offsets.iter().zip(tys))
+            .map(|(&(at, _), t)| (at, t.clone()))
+            .collect();
+        self.children_of_fields(&fields, size, Vec::new(), Vec::new())
+    }
+
+    /// `children(p, op)` of an object of `size` bytes with `fields`, at
+    /// their offsets, which runs `freeing` before it gives the memory
+    /// back, for white or free; `freeing` can use `locals` from local 2.
+    pub fn children_of_fields(
+        &self,
+        fields: &[(u32, Ty)],
+        size: u32,
+        freeing: Vec<I<'static>>,
+        locals: Vec<ValType>,
+    ) -> Body {
+        let (p, op) = (0, 1);
         let mut code = vec![
             I::LocalGet(op),
             I::I32Const(OP_FREE),
             I::I32Ne,
             I::If(BlockType::Empty),
         ];
-        for (t, &(at, _)) in tys.iter().zip(&offsets) {
+        for (at, t) in fields {
+            let at = *at;
             let Some(k) = key_of(t) else { continue };
             if self.cyclic[self.number(&k) as usize] && !is_imm(t) {
                 code.extend([
@@ -1476,16 +1525,16 @@ impl Runtime {
             I::I32Const(OP_WHITE),
             I::I32GeU,
             I::If(BlockType::Empty),
+        ]);
+        code.extend(freeing);
+        code.extend([
             I::LocalGet(p),
             I::I32Const(size as i32),
             I::Call(self.release()),
             I::End,
             I::End,
         ]);
-        Body {
-            locals: Vec::new(),
-            code,
-        }
+        Body { locals, code }
     }
 }
 

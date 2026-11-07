@@ -10,9 +10,11 @@
 //!
 //! Each program is also lowered with its reference counts inserted and
 //! freeing on: its effects lowered by evidence passing first if it needs
-//! that, then given reuse, counted and its drops specialized. Each run must then leave
-//! as many objects live as the evaluator's run of the same module does,
-//! not counting its continuations, which Wasm doesn't make, both with
+//! that, then given reuse, counted and its drops specialized, and for a
+//! program with a general handler, again with stack switching instead of
+//! evidence passing. Each run must then leave as many objects live as the
+//! evaluator's run of the same module does, not counting its
+//! continuations, of which Wasm doesn't make one per `perform`, both with
 //! cycles collected at the end.
 
 mod support;
@@ -43,7 +45,10 @@ fn test(p: &Program) -> Result<(), String> {
     }
     run(p, &m, &bytes, false)?;
     if p.has_runs() && !p.has(|k| matches!(k, CheckKind::WasmError(_))) {
-        counted(p, &m)?;
+        counted(p, &m, false)?;
+        if !conduit_ir::clause::direct_handlers(&m) {
+            counted(p, &m, true)?;
+        }
     }
     // A general handler is lowered by evidence passing without stack
     // switching, and by stack switching with it.
@@ -135,9 +140,9 @@ fn run(p: &Program, m: &Module, bytes: &[u8], stack_switching: bool) -> Result<(
 }
 
 /// Runs `p` counted and with freeing: see the crate's tests' documentation.
-fn counted(p: &Program, m: &Module) -> Result<(), String> {
+fn counted(p: &Program, m: &Module, stack_switching: bool) -> Result<(), String> {
     let mut c = m.clone();
-    if !conduit_ir::clause::direct_handlers(&c) {
+    if !stack_switching && !conduit_ir::clause::direct_handlers(&c) {
         conduit_effects::lower_effects(&mut c)?;
     }
     // A program counted by hand already has its counts.
@@ -147,13 +152,13 @@ fn counted(p: &Program, m: &Module) -> Result<(), String> {
         conduit_opt::ownership::specialize_drops(&mut c);
     }
     let options = Options {
-        stack_switching: false,
+        stack_switching,
         counts: true,
         cycles: true,
         ..Default::default()
     };
     let bytes = lower_with(p, &c, options)?.expect("lowering with counts failed");
-    let (mut store, instance) = instantiate(&bytes, false)?;
+    let (mut store, instance) = instantiate(&bytes, stack_switching)?;
     let live = instance
         .get_global(&mut store, "conduit_live")
         .ok_or("no conduit_live global")?;
@@ -165,7 +170,8 @@ fn counted(p: &Program, m: &Module) -> Result<(), String> {
         let before = live.get(&mut store).unwrap_i32();
         let got = call(&mut store, &instance, run.func, run.args, results);
         let gave = matches!(got, Ok(conduit_test::Outcome::Values(_)));
-        run.check(p, got).map_err(|e| format!("with counts: {e}"))?;
+        run.check(p, got)
+            .map_err(|e| format!("with counts {}: {e}", with(stack_switching)))?;
         if !gave {
             continue;
         }
@@ -192,9 +198,10 @@ fn counted(p: &Program, m: &Module) -> Result<(), String> {
             .count() as i32;
         if left != expected {
             return Err(format!(
-                "{}: {}: with counts, Wasm leaves {left} objects live, but the evaluator {expected}",
+                "{}: {}: with counts {}, Wasm leaves {left} objects live, but the evaluator {expected}",
                 p.at(run.line),
-                run.name
+                run.name,
+                with(stack_switching)
             ));
         }
     }

@@ -444,3 +444,151 @@ fn segments_are_reused() {
     let grown = memory.data_size(&store) - before;
     assert!(grown < 4 << 20, "the memory grew by {grown} bytes");
 }
+
+/// With counts and stack switching: one round resumes its continuation
+/// later, through a ref, and another drops it without resuming it, whose
+/// frame, shadow stack segment and table slot then go back.
+const DROPPED: &str = r#"effect io {}
+effect Gen {
+  (i32) -> ()
+}
+#[link(wasm, module = "test")]
+#[abi(flat)]
+extern gather(imm [imm [i8]]) -> (i32, i32) does io
+const hi: imm [i8] = b"hi"
+handler parking for Gen does io env(i32) ops(park) ret parked
+fn park(%resume: i32, %x: i32, %k: cont() -> (i32) does io) -> (i32) does io {
+  let %cell: ref cont() -> (i32) does io = ref_new(%k)
+  case %resume {
+    0 => jump ret(%x)
+    _ =>
+      let %k2: cont() -> (i32) does io = ref_get(%cell)
+      let %r: i32 = resume(%k2)
+      jump ret(%r)
+  }
+}
+fn parked(%resume: i32, %r: i32) -> (i32) {
+  jump ret(%r)
+}
+fn body() -> (i32) does Gen + io {
+  let %h: imm [i8] = const hi()
+  let %list: imm [imm [i8]] = array_fill(1i32, %h)
+  let %c: i32, %t: i32 = call_extern gather(%list)
+  let = perform Gen.0(%t)
+  jump ret(%c)
+}
+fn main(%n: i32) -> (i32) does io {
+  join rec go(%i: i32, %acc: i32) =
+    case %i {
+      0 => jump ret(%acc)
+      _ =>
+        let %b: imm fn() -> (i32) does Gen + io = closure body()
+        let %resume: i32 = rem.s(%i, 2i32)
+        let %r: i32 = handle parking(%resume, %b)
+        let %acc1: i32 = add(%acc, %r)
+        let %i1: i32 = sub(%i, 1i32)
+        jump go(%i1, %acc1)
+    }
+  in jump go(%n, 0i32)
+}"#;
+
+fn instantiate_dropped<T>(
+    data: T,
+    continuation_stack: u32,
+) -> (wasmtime::Store<T>, wasmtime::Instance) {
+    let mut m = conduit_ir::text::parse(DROPPED).unwrap();
+    conduit_opt::ownership::insert_counts(&mut m).unwrap();
+    conduit_opt::ownership::specialize_drops(&mut m);
+    let options = crate::Options {
+        stack_switching: true,
+        counts: true,
+        cycles: true,
+        continuation_stack,
+        ..Default::default()
+    };
+    let main = text::find_func(&m, "main").unwrap();
+    let bytes = crate::emit_module_with(&m, &[(main, "main")], &options).unwrap();
+    let mut config = conduit_test::wasm::config();
+    config
+        .wasm_gc(true)
+        .wasm_function_references(true)
+        .wasm_stack_switching(true);
+    let engine = wasmtime::Engine::new(&config).unwrap();
+    let module = wasmtime::Module::new(&engine, &bytes).unwrap();
+    let mut linker = wasmtime::Linker::new(&engine);
+    linker
+        .func_wrap(
+            "test",
+            "gather",
+            |mut caller: wasmtime::Caller<'_, T>, iovs: i32, n: i32, out: i32| -> i32 {
+                let memory = caller.get_export("memory").unwrap().into_memory().unwrap();
+                let mut total = 0i32;
+                for j in 0..n {
+                    let mut iov = [0u8; 8];
+                    memory
+                        .read(&caller, (iovs + 8 * j) as usize, &mut iov)
+                        .unwrap();
+                    let (at, len) = (
+                        i32::from_le_bytes(iov[..4].try_into().unwrap()),
+                        i32::from_le_bytes(iov[4..].try_into().unwrap()),
+                    );
+                    let mut bytes = vec![0u8; len as usize];
+                    memory.read(&caller, at as usize, &mut bytes).unwrap();
+                    total += bytes.iter().map(|&b| b as i8 as i32).sum::<i32>();
+                }
+                memory
+                    .write(&mut caller, out as usize, &total.to_le_bytes())
+                    .unwrap();
+                n
+            },
+        )
+        .unwrap();
+    let mut store = wasmtime::Store::new(&engine, data);
+    let instance = linker.instantiate(&mut store, &module).unwrap();
+    (store, instance)
+}
+
+/// Each round's: the dropped ones give 209, the resumed ones 1.
+fn dropped_total(n: i32) -> i32 {
+    n / 2 + (n - n / 2) * 209
+}
+
+/// A continuation's table slot goes back when it's resumed or dropped, so
+/// 10,000 of them fit in tables of 100 slots.
+#[test]
+fn continuation_slots_are_reused() {
+    let limits = wasmtime::StoreLimitsBuilder::new()
+        .table_elements(100)
+        .build();
+    let (mut store, instance) = instantiate_dropped(limits, 4096);
+    store.limiter(|limits| limits);
+    let main = instance
+        .get_typed_func::<i32, i32>(&mut store, "main")
+        .unwrap();
+    assert_eq!(
+        main.call(&mut store, 10_000).unwrap(),
+        dropped_total(10_000)
+    );
+    let collect = instance
+        .get_typed_func::<(), ()>(&mut store, "conduit_collect")
+        .unwrap();
+    collect.call(&mut store, ()).unwrap();
+    let live = instance.get_global(&mut store, "conduit_live").unwrap();
+    assert_eq!(live.get(&mut store).unwrap_i32(), 0);
+}
+
+/// A dropped continuation's segment goes back too: with 64 KiB segments,
+/// 1000 of them would otherwise take 64 MB.
+#[test]
+fn dropped_continuations_give_their_segments_back() {
+    let (mut store, instance) = instantiate_dropped((), 64 * 1024);
+    let main = instance
+        .get_typed_func::<i32, i32>(&mut store, "main")
+        .unwrap();
+    let memory = instance.get_memory(&mut store, "memory").unwrap();
+    main.call(&mut store, 2).unwrap();
+    let before = memory.data_size(&store);
+    assert_eq!(main.call(&mut store, 1000).unwrap(), dropped_total(1000));
+    let grown = memory.data_size(&store) - before;
+    assert!(grown < 4 << 20, "the memory grew by {grown} bytes");
+}
