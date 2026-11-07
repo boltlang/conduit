@@ -753,7 +753,8 @@ fn names() {
     );
 }
 
-/// The one-result forms of `perform`, `resume` and a call with rows.
+/// The one-result forms of `perform`, `resume`, and a call given its
+/// mutability arguments and rows, here none.
 #[test]
 fn one_result_effects() {
     let m = module("effect effect0 {\n  () -> (i32)\n}", vec![I32], vec![I32]);

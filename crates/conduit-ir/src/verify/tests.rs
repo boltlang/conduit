@@ -380,14 +380,18 @@ fn mut_object_can_hold_a_mut_field() {
 
 #[test]
 fn mut_and_imm_fit_read_only() {
-    // G takes a read-only point. F passes it a mut one, then a read-only one
-    // to a function that wants mut.
+    // G takes a read-only point. F passes it a mut one, then an imm one,
+    // then a read-only one to a function that wants mut.
     let mut g = Func::new(vec![Ty::data(POINT, ReadOnly)], vec![]);
     g.body = ret(vec![]);
     let mut m = module();
     m.funcs.insert(G, g);
 
     let mut f = Func::new(vec![Ty::data(POINT, Mut)], vec![]);
+    let p = f.params[0];
+    f.body = let_(vec![], Op::Call(G, vec![], vec![]), vec![v(p)], ret(vec![]));
+    assert_eq!(check_in(m.clone(), f), Vec::<String>::new());
+    let mut f = Func::new(vec![Ty::data(POINT, Imm)], vec![]);
     let p = f.params[0];
     f.body = let_(vec![], Op::Call(G, vec![], vec![]), vec![v(p)], ret(vec![]));
     assert_eq!(check_in(m.clone(), f), Vec::<String>::new());

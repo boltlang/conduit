@@ -1,5 +1,7 @@
 //! What the test programs in `tests/programs` can't check: which way
-//! handlers are lowered, and that the output is deterministic.
+//! handlers are lowered, that the output is deterministic, that freed
+//! memory is used again, that cycles are collected, and where the shadow
+//! stacks overflow.
 
 use conduit_ir::text;
 

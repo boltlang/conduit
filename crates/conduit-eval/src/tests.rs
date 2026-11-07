@@ -475,7 +475,7 @@ fn arrays() {
 #[test]
 fn write_to_imm_object_is_an_error() {
     // Verified IR can't do this, so build it by hand: a Set on a point
-    // that was created imm, through a variable typed mut.
+    // that was created imm, which the verifier would reject.
     let mut f = Func::new(vec![], vec![]);
     let p = f.new_var(Ty::data(POINT, Imm));
     f.body = let_(
@@ -935,8 +935,8 @@ fn error_messages() {
 }
 
 /// A function with a mutability parameter makes what its caller asks for:
-/// a write to the `mut` array works, and one to the `imm` array is an
-/// error.
+/// a `mut` array or an `imm` one. A call without the argument, or with
+/// `ro`, is invalid IR.
 #[test]
 fn mutability_arguments_reach_the_callee() {
     let m = conduit_ir::text::parse(
@@ -1321,9 +1321,9 @@ fn fn0() -> (i32) {{
     );
 }
 
-/// With cycles collected too, the cycle of a ref that holds a box of
-/// itself is freed, and a list it held with it; a shared object only the
-/// cycle and a root hold stays.
+/// With cycles collected too, the cycle of a ref that holds a box of a
+/// pair that holds a box of the ref is freed, all four; the list the pair
+/// holds, which a root holds too, stays.
 #[test]
 fn cycles_are_collected() {
     let src = format!(
