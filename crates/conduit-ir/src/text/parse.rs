@@ -36,15 +36,21 @@ fn kind(prefix: &str) -> usize {
 fn item_names(toks: &[(Tok, Pos)]) -> Result<Vec<Names>, Error> {
     let mut found: Vec<Vec<(Spelled, Pos)>> = vec![Vec::new(); KINDS.len()];
     let mut depth = 0;
-    for w in toks.windows(2) {
-        match &w[0].0 {
+    for (j, (tok, _)) in toks.iter().enumerate() {
+        match tok {
             Tok::Punct("{") => depth += 1,
             Tok::Punct("}") => depth -= 1,
             Tok::Ident(k) if depth == 0 => {
-                if let (Some(i), Tok::Ident(name)) = (KINDS.iter().position(|x| x == k), &w[1].0)
+                // An extern's ABI comes before its name.
+                let at = match toks.get(j + 1) {
+                    Some((Tok::Str(_), _)) if k == "extern" => j + 2,
+                    _ => j + 1,
+                };
+                if let (Some(i), Some((Tok::Ident(name), pos))) =
+                    (KINDS.iter().position(|x| x == k), toks.get(at))
                     && let Some(s) = spelled(name, k)
                 {
-                    found[i].push((s, w[1].1));
+                    found[i].push((s, *pos));
                 }
             }
             _ => {}
@@ -79,6 +85,20 @@ struct Parser {
     /// The names of the variables and labels of the function being read.
     vars: Names,
     labels: Names,
+}
+
+/// An attribute like `#[link(wasm, module = "env")]`.
+struct Attr {
+    name: String,
+    pos: Pos,
+    args: Vec<AttrArg>,
+}
+
+enum AttrArg {
+    /// `wasm`
+    Word(String),
+    /// `module = "env"`
+    Key(String, Box<str>),
 }
 
 /// What a function's body says about its variables and labels.
@@ -264,10 +284,131 @@ impl Parser {
         }
     }
 
+    /// Attributes like `#[link(wasm, module = "env")]`, if there are any.
+    fn attrs(&mut self) -> Res<Vec<Attr>> {
+        let mut attrs = Vec::new();
+        while self.eat_punct("#") {
+            self.punct("[")?;
+            let pos = self.pos();
+            let name = self.ident("an attribute")?;
+            let args = if self.is_punct("(") {
+                self.list(|p| {
+                    let word = p.ident("a word, or a key like `name = \"..\"`")?;
+                    if p.eat_punct("=") {
+                        Ok(AttrArg::Key(word, p.string()?))
+                    } else {
+                        Ok(AttrArg::Word(word))
+                    }
+                })?
+            } else {
+                Vec::new()
+            };
+            self.punct("]")?;
+            attrs.push(Attr { name, pos, args });
+        }
+        Ok(attrs)
+    }
+
+    /// An extern's parameter: its attributes, its name if it has one, and
+    /// its type.
+    fn extern_param(&mut self) -> Res<(bool, Option<Box<str>>, Ty)> {
+        let mut nolen = false;
+        for attr in self.attrs()? {
+            match (attr.name.as_str(), &attr.args[..]) {
+                ("nolen", []) => nolen = true,
+                ("nolen", _) => return self.error_at(attr.pos, "`nolen` takes no arguments"),
+                _ => {
+                    return self.error_at(
+                        attr.pos,
+                        format!(
+                            "`{}` isn't an attribute of a parameter: only `nolen` is",
+                            attr.name
+                        ),
+                    );
+                }
+            }
+        }
+        let name = match self.peek() {
+            Tok::Var(s) => {
+                let s = s.as_str().into();
+                self.next();
+                self.punct(":")?;
+                Some(s)
+            }
+            _ => None,
+        };
+        Ok((nolen, name, self.ty()?))
+    }
+
+    /// The module and name of `#[link(wasm, module = "..", name = "..")]`,
+    /// the only attribute an extern takes, which it must have. The name is
+    /// the extern's own by default.
+    fn link(&self, pos: Pos, attrs: Vec<Attr>, own: Option<&str>) -> Res<(Box<str>, Box<str>)> {
+        let mut link = None;
+        for attr in attrs {
+            if attr.name != "link" {
+                return self.error_at(
+                    attr.pos,
+                    format!(
+                        "`{}` isn't an attribute of an extern: only `link` is",
+                        attr.name
+                    ),
+                );
+            }
+            if link.is_some() {
+                return self.error_at(attr.pos, "an extern has one `link`");
+            }
+            let mut args = attr.args.into_iter();
+            match args.next() {
+                Some(AttrArg::Word(kind)) if kind == "wasm" => {}
+                Some(AttrArg::Word(kind)) => {
+                    return self.error_at(
+                        attr.pos,
+                        format!("`{kind}` isn't a kind of link: only `wasm` is, so far"),
+                    );
+                }
+                _ => {
+                    return self.error_at(attr.pos, "a `link` starts with its kind, like `wasm`");
+                }
+            }
+            let (mut module, mut name) = (None, None);
+            for arg in args {
+                match arg {
+                    AttrArg::Key(k, v) if k == "module" && module.is_none() => module = Some(v),
+                    AttrArg::Key(k, v) if k == "name" && name.is_none() => name = Some(v),
+                    AttrArg::Key(k, _) | AttrArg::Word(k) => {
+                        return self.error_at(
+                            attr.pos,
+                            format!("a wasm `link` takes `module` and `name` once each, not `{k}`"),
+                        );
+                    }
+                }
+            }
+            let Some(module) = module else {
+                return self.error_at(attr.pos, "a wasm `link` needs a `module`");
+            };
+            let Some(name) = name.or_else(|| own.map(Into::into)) else {
+                return self.error_at(
+                    attr.pos,
+                    "a wasm `link` of an extern without a name needs a `name`",
+                );
+            };
+            link = Some((module, name));
+        }
+        match link {
+            Some(link) => Ok(link),
+            None => self.error_at(pos, "an extern needs a `#[link(wasm, module = \"..\")]`"),
+        }
+    }
+
     fn module(&mut self) -> Res<Module> {
         let mut m = Module::default();
         loop {
+            let attrs = self.attrs()?;
             let pos = self.pos();
+            if !attrs.is_empty() && !self.is_keyword("extern") {
+                return self.error_at(attrs[0].pos, "only an extern takes attributes, so far");
+            }
             let name = match self.peek() {
                 Tok::Eof => return Ok(m),
                 Tok::Ident(s) => s.clone(),
@@ -289,26 +430,39 @@ impl Parser {
                         m.data.insert(id, decl).map(|_| id.to_string())
                     }
                     "extern" => {
+                        let abi_pos = self.pos();
+                        let abi = match self.peek() {
+                            Tok::Str(_) => match &*self.string()? {
+                                "flat" => Abi::Flat,
+                                "conduit" => Abi::Conduit,
+                                abi => {
+                                    return self.error_at(
+                                        abi_pos,
+                                        format!("`{abi}` isn't an ABI: `flat` and `conduit` are"),
+                                    );
+                                }
+                            },
+                            _ => Abi::Conduit,
+                        };
                         let (id, debug_name) = self.def("extern")?;
                         let id = ExternId(id);
-                        let (module, name) = (self.string()?, self.string()?);
-                        let abi = if self.eat_keyword("abi") {
-                            self.keyword("flat")?;
-                            Abi::Flat
-                        } else {
-                            Abi::Conduit
-                        };
-                        let params = self.list(|p| Ok((p.eat_keyword("nolen"), p.ty()?)))?;
+                        let (module, name) = self.link(pos, attrs, debug_name.as_deref())?;
+                        let params = self.list(Self::extern_param)?;
                         self.punct("->")?;
                         let results = self.list(Self::ty)?;
                         let row = self.row()?;
-                        let nolen = if params.iter().any(|&(n, _)| n) {
-                            params.iter().map(|&(n, _)| n).collect()
+                        let nolen = if params.iter().any(|p| p.0) {
+                            params.iter().map(|p| p.0).collect()
+                        } else {
+                            Vec::new()
+                        };
+                        let param_names = if params.iter().any(|p| p.1.is_some()) {
+                            params.iter().map(|p| p.1.clone()).collect()
                         } else {
                             Vec::new()
                         };
                         let sig = Sig {
-                            params: params.into_iter().map(|(_, t)| t).collect(),
+                            params: params.into_iter().map(|p| p.2).collect(),
                             results,
                             row,
                         };
@@ -318,6 +472,7 @@ impl Parser {
                             sig,
                             abi,
                             nolen,
+                            param_names,
                             debug_name,
                         };
                         m.externs.insert(id, ext).map(|_| id.to_string())

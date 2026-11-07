@@ -1,6 +1,7 @@
 // `test.double` is a host function every test runner provides.
 
-extern double "test" "double" (i32) -> (i32)
+#[link(wasm, module = "test")]
+extern double(i32) -> (i32)
 
 fn main(%x: i32) -> (i32) {
   let %y: i32 = call_extern double(%x)

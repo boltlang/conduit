@@ -14,7 +14,7 @@ pub(super) enum Tok {
     Str(String),
     /// A byte string, `b"hi\n"`, as its bytes.
     Bytes(Vec<u8>),
-    /// One of `( ) { } [ ] , : = . @`, or `=>` or `->`.
+    /// One of `( ) { } [ ] , ; : = . @ + #`, or `=>` or `->`.
     Punct(&'static str),
     Eof,
 }
@@ -168,6 +168,7 @@ pub(super) fn lex(src: &str) -> Result<Vec<(Tok, Pos)>, Error> {
                     '.' => ".",
                     '@' => "@",
                     '+' => "+",
+                    '#' => "#",
                     _ => return Err(err(pos, format!("unexpected character `{c}`"))),
                 },
             };

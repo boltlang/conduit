@@ -445,8 +445,10 @@ data data0 {
   (i32)
 }
 
-extern extern1 \"env\" \"two\" (i32) -> (i32, i32)
-extern extern2 \"env\" \"one\" (i32) -> (i32)
+#[link(wasm, module = \"env\", name = \"two\")]
+extern extern1(i32) -> (i32, i32)
+#[link(wasm, module = \"env\", name = \"one\")]
+extern extern2(i32) -> (i32)
 
 effect effect20 {
   (i32) -> (i64)

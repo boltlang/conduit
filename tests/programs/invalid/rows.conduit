@@ -11,7 +11,8 @@ effect effect21 {
   () -> ()
 }
 
-extern extern1 "env" "f" () -> () does effect20
+#[link(wasm, module = "env", name = "f")]
+extern extern1() -> () does effect20
 
 effect effect22 {
   () -> () does effect20

@@ -203,19 +203,30 @@ pub(super) fn module(m: &Module) -> String {
     for (id, ext) in &m.externs {
         let abi = match ext.abi {
             Abi::Conduit => "",
-            Abi::Flat => "abi flat ",
+            Abi::Flat => "\"flat\" ",
+        };
+        // The name only if it isn't the extern's own.
+        let name = if ext.debug_name.as_deref() == Some(&*ext.name) {
+            String::new()
+        } else {
+            format!(", name = {}", string(&ext.name))
         };
         let params: Vec<String> = (ext.sig.params.iter().enumerate())
             .map(|(i, ty)| {
-                let nolen = if ext.nolen(i) { "nolen " } else { "" };
-                format!("{nolen}{}", names.ty(ty))
+                let nolen = if ext.nolen(i) { "#[nolen] " } else { "" };
+                let name = match ext.param_names.get(i) {
+                    Some(Some(n)) if n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') => {
+                        format!("%{n}: ")
+                    }
+                    _ => String::new(),
+                };
+                format!("{nolen}{name}{}", names.ty(ty))
             })
             .collect();
         items.push(format!(
-            "extern {} {} {} {abi}({}) -> ({}){}",
-            names.extern_(*id),
+            "#[link(wasm, module = {}{name})]\nextern {abi}{}({}) -> ({}){}",
             string(&ext.module),
-            string(&ext.name),
+            names.extern_(*id),
             params.join(", "),
             names.types(&ext.sig.results),
             names.does(&ext.sig.row)

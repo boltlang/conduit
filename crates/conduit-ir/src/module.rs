@@ -142,6 +142,9 @@ pub struct Extern {
     /// For each parameter, whether a [`Abi::Flat`] array is passed as its
     /// elements' address alone, without its length. Empty for none.
     pub nolen: Vec<bool>,
+    /// Names to show its parameters by in Conduit, which mean nothing to
+    /// the host. Empty for none.
+    pub param_names: Vec<Option<Box<str>>>,
     /// A name to show it by in Conduit, which needn't be the host's. See
     /// [`FuncDebug`].
     pub debug_name: Option<Box<str>>,
@@ -156,6 +159,7 @@ impl Extern {
             sig,
             abi: Abi::Conduit,
             nolen: Vec::new(),
+            param_names: Vec::new(),
             debug_name: None,
         }
     }

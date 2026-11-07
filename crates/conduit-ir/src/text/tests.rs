@@ -19,7 +19,11 @@ data data13['m1, 'm2] {
   ('m1 [i32], 'm2 data10, inherit data13['m2, 'm1])
 }
 
-extern extern1 "env" "print \"it\"" (i32) -> ()
+#[link(wasm, module = "env", name = "print \"it\"")]
+extern "flat" extern1(%x: i32) -> ()
+
+#[link(wasm, module = "env", name = "fill")]
+extern "flat" extern2(#[nolen] %buf: mut [i8], i32) -> ()
 
 const const40: imm [i8] = b"hi \"\\\n\t\r\0\x01\xff é"
 
@@ -345,8 +349,8 @@ fn parse_errors() {
             "3:1: data1 is defined more than once",
         ),
         (
-            "extern extern1 \"a\" \"b\" () -> ()\nextern extern1 \"a\" \"b\" () -> ()",
-            "2:1: extern1 is defined more than once",
+            "#[link(wasm, module = \"a\", name = \"b\")]\nextern extern1() -> ()\n#[link(wasm, module = \"a\", name = \"b\")]\nextern extern1() -> ()",
+            "4:1: extern1 is defined more than once",
         ),
         (
             "effect effect1 { }\neffect effect1 { }",
@@ -357,12 +361,12 @@ fn parse_errors() {
             "2:1: handler1 is defined more than once",
         ),
         (
-            "extern extern1 a \"b\" () -> ()",
-            "1:16: expected a string, found `a`",
+            "#[link(wasm, module = a)]\nextern extern1() -> ()",
+            "1:23: expected a string, found `a`",
         ),
         (
-            "extern extern1 \"a\" \"b\" (wat) -> ()",
-            "1:25: expected a type, found `wat`",
+            "#[link(wasm, module = \"a\", name = \"b\")]\nextern extern1(wat) -> ()",
+            "2:16: expected a type, found `wat`",
         ),
         (
             "data data1 { (imm) }",
@@ -441,11 +445,59 @@ fn parse_errors() {
             "1:23: expected a number, found `x`",
         ),
         (
-            "extern extern1 \"a\\q\" \"b\" () -> ()",
-            "1:16: unknown escape in a string",
+            "#[link(wasm, module = \"a\\q\")]",
+            "1:23: unknown escape in a string",
         ),
-        ("extern extern1 \"a", "1:16: unterminated string"),
-        ("extern extern1 \"a\\", "1:16: unterminated string"),
+        ("#[link(wasm, module = \"a", "1:23: unterminated string"),
+        ("#[link(wasm, module = \"a\\", "1:23: unterminated string"),
+        (
+            "extern extern1() -> ()",
+            "1:1: an extern needs a `#[link(wasm, module = \"..\")]`",
+        ),
+        (
+            "#[link(wasm, module = \"a\")]\n#[link(wasm, module = \"a\")]\nextern f() -> ()",
+            "2:3: an extern has one `link`",
+        ),
+        (
+            "#[link(native, module = \"a\")]\nextern f() -> ()",
+            "1:3: `native` isn't a kind of link: only `wasm` is, so far",
+        ),
+        (
+            "#[link(module = \"a\")]\nextern f() -> ()",
+            "1:3: a `link` starts with its kind, like `wasm`",
+        ),
+        (
+            "#[link(wasm, symbol = \"a\")]\nextern f() -> ()",
+            "1:3: a wasm `link` takes `module` and `name` once each, not `symbol`",
+        ),
+        (
+            "#[link(wasm, name = \"a\")]\nextern f() -> ()",
+            "1:3: a wasm `link` needs a `module`",
+        ),
+        (
+            "#[link(wasm, module = \"a\")]\nextern extern1() -> ()",
+            "1:3: a wasm `link` of an extern without a name needs a `name`",
+        ),
+        (
+            "#[inline]\nextern f() -> ()",
+            "1:3: `inline` isn't an attribute of an extern: only `link` is",
+        ),
+        (
+            "#[link(wasm, module = \"a\")]\nfn f() -> () { jump ret() }",
+            "1:3: only an extern takes attributes, so far",
+        ),
+        (
+            "#[link(wasm, module = \"a\")]\nextern \"c\" f() -> ()",
+            "2:8: `c` isn't an ABI: `flat` and `conduit` are",
+        ),
+        (
+            "#[link(wasm, module = \"a\")]\nextern f(#[nolen(x)] i32) -> ()",
+            "2:12: `nolen` takes no arguments",
+        ),
+        (
+            "#[link(wasm, module = \"a\")]\nextern f(#[cold] i32) -> ()",
+            "2:12: `cold` isn't an attribute of a parameter: only `nolen` is",
+        ),
         (
             "fn fn1(% : i32) -> () { jump ret() }",
             "1:8: expected a variable after `%`, like `%3` or `%acc`",
@@ -506,7 +558,8 @@ fn byte_strings() {
 /// Escapes in strings print back as they were written.
 #[test]
 fn string_escapes_round_trip() {
-    let src = "extern extern1 \"a\\\\b\\n\\t\\\"\" \"x\" () -> ()\n";
+    let src =
+        "#[link(wasm, module = \"a\\\\b\\n\\t\\\"\", name = \"x\")]\nextern extern1() -> ()\n";
     let m = parse(src).unwrap();
     assert_eq!(&*m.externs[&ExternId(1)].module, "a\\b\n\t\"");
     assert_eq!(print(&m), src);
@@ -544,7 +597,8 @@ data List {
   (i32, inherit List)
 }
 
-extern print "env" "print" (i32) -> ()
+#[link(wasm, module = "env")]
+extern print(i32) -> ()
 
 effect Yield {
   (i32) -> ()

@@ -120,7 +120,7 @@ fn lit(v: Value) -> Result<Lit, String> {
 ///
 /// - `double(i32) -> i32` gives twice its argument.
 ///
-/// And these, meant for `abi flat`, where Wasm passes arrays through
+/// And these, meant for the `"flat"` ABI, where Wasm passes arrays through
 /// memory:
 ///
 /// - `sum(imm [i8]) -> (i32)` adds up the bytes, as signed.
@@ -128,7 +128,7 @@ fn lit(v: Value) -> Result<Lit, String> {
 ///   second argument.
 /// - `gather(imm [imm [i8]]) -> (i32, i32)` gives how many buffers there
 ///   are and the sum of all their bytes.
-/// - `squares(nolen mut [i32], i32 n) -> ()` sets elements 0 to n - 1 to
+/// - `squares(#[nolen] mut [i32], i32 n) -> ()` sets elements 0 to n - 1 to
 ///   their index squared.
 /// - `scale(i32) -> (i32, i64)` gives 0 and its argument times 10^12.
 /// - `byte(i8) -> (i32)` gives its argument as Wasm passes it, zero-extended.

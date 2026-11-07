@@ -5,7 +5,8 @@ data data0 {
   (i32, imm data99)
 }
 
-extern extern1 "env" "f" (inherit data0) -> ()
+#[link(wasm, module = "env", name = "f")]
+extern extern1(inherit data0) -> ()
 
 effect effect20 {
   () -> (imm data98)

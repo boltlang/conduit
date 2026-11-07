@@ -1520,7 +1520,7 @@ impl<'m> FuncCx<'_, 'm> {
         }
     }
 
-    /// A call of `abi flat` extern `ext`, import `idx`: see [`Abi::Flat`].
+    /// A call of `"flat"` extern `ext`, import `idx`: see [`Abi::Flat`].
     /// Out-parameters and iovec lists go on the shadow stack, 8 bytes
     /// each, popped after the call. Nothing can unwind past the call while
     /// they're there: the host can only call back into exports, which

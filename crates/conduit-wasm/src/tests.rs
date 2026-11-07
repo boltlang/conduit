@@ -271,7 +271,8 @@ fn deep_cycles_are_collected() {
 #[test]
 fn shadow_stack_overflow_traps() {
     let m = conduit_ir::text::parse(
-        r#"extern gather "test" "gather" abi flat (imm [imm [i8]]) -> (i32, i32)
+        r#"#[link(wasm, module = "test")]
+extern "flat" gather(imm [imm [i8]]) -> (i32, i32)
 const hi: imm [i8] = b"hi"
 fn main(%n: i32) -> (i32) {
   let %h: imm [i8] = const hi()
@@ -313,7 +314,8 @@ effect Gen {
 effect Fail {
   () -> ()
 }
-extern gather "test" "gather" abi flat (imm [imm [i8]]) -> (i32, i32) does io
+#[link(wasm, module = "test")]
+extern "flat" gather(imm [imm [i8]]) -> (i32, i32) does io
 const hi: imm [i8] = b"hi"
 handler summing for Gen does io + Fail env() ops(sum_yield) ret sum_done
 handler or_default for Fail env(i32) ops(fail) ret or_default_done

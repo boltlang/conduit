@@ -4,7 +4,8 @@
 
 effect io {}
 
-extern double "test" "double" (i32) -> (i32) does io
+#[link(wasm, module = "test")]
+extern double(i32) -> (i32) does io
 
 fn twice(%x: i32) -> (i32) does io {
   let %y: i32 = call_extern double(%x)
