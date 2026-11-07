@@ -717,3 +717,28 @@ fn main(%n: i32) -> (i32) {
     }
     assert_eq!(memory.data_size(&store), before);
 }
+
+/// Only an extern with a wasm link can be imported: one with another kind
+/// of link is for another target.
+#[test]
+fn only_wasm_links_are_imported() {
+    for (link, kind) in [("emu", "emu"), ("c, lib = \"c\"", "c")] {
+        let m = conduit_ir::text::parse(&format!(
+            "#[link({link})]
+extern double(i32) -> (i32)
+fn main(%n: i32) -> (i32) {{
+  let %r: i32 = call_extern double(%n)
+  jump ret(%r)
+}}"
+        ))
+        .unwrap();
+        let main = text::find_func(&m, "main").unwrap();
+        let error = crate::emit_module(&m, &[(main, "main")]).unwrap_err();
+        assert!(
+            error.to_string().ends_with(&format!(
+                "can't import a {kind} extern: only one with a `#[link(wasm, ..)]`"
+            )),
+            "{error}"
+        );
+    }
+}

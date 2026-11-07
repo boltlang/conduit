@@ -335,16 +335,12 @@ impl Parser {
         Ok((nolen, name, self.ty()?))
     }
 
-    /// What an extern's attributes say: the module and name of its
-    /// `#[link(wasm, module = "..", name = "..")]`, which it must have, the
-    /// name being its own by default, and its `#[abi(..)]`, by default
-    /// `conduit`.
-    fn link(
-        &self,
-        pos: Pos,
-        attrs: Vec<Attr>,
-        own: Option<&str>,
-    ) -> Res<(Box<str>, Box<str>, Abi)> {
+    /// What an extern's attributes say: its `#[link(..)]`, which it must
+    /// have one of, a `wasm` one with a `module` and a `name`, an `emu` one
+    /// with a `name`, or a `c` one with a `symbol` and maybe a `lib`, the
+    /// name or symbol being the extern's own by default; and its
+    /// `#[abi(..)]`, by default `conduit`.
+    fn link(&self, pos: Pos, attrs: Vec<Attr>, own: Option<&str>) -> Res<(Link, Abi)> {
         let mut link = None;
         let mut abi = None;
         for attr in attrs {
@@ -380,45 +376,83 @@ impl Parser {
                 return self.error_at(attr.pos, "an extern has one `link`");
             }
             let mut args = attr.args.into_iter();
-            match args.next() {
-                Some(AttrArg::Word(kind)) if kind == "wasm" => {}
+            let kind = match args.next() {
+                Some(AttrArg::Word(kind)) if ["wasm", "emu", "c"].contains(&&*kind) => kind,
                 Some(AttrArg::Word(kind)) => {
                     return self.error_at(
                         attr.pos,
-                        format!("`{kind}` isn't a kind of link: only `wasm` is, so far"),
+                        format!("`{kind}` isn't a kind of link: `wasm`, `emu` and `c` are"),
                     );
                 }
                 _ => {
                     return self.error_at(attr.pos, "a `link` starts with its kind, like `wasm`");
                 }
-            }
-            let (mut module, mut name) = (None, None);
+            };
+            // Each kind's keys, the first of which is the extern's own name
+            // if it's left out, except for a wasm link's `module`.
+            let keys: &[&str] = match &*kind {
+                "wasm" => &["module", "name"],
+                "emu" => &["name"],
+                _ => &["symbol", "lib"],
+            };
+            let mut given: Vec<Option<Box<str>>> = vec![None; keys.len()];
             for arg in args {
-                match arg {
-                    AttrArg::Key(k, v) if k == "module" && module.is_none() => module = Some(v),
-                    AttrArg::Key(k, v) if k == "name" && name.is_none() => name = Some(v),
-                    AttrArg::Key(k, _) | AttrArg::Word(k) => {
+                let slot = match &arg {
+                    AttrArg::Key(k, _) => keys.iter().position(|key| key == k),
+                    AttrArg::Word(_) => None,
+                };
+                match (slot, arg) {
+                    (Some(i), AttrArg::Key(_, v)) if given[i].is_none() => given[i] = Some(v),
+                    (_, AttrArg::Key(k, _) | AttrArg::Word(k)) => {
+                        let keys: Vec<String> = keys.iter().map(|k| format!("`{k}`")).collect();
                         return self.error_at(
                             attr.pos,
-                            format!("a wasm `link` takes `module` and `name` once each, not `{k}`"),
+                            format!(
+                                "{} {kind} `link` takes {} once each, not `{k}`",
+                                if kind == "emu" { "an" } else { "a" },
+                                keys.join(" and ")
+                            ),
                         );
                     }
                 }
             }
-            let Some(module) = module else {
-                return self.error_at(attr.pos, "a wasm `link` needs a `module`");
-            };
-            let Some(name) = name.or_else(|| own.map(Into::into)) else {
+            let named = if kind == "wasm" { 1 } else { 0 };
+            let a = if kind == "emu" { "an" } else { "a" };
+            if given[named].is_none() {
+                given[named] = own.map(Into::into);
+            }
+            if given[named].is_none() {
                 return self.error_at(
                     attr.pos,
-                    "a wasm `link` of an extern without a name needs a `name`",
+                    format!(
+                        "{a} {kind} `link` of an extern without a name needs a `{}`",
+                        keys[named]
+                    ),
                 );
-            };
-            link = Some((module, name));
+            }
+            let mut given = given.into_iter();
+            link = Some(match &*kind {
+                "wasm" => {
+                    let Some(module) = given.next().flatten() else {
+                        return self.error_at(attr.pos, "a wasm `link` needs a `module`");
+                    };
+                    Link::Wasm {
+                        module,
+                        name: given.next().flatten().unwrap(),
+                    }
+                }
+                "emu" => Link::Emu {
+                    name: given.next().flatten().unwrap(),
+                },
+                _ => Link::C {
+                    symbol: given.next().flatten().unwrap(),
+                    lib: given.next().flatten(),
+                },
+            });
         }
         match link {
-            Some((module, name)) => Ok((module, name, abi.unwrap_or_default())),
-            None => self.error_at(pos, "an extern needs a `#[link(wasm, module = \"..\")]`"),
+            Some(link) => Ok((link, abi.unwrap_or_default())),
+            None => self.error_at(pos, "an extern needs a `#[link(..)]`, like `#[link(emu)]`"),
         }
     }
 
@@ -453,7 +487,7 @@ impl Parser {
                     "extern" => {
                         let (id, debug_name) = self.def("extern")?;
                         let id = ExternId(id);
-                        let (module, name, abi) = self.link(pos, attrs, debug_name.as_deref())?;
+                        let (link, abi) = self.link(pos, attrs, debug_name.as_deref())?;
                         let params = self.list(Self::extern_param)?;
                         self.punct("->")?;
                         let results = self.list(Self::ty)?;
@@ -474,8 +508,7 @@ impl Parser {
                             row,
                         };
                         let ext = Extern {
-                            module,
-                            name,
+                            link,
                             sig,
                             abi,
                             nolen,

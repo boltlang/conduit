@@ -1,6 +1,6 @@
 // `test.double` is a host function every test runner provides.
 
-#[link(wasm, module = "test")]
+#[link(emu)]
 extern double(i32) -> (i32)
 
 fn main(%x: i32) -> (i32) {

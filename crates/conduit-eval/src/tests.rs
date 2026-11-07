@@ -578,7 +578,7 @@ fn host_functions() {
     impl Host for Doubler {
         fn call(
             &mut self,
-            _: ExternId,
+            _: &str,
             _: &Extern,
             args: &[Value],
             _: &mut Arrays<'_, '_>,
@@ -595,8 +595,11 @@ fn host_functions() {
         params: vec![Ty::I32],
         results: vec![Ty::I32],
     };
+    let link = Link::Emu {
+        name: "double".into(),
+    };
     m.externs
-        .insert(ExternId(1), Extern::new("env", "double", sig));
+        .insert(ExternId(1), Extern::new(link, sig.clone()));
     let mut f = Func::new(vec![], vec![Ty::I32]);
     let r = f.new_var(Ty::I32);
     f.body = let_(
@@ -615,11 +618,23 @@ fn host_functions() {
     let error = Machine::new(&m, NoHost).call(MAIN, vec![]).unwrap_err();
     assert_eq!(
         error.kind,
-        ErrorKind::Host("no host function env.double".into())
+        ErrorKind::Host("no host function double".into())
     );
     assert_eq!(
         error.to_string(),
-        "fn1: host function failed: no host function env.double"
+        "fn1: host function failed: no host function double"
+    );
+    // An extern for another target isn't the host's to call.
+    let link = Link::Wasm {
+        module: "env".into(),
+        name: "double".into(),
+    };
+    m.externs.insert(ExternId(1), Extern::new(link, sig));
+    let error = Machine::new(&m, Doubler).call(MAIN, vec![]).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "fn1: host function failed: extern1 has a wasm link, for another target: \
+         the evaluator calls emu ones"
     );
 }
 

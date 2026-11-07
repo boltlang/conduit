@@ -159,9 +159,9 @@ pub struct DataDecl {
 /// A host function.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Extern {
-    /// The module the host provides it in.
-    pub module: Box<str>,
-    pub name: Box<str>,
+    /// Where the host provides it, for the one target the frontend made
+    /// the module for.
+    pub link: Link,
     pub sig: Sig,
     /// How a backend passes its arguments and results.
     pub abi: Abi,
@@ -176,12 +176,39 @@ pub struct Extern {
     pub debug_name: Option<Box<str>>,
 }
 
+/// Where a target's host provides an extern. Each consumer reads one kind:
+/// the Wasm backend `Wasm`, and the evaluator `Emu`; a module for one
+/// target has its kind of link on every extern, which is the frontend's to
+/// see to.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Link {
+    /// A Wasm import: `name` of module `module`.
+    Wasm { module: Box<str>, name: Box<str> },
+    /// A host function of the evaluator, which emulates the IR, by name.
+    Emu { name: Box<str> },
+    /// A C function, `symbol`, from library `lib` if there's one.
+    C {
+        symbol: Box<str>,
+        lib: Option<Box<str>>,
+    },
+}
+
+impl Link {
+    /// How the text format names its kind: `wasm`, `emu` or `c`.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Link::Wasm { .. } => "wasm",
+            Link::Emu { .. } => "emu",
+            Link::C { .. } => "c",
+        }
+    }
+}
+
 impl Extern {
     /// A host function with the default ABI.
-    pub fn new(module: &str, name: &str, sig: Sig) -> Extern {
+    pub fn new(link: Link, sig: Sig) -> Extern {
         Extern {
-            module: module.into(),
-            name: name.into(),
+            link,
             sig,
             abi: Abi::Conduit,
             nolen: Vec::new(),

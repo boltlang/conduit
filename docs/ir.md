@@ -1457,10 +1457,20 @@ what a pass makes has none.
 results and its row. Attributes in `#[..]` come before it and before its
 parameters:
 
-- `#[link(wasm, module = "..", name = "..")]`, which every extern has
-  exactly one of, is the Wasm import it is (`module` and `name` of
-  `Extern`). The name is the extern's own by default, and `print` leaves
-  it out when it is. `wasm` is the only kind of link so far.
+- `#[link(..)]`, which every extern has exactly one of, is where the
+  host provides it (`link` of `Extern`), for the one target the module
+  is for: choosing the kind for each target is the frontend's job.
+  - `#[link(wasm, module = "..", name = "..")]` is a Wasm import, which
+    only the Wasm backend lowers.
+  - `#[link(emu, name = "..")]` is a function of the evaluator's host,
+    which only the evaluator calls, with IR values, whatever the ABI.
+  - `#[link(c, symbol = "..", lib = "..")]` is a C function, from library
+    `lib` if there is one, which nothing lowers yet.
+
+  The name or symbol is the extern's own by default, and `print` leaves
+  it out when it is. Each consumer rejects the other kinds: the Wasm
+  backend when it lowers the module, and the evaluator when the extern
+  is called.
 - `#[abi(flat)]` is its ABI (`abi` of `Extern`), when it isn't the
   default, `#[abi(conduit)]`.
 - `#[nolen]` before a parameter of an `#[abi(flat)]` extern passes the

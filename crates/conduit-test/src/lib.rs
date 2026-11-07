@@ -24,6 +24,22 @@ use libtest_mimic::{Arguments, Failed, Trial};
 
 pub use checks::{Check, CheckKind, Expect};
 
+/// Links `m`'s externs for the Wasm runner, as a frontend does for the
+/// target it compiles for: each `#[link(emu, name = n)]` that test programs
+/// write becomes `#[link(wasm, module = "test", name = n)]`, which the
+/// runner's linker provides, the same functions as
+/// [`eval::TestHost`]'s.
+pub fn link_for_wasm(m: &mut Module) {
+    for ext in m.externs.values_mut() {
+        if let conduit_ir::Link::Emu { name } = &ext.link {
+            ext.link = conduit_ir::Link::Wasm {
+                module: "test".into(),
+                name: name.clone(),
+            };
+        }
+    }
+}
+
 /// A test program.
 #[derive(Debug, Clone)]
 pub struct Program {

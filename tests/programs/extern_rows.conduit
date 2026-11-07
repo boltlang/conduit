@@ -4,7 +4,7 @@
 
 effect io {}
 
-#[link(wasm, module = "test")]
+#[link(emu)]
 extern double(i32) -> (i32) does io
 
 fn twice(%x: i32) -> (i32) does io {

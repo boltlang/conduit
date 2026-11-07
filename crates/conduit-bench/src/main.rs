@@ -285,6 +285,8 @@ fn bench(p: &Program, args: &Args) -> Result<Vec<Result1>, String> {
         let funcs: std::collections::BTreeSet<FuncId> = runs.iter().map(|r| r.func).collect();
         let names: Vec<(FuncId, String)> = funcs.iter().map(|&f| (f, f.to_string())).collect();
         let exports: Vec<(FuncId, &str)> = names.iter().map(|(f, n)| (*f, n.as_str())).collect();
+        let mut m = m;
+        conduit_test::link_for_wasm(&mut m);
         let bytes = conduit_wasm::emit_module_with(&m, &exports, &options)
             .map_err(|e| format!("{config}: {e}"))?;
         let fuel_module =

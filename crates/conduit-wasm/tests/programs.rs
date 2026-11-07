@@ -91,7 +91,9 @@ fn lower_with(p: &Program, m: &Module, options: Options) -> Result<Option<Vec<u8
         CheckKind::WasmError(m) => Some(m),
         _ => None,
     });
-    let bytes = match conduit_wasm::emit_module_with(m, &exports, &options) {
+    let mut m = m.clone();
+    conduit_test::link_for_wasm(&mut m);
+    let bytes = match conduit_wasm::emit_module_with(&m, &exports, &options) {
         Ok(_) if !expected.is_empty() => {
             return Err(format!(
                 "lowering should fail with {}, but succeeds",

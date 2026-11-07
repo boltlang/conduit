@@ -208,11 +208,24 @@ pub(super) fn module(m: &Module) -> String {
         // The name only if it isn't the extern's own, as written: one
         // written by number has none.
         let spelled = names.extern_(*id);
-        let own = spelled.split('#').next() == Some(&*ext.name);
-        let name = if own && ext.debug_name.as_deref() == Some(&*ext.name) {
-            String::new()
-        } else {
-            format!(", name = {}", string(&ext.name))
+        let own = |name: &str| {
+            spelled.split('#').next() == Some(name) && ext.debug_name.as_deref() == Some(name)
+        };
+        let named = |key: &str, name: &str| match own(name) {
+            true => String::new(),
+            false => format!(", {key} = {}", string(name)),
+        };
+        let link = match &ext.link {
+            Link::Wasm { module, name } => {
+                format!("wasm, module = {}{}", string(module), named("name", name))
+            }
+            Link::Emu { name } => format!("emu{}", named("name", name)),
+            Link::C { symbol, lib } => {
+                let lib = lib
+                    .as_ref()
+                    .map_or(String::new(), |l| format!(", lib = {}", string(l)));
+                format!("c{}{lib}", named("symbol", symbol))
+            }
         };
         let params: Vec<String> = (ext.sig.params.iter().enumerate())
             .map(|(i, ty)| {
@@ -227,8 +240,7 @@ pub(super) fn module(m: &Module) -> String {
             })
             .collect();
         items.push(format!(
-            "#[link(wasm, module = {}{name})]\n{abi}extern {}({}) -> ({}){}",
-            string(&ext.module),
+            "#[link({link})]\n{abi}extern {}({}) -> ({}){}",
             spelled,
             params.join(", "),
             names.types(&ext.sig.results),

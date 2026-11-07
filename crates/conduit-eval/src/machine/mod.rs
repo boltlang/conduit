@@ -1,10 +1,11 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use conduit_ir::Link;
 use conduit_ir::types::subst_params;
 use conduit_ir::{
-    Atom, Block, ConstId, ConstValue, EffectId, Extern, ExternId, Func, FuncId, HandlerId, JoinDef,
-    Label, Mutability, Op, Program, Row, Sig, SourceId, Tag, Tail, Ty, Var,
+    Atom, Block, ConstId, ConstValue, EffectId, Extern, Func, FuncId, HandlerId, JoinDef, Label,
+    Mutability, Op, Program, Row, Sig, SourceId, Tag, Tail, Ty, Var,
 };
 
 use crate::error::{Error, ErrorKind, unverified};
@@ -17,14 +18,16 @@ mod cycles;
 pub use counts::{Count, Leaks, Stats};
 use cycles::Color;
 
-/// Provides the functions of [`Op::CallExtern`].
+/// Provides the functions of [`Op::CallExtern`]: those of the externs
+/// with a `#[link(emu, ..)]`, by its name. An extern with another kind of
+/// link is for another target, and calling it is an error.
 pub trait Host {
-    /// Calls extern `id` with `args`. Through `arrays` it can read the
-    /// arrays it's given, and write to the `mut` ones, as an
-    /// [`Abi::Flat`](conduit_ir::Abi::Flat) host does through memory.
+    /// Calls the function named `name`, extern `decl`, with `args`.
+    /// Through `arrays` it can read the arrays it's given, and write to the
+    /// `mut` ones.
     fn call(
         &mut self,
-        id: ExternId,
+        name: &str,
         decl: &Extern,
         args: &[Value],
         arrays: &mut Arrays<'_, '_>,
@@ -70,12 +73,12 @@ pub struct NoHost;
 impl Host for NoHost {
     fn call(
         &mut self,
-        _: ExternId,
-        decl: &Extern,
+        name: &str,
+        _: &Extern,
         _: &[Value],
         _: &mut Arrays<'_, '_>,
     ) -> Result<Vec<Value>, String> {
-        Err(format!("no host function {}.{}", decl.module, decl.name))
+        Err(format!("no host function {name}"))
     }
 }
 
@@ -615,11 +618,21 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                     .p
                     .extern_fn(*e)
                     .ok_or_else(|| unverified(format!("unknown extern {e}")))?;
+                let Link::Emu { name } = &decl.link else {
+                    let shown = decl
+                        .debug_name
+                        .as_deref()
+                        .map_or(e.to_string(), str::to_string);
+                    return Err(ErrorKind::Host(format!(
+                        "{shown} has a {} link, for another target: the evaluator calls emu ones",
+                        decl.link.kind()
+                    )));
+                };
                 let mut arrays = Arrays {
                     heap: &mut self.heap,
                 };
                 (self.host)
-                    .call(*e, decl, &args, &mut arrays)
+                    .call(name, decl, &args, &mut arrays)
                     .map_err(ErrorKind::Host)?
             }
             Op::Closure(f, margs, _) => {

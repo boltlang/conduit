@@ -53,7 +53,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use conduit_ir::verify::Item;
 use conduit_ir::{
-    Abi, ConstId, ConstValue, CtorId, EffectId, ExternId, Func, FuncId, HandlerId, Lit, Module, Ty,
+    Abi, ConstId, ConstValue, CtorId, EffectId, ExternId, Func, FuncId, HandlerId, Link, Lit,
+    Module, Ty,
 };
 use wasm_encoder::{
     CodeSection, ConstExpr, DataSection, ElementSection, Elements, EntityType, ExportKind,
@@ -756,7 +757,18 @@ pub fn emit_module_with(
     let data = data[CONST_BASE as usize..].to_vec();
 
     let mut imports = Vec::new();
-    for ext in m.externs.values() {
+    for (&id, ext) in &m.externs {
+        // Only a Wasm import can be one: a module for another target has
+        // other links, which the frontend chose.
+        let Link::Wasm { module, name } = &ext.link else {
+            return Err(Error {
+                item: Item::Extern(id),
+                message: format!(
+                    "can't import a {} extern: only one with a `#[link(wasm, ..)]`",
+                    ext.link.kind()
+                ),
+            });
+        };
         let sig = match ext.abi {
             Abi::Conduit => FnSig {
                 params: ext.sig.params.iter().map(val).collect(),
@@ -764,7 +776,7 @@ pub fn emit_module_with(
             },
             Abi::Flat => flat_sig(ext),
         };
-        imports.push((ext, cx.sig(sig)));
+        imports.push((&**module, &**name, cx.sig(sig)));
     }
 
     let mut funcs = Vec::new();
@@ -1007,8 +1019,8 @@ pub fn emit_module_with(
         }
     }
     let mut import_section = ImportSection::new();
-    for (ext, sig) in &imports {
-        import_section.import(&ext.module, &ext.name, EntityType::Function(*sig));
+    for &(module, name, sig) in &imports {
+        import_section.import(module, name, EntityType::Function(sig));
     }
     // With handler frames in memory, each export runs under a wrapper
     // that empties the handler stack and puts it back after.

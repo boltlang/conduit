@@ -171,7 +171,13 @@ fn parsed_module_has_the_right_shape() {
         vec![Ty::F64, Ty::Array(Box::new(Ty::I32), Mutability::Mut)]
     );
     assert_eq!(m.data[&DataId(12)].ctors, vec![]);
-    assert_eq!(&*m.externs[&ExternId(1)].name, "print \"it\"");
+    assert_eq!(
+        m.externs[&ExternId(1)].link,
+        Link::Wasm {
+            module: "env".into(),
+            name: "print \"it\"".into()
+        }
+    );
     let Tail::Join {
         rec: true, defs, ..
     } = &m.funcs[&FuncId(1)].body.tail
@@ -454,7 +460,7 @@ fn parse_errors() {
         ("#[link(wasm, module = \"a\\", "1:23: unterminated string"),
         (
             "extern extern1() -> ()",
-            "1:1: an extern needs a `#[link(wasm, module = \"..\")]`",
+            "1:1: an extern needs a `#[link(..)]`, like `#[link(emu)]`",
         ),
         (
             "#[link(wasm, module = \"a\")]\n#[link(wasm, module = \"a\")]\nextern f() -> ()",
@@ -462,7 +468,19 @@ fn parse_errors() {
         ),
         (
             "#[link(native, module = \"a\")]\nextern f() -> ()",
-            "1:3: `native` isn't a kind of link: only `wasm` is, so far",
+            "1:3: `native` isn't a kind of link: `wasm`, `emu` and `c` are",
+        ),
+        (
+            "#[link(emu, module = \"a\")]\nextern f() -> ()",
+            "1:3: an emu `link` takes `name` once each, not `module`",
+        ),
+        (
+            "#[link(c, name = \"a\")]\nextern f() -> ()",
+            "1:3: a c `link` takes `symbol` and `lib` once each, not `name`",
+        ),
+        (
+            "#[link(emu)]\nextern extern1() -> ()",
+            "1:3: an emu `link` of an extern without a name needs a `name`",
         ),
         (
             "#[link(module = \"a\")]\nextern f() -> ()",
@@ -575,7 +593,10 @@ fn string_escapes_round_trip() {
     let src =
         "#[link(wasm, module = \"a\\\\b\\n\\t\\\"\", name = \"x\")]\nextern extern1() -> ()\n";
     let m = parse(src).unwrap();
-    assert_eq!(&*m.externs[&ExternId(1)].module, "a\\b\n\t\"");
+    let Link::Wasm { module, .. } = &m.externs[&ExternId(1)].link else {
+        panic!("not a wasm link");
+    };
+    assert_eq!(&**module, "a\\b\n\t\"");
     assert_eq!(print(&m), src);
     assert_eq!(m.to_string(), src);
 }
@@ -838,12 +859,55 @@ fn effects_named_like_parameters() {
 fn unwritable_extern_names_round_trip() {
     for name in ["my-fn", "ret"] {
         let mut m = crate::Module::default();
-        let mut e = crate::Extern::new("env", name, crate::Sig::new(vec![], vec![]));
+        let link = Link::Wasm {
+            module: "env".into(),
+            name: name.into(),
+        };
+        let mut e = crate::Extern::new(link.clone(), crate::Sig::new(vec![], vec![]));
         e.debug_name = Some(name.into());
         m.externs.insert(ExternId(1), e);
         let text = print(&m);
         let back = parse(&text).unwrap();
-        assert_eq!(&*back.externs[&ExternId(1)].name, name, "{text}");
+        assert_eq!(back.externs[&ExternId(1)].link, link, "{text}");
         assert_eq!(print(&back), text);
     }
+}
+
+/// Each kind of link, with its name or symbol the extern's own and not.
+#[test]
+fn links_round_trip() {
+    let src = "#[link(emu)]
+extern double(i32) -> (i32)
+
+#[link(emu, name = \"twice\")]
+extern times2(i32) -> (i32)
+
+#[link(c, lib = \"c\")]
+extern write(i32, imm [i8]) -> (i64)
+
+#[link(c, symbol = \"puts\")]
+extern put(imm [i8]) -> (i32)
+";
+    let m = parse(src).unwrap();
+    let links: Vec<&Link> = m.externs.values().map(|e| &e.link).collect();
+    assert_eq!(
+        links,
+        [
+            &Link::Emu {
+                name: "double".into()
+            },
+            &Link::Emu {
+                name: "twice".into()
+            },
+            &Link::C {
+                symbol: "write".into(),
+                lib: Some("c".into())
+            },
+            &Link::C {
+                symbol: "puts".into(),
+                lib: None
+            },
+        ]
+    );
+    assert_eq!(print(&m), src);
 }

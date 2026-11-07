@@ -630,8 +630,7 @@ fn extern_row_without_parameters() {
     m.externs.insert(
         ExternId(0),
         Extern::new(
-            "env",
-            "f",
+            Link::Emu { name: "f".into() },
             Sig {
                 row: Row::param(1),
                 ..unit_sig()
