@@ -120,7 +120,7 @@ fn lit(v: Value) -> Result<Lit, String> {
 ///
 /// - `double(i32) -> i32` gives twice its argument.
 ///
-/// And these, meant for the `"flat"` ABI, where Wasm passes arrays through
+/// And these, meant for the flat ABI, where Wasm passes arrays through
 /// memory:
 ///
 /// - `sum(imm [i8]) -> (i32)` adds up the bytes, as signed.

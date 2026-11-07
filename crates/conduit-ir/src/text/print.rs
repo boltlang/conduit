@@ -203,7 +203,7 @@ pub(super) fn module(m: &Module) -> String {
     for (id, ext) in &m.externs {
         let abi = match ext.abi {
             Abi::Conduit => "",
-            Abi::Flat => "\"flat\" ",
+            Abi::Flat => "#[abi(flat)]\n",
         };
         // The name only if it isn't the extern's own.
         let name = if ext.debug_name.as_deref() == Some(&*ext.name) {
@@ -224,7 +224,7 @@ pub(super) fn module(m: &Module) -> String {
             })
             .collect();
         items.push(format!(
-            "#[link(wasm, module = {}{name})]\nextern {abi}{}({}) -> ({}){}",
+            "#[link(wasm, module = {}{name})]\n{abi}extern {}({}) -> ({}){}",
             string(&ext.module),
             names.extern_(*id),
             params.join(", "),

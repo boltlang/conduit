@@ -23,7 +23,7 @@ pub fn linker(engine: &Engine) -> Result<Linker<()>, String> {
     linker
         .func_wrap("test", "double", |n: i32| n.wrapping_mul(2))
         .map_err(e)?;
-    // The `"flat"` ones, which take addresses into the module's memory.
+    // The flat-ABI ones, which take addresses into the module's memory.
     linker
         .func_wrap("test", "sum", |mut c: Caller<'_, ()>, at: i32, len: i32| {
             let mem = memory(&mut c);

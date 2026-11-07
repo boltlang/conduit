@@ -1,4 +1,4 @@
-// `"flat"` externs: arrays as addresses and lengths, a list of byte
+// `#[abi(flat)]` externs: arrays as addresses and lengths, a list of byte
 // buffers as an iovec list, results after the first through
 // out-parameters, and narrow ints zero-extended. The evaluator's host
 // reads the same arrays as values.
@@ -6,17 +6,23 @@
 effect io {}
 
 #[link(wasm, module = "test")]
-extern "flat" sum(imm [i8]) -> (i32) does io
+#[abi(flat)]
+extern sum(imm [i8]) -> (i32) does io
 #[link(wasm, module = "test")]
-extern "flat" fill(mut [i8], i32) -> () does io
+#[abi(flat)]
+extern fill(mut [i8], i32) -> () does io
 #[link(wasm, module = "test")]
-extern "flat" gather(imm [imm [i8]]) -> (i32, i32) does io
+#[abi(flat)]
+extern gather(imm [imm [i8]]) -> (i32, i32) does io
 #[link(wasm, module = "test")]
-extern "flat" squares(#[nolen] mut [i32], i32) -> () does io
+#[abi(flat)]
+extern squares(#[nolen] mut [i32], i32) -> () does io
 #[link(wasm, module = "test")]
-extern "flat" scale(i32) -> (i32, i64) does io
+#[abi(flat)]
+extern scale(i32) -> (i32, i64) does io
 #[link(wasm, module = "test")]
-extern "flat" byte(i8) -> (i32) does io
+#[abi(flat)]
+extern byte(i8) -> (i32) does io
 
 const hello: imm [i8] = b"hello"
 const world: imm [i8] = b"world"

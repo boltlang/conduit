@@ -1,4 +1,4 @@
-// What the `"flat"` ABI can't pass: data, closures, arrays of objects other
+// What the flat ABI can't pass: data, closures, arrays of objects other
 // than byte buffers, `#[nolen]` on what isn't an array of scalars, objects
 // as results, and `#[nolen]` without it.
 
@@ -7,30 +7,36 @@ data data0 {
 }
 
 #[link(wasm, module = "env", name = "a")]
-extern "flat" extern1(imm data0) -> ()
+#[abi(flat)]
+extern extern1(imm data0) -> ()
 
 #[link(wasm, module = "env", name = "b")]
-extern "flat" extern2(imm fn() -> ()) -> ()
+#[abi(flat)]
+extern extern2(imm fn() -> ()) -> ()
 
 #[link(wasm, module = "env", name = "c")]
-extern "flat" extern3(imm [imm [i32]]) -> ()
+#[abi(flat)]
+extern extern3(imm [imm [i32]]) -> ()
 
 #[link(wasm, module = "env", name = "d")]
-extern "flat" extern4(#[nolen] i32) -> ()
+#[abi(flat)]
+extern extern4(#[nolen] i32) -> ()
 
 #[link(wasm, module = "env", name = "e")]
-extern "flat" extern5(#[nolen] imm [imm [i8]]) -> ()
+#[abi(flat)]
+extern extern5(#[nolen] imm [imm [i8]]) -> ()
 
 #[link(wasm, module = "env", name = "f")]
-extern "flat" extern6() -> (i32, imm [i8])
+#[abi(flat)]
+extern extern6() -> (i32, imm [i8])
 
 #[link(wasm, module = "env", name = "g")]
 extern extern7(#[nolen] imm [i8]) -> ()
 
-//# verify-error: extern1: the "flat" ABI can't pass parameter 0, a imm data0
-//# verify-error: extern2: the "flat" ABI can't pass parameter 0, a imm fn() -> ()
-//# verify-error: extern3: the "flat" ABI can't pass parameter 0, a imm [imm [i32]]
-//# verify-error: extern4: the "flat" ABI can't pass parameter 0, a #[nolen] i32
-//# verify-error: extern5: the "flat" ABI can't pass parameter 0, a #[nolen] imm [imm [i8]]
-//# verify-error: extern6: the "flat" ABI can't give result 1, a imm [i8]: only scalars
-//# verify-error: extern7: parameter 0 is #[nolen], which only the "flat" ABI has
+//# verify-error: extern1: the flat ABI can't pass parameter 0, a imm data0
+//# verify-error: extern2: the flat ABI can't pass parameter 0, a imm fn() -> ()
+//# verify-error: extern3: the flat ABI can't pass parameter 0, a imm [imm [i32]]
+//# verify-error: extern4: the flat ABI can't pass parameter 0, a #[nolen] i32
+//# verify-error: extern5: the flat ABI can't pass parameter 0, a #[nolen] imm [imm [i8]]
+//# verify-error: extern6: the flat ABI can't give result 1, a imm [i8]: only scalars
+//# verify-error: extern7: parameter 0 is #[nolen], which only the flat ABI has

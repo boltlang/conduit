@@ -41,13 +41,8 @@ fn item_names(toks: &[(Tok, Pos)]) -> Result<Vec<Names>, Error> {
             Tok::Punct("{") => depth += 1,
             Tok::Punct("}") => depth -= 1,
             Tok::Ident(k) if depth == 0 => {
-                // An extern's ABI comes before its name.
-                let at = match toks.get(j + 1) {
-                    Some((Tok::Str(_), _)) if k == "extern" => j + 2,
-                    _ => j + 1,
-                };
                 if let (Some(i), Some((Tok::Ident(name), pos))) =
-                    (KINDS.iter().position(|x| x == k), toks.get(at))
+                    (KINDS.iter().position(|x| x == k), toks.get(j + 1))
                     && let Some(s) = spelled(name, k)
                 {
                     found[i].push((s, *pos));
@@ -340,17 +335,43 @@ impl Parser {
         Ok((nolen, name, self.ty()?))
     }
 
-    /// The module and name of `#[link(wasm, module = "..", name = "..")]`,
-    /// the only attribute an extern takes, which it must have. The name is
-    /// the extern's own by default.
-    fn link(&self, pos: Pos, attrs: Vec<Attr>, own: Option<&str>) -> Res<(Box<str>, Box<str>)> {
+    /// What an extern's attributes say: the module and name of its
+    /// `#[link(wasm, module = "..", name = "..")]`, which it must have, the
+    /// name being its own by default, and its `#[abi(..)]`, by default
+    /// `conduit`.
+    fn link(
+        &self,
+        pos: Pos,
+        attrs: Vec<Attr>,
+        own: Option<&str>,
+    ) -> Res<(Box<str>, Box<str>, Abi)> {
         let mut link = None;
+        let mut abi = None;
         for attr in attrs {
+            if attr.name == "abi" {
+                if abi.is_some() {
+                    return self.error_at(attr.pos, "an extern has one `abi`");
+                }
+                abi = Some(match &attr.args[..] {
+                    [AttrArg::Word(w)] if w == "flat" => Abi::Flat,
+                    [AttrArg::Word(w)] if w == "conduit" => Abi::Conduit,
+                    [AttrArg::Word(w)] => {
+                        return self.error_at(
+                            attr.pos,
+                            format!("`{w}` isn't an ABI: `flat` and `conduit` are"),
+                        );
+                    }
+                    _ => {
+                        return self.error_at(attr.pos, "an `abi` is one word, like `abi(flat)`");
+                    }
+                });
+                continue;
+            }
             if attr.name != "link" {
                 return self.error_at(
                     attr.pos,
                     format!(
-                        "`{}` isn't an attribute of an extern: only `link` is",
+                        "`{}` isn't an attribute of an extern: only `link` and `abi` are",
                         attr.name
                     ),
                 );
@@ -396,7 +417,7 @@ impl Parser {
             link = Some((module, name));
         }
         match link {
-            Some(link) => Ok(link),
+            Some((module, name)) => Ok((module, name, abi.unwrap_or_default())),
             None => self.error_at(pos, "an extern needs a `#[link(wasm, module = \"..\")]`"),
         }
     }
@@ -430,23 +451,9 @@ impl Parser {
                         m.data.insert(id, decl).map(|_| id.to_string())
                     }
                     "extern" => {
-                        let abi_pos = self.pos();
-                        let abi = match self.peek() {
-                            Tok::Str(_) => match &*self.string()? {
-                                "flat" => Abi::Flat,
-                                "conduit" => Abi::Conduit,
-                                abi => {
-                                    return self.error_at(
-                                        abi_pos,
-                                        format!("`{abi}` isn't an ABI: `flat` and `conduit` are"),
-                                    );
-                                }
-                            },
-                            _ => Abi::Conduit,
-                        };
                         let (id, debug_name) = self.def("extern")?;
                         let id = ExternId(id);
-                        let (module, name) = self.link(pos, attrs, debug_name.as_deref())?;
+                        let (module, name, abi) = self.link(pos, attrs, debug_name.as_deref())?;
                         let params = self.list(Self::extern_param)?;
                         self.punct("->")?;
                         let results = self.list(Self::ty)?;

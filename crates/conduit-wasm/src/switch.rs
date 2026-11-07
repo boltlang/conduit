@@ -20,7 +20,7 @@
 //! - `discontinue F.j(k, args)` makes a closure that performs `F.j(args)`
 //!   and throws its address into `k` with `resume_throw`, which the
 //!   `perform` catches and calls, under its own handlers.
-//! - With `"flat"` externs, each continuation has a shadow stack
+//! - With `#[abi(flat)]` externs, each continuation has a shadow stack
 //!   segment of its own (see [`Segments`]), which `start` takes and
 //!   keeps in the frame. `start`, `drive` and `throw` switch to it, and
 //!   back to the outer stack's when the body suspends, returns or throws,

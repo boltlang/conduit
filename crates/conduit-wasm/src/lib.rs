@@ -206,7 +206,7 @@ pub(crate) struct Cx<'m> {
     thunks: BTreeMap<(EffectId, u32), FuncId>,
     /// The functions of reference counting, if the module counts.
     pub rt: Option<counts::Runtime>,
-    /// The shadow stack, if the module has `"flat"` externs.
+    /// The shadow stack, if the module has `#[abi(flat)]` externs.
     pub stack: Option<ShadowStack>,
 }
 
@@ -251,7 +251,7 @@ pub struct Options {
     /// (see `counts.rs`). The module then exports `conduit_collect`, which
     /// collects what's buffered so far.
     pub cycles: bool,
-    /// The bytes of the shadow stack, which holds what a `"flat"`
+    /// The bytes of the shadow stack, which holds what an `#[abi(flat)]`
     /// extern call passes through memory: out-parameters and iovec lists.
     /// A call that needs more traps. A module without such externs has no
     /// shadow stack.
@@ -493,7 +493,7 @@ impl Cx<'_> {
     }
 }
 
-/// The import's signature of a `"flat"` extern: see [`Abi::Flat`].
+/// The import's signature of an `#[abi(flat)]` extern: see [`Abi::Flat`].
 fn flat_sig(ext: &conduit_ir::Extern) -> FnSig {
     let mut params = Vec::new();
     for (i, ty) in ext.sig.params.iter().enumerate() {

@@ -1,4 +1,4 @@
-// `"flat"` externs under a handler that switches stacks: with stack
+// `#[abi(flat)]` externs under a handler that switches stacks: with stack
 // switching, the body's calls use its continuation's shadow stack, and the
 // clause's, after it resumes, the outer stack's.
 
@@ -9,9 +9,11 @@ effect Gen {
 }
 
 #[link(wasm, module = "test")]
-extern "flat" gather(imm [imm [i8]]) -> (i32, i32) does io
+#[abi(flat)]
+extern gather(imm [imm [i8]]) -> (i32, i32) does io
 #[link(wasm, module = "test")]
-extern "flat" scale(i32) -> (i32, i64) does io
+#[abi(flat)]
+extern scale(i32) -> (i32, i64) does io
 
 const hi: imm [i8] = b"hi"
 

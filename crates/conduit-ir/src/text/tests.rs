@@ -20,10 +20,12 @@ data data13['m1, 'm2] {
 }
 
 #[link(wasm, module = "env", name = "print \"it\"")]
-extern "flat" extern1(%x: i32) -> ()
+#[abi(flat)]
+extern extern1(%x: i32) -> ()
 
 #[link(wasm, module = "env", name = "fill")]
-extern "flat" extern2(#[nolen] %buf: mut [i8], i32) -> ()
+#[abi(flat)]
+extern extern2(#[nolen] %buf: mut [i8], i32) -> ()
 
 const const40: imm [i8] = b"hi \"\\\n\t\r\0\x01\xff é"
 
@@ -480,15 +482,27 @@ fn parse_errors() {
         ),
         (
             "#[inline]\nextern f() -> ()",
-            "1:3: `inline` isn't an attribute of an extern: only `link` is",
+            "1:3: `inline` isn't an attribute of an extern: only `link` and `abi` are",
         ),
         (
             "#[link(wasm, module = \"a\")]\nfn f() -> () { jump ret() }",
             "1:3: only an extern takes attributes, so far",
         ),
         (
-            "#[link(wasm, module = \"a\")]\nextern \"c\" f() -> ()",
-            "2:8: `c` isn't an ABI: `flat` and `conduit` are",
+            "#[link(wasm, module = \"a\")]\n#[abi(c)]\nextern f() -> ()",
+            "2:3: `c` isn't an ABI: `flat` and `conduit` are",
+        ),
+        (
+            "#[abi(flat)]\n#[abi(flat)]\n#[link(wasm, module = \"a\")]\nextern f() -> ()",
+            "2:3: an extern has one `abi`",
+        ),
+        (
+            "#[abi]\n#[link(wasm, module = \"a\")]\nextern f() -> ()",
+            "1:3: an `abi` is one word, like `abi(flat)`",
+        ),
+        (
+            "#[abi(flat, conduit)]\n#[link(wasm, module = \"a\")]\nextern f() -> ()",
+            "1:3: an `abi` is one word, like `abi(flat)`",
         ),
         (
             "#[link(wasm, module = \"a\")]\nextern f(#[nolen(x)] i32) -> ()",

@@ -876,7 +876,7 @@ let %3: imm fn(i32) -> (i32) does Effect20 = closure fn2()
   row has no effect parameters, since externs aren't generic.
 - **An extern's ABI** says how a backend passes its arguments and
   results. By default it's how the backend represents values: an object
-  is its address. With the `"flat"` ABI, it's how C compilers for wasm32 pass
+  is its address. With `#[abi(flat)]`, it's how C compilers for wasm32 pass
   them, for WASI and other C-like hosts. Only scalars, arrays of scalars
   and arrays of `[i8]` can be passed, and only scalars given back:
   - a scalar is itself, an `i8` or `i16` zero-extended;
@@ -1345,7 +1345,7 @@ Status:
 | `Call` | `call` | ✅ |
 | `Call` in tail position | `return_call` | ✅ (tail calls, Wasm 3.0) |
 | `CallExtern` | `call` of an import | ✅ |
-| `CallExtern` of a `"flat"` extern | `call`, with addresses and lengths for arrays, an iovec list and out-parameters on the shadow stack | ✅ |
+| `CallExtern` of an `#[abi(flat)]` extern | `call`, with addresses and lengths for arrays, an iovec list and out-parameters on the shadow stack | ✅ |
 | `Closure` | allocate, store the wrapper's table slot and the captures | ✅ |
 | `Apply` | `call_indirect` | ✅ |
 | `New` | allocate, store the constructor's index and the fields | ✅ |
@@ -1423,16 +1423,18 @@ what a pass makes has none.
   name can be, like `ret`, `rec` or `Any`. `print` writes a thing whose
   name can't be one by its number.
 
-**Externs.** An extern is `extern`, its ABI if it isn't the default
-`"conduit"`, its name, its parameters, `->`, its results and its row.
-Attributes in `#[..]` come before it and before its parameters:
+**Externs.** An extern is `extern`, its name, its parameters, `->`, its
+results and its row. Attributes in `#[..]` come before it and before its
+parameters:
 
 - `#[link(wasm, module = "..", name = "..")]`, which every extern has
   exactly one of, is the Wasm import it is (`module` and `name` of
   `Extern`). The name is the extern's own by default, and `print` leaves
   it out when it is. `wasm` is the only kind of link so far.
-- `#[nolen]` before a parameter of a `"flat"` extern passes the array's
-  address alone.
+- `#[abi(flat)]` is its ABI (`abi` of `Extern`), when it isn't the
+  default, `#[abi(conduit)]`.
+- `#[nolen]` before a parameter of an `#[abi(flat)]` extern passes the
+  array's address alone.
 - A parameter can have a name, `%fd: i32`, which only shows what it is
   (`param_names` of `Extern`).
 
@@ -1446,10 +1448,12 @@ data data11 {
 extern extern1(i32) -> ()
 
 #[link(wasm, module = "wasi_snapshot_preview1")]
-extern "flat" fd_write(%fd: i32, %iovs: imm [imm [i8]]) -> (i32, i32)
+#[abi(flat)]
+extern fd_write(%fd: i32, %iovs: imm [imm [i8]]) -> (i32, i32)
 
 #[link(wasm, module = "wasi_snapshot_preview1")]
-extern "flat" args_get(#[nolen] %argv: mut [i32], #[nolen] %buf: mut [i8]) -> (i32)
+#[abi(flat)]
+extern args_get(#[nolen] %argv: mut [i32], #[nolen] %buf: mut [i8]) -> (i32)
 
 effect effect20 {
   (i32) -> ()
@@ -1573,7 +1577,7 @@ doesn't need a deep stack.
   same object.
 - **Hosts take and give values,** whatever the extern's ABI. A `Host`
   gets an `Arrays` view of the heap, which reads any array it's given and
-  writes the `mut` ones, as a `"flat"` host does through memory.
+  writes the `mut` ones, as a flat-ABI host does through memory.
 - **Reference counts are checked** with `Machine::counting` on. Every
   object has a count, which `Dup`, `Drop` and the ops that count for
   themselves change (see "Reference counts"), and an object is freed at

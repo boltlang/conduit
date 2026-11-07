@@ -547,7 +547,7 @@ fn abi_ok(ext: &Extern) -> Result<(), String> {
     match ext.abi {
         Abi::Conduit => match (0..n).find(|&i| ext.nolen(i)) {
             Some(i) => Err(format!(
-                "parameter {i} is #[nolen], which only the \"flat\" ABI has"
+                "parameter {i} is #[nolen], which only the flat ABI has"
             )),
             None => Ok(()),
         },
@@ -564,14 +564,14 @@ fn abi_ok(ext: &Extern) -> Result<(), String> {
                 if !ok {
                     let what = if ext.nolen(i) { "#[nolen] " } else { "" };
                     return Err(format!(
-                        "the \"flat\" ABI can't pass parameter {i}, a {what}{ty}: only scalars, \
+                        "the flat ABI can't pass parameter {i}, a {what}{ty}: only scalars, \
                          arrays of scalars, #[nolen] or not, and arrays of [i8]"
                     ));
                 }
             }
             match ext.sig.results.iter().position(|ty| !ty.is_scalar()) {
                 Some(i) => Err(format!(
-                    "the \"flat\" ABI can't give result {i}, a {}: only scalars",
+                    "the flat ABI can't give result {i}, a {}: only scalars",
                     ext.sig.results[i]
                 )),
                 None => Ok(()),

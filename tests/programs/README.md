@@ -103,11 +103,11 @@ Programs can import these host functions, which every runner provides:
 | Module | Name | Signature | Gives |
 |---|---|---|---|
 | `"test"` | `"double"` | `(i32) -> (i32)` | twice its argument |
-| `"test"` | `"sum"` | `"flat"`, `(imm [i8]) -> (i32)` | the sum of its bytes, as signed |
-| `"test"` | `"fill"` | `"flat"`, `(mut [i8], i32) -> ()` | sets every byte to the second argument's low byte |
-| `"test"` | `"gather"` | `"flat"`, `(imm [imm [i8]]) -> (i32, i32)` | how many buffers, and the sum of all their bytes |
-| `"test"` | `"squares"` | `"flat"`, `(#[nolen] mut [i32], i32) -> ()` | sets elements 0 to n - 1 to their index squared |
-| `"test"` | `"scale"` | `"flat"`, `(i32) -> (i32, i64)` | 0, and its argument times 10^12 |
-| `"test"` | `"byte"` | `"flat"`, `(i8) -> (i32)` | its argument zero-extended |
+| `"test"` | `"sum"` | `#[abi(flat)]`, `(imm [i8]) -> (i32)` | the sum of its bytes, as signed |
+| `"test"` | `"fill"` | `#[abi(flat)]`, `(mut [i8], i32) -> ()` | sets every byte to the second argument's low byte |
+| `"test"` | `"gather"` | `#[abi(flat)]`, `(imm [imm [i8]]) -> (i32, i32)` | how many buffers, and the sum of all their bytes |
+| `"test"` | `"squares"` | `#[abi(flat)]`, `(#[nolen] mut [i32], i32) -> ()` | sets elements 0 to n - 1 to their index squared |
+| `"test"` | `"scale"` | `#[abi(flat)]`, `(i32) -> (i32, i64)` | 0, and its argument times 10^12 |
+| `"test"` | `"byte"` | `#[abi(flat)]`, `(i8) -> (i32)` | its argument zero-extended |
 
-For example: `#[link(wasm, module = "test")] extern double(i32) -> (i32)`, or with the `"flat"` ABI, `#[link(wasm, module = "test")] extern "flat" sum(imm [i8]) -> (i32)`.
+For example: `#[link(wasm, module = "test")] extern double(i32) -> (i32)`, or with the flat ABI, `#[link(wasm, module = "test")] #[abi(flat)] extern sum(imm [i8]) -> (i32)`.
