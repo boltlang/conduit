@@ -137,9 +137,57 @@ pub struct Extern {
     pub module: Box<str>,
     pub name: Box<str>,
     pub sig: Sig,
+    /// How a backend passes its arguments and results.
+    pub abi: Abi,
+    /// For each parameter, whether a [`Abi::Flat`] array is passed as its
+    /// elements' address alone, without its length. Empty for none.
+    pub nolen: Vec<bool>,
     /// A name to show it by in Conduit, which needn't be the host's. See
     /// [`FuncDebug`].
     pub debug_name: Option<Box<str>>,
+}
+
+impl Extern {
+    /// A host function with the default ABI.
+    pub fn new(module: &str, name: &str, sig: Sig) -> Extern {
+        Extern {
+            module: module.into(),
+            name: name.into(),
+            sig,
+            abi: Abi::Conduit,
+            nolen: Vec::new(),
+            debug_name: None,
+        }
+    }
+
+    /// Whether parameter `i` is passed without its length.
+    pub fn nolen(&self, i: usize) -> bool {
+        self.nolen.get(i).copied().unwrap_or(false)
+    }
+}
+
+/// How an extern takes its arguments and gives its results. The
+/// evaluator ignores it: its hosts take and give values.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum Abi {
+    /// Values as the backend represents them: an object is its address.
+    #[default]
+    Conduit,
+    /// Addresses and lengths, as C compilers for wasm32 pass them, for WASI
+    /// and other C-like hosts. Only scalars, arrays of scalars and arrays
+    /// of `[i8]` (lists of byte buffers) can be passed, and only scalars
+    /// given back. In Wasm:
+    ///
+    /// - a scalar is itself, an `i8` or `i16` zero-extended;
+    /// - an array is its elements' address, then its length, or the
+    ///   address alone if the parameter is `nolen`;
+    /// - a list of byte buffers is the address and count of a list of
+    ///   (address, length) pairs, an iovec list, made for the call;
+    /// - the first result is the import's result, and each other result
+    ///   is an address to write it to, after the arguments.
+    ///
+    /// The host may write only to `mut` arrays, and only during the call.
+    Flat,
 }
 
 /// An effect: the signature of each of its operations.

@@ -201,12 +201,24 @@ pub(super) fn module(m: &Module) -> String {
         items.push(s);
     }
     for (id, ext) in &m.externs {
+        let abi = match ext.abi {
+            Abi::Conduit => "",
+            Abi::Flat => "abi flat ",
+        };
+        let params: Vec<String> = (ext.sig.params.iter().enumerate())
+            .map(|(i, ty)| {
+                let nolen = if ext.nolen(i) { "nolen " } else { "" };
+                format!("{nolen}{}", names.ty(ty))
+            })
+            .collect();
         items.push(format!(
-            "extern {} {} {} {}",
+            "extern {} {} {} {abi}({}) -> ({}){}",
             names.extern_(*id),
             string(&ext.module),
             string(&ext.name),
-            names.sig(&ext.sig)
+            params.join(", "),
+            names.types(&ext.sig.results),
+            names.does(&ext.sig.row)
         ));
     }
     for (id, decl) in &m.consts {

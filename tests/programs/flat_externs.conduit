@@ -1,0 +1,73 @@
+// `abi flat` externs: arrays as addresses and lengths, a list of byte
+// buffers as an iovec list, results after the first through
+// out-parameters, and narrow ints zero-extended. The evaluator's host
+// reads the same arrays as values.
+
+effect io {}
+
+extern sum "test" "sum" abi flat (imm [i8]) -> (i32) does io
+extern fill "test" "fill" abi flat (mut [i8], i32) -> () does io
+extern gather "test" "gather" abi flat (imm [imm [i8]]) -> (i32, i32) does io
+extern squares "test" "squares" abi flat (nolen mut [i32], i32) -> () does io
+extern scale "test" "scale" abi flat (i32) -> (i32, i64) does io
+extern byte "test" "byte" abi flat (i8) -> (i32) does io
+
+const hello: imm [i8] = b"hello"
+const world: imm [i8] = b"world"
+
+fn sum_hello() -> (i32) does io {
+  let %s: imm [i8] = const hello()
+  let %r: i32 = call_extern sum(%s)
+  jump ret(%r)
+}
+
+// The host writes into a `mut` array.
+fn filled(%n: i32, %b: i32) -> (i8) does io {
+  let %a: mut [i8] = array_fill(%n, 0i8)
+  let = call_extern fill(%a, %b)
+  let %last: i32 = sub(%n, 1i32)
+  let %r: i8 = array_get(%a, %last)
+  jump ret(%r)
+}
+
+fn gathered() -> (i32, i32) does io {
+  let %h: imm [i8] = const hello()
+  let %w: imm [i8] = const world()
+  let %list: imm [imm [i8]] = array_new(%h, %w, %h)
+  let %n: i32, %total: i32 = call_extern gather(%list)
+  jump ret(%n, %total)
+}
+
+fn gathered_none() -> (i32, i32) does io {
+  let %list: imm [imm [i8]] = array_new()
+  let %n: i32, %total: i32 = call_extern gather(%list)
+  jump ret(%n, %total)
+}
+
+fn squared(%n: i32) -> (i32) does io {
+  let %a: mut [i32] = array_fill(%n, -1i32)
+  let = call_extern squares(%a, %n)
+  let %last: i32 = sub(%n, 1i32)
+  let %r: i32 = array_get(%a, %last)
+  jump ret(%r)
+}
+
+// A second result through an 8-byte out-parameter, in tail position.
+fn scaled(%x: i32) -> (i32, i64) does io {
+  let %e: i32, %v: i64 = call_extern scale(%x)
+  jump ret(%e, %v)
+}
+
+fn narrow(%b: i8) -> (i32) does io {
+  let %r: i32 = call_extern byte(%b)
+  jump ret(%r)
+}
+
+//# run sum_hello() == 532i32
+//# run filled(3i32, 7i32) == 7i8
+//# run filled(1i32, 300i32) == 44i8
+//# run gathered() == (3i32, 1616i32)
+//# run gathered_none() == (0i32, 0i32)
+//# run squared(5i32) == 16i32
+//# run scaled(3i32) == (0i32, 3000000000000i64)
+//# run narrow(-1i8) == 255i32

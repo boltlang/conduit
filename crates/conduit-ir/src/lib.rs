@@ -28,7 +28,7 @@ pub use id::{
     ConstId, CtorId, DataId, EffectId, ExternId, FuncId, HandlerId, Label, SourceId, Var,
 };
 pub use module::{
-    ConstDecl, ConstValue, DataDecl, EffectDecl, Extern, Func, FuncDebug, HandlerDecl, Module,
+    Abi, ConstDecl, ConstValue, DataDecl, EffectDecl, Extern, Func, FuncDebug, HandlerDecl, Module,
     MutParams, const_refs, const_value,
 };
 pub use op::{Effects, Memory, Op, Prim, Sign};

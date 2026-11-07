@@ -3,7 +3,7 @@
 //! and turning literals into Wasm values and back.
 
 use conduit_ir::{FuncId, Lit, Ty};
-use wasmtime::{Engine, Instance, Linker, Store, Val};
+use wasmtime::{Caller, Engine, Instance, Linker, Memory, Store, Val};
 
 use crate::Outcome;
 
@@ -19,10 +19,95 @@ pub fn config() -> wasmtime::Config {
 /// [`eval::TestHost`](crate::eval::TestHost)'s.
 pub fn linker(engine: &Engine) -> Result<Linker<()>, String> {
     let mut linker = Linker::new(engine);
+    let e = |e: wasmtime::Error| e.to_string();
     linker
         .func_wrap("test", "double", |n: i32| n.wrapping_mul(2))
-        .map_err(|e| e.to_string())?;
+        .map_err(e)?;
+    // The `abi flat` ones, which take addresses into the module's memory.
+    linker
+        .func_wrap("test", "sum", |mut c: Caller<'_, ()>, at: i32, len: i32| {
+            let mem = memory(&mut c);
+            sum(mem.data(&c), at, len)
+        })
+        .map_err(e)?;
+    linker
+        .func_wrap(
+            "test",
+            "fill",
+            |mut c: Caller<'_, ()>, at: i32, len: i32, b: i32| {
+                let mem = memory(&mut c);
+                let (at, len) = (at as usize, len as usize);
+                mem.data_mut(&mut c)[at..at + len].fill(b as u8);
+            },
+        )
+        .map_err(e)?;
+    linker
+        .func_wrap(
+            "test",
+            "gather",
+            |mut c: Caller<'_, ()>, iovs: i32, n: i32, out: i32| {
+                let mem = memory(&mut c);
+                let data = mem.data_mut(&mut c);
+                let mut total = 0i32;
+                for i in 0..n {
+                    let iov = (iovs + 8 * i) as usize;
+                    let at = read_i32(data, iov);
+                    let len = read_i32(data, iov + 4);
+                    total = total.wrapping_add(sum(data, at, len));
+                }
+                data[out as usize..out as usize + 4].copy_from_slice(&total.to_le_bytes());
+                n
+            },
+        )
+        .map_err(e)?;
+    linker
+        .func_wrap(
+            "test",
+            "squares",
+            |mut c: Caller<'_, ()>, at: i32, n: i32| {
+                let mem = memory(&mut c);
+                let data = mem.data_mut(&mut c);
+                for i in 0..n {
+                    let to = (at + 4 * i) as usize;
+                    data[to..to + 4].copy_from_slice(&(i * i).to_le_bytes());
+                }
+            },
+        )
+        .map_err(e)?;
+    linker
+        .func_wrap(
+            "test",
+            "scale",
+            |mut c: Caller<'_, ()>, n: i32, out: i32| {
+                let mem = memory(&mut c);
+                let v = i64::from(n) * 1_000_000_000_000;
+                mem.data_mut(&mut c)[out as usize..out as usize + 8]
+                    .copy_from_slice(&v.to_le_bytes());
+                0
+            },
+        )
+        .map_err(e)?;
+    linker.func_wrap("test", "byte", |b: i32| b).map_err(e)?;
     Ok(linker)
+}
+
+/// The memory of the module calling a host function.
+fn memory(c: &mut Caller<'_, ()>) -> Memory {
+    c.get_export("memory")
+        .and_then(|m| m.into_memory())
+        .expect("the module exports its memory")
+}
+
+fn read_i32(data: &[u8], at: usize) -> i32 {
+    i32::from_le_bytes(data[at..at + 4].try_into().unwrap())
+}
+
+/// The sum of `len` bytes from `at`, as signed.
+fn sum(data: &[u8], at: i32, len: i32) -> i32 {
+    let (at, len) = (at as usize, len as usize);
+    data[at..at + len]
+        .iter()
+        .fold(0i32, |s, &b| s.wrapping_add(i32::from(b as i8)))
 }
 
 /// Calls the export named after `func` with `args`, and gives what it

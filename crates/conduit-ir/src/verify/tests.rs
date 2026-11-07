@@ -927,15 +927,14 @@ fn extern_row_without_parameters() {
     let mut m = Module::default();
     m.externs.insert(
         ExternId(0),
-        Extern {
-            module: "env".into(),
-            name: "f".into(),
-            sig: Sig {
+        Extern::new(
+            "env",
+            "f",
+            Sig {
                 row: Row::param(1),
                 ..unit_sig()
             },
-            debug_name: None,
-        },
+        ),
     );
     let errors = verify_module(&m).unwrap_err();
     assert_eq!(

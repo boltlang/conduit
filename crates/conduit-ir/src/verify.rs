@@ -91,7 +91,10 @@ pub fn verify_module(m: &Module) -> Result<(), Vec<Error>> {
     for (&id, ext) in &m.externs {
         // An extern's row says what its callers must be allowed to do; the
         // call itself performs nothing.
-        if let Err(message) = sig_ok(m, &ext.sig, 0, 0).and_then(|()| row_ok(m, &ext.sig.row, 0)) {
+        if let Err(message) = sig_ok(m, &ext.sig, 0, 0)
+            .and_then(|()| row_ok(m, &ext.sig.row, 0))
+            .and_then(|()| abi_ok(ext))
+        {
             errors.push(decl_error(Item::Extern(id), message));
         }
     }
@@ -529,6 +532,49 @@ pub(crate) fn row_ok<P: Program + ?Sized>(p: &P, row: &Row, params: u32) -> Resu
             }
         )),
         None => Ok(()),
+    }
+}
+
+/// Checks what an extern's ABI can pass: see [`Abi::Flat`].
+fn abi_ok(ext: &Extern) -> Result<(), String> {
+    let n = ext.sig.params.len();
+    if !ext.nolen.is_empty() && ext.nolen.len() != n {
+        return Err(format!(
+            "has {} nolen flags for {n} parameters",
+            ext.nolen.len()
+        ));
+    }
+    match ext.abi {
+        Abi::Conduit => match (0..n).find(|&i| ext.nolen(i)) {
+            Some(i) => Err(format!("parameter {i} is nolen, which only abi flat has")),
+            None => Ok(()),
+        },
+        Abi::Flat => {
+            for (i, ty) in ext.sig.params.iter().enumerate() {
+                let ok = match ty {
+                    ty if ty.is_scalar() => !ext.nolen(i),
+                    Ty::Array(elem, _) if elem.is_scalar() => true,
+                    Ty::Array(elem, _) => {
+                        matches!(&**elem, Ty::Array(b, _) if **b == Ty::I8) && !ext.nolen(i)
+                    }
+                    _ => false,
+                };
+                if !ok {
+                    let what = if ext.nolen(i) { "nolen " } else { "" };
+                    return Err(format!(
+                        "abi flat can't pass parameter {i}, a {what}{ty}: only scalars, \
+                         arrays of scalars, nolen or not, and arrays of [i8]"
+                    ));
+                }
+            }
+            match ext.sig.results.iter().position(|ty| !ty.is_scalar()) {
+                Some(i) => Err(format!(
+                    "abi flat can't give result {i}, a {}: only scalars",
+                    ext.sig.results[i]
+                )),
+                None => Ok(()),
+            }
+        }
     }
 }
 

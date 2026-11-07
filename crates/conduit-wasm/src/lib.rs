@@ -51,7 +51,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use conduit_ir::verify::Item;
 use conduit_ir::{
-    ConstId, ConstValue, CtorId, EffectId, ExternId, Func, FuncId, HandlerId, Lit, Module, Ty,
+    Abi, ConstId, ConstValue, CtorId, EffectId, ExternId, Func, FuncId, HandlerId, Lit, Module, Ty,
 };
 use wasm_encoder::{
     CodeSection, ConstExpr, DataSection, ElementSection, Elements, EntityType, ExportKind,
@@ -206,6 +206,8 @@ pub(crate) struct Cx<'m> {
     thunks: BTreeMap<(EffectId, u32), FuncId>,
     /// The functions of reference counting, if the module counts.
     pub rt: Option<counts::Runtime>,
+    /// The shadow stack, if the module has `abi flat` externs.
+    pub stack: Option<ShadowStack>,
 }
 
 /// The functions, table slots and tables of a handler that switches
@@ -227,7 +229,7 @@ pub(crate) struct Switch {
 }
 
 /// How [`emit_module_with`] lowers a module.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct Options {
     /// Whether to lower handlers with a clause that's neither
     /// tail-resumptive nor aborting with the stack switching proposal,
@@ -249,6 +251,32 @@ pub struct Options {
     /// (see `counts.rs`). The module then exports `conduit_collect`, which
     /// collects what's buffered so far.
     pub cycles: bool,
+    /// The bytes of the shadow stack, which holds what an `abi flat`
+    /// extern call passes through memory: out-parameters and iovec lists.
+    /// A call that needs more traps. A module without such externs has no
+    /// shadow stack.
+    pub shadow_stack: u32,
+}
+
+impl Default for Options {
+    fn default() -> Options {
+        Options {
+            stack_switching: false,
+            counts: false,
+            cycles: false,
+            shadow_stack: 64 * 1024,
+        }
+    }
+}
+
+/// The shadow stack: a region of memory that grows down from its top,
+/// with a global holding the lowest address in use.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ShadowStack {
+    pub global: u32,
+    /// Where the region starts: a push below it traps.
+    pub base: u32,
+    pub top: u32,
 }
 
 impl Cx<'_> {
@@ -432,6 +460,23 @@ impl Cx<'_> {
     }
 }
 
+/// The import's signature of an `abi flat` extern: see [`Abi::Flat`].
+fn flat_sig(ext: &conduit_ir::Extern) -> FnSig {
+    let mut params = Vec::new();
+    for (i, ty) in ext.sig.params.iter().enumerate() {
+        match ty {
+            Ty::Array(..) if ext.nolen(i) => params.push(ValType::I32),
+            Ty::Array(..) => params.extend([ValType::I32, ValType::I32]),
+            ty => params.push(val(ty)),
+        }
+    }
+    params.extend(ext.sig.results.iter().skip(1).map(|_| ValType::I32));
+    FnSig {
+        params,
+        results: ext.sig.results.iter().take(1).map(val).collect(),
+    }
+}
+
 /// Lowers a module that has passed [`conduit_ir::verify::verify_module`]
 /// to a Wasm binary with objects in linear memory, exporting each function
 /// in `exports` under its name, and the memory as `memory`, with the
@@ -560,6 +605,7 @@ pub fn emit_module_with(
         disc_tag: None,
         thunks,
         rt: None,
+        stack: None,
     };
     if options.counts {
         cx.rt = Some(counts::Runtime::new(m, cx.alloc + 1, options.cycles));
@@ -589,15 +635,27 @@ pub fn emit_module_with(
         rt.heads = heap_base;
         heap_base += rt.memory();
     }
+    // The shadow stack, after them, and its pointer after the other globals.
+    if m.externs.values().any(|e| e.abi == Abi::Flat) {
+        let base = heap_base;
+        heap_base += options.shadow_stack.next_multiple_of(8);
+        cx.stack = Some(ShadowStack {
+            global: if cx.rt.is_some() { 9 } else { 3 },
+            base,
+            top: heap_base,
+        });
+    }
     let data = data[CONST_BASE as usize..].to_vec();
 
     let mut imports = Vec::new();
-    for (&id, ext) in &m.externs {
-        let sig = FnSig {
-            params: ext.sig.params.iter().map(val).collect(),
-            results: ext.sig.results.iter().map(val).collect(),
+    for ext in m.externs.values() {
+        let sig = match ext.abi {
+            Abi::Conduit => FnSig {
+                params: ext.sig.params.iter().map(val).collect(),
+                results: ext.sig.results.iter().map(val).collect(),
+            },
+            Abi::Flat => flat_sig(ext),
         };
-        let _ = id;
         imports.push((ext, cx.sig(sig)));
     }
 
@@ -955,12 +1013,16 @@ pub fn emit_module_with(
     let mut globals = GlobalSection::new();
     // The heap pointer, the handler stack, the stack of the `perform`
     // whose clause runs, and, when counting, the live objects.
-    let inits: &[i32] = if cx.rt.is_some() {
-        &[heap_base as i32, 0, 0, 0, 0, 0, 0, 0, 0]
+    let mut inits: Vec<i32> = if cx.rt.is_some() {
+        vec![heap_base as i32, 0, 0, 0, 0, 0, 0, 0, 0]
     } else {
-        &[heap_base as i32, 0, 0]
+        vec![heap_base as i32, 0, 0]
     };
-    for &init in inits {
+    if let Some(stack) = cx.stack {
+        debug_assert_eq!(stack.global as usize, inits.len());
+        inits.push(stack.top as i32);
+    }
+    for init in inits {
         globals.global(
             GlobalType {
                 val_type: ValType::I32,

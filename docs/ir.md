@@ -874,6 +874,25 @@ let %3: imm fn(i32) -> (i32) does Effect20 = closure fn2()
   performs nothing. Such an effect usually has no operations, like an
   `io` that only code allowed to do I/O has: `effect io {}`. An extern's
   row has no effect parameters, since externs aren't generic.
+- **An extern's ABI** says how a backend passes its arguments and
+  results. By default it's how the backend represents values: an object
+  is its address. With `abi flat`, it's how C compilers for wasm32 pass
+  them, for WASI and other C-like hosts. Only scalars, arrays of scalars
+  and arrays of `[i8]` can be passed, and only scalars given back:
+  - a scalar is itself, an `i8` or `i16` zero-extended;
+  - an array is its elements' address, then its length, or the address
+    alone for a `nolen` parameter, like `args_get`'s buffers;
+  - an array of `[i8]` is the address and count of an iovec list, a list
+    of (address, length) pairs the call makes;
+  - the first result is the import's result, and each other result is an
+    address to write it to, after the arguments.
+
+  The host may write only to `mut` arrays, and only during the call. An
+  `imm` parameter is the host's promise not to write it. Iovec lists and
+  out-parameters go on a shadow stack in memory, which
+  `Options::shadow_stack` sizes, 64 KiB by default: a call that needs
+  more traps. To the optimizer, every `call_extern` borrows its arguments
+  and may touch any memory, whatever the ABI.
 - **Exports start with no handlers.** The host calling an exported
   function grants it the effects without operations in its row. An
   operation it doesn't handle itself traps, even when the host calls it
@@ -1323,6 +1342,7 @@ Status:
 | `Call` | `call` | ✅ |
 | `Call` in tail position | `return_call` | ✅ (tail calls, Wasm 3.0) |
 | `CallExtern` | `call` of an import | ✅ |
+| `CallExtern` of an `abi flat` extern | `call`, with addresses and lengths for arrays, an iovec list and out-parameters on the shadow stack | ✅ |
 | `Closure` | allocate, store the wrapper's table slot and the captures | ✅ |
 | `Apply` | `call_indirect` | ✅ |
 | `New` | allocate, store the constructor's index and the fields | ✅ |
@@ -1407,6 +1427,8 @@ data data11 {
 }
 
 extern extern1 "env" "print" (i32) -> ()
+extern extern2 "wasi_snapshot_preview1" "fd_write" abi flat (i32, imm [imm [i8]]) -> (i32, i32)
+extern extern3 "wasi_snapshot_preview1" "args_get" abi flat (nolen mut [i32], nolen mut [i8]) -> (i32)
 
 effect effect20 {
   (i32) -> ()
@@ -1528,6 +1550,9 @@ doesn't need a deep stack.
 - **Undefined behavior is an error,** like `Unbox` at the wrong type.
 - **Constants are made when first used,** and kept, so every use gets the
   same object.
+- **Hosts take and give values,** whatever the extern's ABI. A `Host`
+  gets an `Arrays` view of the heap, which reads any array it's given and
+  writes the `mut` ones, as an `abi flat` host does through memory.
 - **Reference counts are checked** with `Machine::counting` on. Every
   object has a count, which `Dup`, `Drop` and the ops that count for
   themselves change (see "Reference counts"), and an object is freed at

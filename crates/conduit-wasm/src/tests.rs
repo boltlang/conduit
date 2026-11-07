@@ -44,6 +44,7 @@ fn general_handlers_switching() {
         stack_switching: true,
         counts: false,
         cycles: false,
+        ..Default::default()
     };
     let bytes = crate::emit_module_with(&m, &[], &options).unwrap();
     let wat = wasmprinter::print_bytes(&bytes).unwrap();
@@ -158,6 +159,7 @@ fn run_counted_in(src: &str, expected: i32, count: bool) {
         stack_switching: false,
         counts: true,
         cycles: true,
+        ..Default::default()
     };
     let bytes = crate::emit_module_with(&m, &[(main, "main")], &options).unwrap();
     let mut config = wasmtime::Config::new();
@@ -261,4 +263,41 @@ fn deep_cycles_are_collected() {
         0,
         false,
     );
+}
+
+/// An iovec list takes 8 bytes a buffer on the shadow stack, and the
+/// second result 8 more: with 64 bytes, a call with 7 buffers fits, every
+/// time, since each call pops what it pushed, and one with 8 traps.
+#[test]
+fn shadow_stack_overflow_traps() {
+    let m = conduit_ir::text::parse(
+        r#"extern gather "test" "gather" abi flat (imm [imm [i8]]) -> (i32, i32)
+const hi: imm [i8] = b"hi"
+fn main(%n: i32) -> (i32) {
+  let %h: imm [i8] = const hi()
+  let %list: imm [imm [i8]] = array_fill(%n, %h)
+  let %count: i32, %total: i32 = call_extern gather(%list)
+  jump ret(%total)
+}"#,
+    )
+    .unwrap();
+    let options = crate::Options {
+        shadow_stack: 64,
+        ..Default::default()
+    };
+    let main = text::find_func(&m, "main").unwrap();
+    let bytes = crate::emit_module_with(&m, &[(main, "main")], &options).unwrap();
+    let engine = wasmtime::Engine::new(&conduit_test::wasm::config()).unwrap();
+    let module = wasmtime::Module::new(&engine, &bytes).unwrap();
+    let linker = conduit_test::wasm::linker(&engine).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = linker.instantiate(&mut store, &module).unwrap();
+    let main = instance
+        .get_typed_func::<i32, i32>(&mut store, "main")
+        .unwrap();
+    for _ in 0..3 {
+        assert_eq!(main.call(&mut store, 7).unwrap(), 7 * (104 + 105));
+    }
+    let trap = main.call(&mut store, 8).unwrap_err();
+    assert!(trap.downcast_ref::<wasmtime::Trap>().is_some(), "{trap:?}");
 }

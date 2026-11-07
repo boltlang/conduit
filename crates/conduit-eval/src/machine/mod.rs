@@ -19,14 +19,62 @@ use cycles::Color;
 
 /// Provides the functions of [`Op::CallExtern`].
 pub trait Host {
-    fn call(&mut self, id: ExternId, decl: &Extern, args: &[Value]) -> Result<Vec<Value>, String>;
+    /// Calls extern `id` with `args`. Through `arrays` it can read the
+    /// arrays it's given, and write to the `mut` ones, as an
+    /// [`Abi::Flat`](conduit_ir::Abi::Flat) host does through memory.
+    fn call(
+        &mut self,
+        id: ExternId,
+        decl: &Extern,
+        args: &[Value],
+        arrays: &mut Arrays<'_, '_>,
+    ) -> Result<Vec<Value>, String>;
+}
+
+/// The arrays of the heap, as a host function sees them.
+pub struct Arrays<'a, 'p> {
+    heap: &'a mut [Object<'p>],
+}
+
+impl Arrays<'_, '_> {
+    /// The elements of array `v`, or `None` if it isn't an array.
+    pub fn get(&self, v: &Value) -> Option<&[Value]> {
+        match v {
+            Value::Obj(id) => match self.heap.get(id.0 as usize)? {
+                Object::Array { elems, .. } => Some(elems),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// The elements of array `v` to write to, or `None` if it isn't a
+    /// `mut` array. The host must write values of the element type.
+    pub fn get_mut(&mut self, v: &Value) -> Option<&mut [Value]> {
+        match v {
+            Value::Obj(id) => match self.heap.get_mut(id.0 as usize)? {
+                Object::Array {
+                    elems,
+                    is_mut: true,
+                } => Some(elems),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
 }
 
 /// A host without functions: every extern call fails.
 pub struct NoHost;
 
 impl Host for NoHost {
-    fn call(&mut self, _: ExternId, decl: &Extern, _: &[Value]) -> Result<Vec<Value>, String> {
+    fn call(
+        &mut self,
+        _: ExternId,
+        decl: &Extern,
+        _: &[Value],
+        _: &mut Arrays<'_, '_>,
+    ) -> Result<Vec<Value>, String> {
         Err(format!("no host function {}.{}", decl.module, decl.name))
     }
 }
@@ -567,7 +615,12 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                     .p
                     .extern_fn(*e)
                     .ok_or_else(|| unverified(format!("unknown extern {e}")))?;
-                self.host.call(*e, decl, &args).map_err(ErrorKind::Host)?
+                let mut arrays = Arrays {
+                    heap: &mut self.heap,
+                };
+                (self.host)
+                    .call(*e, decl, &args, &mut arrays)
+                    .map_err(ErrorKind::Host)?
             }
             Op::Closure(f, margs, _) => {
                 let is_mut = self.binds_mut(binds)?;

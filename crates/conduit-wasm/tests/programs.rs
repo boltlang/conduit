@@ -72,6 +72,7 @@ fn lower(p: &Program, m: &Module, stack_switching: bool) -> Result<Option<Vec<u8
             stack_switching,
             counts: false,
             cycles: false,
+            ..Default::default()
         },
     )
 }
@@ -149,6 +150,7 @@ fn counted(p: &Program, m: &Module) -> Result<(), String> {
         stack_switching: false,
         counts: true,
         cycles: true,
+        ..Default::default()
     };
     let bytes = lower_with(p, &c, options)?.expect("lowering with counts failed");
     let (mut store, instance) = instantiate(&bytes, false)?;

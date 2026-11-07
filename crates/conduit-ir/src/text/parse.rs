@@ -292,11 +292,32 @@ impl Parser {
                         let (id, debug_name) = self.def("extern")?;
                         let id = ExternId(id);
                         let (module, name) = (self.string()?, self.string()?);
-                        let sig = self.sig()?;
+                        let abi = if self.eat_keyword("abi") {
+                            self.keyword("flat")?;
+                            Abi::Flat
+                        } else {
+                            Abi::Conduit
+                        };
+                        let params = self.list(|p| Ok((p.eat_keyword("nolen"), p.ty()?)))?;
+                        self.punct("->")?;
+                        let results = self.list(Self::ty)?;
+                        let row = self.row()?;
+                        let nolen = if params.iter().any(|&(n, _)| n) {
+                            params.iter().map(|&(n, _)| n).collect()
+                        } else {
+                            Vec::new()
+                        };
+                        let sig = Sig {
+                            params: params.into_iter().map(|(_, t)| t).collect(),
+                            results,
+                            row,
+                        };
                         let ext = Extern {
                             module,
                             name,
                             sig,
+                            abi,
+                            nolen,
                             debug_name,
                         };
                         m.externs.insert(id, ext).map(|_| id.to_string())

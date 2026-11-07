@@ -268,6 +268,7 @@ fn modules(p: &Program, configs: &[String]) -> Result<Vec<(String, Module, Optio
             stack_switching: false,
             counts: config.counts,
             cycles: config.cycles,
+            ..Default::default()
         };
         out.push((name.clone(), m, options));
     }

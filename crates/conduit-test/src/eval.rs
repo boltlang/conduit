@@ -1,6 +1,6 @@
 //! Running `run` checks with the evaluator.
 
-use conduit_eval::{ErrorKind, Host, Leaks, Machine, Value};
+use conduit_eval::{Arrays, ErrorKind, Host, Leaks, Machine, Value};
 use conduit_ir::{Extern, ExternId, Lit, Module};
 
 use crate::{CheckKind, Outcome, Program};
@@ -119,12 +119,65 @@ fn lit(v: Value) -> Result<Lit, String> {
 /// Every backend's runner provides the same ones.
 ///
 /// - `double(i32) -> i32` gives twice its argument.
+///
+/// And these, meant for `abi flat`, where Wasm passes arrays through
+/// memory:
+///
+/// - `sum(imm [i8]) -> (i32)` adds up the bytes, as signed.
+/// - `fill(mut [i8], i32) -> ()` sets every byte to the low byte of the
+///   second argument.
+/// - `gather(imm [imm [i8]]) -> (i32, i32)` gives how many buffers there
+///   are and the sum of all their bytes.
+/// - `squares(nolen mut [i32], i32 n) -> ()` sets elements 0 to n - 1 to
+///   their index squared.
+/// - `scale(i32) -> (i32, i64)` gives 0 and its argument times 10^12.
+/// - `byte(i8) -> (i32)` gives its argument as Wasm passes it, zero-extended.
 pub struct TestHost;
 
 impl Host for TestHost {
-    fn call(&mut self, _: ExternId, decl: &Extern, args: &[Value]) -> Result<Vec<Value>, String> {
+    fn call(
+        &mut self,
+        _: ExternId,
+        decl: &Extern,
+        args: &[Value],
+        arrays: &mut Arrays<'_, '_>,
+    ) -> Result<Vec<Value>, String> {
+        let bytes = |arrays: &Arrays<'_, '_>, v: &Value| -> Result<i32, String> {
+            let elems = arrays.get(v).ok_or("not an array")?;
+            elems.iter().try_fold(0i32, |sum, e| match e {
+                Value::I8(b) => Ok(sum.wrapping_add(i32::from(*b))),
+                _ => Err("not a byte".to_string()),
+            })
+        };
         match (&*decl.module, &*decl.name, args) {
             ("test", "double", [Value::I32(n)]) => Ok(vec![Value::I32(n.wrapping_mul(2))]),
+            ("test", "sum", [a]) => Ok(vec![Value::I32(bytes(arrays, a)?)]),
+            ("test", "fill", [a, Value::I32(b)]) => {
+                for e in arrays.get_mut(a).ok_or("not a mut array")? {
+                    *e = Value::I8(*b as i8);
+                }
+                Ok(vec![])
+            }
+            ("test", "gather", [list]) => {
+                let bufs = arrays.get(list).ok_or("not an array")?.to_vec();
+                let total = bufs.iter().try_fold(0i32, |sum, b| {
+                    Ok::<_, String>(sum.wrapping_add(bytes(arrays, b)?))
+                })?;
+                Ok(vec![Value::I32(bufs.len() as i32), Value::I32(total)])
+            }
+            ("test", "squares", [a, Value::I32(n)]) => {
+                let elems = arrays.get_mut(a).ok_or("not a mut array")?;
+                let n = usize::try_from(*n).map_err(|e| e.to_string())?;
+                for (i, e) in elems.iter_mut().take(n).enumerate() {
+                    *e = Value::I32((i * i) as i32);
+                }
+                Ok(vec![])
+            }
+            ("test", "scale", [Value::I32(n)]) => Ok(vec![
+                Value::I32(0),
+                Value::I64(i64::from(*n) * 1_000_000_000_000),
+            ]),
+            ("test", "byte", [Value::I8(b)]) => Ok(vec![Value::I32(i32::from(*b as u8))]),
             _ => Err(format!(
                 "no test host function {:?} {:?} taking these arguments",
                 decl.module, decl.name

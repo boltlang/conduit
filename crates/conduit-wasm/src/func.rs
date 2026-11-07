@@ -12,7 +12,7 @@
 use std::borrow::Cow;
 
 use conduit_ir::{
-    Atom, Block, CtorId, Func, FuncId, JoinDef, Label, Lit, Op, Prim, Sign, Tag, Tail, Ty, Var,
+    Abi, Atom, Block, CtorId, Func, FuncId, JoinDef, Label, Lit, Op, Prim, Sign, Tag, Tail, Ty, Var,
 };
 use wasm_encoder::{BlockType, Ieee32, Ieee64, Instruction as I, MemArg, MemArgTarget, ValType};
 
@@ -606,6 +606,11 @@ impl<'m> FuncCx<'_, 'm> {
             }
             Op::CallExtern(e) => {
                 let idx = self.cx.extern_index(*e)?;
+                let ext = self.cx.m.externs.get(e).ok_or("unknown extern")?;
+                if ext.abi == Abi::Flat {
+                    self.call_flat(idx, ext, args)?;
+                    return Ok(self.bind(binds, false));
+                }
                 self.atoms(args);
                 self.emit(if tail {
                     I::ReturnCall(idx)
@@ -1513,6 +1518,160 @@ impl<'m> FuncCx<'_, 'm> {
             Ty::Array(elem, _) => Ok(Storage::of(elem)),
             _ => Err(format!("expected an array, but got a {ty}")),
         }
+    }
+
+    /// A call of `abi flat` extern `ext`, import `idx`: see [`Abi::Flat`].
+    /// Out-parameters and iovec lists go on the shadow stack, 8 bytes
+    /// each, popped after the call. Nothing can unwind past the call while
+    /// they're there: the host can only call back into exports, which
+    /// start with no handlers, so the pointer is always put back.
+    fn call_flat(
+        &mut self,
+        idx: u32,
+        ext: &'m conduit_ir::Extern,
+        args: &[Atom],
+    ) -> Result<(), String> {
+        let is_list = |ty: &Ty| matches!(ty, Ty::Array(e, _) if matches!(**e, Ty::Array(..)));
+        let lists: Vec<usize> = (0..args.len())
+            .filter(|&i| is_list(&ext.sig.params[i]))
+            .collect();
+        let outs = ext.sig.results.len().saturating_sub(1) as u32;
+        // Push what the call needs: the out-parameters, then the iovecs.
+        let mut scratch = None;
+        if outs > 0 || !lists.is_empty() {
+            let stack = self.cx.stack.ok_or("a flat extern needs a shadow stack")?;
+            let (size, old, at) = (
+                self.new_local(ValType::I32),
+                self.new_local(ValType::I32),
+                self.new_local(ValType::I32),
+            );
+            self.emit(I::I32Const(8 * outs as i32));
+            for &i in &lists {
+                self.atom(&args[i]);
+                self.emit(load(Storage::I32, 4));
+                self.emit(I::I32Const(3));
+                self.emit(I::I32Shl);
+                self.emit(I::I32Add);
+            }
+            self.emit(I::LocalSet(size));
+            // Trap if it doesn't fit above the base.
+            self.emit(I::GlobalGet(stack.global));
+            self.emit(I::LocalTee(old));
+            self.emit(I::I32Const(stack.base as i32));
+            self.emit(I::I32Sub);
+            self.emit(I::LocalGet(size));
+            self.emit(I::I32LtU);
+            self.trap_if();
+            self.emit(I::LocalGet(old));
+            self.emit(I::LocalGet(size));
+            self.emit(I::I32Sub);
+            self.emit(I::LocalTee(at));
+            self.emit(I::GlobalSet(stack.global));
+            scratch = Some((stack, old, at));
+        }
+        let mut iovecs = Vec::new();
+        if let Some((_, _, at)) = scratch {
+            let cursor = self.new_local(ValType::I32);
+            self.emit(I::LocalGet(at));
+            self.emit(I::I32Const(8 * outs as i32));
+            self.emit(I::I32Add);
+            self.emit(I::LocalSet(cursor));
+            for &i in &lists {
+                let (start, j, elem) = (
+                    self.new_local(ValType::I32),
+                    self.new_local(ValType::I32),
+                    self.new_local(ValType::I32),
+                );
+                self.emit(I::LocalGet(cursor));
+                self.emit(I::LocalSet(start));
+                self.emit(I::I32Const(0));
+                self.emit(I::LocalSet(j));
+                self.open(I::Block(BlockType::Empty));
+                self.open(I::Loop(BlockType::Empty));
+                self.emit(I::LocalGet(j));
+                self.atom(&args[i]);
+                self.emit(load(Storage::I32, 4));
+                self.emit(I::I32GeU);
+                self.emit(I::BrIf(1));
+                // The buffer's address and length.
+                self.atom(&args[i]);
+                self.emit(I::LocalGet(j));
+                self.emit(I::I32Const(2));
+                self.emit(I::I32Shl);
+                self.emit(I::I32Add);
+                self.emit(load(Storage::I32, 8));
+                self.emit(I::LocalSet(elem));
+                self.emit(I::LocalGet(cursor));
+                self.emit(I::LocalGet(elem));
+                self.emit(I::I32Const(8));
+                self.emit(I::I32Add);
+                self.emit(store(Storage::I32, 0));
+                self.emit(I::LocalGet(cursor));
+                self.emit(I::LocalGet(elem));
+                self.emit(load(Storage::I32, 4));
+                self.emit(store(Storage::I32, 4));
+                for (l, by) in [(cursor, 8), (j, 1)] {
+                    self.emit(I::LocalGet(l));
+                    self.emit(I::I32Const(by));
+                    self.emit(I::I32Add);
+                    self.emit(I::LocalSet(l));
+                }
+                self.emit(I::Br(0));
+                self.close();
+                self.close();
+                iovecs.push((i, start));
+            }
+        }
+        // The arguments.
+        for (i, a) in args.iter().enumerate() {
+            match &ext.sig.params[i] {
+                ty if is_list(ty) => {
+                    let start = iovecs.iter().find(|&&(k, _)| k == i).map(|&(_, s)| s);
+                    self.emit(I::LocalGet(start.ok_or("no iovec list")?));
+                    self.atom(a);
+                    self.emit(load(Storage::I32, 4));
+                }
+                Ty::Array(..) => {
+                    self.atom(a);
+                    self.emit(I::I32Const(8));
+                    self.emit(I::I32Add);
+                    if !ext.nolen(i) {
+                        self.atom(a);
+                        self.emit(load(Storage::I32, 4));
+                    }
+                }
+                ty => {
+                    self.atom(a);
+                    // A narrow int's high bits may be anything.
+                    let mask = match ty {
+                        Ty::I8 => Some(0xff),
+                        Ty::I16 => Some(0xffff),
+                        _ => None,
+                    };
+                    if let Some(mask) = mask {
+                        self.emit(I::I32Const(mask));
+                        self.emit(I::I32And);
+                    }
+                }
+            }
+        }
+        if let Some((_, _, at)) = scratch {
+            for k in 0..outs {
+                self.emit(I::LocalGet(at));
+                self.emit(I::I32Const(8 * k as i32));
+                self.emit(I::I32Add);
+            }
+        }
+        self.emit(I::Call(idx));
+        if let Some((stack, old, at)) = scratch {
+            for (k, ty) in ext.sig.results.iter().skip(1).enumerate() {
+                self.emit(I::LocalGet(at));
+                self.emit(load(Storage::of(ty), 8 * k as u32));
+            }
+            self.emit(I::LocalGet(old));
+            self.emit(I::GlobalSet(stack.global));
+        }
+        Ok(())
     }
 
     /// Allocates `size` bytes, into a new local.

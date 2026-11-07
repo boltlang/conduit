@@ -577,7 +577,13 @@ fn fuel_stops_an_infinite_loop() {
 fn host_functions() {
     struct Doubler;
     impl Host for Doubler {
-        fn call(&mut self, _: ExternId, _: &Extern, args: &[Value]) -> Result<Vec<Value>, String> {
+        fn call(
+            &mut self,
+            _: ExternId,
+            _: &Extern,
+            args: &[Value],
+            _: &mut Arrays<'_, '_>,
+        ) -> Result<Vec<Value>, String> {
             match args {
                 [Value::I32(x)] => Ok(vec![Value::I32(x * 2)]),
                 _ => Err("bad arguments".into()),
@@ -590,15 +596,8 @@ fn host_functions() {
         params: vec![Ty::I32],
         results: vec![Ty::I32],
     };
-    m.externs.insert(
-        ExternId(1),
-        Extern {
-            debug_name: None,
-            module: "env".into(),
-            name: "double".into(),
-            sig,
-        },
-    );
+    m.externs
+        .insert(ExternId(1), Extern::new("env", "double", sig));
     let mut f = Func::new(vec![], vec![Ty::I32]);
     let r = f.new_var(Ty::I32);
     f.body = let_(
