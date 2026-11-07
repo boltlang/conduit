@@ -31,9 +31,10 @@ impl Borrows {
 ///
 /// Two more rules keep parameters owned:
 ///
-/// - A function that's made into a closure, or is a handler's clause, keeps
-///   every parameter owned: `apply` and `perform` don't know whom they
-///   call, so they always give their arguments away.
+/// - A function that's made into a closure, is a handler's clause, or is
+///   exported, keeps every parameter owned: `apply` and `perform` don't
+///   know whom they call, and a caller from outside the module isn't
+///   counted with the module, so they always give their arguments away.
 /// - A recursive tail call keeps being one: a call `f(.., y, ..)` whose
 ///   results the caller returns, where `f` can call the caller back, makes
 ///   `f`'s parameter owned if `y` is, since otherwise the caller would drop
@@ -53,6 +54,7 @@ pub fn borrows(m: &Module) -> Borrows {
         always_owned.extend(h.clauses().map(|(_, _, c)| c));
         always_owned.insert(h.ret);
     }
+    always_owned.extend(m.exports.keys());
     let reaches = reaches(m);
     let mut b = Borrows::default();
     for (id, f) in &m.funcs {

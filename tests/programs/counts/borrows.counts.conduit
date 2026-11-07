@@ -73,6 +73,7 @@ fn skip_zeros(%l: imm List) -> (imm List) {
   }
 }
 
+#[export(emu)]
 fn skipped() -> (i32) {
   let %nil: imm List = new List.0()
   let %l4: imm List = new List.1(0i32, %nil)
@@ -85,6 +86,7 @@ fn skipped() -> (i32) {
   jump ret(%n)
 }
 
+#[export(emu)]
 fn main(%n: i32) -> (i32) {
   let %l: imm List = call build(%n)
   let %a: i32 = call len(%l)

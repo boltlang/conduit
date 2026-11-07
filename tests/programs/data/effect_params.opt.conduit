@@ -41,6 +41,7 @@ fn seven() -> (i32) {
   jump ret(7i32)
 }
 
+#[export(emu)]
 fn pure(%x: i32) -> (i32) {
   let %f#1: imm fn(i32) -> (i32) = closure add3()
   join j1(%r#2: i32) =
@@ -78,6 +79,7 @@ fn twice_logging(%x: i32) -> (i32) does Log {
   jump ret(%z)
 }
 
+#[export(emu)]
 fn logging(%x: i32) -> (i32, i32) {
   let %total: ref i32 = ref_new(0i32)
   let %body: imm fn() -> (i32) does Log = closure twice_logging(%x)
@@ -126,6 +128,7 @@ fn yields() -> () does Yield {
   jump ret()
 }
 
+#[export(emu)]
 fn summed() -> (i32, i32) {
   let %body: imm fn() -> () does Yield = closure yields()
   join j1(%pure: i32) =

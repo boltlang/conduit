@@ -1,3 +1,4 @@
+#[export(emu)]
 fn count_up(%n: i32) -> (i32) {
   let %xs: mut [i32] = array_fill(%n, 0i32)
   join rec loop(%i: i32, %local: mut [i32]) =

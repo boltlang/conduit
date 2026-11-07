@@ -2,7 +2,7 @@
 //! runners that do: what they set Wasmtime up with, the host functions,
 //! and turning literals into Wasm values and back.
 
-use conduit_ir::{FuncId, Lit, Ty};
+use conduit_ir::{FuncId, Lit, Module, Ty};
 use wasmtime::{Caller, Engine, Instance, Linker, Memory, Store, Val};
 
 use crate::Outcome;
@@ -110,18 +110,23 @@ fn sum(data: &[u8], at: i32, len: i32) -> i32 {
         .fold(0i32, |s, &b| s.wrapping_add(i32::from(b as i8)))
 }
 
-/// Calls the export named after `func` with `args`, and gives what it
-/// gives, read as `result_tys`, or the trap it stopped with.
+/// Calls `m`'s export of `func` with `args`, and gives what it gives, read
+/// as `result_tys`, or the trap it stopped with.
 pub fn call(
     store: &mut Store<()>,
     instance: &Instance,
+    m: &Module,
     func: FuncId,
     args: &[Lit],
     result_tys: &[Ty],
 ) -> Result<Outcome, String> {
-    let name = func.to_string();
+    let name = m
+        .exports
+        .get(&func)
+        .map(|e| e.name())
+        .ok_or_else(|| format!("{func} isn't exported"))?;
     let f = instance
-        .get_func(&mut *store, &name)
+        .get_func(&mut *store, name)
         .ok_or_else(|| format!("{name} isn't exported"))?;
     let params: Vec<Val> = args
         .iter()

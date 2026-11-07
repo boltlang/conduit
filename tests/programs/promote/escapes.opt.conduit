@@ -1,3 +1,4 @@
+#[export(emu)]
 fn captured() -> (i32) {
   let %local: ref i32 = ref_new(1i32)
   let %f: mut fn() -> (i32) = closure read(%local)
@@ -6,6 +7,7 @@ fn captured() -> (i32) {
   jump ret(%r)
 }
 
+#[export(emu)]
 fn passed() -> (i32) {
   let %local: ref i32 = ref_new(1i32)
   let = call write9(%local)
@@ -13,6 +15,7 @@ fn passed() -> (i32) {
   jump ret(%r)
 }
 
+#[export(emu)]
 fn stored() -> (i32) {
   let %local: ref i32 = ref_new(1i32)
   let %outer: ref ref i32 = ref_new(%local)
@@ -21,6 +24,7 @@ fn stored() -> (i32) {
   jump ret(%r)
 }
 
+#[export(emu)]
 fn jumped() -> (i32) {
   let %a: ref i32 = ref_new(1i32)
   join read(%r: ref i32, %b: i32) =
@@ -30,6 +34,7 @@ fn jumped() -> (i32) {
   in jump read(%a, 2i32)
 }
 
+#[export(emu)]
 fn boxed() -> (i32) {
   let %local: ref i32 = ref_new(8i32)
   let %boxed: mut any = box[ref i32](%local)

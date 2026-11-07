@@ -67,6 +67,7 @@ fn to_mut(%p: imm Point) -> (mut Point) {
   jump ret(%q)
 }
 
+#[export(emu)]
 fn main() -> (i32) {
   let %a: imm Point = new Point.0(1i32, 2i32)
   let %b: imm Point = new Point.0(3i32, 4i32)

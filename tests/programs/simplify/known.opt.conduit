@@ -3,12 +3,14 @@ data Pair {
   (i32, i32)
 }
 
+#[export(emu)]
 fn imm_fields(%x: i32) -> (i32) {
   let %pair: imm Pair = new Pair.1(%x, 5i32)
   let %sum: i32 = add(%x, 5i32)
   jump ret(%sum)
 }
 
+#[export(emu)]
 fn mut_fields(%x: i32) -> (i32) {
   let %pair: mut Pair = new Pair.1(%x, 5i32)
   let = set Pair.1.0(%pair, 9i32)
@@ -16,15 +18,18 @@ fn mut_fields(%x: i32) -> (i32) {
   jump ret(%a)
 }
 
+#[export(emu)]
 fn literals(%x: i32) -> (i32) {
   jump ret(%x)
 }
 
+#[export(emu)]
 fn default() -> (i32) {
   let %empty: imm Pair = new Pair.0()
   jump ret(2i32)
 }
 
+#[export(emu)]
 fn through_join(%x: i32) -> (i32) {
   join check(%p: imm Pair) =
     case %p {

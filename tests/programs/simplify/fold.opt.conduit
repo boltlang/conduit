@@ -1,27 +1,33 @@
+#[export(emu)]
 fn constants() -> (i32) {
   jump ret(-2147483607i32)
 }
 
+#[export(emu)]
 fn overflow() -> (i32) {
   let %q: i32 = div.s(-2147483648i32, -1i32)
   jump ret(%q)
 }
 
+#[export(emu)]
 fn by_zero() -> (i32) {
   jump ret(-7i32)
 }
 
+#[export(emu)]
 fn out_of_range() -> (i32) {
   let %x: i32 = convert.s[i32](10000000000.0f64)
   jump ret(%x)
 }
 
+#[export(emu)]
 fn nan() -> (i32) {
   let %nan: f64 = div.s(0.0f64, 0.0f64)
   let %same: i32 = eq(%nan, %nan)
   jump ret(%same)
 }
 
+#[export(emu)]
 fn floats() -> (f64) {
   let %root: f64 = sqrt(-3.0f64)
   jump ret(3.0f64)

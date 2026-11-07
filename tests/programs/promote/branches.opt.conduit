@@ -1,3 +1,4 @@
+#[export(emu)]
 fn set_in_branches(%x: i32) -> (i32) {
   join meet(%local: i32) = jump ret(%local)
   in
@@ -10,12 +11,14 @@ fn set_in_branches(%x: i32) -> (i32) {
   }
 }
 
+#[export(emu)]
 fn read_before_write() -> (i32) {
   let %old10: i32 = mul(3i32, 10i32)
   let %r: i32 = add(%old10, 4i32)
   jump ret(%r)
 }
 
+#[export(emu)]
 fn write_first(%x: i32) -> (i32) {
   join meet() = jump ret(7i32)
   in
@@ -25,6 +28,7 @@ fn write_first(%x: i32) -> (i32) {
   }
 }
 
+#[export(emu)]
 fn passed_on(%x: i32) -> (i32) {
   join second(%local#1: i32) = jump ret(%local#1)
   in

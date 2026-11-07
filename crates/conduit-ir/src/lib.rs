@@ -28,8 +28,8 @@ pub use id::{
     ConstId, CtorId, DataId, EffectId, ExternId, FuncId, HandlerId, Label, SourceId, Var,
 };
 pub use module::{
-    Abi, ConstDecl, ConstValue, DataDecl, EffectDecl, Extern, Func, FuncDebug, HandlerDecl, Link,
-    Module, MutParams, const_refs, const_value,
+    Abi, ConstDecl, ConstValue, DataDecl, EffectDecl, Export, Extern, Func, FuncDebug, HandlerDecl,
+    Link, Module, MutParams, const_refs, const_value,
 };
 pub use op::{Effects, Memory, Op, Prim, Sign};
 pub use row::Row;

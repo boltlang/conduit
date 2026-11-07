@@ -127,6 +127,27 @@ pub fn verify_module(m: &Module) -> Result<(), Vec<Error>> {
             errors.extend(e);
         }
     }
+    // Each export is of a function, by a name no other export of its kind
+    // has.
+    let mut names = BTreeMap::new();
+    for (&id, export) in &m.exports {
+        if !m.funcs.contains_key(&id) {
+            errors.push(decl_error(
+                Item::Func(id),
+                format!("{id} is exported, but isn't a function"),
+            ));
+        }
+        if let Some(other) = names.insert((export.kind(), export.name()), id) {
+            errors.push(decl_error(
+                Item::Func(id),
+                format!(
+                    "{id} is exported as {} `{}`, as {other} is",
+                    export.kind(),
+                    export.name()
+                ),
+            ));
+        }
+    }
     if errors.is_empty() {
         Ok(())
     } else {

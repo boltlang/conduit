@@ -54,6 +54,7 @@ fn sum(%l: imm List) -> (i32) {
   }
 }
 
+#[export(emu)]
 fn main(%n: i32) -> (i32) {
   let %l: imm List = call build(%n)
   let %m: imm List = call map(%l)
@@ -62,6 +63,7 @@ fn main(%n: i32) -> (i32) {
   jump ret(%r)
 }
 
+#[export(emu)]
 fn frozen(%n: i32) -> (i32) {
   let %a: mut [i32] = array_fill(3i32, %n)
   let %6: i32 = is_unique(%a)

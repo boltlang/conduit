@@ -16,7 +16,7 @@
   (global (;3;) (mut i32) i32.const 65568)
   (global (;4;) (mut i32) i32.const 32)
   (global (;5;) (mut i32) i32.const 0)
-  (export "fn3" (func $main))
+  (export "main" (func $main))
   (export "memory" (memory 0))
   (elem (;0;) (table 0) (i32.const 0) func 20 21 22 23 24 25 26 27 28)
   (func $ask (;0;) (type 0) (param i32) (result i32)

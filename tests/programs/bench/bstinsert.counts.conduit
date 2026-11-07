@@ -77,6 +77,7 @@ fn sum(%t: imm Tree) -> (i32) {
   }
 }
 
+#[export(emu)]
 fn bst(%n: i32) -> (i32) {
   let %empty: imm Tree = new Tree.0()
   join rec go(%i: i32, %t: imm Tree) =

@@ -22,6 +22,7 @@ fn produce() -> () does Yield {
   jump ret()
 }
 
+#[export(emu)]
 fn sum() -> (i32) {
   jump ret(3i32)
 }

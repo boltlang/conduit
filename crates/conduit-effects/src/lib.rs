@@ -1749,6 +1749,8 @@ impl Lower {
         }
         // An extern's row only limited its callers, and no effects are left.
         self.out.externs = self.src.externs.clone();
+        // An exported function keeps its ID, wrapped if it takes evidence.
+        self.out.exports = self.src.exports.clone();
         for ext in self.out.externs.values_mut() {
             ext.sig.row = Row::NOTHING;
         }

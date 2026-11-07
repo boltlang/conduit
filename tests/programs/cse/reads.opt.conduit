@@ -52,6 +52,7 @@ fn write100(%xs: mut [i32]) -> (i32) {
   jump ret(0i32)
 }
 
+#[export(emu)]
 fn main_fields(%x: i32) -> (i32) {
   let %p: mut Pair = new Pair.0(%x, 1i32)
   let %q: imm Pair = new Pair.0(10i32, 2i32)
@@ -59,12 +60,14 @@ fn main_fields(%x: i32) -> (i32) {
   jump ret(%r)
 }
 
+#[export(emu)]
 fn main_elements() -> (i32) {
   let %xs: mut [i32] = array_fill(2i32, 1i32)
   let %r: i32 = call elements(%xs)
   jump ret(%r)
 }
 
+#[export(emu)]
 fn main_loop() -> (i32) {
   let %cell: ref i32 = ref_new(1i32)
   let %p: imm Pair = new Pair.0(0i32, 3i32)

@@ -1,3 +1,4 @@
+#[export(emu)]
 fn main(%x: i32) -> (i32) {
   join used(%y: i32) = jump ret(%y)
   in

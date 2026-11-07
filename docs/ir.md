@@ -536,7 +536,10 @@ and an op either **takes** an argument's reference, moving it, or
   continuation of `Resume` and
   `Discontinue`, and what a jump passes or returns. A function owns its
   parameters, unless a convention between it and its callers says one is
-  borrowed, which only changes where the `Drop`s go.
+  borrowed, which only changes where the `Drop`s go. An exported
+  function always owns them, since a caller from outside the module
+  can't know the convention: it gives away what it passes, and owns what
+  it gets back, as every caller owns a function's results.
 - They borrow: what `Get`, `ArrayGet`, `ArrayLen`, `RefGet`, `Unbox`,
   `ArrayClone`, `CallExtern` and `case` look at. What `Get`, `ArrayGet`, `RefGet` and `Unbox` give
   is borrowed from the object it was read from: code that keeps it longer
@@ -892,6 +895,10 @@ let %3: imm fn(i32) -> (i32) does Effect20 = closure fn2()
   out-parameters go on the shadow stack, popped after the call (see the
   Wasm backend below). To the optimizer, every `call_extern` borrows its arguments
   and may touch any memory, whatever the ABI.
+- **Exports** are the functions with an `#[export(..)]`, which a host
+  calls (see the text format below). The Wasm backend exports those with
+  an `#[export(wasm, ..)]`, under their names, and rejects any other kind,
+  which is for another target.
 - **Exports start with no handlers.** The host calling an exported
   function grants it the effects without operations in its row. An
   operation it doesn't handle itself traps, even when the host calls it
@@ -1452,6 +1459,23 @@ what a pass makes has none.
 - Only identifiers can be names, and not the words the format uses where a
   name can be, like `ret`, `rec` or `Any`. `print` writes a thing whose
   name can't be one by its number.
+
+**Exports.** `#[export(..)]` before a function, at most one, says how
+it's called from outside the module (`exports` of `Module`), for the one
+target the module is for, like an extern's `#[link(..)]`:
+`#[export(wasm, name = "..")]` as a Wasm export, `#[export(emu, name =
+"..")]` by the evaluator's host, or `#[export(c, symbol = "..")]` as a C
+function, which nothing lowers yet. The name or symbol is the function's
+own by default, and `print` leaves it out when it is. Two exports of one
+kind can't share a name. An exported function owns its parameters (see
+"Reference counts").
+
+```
+#[export(wasm, name = "_start")]
+fn start() -> () {
+  jump ret()
+}
+```
 
 **Externs.** An extern is `extern`, its name, its parameters, `->`, its
 results and its row. Attributes in `#[..]` come before it and before its

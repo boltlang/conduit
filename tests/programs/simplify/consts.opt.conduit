@@ -17,6 +17,7 @@ const named: imm Named = Named.0(hello, [7i32, 8i32])
 
 const table: imm [imm List] = [list, nil]
 
+#[export(emu)]
 fn heads() -> (i32) {
   let %l: imm List = const list()
   let %rest: imm List = get List.1.1(%l)
@@ -29,12 +30,14 @@ fn heads() -> (i32) {
   }
 }
 
+#[export(emu)]
 fn hello_bytes() -> (i32) {
   let %n: imm Named = const named()
   let %s: imm [i8] = const hello()
   jump ret(5101i32)
 }
 
+#[export(emu)]
 fn others(%i: i32) -> (i32) {
   let %n: imm Named = const named()
   let %xs: imm [i32] = get Named.0.1(%n)

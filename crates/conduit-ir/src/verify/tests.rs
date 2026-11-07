@@ -643,3 +643,43 @@ fn extern_row_without_parameters() {
         "E1 in row E1 isn't an effect parameter here: there are none"
     );
 }
+
+/// An export is of a function, under a name no other export of its kind
+/// has: the same name is fine for two kinds.
+#[test]
+fn exports_name_functions_once() {
+    let m = crate::text::parse(
+        "#[export(wasm, name = \"x\")]
+fn a() -> () {
+  jump ret()
+}
+#[export(wasm, name = \"x\")]
+fn b() -> () {
+  jump ret()
+}
+#[export(emu, name = \"x\")]
+fn c() -> () {
+  jump ret()
+}",
+    )
+    .unwrap();
+    let errors: Vec<String> = verify_module(&m)
+        .unwrap_err()
+        .iter()
+        .map(|e| e.to_string())
+        .collect();
+    assert_eq!(errors, ["fn1: fn1 is exported as wasm `x`, as fn0 is"]);
+    let mut m = Module::default();
+    m.exports.insert(
+        FuncId(4),
+        Export::Wasm {
+            name: "gone".into(),
+        },
+    );
+    let errors: Vec<String> = verify_module(&m)
+        .unwrap_err()
+        .iter()
+        .map(|e| e.to_string())
+        .collect();
+    assert_eq!(errors, ["fn4: fn4 is exported, but isn't a function"]);
+}

@@ -15,6 +15,7 @@ fn safe_div(%x: i32, %y: i32) -> (imm Option) {
   }
 }
 
+#[export(emu)]
 fn div_or(%x: i32, %y: i32) -> (i32) {
   case %y {
     0 => jump ret(0i32)

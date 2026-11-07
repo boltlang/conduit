@@ -1,3 +1,4 @@
+#[export(emu)]
 fn count(%n: i32) -> (i32) {
   join rec loop(%i: i32) =
     let %more: i32 = lt.s(%i, %n)
@@ -10,6 +11,7 @@ fn count(%n: i32) -> (i32) {
   in jump loop(0i32)
 }
 
+#[export(emu)]
 fn sum(%n: i32) -> (i32) {
   join rec loop(%acc: i32, %i: i32) =
     let %more: i32 = lt.s(%i, %n)

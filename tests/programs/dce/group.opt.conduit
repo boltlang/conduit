@@ -1,3 +1,4 @@
+#[export(emu)]
 fn is_even(%n: i32) -> (i32) {
   join rec even(%m: i32) =
     case %m {

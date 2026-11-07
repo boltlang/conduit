@@ -18,6 +18,10 @@ pub struct Module {
     pub effects: BTreeMap<EffectId, EffectDecl>,
     pub handlers: BTreeMap<HandlerId, HandlerDecl>,
     pub consts: BTreeMap<ConstId, ConstDecl>,
+    /// The functions called from outside the module, and how. Their
+    /// object parameters are owned, so that a caller from outside gives
+    /// away what it passes, as it owns what it gets back.
+    pub exports: BTreeMap<FuncId, Export>,
 }
 
 /// A top-level function. Nested functions don't exist: frontends lift them,
@@ -200,6 +204,38 @@ impl Link {
             Link::Wasm { .. } => "wasm",
             Link::Emu { .. } => "emu",
             Link::C { .. } => "c",
+        }
+    }
+}
+
+/// How a function is called from outside the module, for the one target
+/// the frontend made it for, as [`Link`] is for an extern: the Wasm
+/// backend exports `Wasm` ones, and rejects the others.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Export {
+    /// A Wasm export, by name.
+    Wasm { name: Box<str> },
+    /// A function the evaluator's host calls, by name.
+    Emu { name: Box<str> },
+    /// A C function, by symbol.
+    C { symbol: Box<str> },
+}
+
+impl Export {
+    /// How the text format names its kind: `wasm`, `emu` or `c`.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Export::Wasm { .. } => "wasm",
+            Export::Emu { .. } => "emu",
+            Export::C { .. } => "c",
+        }
+    }
+
+    /// The name or symbol it's called by.
+    pub fn name(&self) -> &str {
+        match self {
+            Export::Wasm { name } | Export::Emu { name } => name,
+            Export::C { symbol } => symbol,
         }
     }
 }

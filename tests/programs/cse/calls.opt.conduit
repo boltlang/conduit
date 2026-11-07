@@ -60,6 +60,7 @@ fn calls(%c: mut Cell, %n: i32) -> (i32) {
   jump ret(%t8)
 }
 
+#[export(emu)]
 fn main(%x: i32) -> (i32) {
   let %c: mut Cell = new Cell.0(%x)
   let %r: i32 = call calls(%c, 3i32)

@@ -24,6 +24,7 @@ fn divide(%x: i32) -> (i32) does Fail {
   }
 }
 
+#[export(emu)]
 fn safe_divide(%x: i32) -> (i32) {
   join j1(%r#1: i32) =
     let %r2: i32 = mul(%r#1, 2i32)

@@ -42,7 +42,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use conduit_bench::{CONFIGS, Config, prepare};
-use conduit_ir::{Atom, FuncId, Module, Ty};
+use conduit_ir::{Atom, Module, Ty};
 use conduit_test::{CheckKind, Program};
 use conduit_wasm::Options;
 use serde_json::{Value as Json, json};
@@ -281,14 +281,10 @@ fn bench(p: &Program, args: &Args) -> Result<Vec<Result1>, String> {
     // Each config compiled, once for fuel and once for timing.
     let mut compiled = Vec::new();
     for (config, m, options) in modules(p, &args.configs)? {
-        let runs = p.runs(&m)?;
-        let funcs: std::collections::BTreeSet<FuncId> = runs.iter().map(|r| r.func).collect();
-        let names: Vec<(FuncId, String)> = funcs.iter().map(|&f| (f, f.to_string())).collect();
-        let exports: Vec<(FuncId, &str)> = names.iter().map(|(f, n)| (*f, n.as_str())).collect();
         let mut m = m;
         conduit_test::link_for_wasm(&mut m);
-        let bytes = conduit_wasm::emit_module_with(&m, &exports, &options)
-            .map_err(|e| format!("{config}: {e}"))?;
+        let bytes =
+            conduit_wasm::emit_module_with(&m, &options).map_err(|e| format!("{config}: {e}"))?;
         let fuel_module =
             wasmtime::Module::new(&fuel_engine, &bytes).map_err(|e| format!("{config}: {e:?}"))?;
         let time_module = (!args.fuel_only)
@@ -315,7 +311,8 @@ fn bench(p: &Program, args: &Args) -> Result<Vec<Result1>, String> {
             let mut store = Store::new(&fuel_engine, ());
             store.set_fuel(u64::MAX / 2).map_err(|e| e.to_string())?;
             let instance = instantiate(&fuel_engine, &mut store, fuel_module)?;
-            let got = conduit_test::wasm::call(&mut store, &instance, run.func, run.args, results);
+            let got =
+                conduit_test::wasm::call(&mut store, &instance, first, run.func, run.args, results);
             let fuel = u64::MAX / 2 - store.get_fuel().map_err(|e| e.to_string())?;
             let pages = instance
                 .get_memory(&mut store, "memory")
@@ -337,7 +334,7 @@ fn bench(p: &Program, args: &Args) -> Result<Vec<Result1>, String> {
         let modules: Vec<&wasmtime::Module> = (compiled.iter())
             .filter_map(|(.., time_module)| time_module.as_ref())
             .collect();
-        let times = time_calls(&time_engine, &modules, run, results, args.time)?;
+        let times = time_calls(&time_engine, &modules, first, run, results, args.time)?;
         let n = out.len() - times.len();
         for (r, t) in out[n..].iter_mut().zip(times) {
             r.time = Some(t);
@@ -354,6 +351,7 @@ fn bench(p: &Program, args: &Args) -> Result<Vec<Result1>, String> {
 fn time_calls(
     engine: &Engine,
     modules: &[&wasmtime::Module],
+    m: &Module,
     run: &conduit_test::Run<'_>,
     results: &[Ty],
     budget: Duration,
@@ -362,7 +360,7 @@ fn time_calls(
         let mut store = Store::new(engine, ());
         let instance = instantiate(engine, &mut store, module)?;
         let t = Instant::now();
-        let got = conduit_test::wasm::call(&mut store, &instance, run.func, run.args, results);
+        let got = conduit_test::wasm::call(&mut store, &instance, m, run.func, run.args, results);
         let elapsed = t.elapsed();
         got?;
         Ok(elapsed)

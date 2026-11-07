@@ -504,7 +504,27 @@ fn parse_errors() {
         ),
         (
             "#[link(wasm, module = \"a\")]\nfn f() -> () { jump ret() }",
-            "1:3: only an extern takes attributes, so far",
+            "1:3: `link` isn't an attribute of a function: only `export` is",
+        ),
+        (
+            "#[export(wasm)]\ndata d { () }",
+            "1:3: only an extern or a function takes attributes, so far",
+        ),
+        (
+            "#[export(wasm)]\n#[export(emu)]\nfn f() -> () { jump ret() }",
+            "2:3: a function has one `export`",
+        ),
+        (
+            "#[export(emu, symbol = \"f\")]\nfn f() -> () { jump ret() }",
+            "1:3: an emu `export` takes `name` once each, not `symbol`",
+        ),
+        (
+            "#[export(js)]\nfn f() -> () { jump ret() }",
+            "1:3: `js` isn't a kind of export: `wasm`, `emu` and `c` are",
+        ),
+        (
+            "#[export(wasm)]\nfn fn1() -> () { jump ret() }",
+            "1:3: a wasm `export` of a function without a name needs a `name`",
         ),
         (
             "#[link(wasm, module = \"a\")]\n#[abi(c)]\nextern f() -> ()",
@@ -871,6 +891,50 @@ fn unwritable_extern_names_round_trip() {
         assert_eq!(back.externs[&ExternId(1)].link, link, "{text}");
         assert_eq!(print(&back), text);
     }
+}
+
+/// Each kind of export, with its name or symbol the function's own and
+/// not.
+#[test]
+fn exports_round_trip() {
+    let src = "#[export(wasm)]
+fn main() -> () {
+  jump ret()
+}
+
+#[export(wasm, name = \"_start\")]
+fn start() -> () {
+  jump ret()
+}
+
+#[export(emu)]
+fn run() -> () {
+  jump ret()
+}
+
+#[export(c, symbol = \"lib_init\")]
+fn init() -> () {
+  jump ret()
+}
+";
+    let m = parse(src).unwrap();
+    let exports: Vec<&Export> = m.exports.values().collect();
+    assert_eq!(
+        exports,
+        [
+            &Export::Wasm {
+                name: "main".into()
+            },
+            &Export::Wasm {
+                name: "_start".into()
+            },
+            &Export::Emu { name: "run".into() },
+            &Export::C {
+                symbol: "lib_init".into()
+            },
+        ]
+    );
+    assert_eq!(print(&m), src);
 }
 
 /// Each kind of link, with its name or symbol the extern's own and not.

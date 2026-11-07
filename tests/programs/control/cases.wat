@@ -6,9 +6,9 @@
   (global (;0;) (mut i32) i32.const 16)
   (global (;1;) (mut i32) i32.const 0)
   (global (;2;) (mut i32) i32.const 0)
-  (export "fn0" (func $dense))
-  (export "fn1" (func $sparse))
-  (export "fn2" (func $wide))
+  (export "dense" (func $dense))
+  (export "sparse" (func $sparse))
+  (export "wide" (func $wide))
   (export "memory" (memory 0))
   (func $dense (;0;) (type 0) (param i32) (result i32)
     block ;; label = @1

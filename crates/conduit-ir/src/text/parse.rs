@@ -375,61 +375,16 @@ impl Parser {
             if link.is_some() {
                 return self.error_at(attr.pos, "an extern has one `link`");
             }
-            let mut args = attr.args.into_iter();
-            let kind = match args.next() {
-                Some(AttrArg::Word(kind)) if ["wasm", "emu", "c"].contains(&&*kind) => kind,
-                Some(AttrArg::Word(kind)) => {
-                    return self.error_at(
-                        attr.pos,
-                        format!("`{kind}` isn't a kind of link: `wasm`, `emu` and `c` are"),
-                    );
-                }
-                _ => {
-                    return self.error_at(attr.pos, "a `link` starts with its kind, like `wasm`");
-                }
-            };
-            // Each kind's keys, the first of which is the extern's own name
-            // if it's left out, except for a wasm link's `module`.
-            let keys: &[&str] = match &*kind {
-                "wasm" => &["module", "name"],
-                "emu" => &["name"],
-                _ => &["symbol", "lib"],
-            };
-            let mut given: Vec<Option<Box<str>>> = vec![None; keys.len()];
-            for arg in args {
-                let slot = match &arg {
-                    AttrArg::Key(k, _) => keys.iter().position(|key| key == k),
-                    AttrArg::Word(_) => None,
-                };
-                match (slot, arg) {
-                    (Some(i), AttrArg::Key(_, v)) if given[i].is_none() => given[i] = Some(v),
-                    (_, AttrArg::Key(k, _) | AttrArg::Word(k)) => {
-                        let keys: Vec<String> = keys.iter().map(|k| format!("`{k}`")).collect();
-                        return self.error_at(
-                            attr.pos,
-                            format!(
-                                "{} {kind} `link` takes {} once each, not `{k}`",
-                                if kind == "emu" { "an" } else { "a" },
-                                keys.join(" and ")
-                            ),
-                        );
+            let (kind, given) =
+                self.kinded(attr.pos, attr.args, "link", "an extern", own, |kind| {
+                    // The first of each kind's keys but a wasm link's `module`
+                    // is the extern's own name if it's left out.
+                    match kind {
+                        "wasm" => (&["module", "name"], 1),
+                        "emu" => (&["name"], 0),
+                        _ => (&["symbol", "lib"], 0),
                     }
-                }
-            }
-            let named = if kind == "wasm" { 1 } else { 0 };
-            let a = if kind == "emu" { "an" } else { "a" };
-            if given[named].is_none() {
-                given[named] = own.map(Into::into);
-            }
-            if given[named].is_none() {
-                return self.error_at(
-                    attr.pos,
-                    format!(
-                        "{a} {kind} `link` of an extern without a name needs a `{}`",
-                        keys[named]
-                    ),
-                );
-            }
+                })?;
             let mut given = given.into_iter();
             link = Some(match &*kind {
                 "wasm" => {
@@ -456,13 +411,118 @@ impl Parser {
         }
     }
 
+    /// The kind and keys of an attribute like `link` or `export`: a kind,
+    /// `wasm`, `emu` or `c`, then keys, each once. `keys` gives a kind's
+    /// keys and which of them is the item's own name, `own`, if it's left
+    /// out. `what` names the attribute and `item` what it's on, for errors.
+    fn kinded(
+        &self,
+        pos: Pos,
+        args: Vec<AttrArg>,
+        what: &str,
+        item: &str,
+        own: Option<&str>,
+        keys: impl Fn(&str) -> (&'static [&'static str], usize),
+    ) -> Res<(String, Vec<Option<Box<str>>>)> {
+        let mut args = args.into_iter();
+        let kind = match args.next() {
+            Some(AttrArg::Word(kind)) if ["wasm", "emu", "c"].contains(&&*kind) => kind,
+            Some(AttrArg::Word(kind)) => {
+                return self.error_at(
+                    pos,
+                    format!("`{kind}` isn't a kind of {what}: `wasm`, `emu` and `c` are"),
+                );
+            }
+            _ => {
+                return self.error_at(pos, format!("a `{what}` starts with its kind, like `wasm`"));
+            }
+        };
+        let a = if kind == "emu" { "an" } else { "a" };
+        let (keys, named) = keys(&kind);
+        let mut given: Vec<Option<Box<str>>> = vec![None; keys.len()];
+        for arg in args {
+            let slot = match &arg {
+                AttrArg::Key(k, _) => keys.iter().position(|key| key == k),
+                AttrArg::Word(_) => None,
+            };
+            match (slot, arg) {
+                (Some(i), AttrArg::Key(_, v)) if given[i].is_none() => given[i] = Some(v),
+                (_, AttrArg::Key(k, _) | AttrArg::Word(k)) => {
+                    let keys: Vec<String> = keys.iter().map(|k| format!("`{k}`")).collect();
+                    return self.error_at(
+                        pos,
+                        format!(
+                            "{a} {kind} `{what}` takes {} once each, not `{k}`",
+                            keys.join(" and ")
+                        ),
+                    );
+                }
+            }
+        }
+        if given[named].is_none() {
+            given[named] = own.map(Into::into);
+        }
+        if given[named].is_none() {
+            return self.error_at(
+                pos,
+                format!(
+                    "{a} {kind} `{what}` of {item} without a name needs a `{}`",
+                    keys[named]
+                ),
+            );
+        }
+        Ok((kind, given))
+    }
+
+    /// What a function's attributes say: its `#[export(..)]`, if it has
+    /// one, a `wasm` or `emu` one with a `name`, or a `c` one with a
+    /// `symbol`, by default the function's own.
+    fn export(&self, attrs: Vec<Attr>, own: Option<&str>) -> Res<Option<Export>> {
+        let mut export = None;
+        for attr in attrs {
+            if attr.name != "export" {
+                return self.error_at(
+                    attr.pos,
+                    format!(
+                        "`{}` isn't an attribute of a function: only `export` is",
+                        attr.name
+                    ),
+                );
+            }
+            if export.is_some() {
+                return self.error_at(attr.pos, "a function has one `export`");
+            }
+            let (kind, given) = self.kinded(
+                attr.pos,
+                attr.args,
+                "export",
+                "a function",
+                own,
+                |kind| match kind {
+                    "c" => (&["symbol"], 0),
+                    _ => (&["name"], 0),
+                },
+            )?;
+            let name = given.into_iter().next().flatten().unwrap();
+            export = Some(match &*kind {
+                "wasm" => Export::Wasm { name },
+                "emu" => Export::Emu { name },
+                _ => Export::C { symbol: name },
+            });
+        }
+        Ok(export)
+    }
+
     fn module(&mut self) -> Res<Module> {
         let mut m = Module::default();
         loop {
             let attrs = self.attrs()?;
             let pos = self.pos();
-            if !attrs.is_empty() && !self.is_keyword("extern") {
-                return self.error_at(attrs[0].pos, "only an extern takes attributes, so far");
+            if !attrs.is_empty() && !self.is_keyword("extern") && !self.is_keyword("fn") {
+                return self.error_at(
+                    attrs[0].pos,
+                    "only an extern or a function takes attributes, so far",
+                );
             }
             let name = match self.peek() {
                 Tok::Eof => return Ok(m),
@@ -611,6 +671,9 @@ impl Parser {
                     "fn" => {
                         let (id, name) = self.def("fn")?;
                         let id = FuncId(id);
+                        if let Some(export) = self.export(attrs, name.as_deref())? {
+                            m.exports.insert(id, export);
+                        }
                         let mut f = self.func()?;
                         f.debug.name = name;
                         m.funcs.insert(id, f).map(|_| id.to_string())

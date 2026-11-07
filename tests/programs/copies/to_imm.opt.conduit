@@ -14,11 +14,13 @@ fn to_imm_imm(%v: imm Vec) -> (imm Vec) {
   jump ret(%v)
 }
 
+#[export(emu)]
 fn fresh(%n: i32) -> (i32) {
   let %items: mut [i32] = array_fill(%n, 1i32)
   jump ret(%n)
 }
 
+#[export(emu)]
 fn main() -> (i32) {
   jump ret(2i32)
 }

@@ -19,7 +19,7 @@
 
 mod support;
 
-use conduit_ir::{FuncId, Module};
+use conduit_ir::Module;
 use conduit_test::{CheckKind, Program};
 use conduit_wasm::Options;
 use support::{call, instantiate};
@@ -84,16 +84,13 @@ fn lower(p: &Program, m: &Module, stack_switching: bool) -> Result<Option<Vec<u8
 
 fn lower_with(p: &Program, m: &Module, options: Options) -> Result<Option<Vec<u8>>, String> {
     let stack_switching = options.stack_switching;
-    let funcs: std::collections::BTreeSet<FuncId> = p.runs(m)?.iter().map(|r| r.func).collect();
-    let names: Vec<(FuncId, String)> = funcs.iter().map(|&f| (f, f.to_string())).collect();
-    let exports: Vec<(FuncId, &str)> = names.iter().map(|(f, n)| (*f, n.as_str())).collect();
     let expected = p.messages(|k| match k {
         CheckKind::WasmError(m) => Some(m),
         _ => None,
     });
     let mut m = m.clone();
     conduit_test::link_for_wasm(&mut m);
-    let bytes = match conduit_wasm::emit_module_with(&m, &exports, &options) {
+    let bytes = match conduit_wasm::emit_module_with(&m, &options) {
         Ok(_) if !expected.is_empty() => {
             return Err(format!(
                 "lowering should fail with {}, but succeeds",
@@ -134,7 +131,7 @@ fn run(p: &Program, m: &Module, bytes: &[u8], stack_switching: bool) -> Result<(
     let (mut store, instance) = instantiate(bytes, stack_switching)?;
     for run in p.runs(m)? {
         let results = m.funcs.get(&run.func).map_or(&[][..], |f| &f.results[..]);
-        let got = call(&mut store, &instance, run.func, run.args, results);
+        let got = call(&mut store, &instance, m, run.func, run.args, results);
         run.check(p, got)
             .map_err(|e| format!("{}: {e}", with(stack_switching)))?;
     }
@@ -170,7 +167,7 @@ fn counted(p: &Program, m: &Module, stack_switching: bool) -> Result<(), String>
     for run in p.runs(&c)? {
         let results = c.funcs.get(&run.func).map_or(&[][..], |f| &f.results[..]);
         let before = live.get(&mut store).unwrap_i32();
-        let got = call(&mut store, &instance, run.func, run.args, results);
+        let got = call(&mut store, &instance, &c, run.func, run.args, results);
         let gave = matches!(got, Ok(conduit_test::Outcome::Values(_)));
         run.check(p, got)
             .map_err(|e| format!("with counts {}: {e}", with(stack_switching)))?;

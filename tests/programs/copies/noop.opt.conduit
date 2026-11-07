@@ -1,3 +1,4 @@
+#[export(emu)]
 fn main(%x: i32) -> (i32) {
   let %xs: imm [i32] = array_new(%x, 2i32)
   let %c: mut [i32] = array_clone(%xs)

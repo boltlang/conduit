@@ -46,6 +46,7 @@ fn logging_body(%x: i32) -> (i32) does Log {
   jump ret(%x)
 }
 
+#[export(emu)]
 fn unused(%x: i32) -> (i32) {
   let %body: imm fn() -> (i32) = closure pure_body(%x)
   let %2: i32 = apply(%body)
@@ -53,6 +54,7 @@ fn unused(%x: i32) -> (i32) {
   jump ret(%r)
 }
 
+#[export(emu)]
 fn other_effect(%x: i32) -> (i32) {
   let %body: imm fn() -> (i32) does Log = closure logging_body(%x)
   let %inner: imm fn() -> (i32) does Log = closure caught(%body)
@@ -113,12 +115,14 @@ fn logging_body(%x: i32) -> (i32) does Log {
   jump ret(%x)
 }
 
+#[export(emu)]
 fn unused(%x: i32) -> (i32) {
   let %y: i32 = mul(%x, 3i32)
   let %s: i32 = add(100i32, %y)
   jump ret(%s)
 }
 
+#[export(emu)]
 fn other_effect(%x: i32) -> (i32) {
   let %body: imm fn() -> (i32) does Log = closure logging_body(%x)
   let %inner: imm fn() -> (i32) does Log = closure caught(%body)

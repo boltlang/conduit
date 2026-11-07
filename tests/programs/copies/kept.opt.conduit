@@ -2,6 +2,7 @@ data Holder {
   (mut [i32])
 }
 
+#[export(emu)]
 fn written_after(%x: i32) -> (i32) {
   let %xs: mut [i32] = array_fill(1i32, %x)
   let %frozen: imm [i32] = array_clone(%xs)
@@ -10,6 +11,7 @@ fn written_after(%x: i32) -> (i32) {
   jump ret(%first)
 }
 
+#[export(emu)]
 fn held(%x: i32) -> (i32) {
   let %xs: mut [i32] = array_fill(1i32, %x)
   let %holder: mut Holder = new Holder.0(%xs)
@@ -26,6 +28,7 @@ fn param(%xs: mut [i32]) -> (i32) {
   jump ret(%first)
 }
 
+#[export(emu)]
 fn passed(%x: i32) -> (i32) {
   let %xs: mut [i32] = array_fill(1i32, %x)
   let %r: i32 = call param(%xs)

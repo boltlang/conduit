@@ -29,6 +29,7 @@ fn radius(%s: imm Shape) -> (f64) {
   }
 }
 
+#[export(emu)]
 fn digit(%x: i8) -> (i32) {
   case %x {
     7 => jump ret(8i32)
@@ -38,12 +39,14 @@ fn digit(%x: i8) -> (i32) {
   }
 }
 
+#[export(emu)]
 fn circle() -> (f64) {
   let %s: imm Shape = new Shape.0(2.0f64)
   let %a: f64 = call area(%s)
   jump ret(%a)
 }
 
+#[export(emu)]
 fn rect() -> (f64) {
   let %s: imm Shape = new Shape.1(2.0f64, 3.5f64)
   let %a: f64 = call area(%s)
@@ -81,6 +84,7 @@ fn radius(%s: imm Shape) -> (f64) {
   }
 }
 
+#[export(emu)]
 fn digit(%x: i8) -> (i32) {
   case %x {
     7 => jump ret(8i32)
@@ -90,10 +94,12 @@ fn digit(%x: i8) -> (i32) {
   }
 }
 
+#[export(emu)]
 fn circle() -> (f64) {
   jump ret(12.0f64)
 }
 
+#[export(emu)]
 fn rect() -> (f64) {
   jump ret(7.0f64)
 }

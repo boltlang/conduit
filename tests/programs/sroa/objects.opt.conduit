@@ -4,6 +4,7 @@ data Stats {
   (i64, i32)
 }
 
+#[export(emu)]
 fn mean(%n: i32) -> (i64) {
   join rec loop(%i: i32, %s_0: i64, %s_1: i32) =
     let %done: i32 = gt.s(%i, %n)
@@ -22,6 +23,7 @@ fn mean(%n: i32) -> (i64) {
   in jump loop(1i32, 0i64, 0i32)
 }
 
+#[export(emu)]
 fn parity(%n: i32) -> (i32) {
   join rec loop(%i: i32, %counts_0: i32, %counts_1: i32) =
     case %i {
@@ -44,6 +46,7 @@ fn parity(%n: i32) -> (i32) {
   in jump loop(%n, 0i32, 0i32)
 }
 
+#[export(emu)]
 fn escapes(%x: i64) -> (i64) {
   let %s: mut Stats = new Stats.0(%x, 1i32)
   let = call reset(%s)
@@ -56,6 +59,7 @@ fn reset(%s: mut Stats) -> () {
   jump ret()
 }
 
+#[export(emu)]
 fn pick(%i: i32) -> (i32) {
   let %xs: mut [i32] = array_new(4i32, 5i32)
   let = array_set(%xs, 0i32, 6i32)
@@ -69,6 +73,7 @@ data Stats {
   (i64, i32)
 }
 
+#[export(emu)]
 fn mean(%n: i32) -> (i64) {
   join rec loop(%i: i32, %s_0: i64, %s_1: i32) =
     let %done: i32 = gt.s(%i, %n)
@@ -87,6 +92,7 @@ fn mean(%n: i32) -> (i64) {
   in jump loop(1i32, 0i64, 0i32)
 }
 
+#[export(emu)]
 fn parity(%n: i32) -> (i32) {
   join rec loop(%i: i32, %counts_0: i32, %counts_1: i32) =
     case %i {
@@ -109,6 +115,7 @@ fn parity(%n: i32) -> (i32) {
   in jump loop(%n, 0i32, 0i32)
 }
 
+#[export(emu)]
 fn escapes(%x: i64) -> (i64) {
   jump ret(0i64)
 }
@@ -118,6 +125,7 @@ fn reset(%s: mut Stats) -> () {
   jump ret()
 }
 
+#[export(emu)]
 fn pick(%i: i32) -> (i32) {
   let %xs: mut [i32] = array_new(4i32, 5i32)
   let = array_set(%xs, 0i32, 6i32)

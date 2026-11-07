@@ -1,3 +1,4 @@
+#[export(emu)]
 fn outside(%n: i32) -> (i32) {
   let %xs: mut [i32] = array_fill(1i32, 0i32)
   join rec loop(%i: i32, %acc: i32) =
@@ -15,6 +16,7 @@ fn outside(%n: i32) -> (i32) {
   in jump loop(0i32, 0i32)
 }
 
+#[export(emu)]
 fn inside(%n: i32) -> (i32) {
   join rec loop(%i: i32, %acc: i32) =
     let %done: i32 = ge.s(%i, %n)

@@ -6,7 +6,7 @@
   (global (;0;) (mut i32) i32.const 16)
   (global (;1;) (mut i32) i32.const 0)
   (global (;2;) (mut i32) i32.const 0)
-  (export "fn0" (func $count))
+  (export "count" (func $count))
   (export "memory" (memory 0))
   (func $count (;0;) (type 0) (param i32 i32) (result i32)
     (local i32 i32 i32)

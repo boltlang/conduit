@@ -4,12 +4,14 @@ fn triple_then(%x: i32) -> (i32) {
   jump ret(%r)
 }
 
+#[export(emu)]
 fn tail(%x: i32) -> (i32) {
   let %y: i32 = mul(%x, 3i32)
   let %r: i32 = call double_until(%y)
   jump ret(%r)
 }
 
+#[export(emu)]
 fn to_join(%x: i32) -> (i32) {
   join next(%r#1: i32) =
     let %y#2: i32 = add(%r#1, 1i32)

@@ -1,3 +1,4 @@
+#[export(emu)]
 fn one_arm(%x: i32) -> (i32) {
   let %xs: mut [i32] = array_fill(1i32, %x)
   let %frozen: imm [i32] = array_clone(%xs)
@@ -10,6 +11,7 @@ fn one_arm(%x: i32) -> (i32) {
   }
 }
 
+#[export(emu)]
 fn two_loops(%n: i32) -> (i32) {
   let %xs: mut [i32] = array_fill(1i32, 0i32)
   join rec read(%i: i32, %acc: i32) =
@@ -27,6 +29,7 @@ fn two_loops(%n: i32) -> (i32) {
   in jump read(%n, 0i32)
 }
 
+#[export(emu)]
 fn in_ref(%x: i32) -> (i32) {
   let %xs: mut [i32] = array_fill(1i32, %x)
   let %cell: ref mut [i32] = ref_new(%xs)
@@ -37,6 +40,7 @@ fn in_ref(%x: i32) -> (i32) {
   jump ret(%first)
 }
 
+#[export(emu)]
 fn in_closure(%x: i32) -> (i32) {
   let %xs: mut [i32] = array_fill(1i32, %x)
   let %write: mut fn() -> () = closure write9(%xs)
@@ -51,6 +55,7 @@ fn write9(%xs: mut [i32]) -> () {
   jump ret()
 }
 
+#[export(emu)]
 fn in_box(%x: i32) -> (i32) {
   let %xs: mut [i32] = array_fill(1i32, %x)
   let %boxed: mut any = box[mut [i32]](%xs)
@@ -61,6 +66,7 @@ fn in_box(%x: i32) -> (i32) {
   jump ret(%first)
 }
 
+#[export(emu)]
 fn read_after(%x: i32) -> (i32) {
   let %xs: mut [i32] = array_fill(1i32, %x)
   let %frozen: imm [i32] = array_clone(%xs)
@@ -70,6 +76,7 @@ fn read_after(%x: i32) -> (i32) {
   jump ret(%sum)
 }
 
+#[export(emu)]
 fn nested(%x: i32) -> (i32) {
   let %inner: mut [i32] = array_fill(1i32, %x)
   let %outer: mut [mut [i32]] = array_new(%inner)

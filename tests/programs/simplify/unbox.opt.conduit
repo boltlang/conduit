@@ -1,3 +1,4 @@
+#[export(emu)]
 fn same(%x: i64) -> (i64) {
   let %b: imm any = box[i64](%x)
   jump ret(%x)

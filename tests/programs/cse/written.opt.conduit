@@ -22,6 +22,7 @@ fn elements(%xs: mut [i32], %i: i32) -> (i32) {
   jump ret(%r)
 }
 
+#[export(emu)]
 fn refs(%x: i32) -> (i32) {
   let %r: ref i32 = ref_new(%x)
   let = call bump(%r)
@@ -44,12 +45,14 @@ fn bump(%r: ref i32) -> () {
   jump ret()
 }
 
+#[export(emu)]
 fn main_fields(%x: i32) -> (i32) {
   let %p: mut Pair = new Pair.0(0i32, 0i32)
   let %r: i32 = call fields(%p, %x)
   jump ret(%r)
 }
 
+#[export(emu)]
 fn main_elements() -> (i32) {
   let %xs: mut [i32] = array_fill(3i32, 0i32)
   let %r: i32 = call elements(%xs, 2i32)

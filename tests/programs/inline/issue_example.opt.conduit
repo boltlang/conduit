@@ -3,6 +3,7 @@ fn double(%x: i32) -> (i32) {
   jump ret(%y)
 }
 
+#[export(emu)]
 fn main(%x: i32) -> (i32) {
   join j1(%y#1: i32) =
     let %z: i32 = add(%y#1, 1i32)

@@ -35,6 +35,7 @@ fn count_to(%n: i32) -> (i32) does State {
   in jump go()
 }
 
+#[export(emu)]
 fn run(%n: i32) -> (i32) {
   join rec go(%s: i32) =
     let %more: i32 = lt.s(%s, %n)

@@ -1,16 +1,20 @@
+#[export(emu)]
 fn ints(%x: i32) -> (i32) {
   jump ret(%x)
 }
 
+#[export(emu)]
 fn zeros(%x: i64) -> (i64) {
   jump ret(0i64)
 }
 
+#[export(emu)]
 fn plus_zero(%x: f64) -> (f64) {
   let %y: f64 = add(%x, 0.0f64)
   jump ret(%y)
 }
 
+#[export(emu)]
 fn negate(%x: i8) -> (i8) {
   let %y: i8 = sub(0i8, %x)
   jump ret(%y)

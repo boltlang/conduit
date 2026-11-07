@@ -4,6 +4,7 @@ data Pair {
 
 const pair: imm Pair = Pair.0(2i32, 3i32)
 
+#[export(emu)]
 fn arith(%x: i32, %y: i32) -> (i32) {
   let %sum: i32 = add(%x, %y)
   let %q: i32 = div.s(%x, %y)
@@ -11,6 +12,7 @@ fn arith(%x: i32, %y: i32) -> (i32) {
   jump ret(%r)
 }
 
+#[export(emu)]
 fn objects(%x: i32) -> (i32) {
   let %imm1: imm Pair = new Pair.0(%x, 1i32)
   let %mut1: mut Pair = new Pair.0(%x, 1i32)
@@ -28,6 +30,7 @@ fn objects(%x: i32) -> (i32) {
   jump ret(%abc)
 }
 
+#[export(emu)]
 fn arms(%x: i32, %y: i32) -> (i32) {
   let %xy: i32 = mul(%x, %y)
   case %x {
@@ -46,6 +49,7 @@ fn adder(%n: i32, %x: i32) -> (i32) {
   jump ret(%sum)
 }
 
+#[export(emu)]
 fn consts() -> (i32) {
   let %p1: imm Pair = const pair()
   let %a: i32 = get Pair.0.0(%p1)

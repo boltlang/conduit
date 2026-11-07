@@ -68,6 +68,7 @@ let %a: i32 = perform Ask.0()
     s.push_str(&"}\n".repeat(depth));
     s.push_str(
         "}
+#[export(wasm)]
 fn main(%x: i32) -> (i32) {
   let %b: imm fn() -> (i32) does Ask = closure joins(%x)
   let %r: i32 = handle later(%b)
@@ -103,7 +104,7 @@ fn eval(m: &Module, counting: bool) -> i32 {
 
 /// `m` as Wasm, lowered with `options`, and validated.
 fn emit(m: &Module, options: conduit_wasm::Options) -> Vec<u8> {
-    let bytes = conduit_wasm::emit_module_with(m, &[(main_of(m), "main")], &options).unwrap();
+    let bytes = conduit_wasm::emit_module_with(m, &options).unwrap();
     let mut features = WasmFeatures::default() - WasmFeatures::GC;
     if options.stack_switching {
         features |= WasmFeatures::STACK_SWITCHING;

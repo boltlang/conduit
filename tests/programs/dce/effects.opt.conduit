@@ -2,6 +2,7 @@ data Pair {
   (i32, i32)
 }
 
+#[export(emu)]
 fn main(%x: i32) -> (i32) {
   let %written: mut Pair = new Pair.0(%x, %x)
   let = set Pair.0.0(%written, 1i32)

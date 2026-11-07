@@ -29,6 +29,7 @@ fn bump(%c: mut Cell) -> (i32) {
   jump ret(0i32)
 }
 
+#[export(emu)]
 fn main(%x: i32) -> (i32) {
   let %c: mut Cell = new Cell.0(%x)
   let %f: imm fn(i32) -> (i32) = closure double()

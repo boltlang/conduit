@@ -7,7 +7,7 @@ use conduit_ir::text;
 
 fn names(src: &str) -> String {
     let m = text::parse(src).unwrap();
-    let bytes = crate::emit_module(&m, &[]).unwrap();
+    let bytes = crate::emit_module(&m).unwrap();
     wasmprinter::print_bytes(&bytes).unwrap()
 }
 
@@ -48,7 +48,7 @@ fn general_handlers_switching() {
         cycles: false,
         ..Default::default()
     };
-    let bytes = crate::emit_module_with(&m, &[], &options).unwrap();
+    let bytes = crate::emit_module_with(&m, &options).unwrap();
     let wat = wasmprinter::print_bytes(&bytes).unwrap();
     assert!(!wat.contains("$lookup"), "{wat}");
     assert!(wat.contains("suspend"), "{wat}");
@@ -58,7 +58,7 @@ fn general_handlers_switching() {
 #[test]
 fn output_is_deterministic() {
     let m = text::parse(include_str!("../../../tests/programs/data/lists.conduit")).unwrap();
-    assert_eq!(crate::emit_module(&m, &[]), crate::emit_module(&m, &[]));
+    assert_eq!(crate::emit_module(&m), crate::emit_module(&m));
 }
 
 /// With counts, memory that's freed is used again: building and summing a
@@ -97,6 +97,7 @@ fn sum(%l: imm List) -> (i32) {
   }
 }
 
+#[export(wasm)]
 fn main() -> (i32) {
   join rec go(%i: i32, %acc: i32) =
     case %i {
@@ -118,7 +119,8 @@ fn main() -> (i32) {
 #[test]
 fn freed_big_blocks_are_reused() {
     run_counted(
-        "fn main() -> (i32) {
+        "#[export(wasm)]
+fn main() -> (i32) {
   join rec go(%i: i32, %acc: i32) =
     case %i {
       0 => jump ret(%acc)
@@ -151,19 +153,13 @@ fn run_counted_in(src: &str, expected: i32, count: bool) {
         conduit_opt::ownership::insert_counts(&mut m).unwrap();
     }
     conduit_opt::ownership::specialize_drops(&mut m);
-    let main = *m
-        .funcs
-        .iter()
-        .find(|(_, f)| f.debug.name.as_deref() == Some("main"))
-        .unwrap()
-        .0;
     let options = crate::Options {
         stack_switching: false,
         counts: true,
         cycles: true,
         ..Default::default()
     };
-    let bytes = crate::emit_module_with(&m, &[(main, "main")], &options).unwrap();
+    let bytes = crate::emit_module_with(&m, &options).unwrap();
     let mut config = wasmtime::Config::new();
     config.wasm_tail_call(true).wasm_exceptions(true);
     let engine = wasmtime::Engine::new(&config).unwrap();
@@ -191,7 +187,8 @@ fn run_counted_in(src: &str, expected: i32, count: bool) {
 #[test]
 fn cycles_are_collected() {
     run_counted(
-        "fn main() -> (i32) {
+        "#[export(wasm)]
+fn main() -> (i32) {
   join rec go(%i: i32) =
     case %i {
       0 => jump ret(%i)
@@ -215,7 +212,8 @@ fn cycles_are_collected() {
 #[test]
 fn cycles_of_two_roots_are_collected() {
     run_counted(
-        "fn main() -> (i32) {
+        "#[export(wasm)]
+fn main() -> (i32) {
   join rec go(%i: i32) =
     case %i {
       0 => jump ret(%i)
@@ -243,7 +241,8 @@ fn cycles_of_two_roots_are_collected() {
 #[test]
 fn deep_cycles_are_collected() {
     run_counted_in(
-        "fn main() -> (i32) {
+        "#[export(wasm)]
+fn main() -> (i32) {
   let %u: mut any = undefined()
   let %first: ref mut any = ref_new(%u)
   let = dup(%first)
@@ -279,6 +278,7 @@ fn shadow_stack_grows() {
 #[abi(flat)]
 extern gather(imm [imm [i8]]) -> (i32, i32)
 const hi: imm [i8] = b"hi"
+#[export(wasm)]
 fn main(%n: i32) -> (i32) {
   let %h: imm [i8] = const hi()
   let %list: imm [imm [i8]] = array_fill(%n, %h)
@@ -291,8 +291,7 @@ fn main(%n: i32) -> (i32) {
         shadow_stack: 64,
         ..Default::default()
     };
-    let main = text::find_func(&m, "main").unwrap();
-    let bytes = crate::emit_module_with(&m, &[(main, "main")], &options).unwrap();
+    let bytes = crate::emit_module_with(&m, &options).unwrap();
     let engine = wasmtime::Engine::new(&conduit_test::wasm::config()).unwrap();
     let module = wasmtime::Module::new(&engine, &bytes).unwrap();
     let linker = conduit_test::wasm::linker(&engine).unwrap();
@@ -373,11 +372,13 @@ fn gen_failing(%n: i32) -> (i32) does io + Fail {
   let %r: i32 = handle summing(%b)
   jump ret(%r)
 }
+#[export(wasm)]
 fn main(%n: i32) -> (i32) does io {
   let %b: imm fn() -> (i32) does io + Fail = closure gen(%n)
   let %r: i32 = handle or_default(-1i32, %b)
   jump ret(%r)
 }
+#[export(wasm)]
 fn failing(%n: i32, %after: i32) -> (i32) does io {
   let %b: imm fn() -> (i32) does io + Fail = closure gen_failing(%n)
   let %r: i32 = handle or_default(-1i32, %b)
@@ -405,11 +406,7 @@ fn instantiate_segments(
         cycles: counts,
         ..Default::default()
     };
-    let exports: Vec<_> = ["main", "failing"]
-        .iter()
-        .map(|&n| (text::find_func(&m, n).unwrap(), n))
-        .collect();
-    let bytes = crate::emit_module_with(&m, &exports, &options).unwrap();
+    let bytes = crate::emit_module_with(&m, &options).unwrap();
     let mut config = conduit_test::wasm::config();
     config
         .wasm_gc(true)
@@ -507,6 +504,7 @@ fn body() -> (i32) does Gen + io {
   let = perform Gen.0(%t)
   jump ret(%c)
 }
+#[export(wasm)]
 fn main(%n: i32) -> (i32) does io {
   join rec go(%i: i32, %acc: i32) =
     case %i {
@@ -536,8 +534,7 @@ fn instantiate_dropped<T>(
         continuation_stack,
         ..Default::default()
     };
-    let main = text::find_func(&m, "main").unwrap();
-    let bytes = crate::emit_module_with(&m, &[(main, "main")], &options).unwrap();
+    let bytes = crate::emit_module_with(&m, &options).unwrap();
     let mut config = conduit_test::wasm::config();
     config
         .wasm_gc(true)
@@ -645,6 +642,7 @@ fn body(%n: i32) -> (i32) does Fail {
   let = perform Fail.0()
   jump ret(%x)
 }
+#[export(wasm)]
 fn main(%n: i32) -> (i32) {
   let %b: imm fn() -> (i32) does Fail = closure body(%n)
   let %r: i32 = handle or_default(-1i32, %b)
@@ -652,8 +650,7 @@ fn main(%n: i32) -> (i32) {
 }",
     )
     .unwrap();
-    let main = text::find_func(&m, "main").unwrap();
-    let bytes = crate::emit_module(&m, &[(main, "main")]).unwrap();
+    let bytes = crate::emit_module(&m).unwrap();
     let engine = wasmtime::Engine::new(&conduit_test::wasm::config()).unwrap();
     let module = wasmtime::Module::new(&engine, &bytes).unwrap();
     let mut store = wasmtime::Store::new(&engine, ());
@@ -692,6 +689,7 @@ fn objects_that_dont_escape_go_on_the_stack() {
     }
   in jump go(0i32, 0i32)
 }
+#[export(wasm)]
 fn main(%n: i32) -> (i32) {
   let %xs: mut [i32] = array_fill(%n, 2i32)
   let %r: i32 = call sum(%xs)
@@ -700,8 +698,7 @@ fn main(%n: i32) -> (i32) {
 }",
     )
     .unwrap();
-    let main = text::find_func(&m, "main").unwrap();
-    let bytes = crate::emit_module(&m, &[(main, "main")]).unwrap();
+    let bytes = crate::emit_module(&m).unwrap();
     let engine = wasmtime::Engine::new(&conduit_test::wasm::config()).unwrap();
     let module = wasmtime::Module::new(&engine, &bytes).unwrap();
     let mut store = wasmtime::Store::new(&engine, ());
@@ -726,14 +723,14 @@ fn only_wasm_links_are_imported() {
         let m = conduit_ir::text::parse(&format!(
             "#[link({link})]
 extern double(i32) -> (i32)
+#[export(wasm)]
 fn main(%n: i32) -> (i32) {{
   let %r: i32 = call_extern double(%n)
   jump ret(%r)
 }}"
         ))
         .unwrap();
-        let main = text::find_func(&m, "main").unwrap();
-        let error = crate::emit_module(&m, &[(main, "main")]).unwrap_err();
+        let error = crate::emit_module(&m).unwrap_err();
         assert!(
             error.to_string().ends_with(&format!(
                 "can't import a {kind} extern: only one with a `#[link(wasm, ..)]`"
@@ -741,4 +738,66 @@ fn main(%n: i32) -> (i32) {{
             "{error}"
         );
     }
+}
+
+/// A list the host gets from one export and passes to another, which only
+/// reads it, is the second's to drop: an exported function owns what it's
+/// given, as the host owns what it gets back, whatever borrowing would
+/// infer for a caller inside the module.
+#[test]
+fn exports_own_their_arguments() {
+    let mut m = text::parse(
+        "data List {
+  ()
+  (i32, inherit List)
+}
+#[export(wasm)]
+fn build(%n: i32) -> (imm List) {
+  case %n {
+    0 =>
+      let %nil: imm List = new List.0()
+      jump ret(%nil)
+    _ =>
+      let %n1: i32 = sub(%n, 1i32)
+      let %rest: imm List = call build(%n1)
+      let %l: imm List = new List.1(%n, %rest)
+      jump ret(%l)
+  }
+}
+#[export(wasm)]
+fn sum(%l: imm List) -> (i32) {
+  case %l {
+    List.0 => jump ret(0i32)
+    List.1 =>
+      let %x: i32 = get List.1.0(%l)
+      let %rest: imm List = get List.1.1(%l)
+      let %s: i32 = call sum(%rest)
+      let %r: i32 = add(%x, %s)
+      jump ret(%r)
+  }
+}",
+    )
+    .unwrap();
+    conduit_opt::ownership::insert_counts(&mut m).unwrap();
+    conduit_opt::ownership::specialize_drops(&mut m);
+    let options = crate::Options {
+        counts: true,
+        ..Default::default()
+    };
+    let bytes = crate::emit_module_with(&m, &options).unwrap();
+    let engine = wasmtime::Engine::new(&conduit_test::wasm::config()).unwrap();
+    let module = wasmtime::Module::new(&engine, &bytes).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+    let build = instance
+        .get_typed_func::<i32, i32>(&mut store, "build")
+        .unwrap();
+    let sum = instance
+        .get_typed_func::<i32, i32>(&mut store, "sum")
+        .unwrap();
+    let live = instance.get_global(&mut store, "conduit_live").unwrap();
+    let l = build.call(&mut store, 3).unwrap();
+    assert!(live.get(&mut store).unwrap_i32() > 0);
+    assert_eq!(sum.call(&mut store, l).unwrap(), 6);
+    assert_eq!(live.get(&mut store).unwrap_i32(), 0);
 }

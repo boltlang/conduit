@@ -205,7 +205,9 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
         }
     }
 
-    /// Calls a function and runs it to completion.
+    /// Calls a function and runs it to completion. When counting, it's
+    /// called as from outside the module: it owns `args`, as an exported
+    /// function does, and the caller owns what it gives.
     pub fn call(&mut self, func: FuncId, args: Vec<Value>) -> Result<Vec<Value>, Error> {
         self.call_at(func, Vec::new(), args)
     }

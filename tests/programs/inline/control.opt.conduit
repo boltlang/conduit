@@ -11,6 +11,7 @@ fn times(%n: i32, %x: i32) -> (i32, i32) {
   in jump loop(0i32, 0i32)
 }
 
+#[export(emu)]
 fn main() -> (i32) {
   join j1(%a: i32, %i#1: i32) =
     join j2(%b: i32, %j: i32) =

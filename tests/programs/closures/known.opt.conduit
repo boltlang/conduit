@@ -5,6 +5,7 @@ fn times(%n: i32, %x: i32) -> (i32) {
   jump ret(%product)
 }
 
+#[export(emu)]
 fn times3_twice(%x: i32) -> (i32) {
   let %times3: imm fn(i32) -> (i32) = closure times(3i32)
   let %once: i32 = call times(3i32, %x)
@@ -12,6 +13,7 @@ fn times3_twice(%x: i32) -> (i32) {
   jump ret(%twice)
 }
 
+#[export(emu)]
 fn through_join(%x: i32) -> (i32) {
   join j1(%f: imm fn(i32) -> (i32)) =
     let %r: i32 = apply(%f, %x)
@@ -26,6 +28,7 @@ fn at['m1](%xs: 'm1 [i32], %i: i32) -> (i32) {
   jump ret(%x)
 }
 
+#[export(emu)]
 fn at1(%x: i32) -> (i32) {
   let %xs: mut [i32] = array_fill(3i32, %x)
   let %at1: mut fn(i32) -> (i32) = closure at[mut](%xs)
@@ -40,12 +43,14 @@ fn times(%n: i32, %x: i32) -> (i32) {
   jump ret(%product)
 }
 
+#[export(emu)]
 fn times3_twice(%x: i32) -> (i32) {
   let %product#1: i32 = mul(%x, 3i32)
   let %product#2: i32 = mul(%product#1, 3i32)
   jump ret(%product#2)
 }
 
+#[export(emu)]
 fn through_join(%x: i32) -> (i32) {
   let %product: i32 = mul(%x, %x)
   jump ret(%product)
@@ -56,6 +61,7 @@ fn at['m1](%xs: 'm1 [i32], %i: i32) -> (i32) {
   jump ret(%x)
 }
 
+#[export(emu)]
 fn at1(%x#0: i32) -> (i32) {
   let %xs: mut [i32] = array_fill(3i32, %x#0)
   let %x#2: i32 = array_get(%xs, 1i32)

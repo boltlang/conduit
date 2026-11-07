@@ -97,6 +97,7 @@ fn calls_big() -> (i32) does Ask {
   jump ret(%x)
 }
 
+#[export(emu)]
 fn through_callee() -> (i32) {
   let %body: imm fn() -> (i32) does Ask = closure calls_big()
   let %r: i32 = handle answer(5i32, %body)
@@ -115,6 +116,7 @@ fn also_logs() -> (i32) does Log {
   jump ret(%r)
 }
 
+#[export(emu)]
 fn logs_outside() -> (i32) {
   let %body: imm fn() -> (i32) does Log = closure also_logs()
   let %r: i32 = handle logging(%body)
@@ -127,12 +129,14 @@ fn asks_bumped() -> (i32) does Bump {
   jump ret(%r)
 }
 
+#[export(emu)]
 fn discontinues() -> (i32) {
   let %body: imm fn() -> (i32) does Bump = closure asks_bumped()
   let %r: i32 = handle bumping(%body)
   jump ret(%r)
 }
 
+#[export(emu)]
 fn doubled() -> (i32) {
   let %body: imm fn() -> (i32) does Ask = closure just_ask()
   let %r: i32 = handle doubling(5i32, %body)

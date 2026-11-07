@@ -9,7 +9,7 @@
   (global (;0;) (mut i32) i32.const 16)
   (global (;1;) (mut i32) i32.const 0)
   (global (;2;) (mut i32) i32.const 0)
-  (export "fn0" (func $main_export))
+  (export "main" (func $main_export))
   (export "memory" (memory 0))
   (elem (;0;) (table 0) (i32.const 0) func 5 6)
   (func $main (;0;) (type 0) (result i32)

@@ -24,12 +24,18 @@ use libtest_mimic::{Arguments, Failed, Trial};
 
 pub use checks::{Check, CheckKind, Expect};
 
-/// Links `m`'s externs for the Wasm runner, as a frontend does for the
-/// target it compiles for: each `#[link(emu, name = n)]` that test programs
-/// write becomes `#[link(wasm, module = "test", name = n)]`, which the
-/// runner's linker provides, the same functions as
-/// [`eval::TestHost`]'s.
+/// Links `m`'s externs and exports for the Wasm runner, as a frontend does
+/// for the target it compiles for: each `#[link(emu, name = n)]` that test
+/// programs write becomes `#[link(wasm, module = "test", name = n)]`, which
+/// the runner's linker provides, the same functions as
+/// [`eval::TestHost`]'s, and each `#[export(emu, name = n)]`
+/// `#[export(wasm, name = n)]`.
 pub fn link_for_wasm(m: &mut Module) {
+    for export in m.exports.values_mut() {
+        if let conduit_ir::Export::Emu { name } = export {
+            *export = conduit_ir::Export::Wasm { name: name.clone() };
+        }
+    }
     for ext in m.externs.values_mut() {
         if let conduit_ir::Link::Emu { name } = &ext.link {
             ext.link = conduit_ir::Link::Wasm {
@@ -93,8 +99,25 @@ impl Program {
     }
 
     /// The module the program's text describes.
+    /// The program's module, with each function a `run` check calls
+    /// exported to the evaluator's host, under its own name, since it's
+    /// called from outside the module (see [`link_for_wasm`]).
     pub fn module(&self) -> Result<Module, String> {
-        conduit_ir::text::parse(&self.text).map_err(|e| format!("{}:{e}", self.shown()))
+        let mut m =
+            conduit_ir::text::parse(&self.text).map_err(|e| format!("{}:{e}", self.shown()))?;
+        for c in &self.checks {
+            if let CheckKind::Run { func, .. } = &c.kind
+                && let Ok(id) = conduit_ir::text::find_func(&m, func)
+                && !m.exports.contains_key(&id)
+            {
+                let name = match &m.funcs[&id].debug.name {
+                    Some(name) => name.clone(),
+                    None => id.to_string().into(),
+                };
+                m.exports.insert(id, conduit_ir::Export::Emu { name });
+            }
+        }
+        Ok(m)
     }
 
     pub fn has(&self, f: impl Fn(&CheckKind) -> bool) -> bool {

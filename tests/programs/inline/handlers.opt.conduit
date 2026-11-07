@@ -45,6 +45,7 @@ fn ask_twice() -> (i32) does Ask {
   jump j1(%y#6)
 }
 
+#[export(emu)]
 fn main(%x: i32) -> (i32) {
   let %body: imm fn() -> (i32) does Ask = closure ask_twice()
   let %r: i32 = handle tenfold(%x, %body)
@@ -89,6 +90,7 @@ fn ask_twice() -> (i32) does Ask {
   jump ret(%r)
 }
 
+#[export(emu)]
 fn main(%x: i32) -> (i32) {
   let %y#1: i32 = mul(%x, 10i32)
   let %y#2: i32 = add(%y#1, 1i32)

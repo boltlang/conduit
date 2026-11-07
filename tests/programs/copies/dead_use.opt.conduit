@@ -4,6 +4,7 @@ data Two {
   (mut [i32], mut [i32])
 }
 
+#[export(emu)]
 fn main(%x: i32) -> (i32) {
   let %xs: mut [i32] = array_fill(1i32, %x)
   let %frozen: imm [i32] = array_clone(%xs)
@@ -24,6 +25,7 @@ data Two {
   (mut [i32], mut [i32])
 }
 
+#[export(emu)]
 fn main(%x: i32) -> (i32) {
   let %xs: mut [i32] = array_fill(1i32, %x)
   let %frozen: imm [i32] = array_freeze(%xs)

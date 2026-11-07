@@ -53,8 +53,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use conduit_ir::verify::Item;
 use conduit_ir::{
-    Abi, ConstId, ConstValue, CtorId, EffectId, ExternId, Func, FuncId, HandlerId, Link, Lit,
-    Module, Ty,
+    Abi, ConstId, ConstValue, CtorId, EffectId, Export, ExternId, Func, FuncId, HandlerId, Link,
+    Lit, Module, Ty,
 };
 use wasm_encoder::{
     CodeSection, ConstExpr, DataSection, ElementSection, Elements, EntityType, ExportKind,
@@ -555,27 +555,24 @@ fn flat_sig(ext: &conduit_ir::Extern) -> FnSig {
 
 /// Lowers a module that has passed [`conduit_ir::verify::verify_module`]
 /// to a Wasm binary with objects in linear memory, exporting each function
-/// in `exports` under its name, and the memory as `memory`, with the
-/// default [`Options`]: without stack switching.
+/// with a `#[export(wasm, ..)]` under its name, and the memory as
+/// `memory`, with the default [`Options`]: without stack switching. An
+/// export of another kind is an error: it's for another target.
 ///
 /// An export starts with no handlers, even when the host calls it from
 /// inside an extern: an operation it doesn't handle itself traps, rather
 /// than reaching the handlers around that extern's call, behind the
 /// host's frame. Effects without operations, which only limit who may
 /// call an extern, are never performed, so they never trap.
-pub fn emit_module(m: &Module, exports: &[(FuncId, &str)]) -> Result<Vec<u8>, Error> {
-    emit_module_with(m, exports, &Options::default())
+pub fn emit_module(m: &Module) -> Result<Vec<u8>, Error> {
+    emit_module_with(m, &Options::default())
 }
 
 /// [`emit_module`] with `options`. A module with a handler whose clauses
 /// aren't all tail-resumptive or aborting is lowered with stack switching
 /// if the options ask for it, and by evidence passing first otherwise,
 /// which keeps every function's ID.
-pub fn emit_module_with(
-    m: &Module,
-    exports: &[(FuncId, &str)],
-    options: &Options,
-) -> Result<Vec<u8>, Error> {
+pub fn emit_module_with(m: &Module, options: &Options) -> Result<Vec<u8>, Error> {
     let lowered;
     let mut thunks = BTreeMap::new();
     if options.counts && !options.stack_switching && !conduit_ir::clause::direct_handlers(m) {
@@ -602,6 +599,21 @@ pub fn emit_module_with(
     } else {
         m
     };
+    let mut exported = Vec::new();
+    for (&f, export) in &m.exports {
+        let Export::Wasm { name } = export else {
+            return Err(Error {
+                item: Item::Func(f),
+                message: format!(
+                    "can't export a function as {} `{}`: only with a `#[export(wasm, ..)]`",
+                    export.kind(),
+                    export.name()
+                ),
+            });
+        };
+        exported.push((f, &**name));
+    }
+    let exports: &[(FuncId, &str)] = &exported;
     let mut switching: BTreeSet<HandlerId> = m
         .handlers
         .keys()

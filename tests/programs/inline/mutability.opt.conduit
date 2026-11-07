@@ -9,6 +9,7 @@ fn length(%xs: ro [i32]) -> (i32) {
   jump ret(%n)
 }
 
+#[export(emu)]
 fn main() -> (i32) {
   join j1(%xs#0: mut [i32]) =
     let = array_set(%xs#0, 0i32, 1i32)

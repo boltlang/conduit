@@ -3,11 +3,13 @@ data Shape {
   (f64, f64)
 }
 
+#[export(emu)]
 fn positive(%x: i32) -> (i32) {
   let %y: i32 = add(%x, 1i32)
   jump ret(%y)
 }
 
+#[export(emu)]
 fn checked(%x: i32) -> (i32) {
   case %x {
     0 => trap

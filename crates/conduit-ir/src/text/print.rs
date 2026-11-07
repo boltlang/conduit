@@ -283,7 +283,25 @@ pub(super) fn module(m: &Module) -> String {
         ));
     }
     for (&id, f) in &m.funcs {
-        items.push(func_with(&names, id, f));
+        let mut item = String::new();
+        if let Some(export) = m.exports.get(&id) {
+            // The name only if it isn't the function's own, as written.
+            let spelled = names.func(id);
+            let own = spelled.split('#').next() == Some(export.name())
+                && f.debug.name.as_deref() == Some(export.name());
+            let key = if let Export::C { .. } = export {
+                "symbol"
+            } else {
+                "name"
+            };
+            let name = match own {
+                true => String::new(),
+                false => format!(", {key} = {}", string(export.name())),
+            };
+            let _ = writeln!(item, "#[export({}{name})]", export.kind());
+        }
+        item.push_str(&func_with(&names, id, f));
+        items.push(item);
     }
     let mut out = items.join("\n\n");
     if !out.is_empty() {

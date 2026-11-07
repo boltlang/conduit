@@ -7,12 +7,14 @@ data Pair {
 
 const origin: imm Pair = Pair.1(0i32, 0i32)
 
+#[export(emu)]
 fn once(%x: i32) -> (i32) {
   let %x1: i32 = add(%x, 1i32)
   let %z: i32 = mul(%x1, 2i32)
   jump ret(%z)
 }
 
+#[export(emu)]
 fn literals(%c: i32) -> (i32) {
   join pick(%n: i32) =
     case %n {
@@ -68,6 +70,7 @@ fn objects(%c: i32, %p: imm Pair) -> (i32) {
   }
 }
 
+#[export(emu)]
 fn sum_to(%n: i32) -> (i32) {
   join rec go(%i: i32, %acc: i32) =
     case %i {
@@ -80,6 +83,7 @@ fn sum_to(%n: i32) -> (i32) {
   in jump go(%n, 0i32)
 }
 
+#[export(emu)]
 fn objects_of(%c: i32) -> (i32) {
   let %p: imm Pair = new Pair.0()
   let %r: i32 = call objects(%c, %p)
@@ -95,12 +99,14 @@ data Pair {
 
 const origin: imm Pair = Pair.1(0i32, 0i32)
 
+#[export(emu)]
 fn once(%x: i32) -> (i32) {
   let %x1: i32 = add(%x, 1i32)
   let %z: i32 = mul(%x1, 2i32)
   jump ret(%z)
 }
 
+#[export(emu)]
 fn literals(%c: i32) -> (i32) {
   case %c {
     0 => jump ret(10i32)
@@ -124,6 +130,7 @@ fn objects(%c: i32, %p: imm Pair) -> (i32) {
   }
 }
 
+#[export(emu)]
 fn sum_to(%n: i32) -> (i32) {
   join rec go(%i: i32, %acc: i32) =
     case %i {
@@ -136,6 +143,7 @@ fn sum_to(%n: i32) -> (i32) {
   in jump go(%n, 0i32)
 }
 
+#[export(emu)]
 fn objects_of(%c: i32) -> (i32) {
   let %p: imm Pair = new Pair.0()
   let %r: i32 = call objects(%c, %p)
