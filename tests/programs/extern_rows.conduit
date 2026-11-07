@@ -1,0 +1,20 @@
+// An extern can require an effect without performing it: `io` has no
+// operations and only limits who may call `double`. The host grants it to
+// `main` by calling it, so `main` needs no handler.
+
+effect io {}
+
+extern double "test" "double" (i32) -> (i32) does io
+
+fn twice(%x: i32) -> (i32) does io {
+  let %y: i32 = call_extern double(%x)
+  jump ret(%y)
+}
+
+fn main(%x: i32) -> (i32) does io {
+  let %y: i32 = call twice(%x)
+  let %z: i32 = add(%y, 1i32)
+  jump ret(%z)
+}
+
+//# run main(20i32) == 41i32

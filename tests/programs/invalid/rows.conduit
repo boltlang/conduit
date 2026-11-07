@@ -1,5 +1,5 @@
-// Rows that don't hold: a `perform`, call, `apply`, `resume` or `handle`
-// whose effects aren't in the function's row, a closure or handler body
+// Rows that don't hold: a `perform`, call, `call_extern`, `apply`,
+// `resume` or `handle` whose effects aren't in the function's row, a closure or handler body
 // with a row that's too small, clauses that perform more than their
 // handler says, and rows where none can be.
 
@@ -90,7 +90,11 @@ fn fn12() -> () does effect99 {
   jump ret()
 }
 
-//# verify-error: extern1: () -> () does effect20 has a row, which only functions, closures and continuations can
+fn fn13() -> () {
+  let = call_extern extern1()
+  jump ret()
+}
+
 //# verify-error: effect22: operation 0: () -> () does effect20 has a row
 //# verify-error: fn0: perform effect20.0 may perform effect20, but the function has no effects
 //# verify-error: fn1: call fn2 may perform effect20, but the function only does effect21
@@ -101,3 +105,4 @@ fn fn12() -> () does effect99 {
 //# verify-error: fn7: jump to ret: value 0 has type imm fn() -> () does effect20, but should have imm fn() -> ()
 //# verify-error: handler30: clause fn9 for effect20.0 does effect21, which isn't in the handler's row Nothing
 //# verify-error: fn12: unknown effect effect99 in row effect99
+//# verify-error: fn13: call_extern extern1 may perform effect20, but the function has no effects

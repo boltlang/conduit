@@ -9,10 +9,7 @@
   (global (;0;) (mut i32) i32.const 16)
   (global (;1;) (mut i32) i32.const 0)
   (global (;2;) (mut i32) i32.const 0)
-  (export "fn0" (func $main))
-  (export "fn1" (func $add_yield))
-  (export "fn2" (func $done))
-  (export "fn3" (func $produce))
+  (export "fn0" (func $main_export))
   (export "memory" (memory 0))
   (elem (;0;) (table 0) (i32.const 0) func 5 6)
   (func $main (;0;) (type 0) (result i32)
@@ -232,5 +229,19 @@
   )
   (func (;6;) (type 1) (param i32)
     return_call $produce
+  )
+  (func $main_export (;7;) (type 0) (result i32)
+    (local i32 i32)
+    global.get 1
+    local.set 0
+    global.get 2
+    local.set 1
+    i32.const 0
+    global.set 1
+    call $main
+    local.get 0
+    global.set 1
+    local.get 1
+    global.set 2
   )
 )

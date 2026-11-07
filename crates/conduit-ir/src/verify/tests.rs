@@ -919,3 +919,27 @@ fn effect_parameter_out_of_range() {
         "E2 in row E2 isn't an effect parameter here: there is E1"
     );
 }
+
+/// An extern isn't generic, so its row can't name effect parameters. The
+/// text format can't write one; a builder can.
+#[test]
+fn extern_row_without_parameters() {
+    let mut m = Module::default();
+    m.externs.insert(
+        ExternId(0),
+        Extern {
+            module: "env".into(),
+            name: "f".into(),
+            sig: Sig {
+                row: Row::param(1),
+                ..unit_sig()
+            },
+            debug_name: None,
+        },
+    );
+    let errors = verify_module(&m).unwrap_err();
+    assert_eq!(
+        errors[0].message,
+        "E1 in row E1 isn't an effect parameter here: there are none"
+    );
+}

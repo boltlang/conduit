@@ -89,7 +89,9 @@ pub fn verify_module(m: &Module) -> Result<(), Vec<Error>> {
         check_data(m, id, decl, &mut errors);
     }
     for (&id, ext) in &m.externs {
-        if let Err(message) = sig_ok(m, &ext.sig, 0, 0).and_then(|()| no_row(&ext.sig)) {
+        // An extern's row says what its callers must be allowed to do; the
+        // call itself performs nothing.
+        if let Err(message) = sig_ok(m, &ext.sig, 0, 0).and_then(|()| row_ok(m, &ext.sig.row, 0)) {
             errors.push(decl_error(Item::Extern(id), message));
         }
     }
@@ -530,8 +532,7 @@ pub(crate) fn row_ok<P: Program + ?Sized>(p: &P, row: &Row, params: u32) -> Resu
     }
 }
 
-/// An extern's or an effect operation's signature has no row: the host
-/// can't perform a Conduit effect, and an operation's effects are its
+/// An effect operation's signature has no row: its effects are its
 /// handler's.
 fn no_row(sig: &Sig) -> Result<(), String> {
     if sig.row.is_nothing() {

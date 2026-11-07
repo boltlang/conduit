@@ -1717,7 +1717,11 @@ impl Lower {
                 },
             );
         }
+        // An extern's row only limited its callers, and no effects are left.
         self.out.externs = self.src.externs.clone();
+        for ext in self.out.externs.values_mut() {
+            ext.sig.row = Row::NOTHING;
+        }
         for (&c, decl) in &self.src.consts {
             let mut decl = decl.clone();
             decl.ty = self.ty(&decl.ty);

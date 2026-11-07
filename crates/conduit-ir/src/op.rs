@@ -186,7 +186,9 @@ impl Op {
     }
 
     /// What an op may perform, given its arguments' types: an operation's
-    /// effect, a callee's, closure's or continuation's row, or a handler's. A
+    /// effect, a callee's, extern's, closure's or continuation's row, or a
+    /// handler's. An extern's row only limits who may call it: the host
+    /// performs nothing. A
     /// `discontinue` also performs its operation where the continuation was
     /// captured.
     pub fn row<P: crate::Program + ?Sized>(&self, p: &P, tys: &[Ty]) -> Row {
@@ -199,6 +201,7 @@ impl Op {
             Op::Call(f, _, rows) => p
                 .func_sig(*f)
                 .map_or(Row::NOTHING, |sig| sig.row.subst(rows)),
+            Op::CallExtern(e) => p.extern_fn(*e).map_or(Row::NOTHING, |x| x.sig.row.clone()),
             Op::Apply | Op::Resume => first(),
             Op::Discontinue(e, _) => first().union(&Row::one(*e)),
             Op::Handle(h, rows) => p

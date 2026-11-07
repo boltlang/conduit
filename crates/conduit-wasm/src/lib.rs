@@ -56,8 +56,8 @@ use conduit_ir::{
 use wasm_encoder::{
     CodeSection, ConstExpr, DataSection, ElementSection, Elements, EntityType, ExportKind,
     ExportSection, Function, FunctionSection, GlobalSection, GlobalType, ImportSection,
-    MemorySection, MemoryType, NameMap, NameSection, RefType, TableSection, TableType, TagKind,
-    TagSection, TagType, TypeSection, ValType,
+    Instruction as I, MemorySection, MemoryType, NameMap, NameSection, RefType, TableSection,
+    TableType, TagKind, TagSection, TagType, TypeSection, ValType,
 };
 
 use std::fmt;
@@ -436,6 +436,12 @@ impl Cx<'_> {
 /// to a Wasm binary with objects in linear memory, exporting each function
 /// in `exports` under its name, and the memory as `memory`, with the
 /// default [`Options`]: without stack switching.
+///
+/// An export starts with no handlers, even when the host calls it from
+/// inside an extern: an operation it doesn't handle itself traps, rather
+/// than reaching the handlers around that extern's call, behind the
+/// host's frame. Effects without operations, which only limit who may
+/// call an extern, are never performed, so they never trap.
 pub fn emit_module(m: &Module, exports: &[(FuncId, &str)]) -> Result<Vec<u8>, Error> {
     emit_module_with(m, exports, &Options::default())
 }
@@ -596,6 +602,7 @@ pub fn emit_module_with(
     }
 
     let mut funcs = Vec::new();
+    let mut func_types = BTreeMap::new();
     for (&id, f) in &m.funcs {
         let err = |message| Error {
             item: Item::Func(id),
@@ -606,8 +613,10 @@ pub fn emit_module_with(
             params: f.params.iter().map(|&p| val(f.var_ty(p))).collect(),
             results: f.results.iter().map(val).collect(),
         };
+        let n_params = sig.params.len() as u32;
         let ty = cx.sig(sig);
         let body = func::lower_func(&mut cx, f).map_err(err)?;
+        func_types.insert(id, (ty, n_params));
         funcs.push((ty, body));
     }
 
@@ -807,6 +816,57 @@ pub fn emit_module_with(
     for (ext, sig) in &imports {
         import_section.import(&ext.module, &ext.name, EntityType::Function(*sig));
     }
+    // With handler frames in memory, each export runs under a wrapper
+    // that empties the handler stack and puts it back after.
+    let mut export_wrappers = Vec::new();
+    let mut export_index = BTreeMap::new();
+    if !m.handlers.is_empty() {
+        let mut next = first
+            + (funcs.len()
+                + 1
+                + runtime.len()
+                + clause_wrappers.len()
+                + switched.len()
+                + entries.len()
+                + closure_frees.len()) as u32;
+        for &(f, _) in exports {
+            if export_index.contains_key(&f) {
+                continue;
+            }
+            let Some(&(ty, n)) = func_types.get(&f) else {
+                continue;
+            };
+            let (handlers, site) = (n, n + 1);
+            let mut code = vec![
+                I::GlobalGet(HANDLERS),
+                I::LocalSet(handlers),
+                I::GlobalGet(SITE),
+                I::LocalSet(site),
+                I::I32Const(0),
+                I::GlobalSet(HANDLERS),
+            ];
+            code.extend((0..n).map(I::LocalGet));
+            code.extend([
+                I::Call(cx.func_index(f).map_err(|message| Error {
+                    item: Item::Func(f),
+                    message,
+                })?),
+                I::LocalGet(handlers),
+                I::GlobalSet(HANDLERS),
+                I::LocalGet(site),
+                I::GlobalSet(SITE),
+                I::End,
+            ]);
+            let body = func::Body {
+                locals: vec![ValType::I32, ValType::I32],
+                code,
+            };
+            export_wrappers.push((ty, body));
+            export_index.insert(f, next);
+            next += 1;
+        }
+    }
+
     let mut functions = FunctionSection::new();
     let mut code = CodeSection::new();
     let bodies = funcs
@@ -817,7 +877,8 @@ pub fn emit_module_with(
         .chain(clause_wrappers.iter().map(|(ty, b)| (*ty, b)))
         .chain(switched.iter().map(|(ty, b)| (*ty, b)))
         .chain(entries.iter().map(|(ty, b)| (*ty, b)))
-        .chain(closure_frees.iter().map(|(ty, b)| (*ty, b)));
+        .chain(closure_frees.iter().map(|(ty, b)| (*ty, b)))
+        .chain(export_wrappers.iter().map(|(ty, b)| (*ty, b)));
     for (ty, body) in bodies {
         functions.function(ty);
         let mut f = Function::new_with_locals_types(body.locals.iter().copied());
@@ -912,10 +973,13 @@ pub fn emit_module_with(
     module.section(&globals);
     let mut export_section = ExportSection::new();
     for &(f, name) in exports {
-        let idx = cx.func_index(f).map_err(|message| Error {
-            item: Item::Func(f),
-            message,
-        })?;
+        let idx = match export_index.get(&f) {
+            Some(&idx) => idx,
+            None => cx.func_index(f).map_err(|message| Error {
+                item: Item::Func(f),
+                message,
+            })?,
+        };
         export_section.export(name, ExportKind::Func, idx);
     }
     export_section.export("memory", ExportKind::Memory, 0);
@@ -967,7 +1031,7 @@ pub fn emit_module_with(
         segments.active(0, &ConstExpr::i32_const(CONST_BASE as i32), data);
         module.section(&segments);
     }
-    if let Some(names) = name_section(m, &cx) {
+    if let Some(names) = name_section(m, &cx, &export_index) {
         module.section(&names);
     }
     Ok(module.finish())
@@ -1188,9 +1252,13 @@ fn lit_bytes(l: Lit) -> Vec<u8> {
     }
 }
 
-/// Names for tools and stack traces: the externs', functions' and
-/// `alloc`'s.
-fn name_section(m: &Module, cx: &Cx<'_>) -> Option<NameSection> {
+/// Names for tools and stack traces: the externs', functions', `alloc`'s
+/// and the export wrappers'.
+fn name_section(
+    m: &Module,
+    cx: &Cx<'_>,
+    export_index: &BTreeMap<FuncId, u32>,
+) -> Option<NameSection> {
     let mut functions = NameMap::new();
     for (i, ext) in m.externs.values().enumerate() {
         if let Some(name) = &ext.debug_name {
@@ -1204,6 +1272,16 @@ fn name_section(m: &Module, cx: &Cx<'_>) -> Option<NameSection> {
         }
     }
     functions.append(cx.alloc, "alloc");
+    let mut wrappers: Vec<(u32, FuncId)> = export_index.iter().map(|(&f, &i)| (i, f)).collect();
+    wrappers.sort();
+    for (i, f) in wrappers {
+        let name = m.funcs[&f]
+            .debug
+            .name
+            .as_deref()
+            .map_or_else(|| f.to_string(), str::to_string);
+        functions.append(i, &format!("{name}_export"));
+    }
     let mut section = NameSection::new();
     section.functions(&functions);
     Some(section)

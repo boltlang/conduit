@@ -12,32 +12,10 @@
   (global (;0;) (mut i32) i32.const 16)
   (global (;1;) (mut i32) i32.const 0)
   (global (;2;) (mut i32) i32.const 0)
-  (export "fn0" (func $get))
-  (export "fn1" (func $get_plain))
-  (export "fn2" (func $set))
-  (export "fn3" (func $set_plain))
-  (export "fn4" (func $log))
-  (export "fn5" (func $log_reads))
-  (export "fn6" (func $job_done))
-  (export "fn7" (func $add_log))
-  (export "fn8" (func $sum_done))
-  (export "fn9" (func $fixed_get))
-  (export "fn10" (func $fixed_set))
-  (export "fn11" (func $fixed_done))
-  (export "fn12" (func $fail))
-  (export "fn13" (func $record))
-  (export "fn14" (func $work))
-  (export "fn15" (func $issue))
-  (export "fn16" (func $in_job))
-  (export "fn17" (func $log_reads_outer))
-  (export "fn18" (func $in_log_state))
-  (export "fn19" (func $log_then_get))
-  (export "fn20" (func $log_then_fail))
-  (export "fn21" (func $logs_then_fails))
-  (export "fn22" (func $nested))
-  (export "fn23" (func $outer_job))
-  (export "fn24" (func $inner_job))
-  (export "fn25" (func $get_then_log))
+  (export "fn15" (func $issue_export))
+  (export "fn17" (func $log_reads_outer_export))
+  (export "fn20" (func $log_then_fail_export))
+  (export "fn22" (func $nested_export))
   (export "memory" (memory 0))
   (elem (;0;) (table 0) (i32.const 0) func 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45)
   (func $get (;0;) (type 0) (param i32 i32) (result i32)
@@ -1611,5 +1589,61 @@
   )
   (func (;45;) (type 3) (param i32) (result i32)
     return_call $get_then_log
+  )
+  (func $issue_export (;46;) (type 5) (result i32)
+    (local i32 i32)
+    global.get 1
+    local.set 0
+    global.get 2
+    local.set 1
+    i32.const 0
+    global.set 1
+    call $issue
+    local.get 0
+    global.set 1
+    local.get 1
+    global.set 2
+  )
+  (func $log_reads_outer_export (;47;) (type 5) (result i32)
+    (local i32 i32)
+    global.get 1
+    local.set 0
+    global.get 2
+    local.set 1
+    i32.const 0
+    global.set 1
+    call $log_reads_outer
+    local.get 0
+    global.set 1
+    local.get 1
+    global.set 2
+  )
+  (func $log_then_fail_export (;48;) (type 5) (result i32)
+    (local i32 i32)
+    global.get 1
+    local.set 0
+    global.get 2
+    local.set 1
+    i32.const 0
+    global.set 1
+    call $log_then_fail
+    local.get 0
+    global.set 1
+    local.get 1
+    global.set 2
+  )
+  (func $nested_export (;49;) (type 5) (result i32)
+    (local i32 i32)
+    global.get 1
+    local.set 0
+    global.get 2
+    local.set 1
+    i32.const 0
+    global.set 1
+    call $nested
+    local.get 0
+    global.set 1
+    local.get 1
+    global.set 2
   )
 )

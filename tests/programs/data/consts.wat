@@ -10,7 +10,6 @@
   (global (;1;) (mut i32) i32.const 0)
   (global (;2;) (mut i32) i32.const 0)
   (export "fn0" (func $hello_len))
-  (export "fn1" (func $sum))
   (export "fn2" (func $sum_list))
   (export "fn3" (func $named_parts))
   (export "fn4" (func $cell_second))

@@ -62,8 +62,8 @@ fn with(stack_switching: bool) -> &'static str {
     }
 }
 
-/// The Wasm of `m`, validated, with every function exported under its
-/// name, or `None` if lowering failed as the `wasm-error` checks expect.
+/// The Wasm of `m`, validated, with each function a `run` check calls
+/// exported under its name, or `None` if lowering failed as the `wasm-error` checks expect.
 fn lower(p: &Program, m: &Module, stack_switching: bool) -> Result<Option<Vec<u8>>, String> {
     lower_with(
         p,
@@ -78,7 +78,8 @@ fn lower(p: &Program, m: &Module, stack_switching: bool) -> Result<Option<Vec<u8
 
 fn lower_with(p: &Program, m: &Module, options: Options) -> Result<Option<Vec<u8>>, String> {
     let stack_switching = options.stack_switching;
-    let names: Vec<(FuncId, String)> = m.funcs.keys().map(|&f| (f, f.to_string())).collect();
+    let funcs: std::collections::BTreeSet<FuncId> = p.runs(m)?.iter().map(|r| r.func).collect();
+    let names: Vec<(FuncId, String)> = funcs.iter().map(|&f| (f, f.to_string())).collect();
     let exports: Vec<(FuncId, &str)> = names.iter().map(|(f, n)| (*f, n.as_str())).collect();
     let expected = p.messages(|k| match k {
         CheckKind::WasmError(m) => Some(m),

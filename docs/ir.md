@@ -865,10 +865,20 @@ let %3: imm fn(i32) -> (i32) does Effect20 = closure fn2()
   `does` has no effects. `Any` is for frontends without effect types: it
   can perform anything, which is what every function can do today.
 - **Rows are on signatures:** a function's, a closure type's
-  (`fn(..) -> (..) does ..`) and a continuation type's. An extern's and an
-  effect operation's have none. A continuation's row is that of its
+  (`fn(..) -> (..) does ..`), a continuation type's and an extern's. An
+  effect operation's has none. A continuation's row is that of its
   handler, since resuming it runs the rest of the body, which is still
   handled.
+- **An extern's row** only limits who may call it: a `call_extern` may
+  perform its row, so its caller's row must hold it, but the host
+  performs nothing. Such an effect usually has no operations, like an
+  `io` that only code allowed to do I/O has: `effect io {}`. An extern's
+  row has no effect parameters, since externs aren't generic.
+- **Exports start with no handlers.** The host calling an exported
+  function grants it the effects without operations in its row. An
+  operation it doesn't handle itself traps, even when the host calls it
+  back from inside an extern: it never reaches the handlers around that
+  extern's call, which are behind the host's frame.
 - **Effect parameters** work like mutability parameters. Functions, data
   declarations and handlers can have them, after their mutability
   parameters: `fn fn3['m1, E1]`, `data data10[E1]`. Each call, closure,
@@ -973,7 +983,7 @@ Still to decide:
 - Operations with type parameters of their own, like a `raise` that can
   give any type: erase the type to `Any`, or make one operation per
   instance.
-- Externs that suspend, through JSPI, which would need extern rows.
+- Externs that suspend, through JSPI.
 - Whether handler clauses can also have mutability parameters, now that
   `handle` gives arguments.
 
@@ -1037,6 +1047,9 @@ aborting without capturing a continuation:
   runs, and performs. A `perform` sets that global and puts it back after,
   and a `handle` that catches an abort puts it back too, since the
   `perform`s the exception left couldn't.
+- Each export runs under a wrapper that empties both globals and puts
+  them back after, so that an export the host calls from inside an
+  extern starts with no handlers.
 
 A handler with any other clause needs its continuations captured. There
 are two ways to do that, both possible because handlers are confined to
