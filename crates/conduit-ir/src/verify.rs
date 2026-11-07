@@ -670,16 +670,17 @@ impl<P: Program + ?Sized> Cx<'_, P> {
         }
         self.block(&f.body);
 
-        let counts = Linear {
+        let mut linear = Linear {
             f,
             labels: BTreeMap::new(),
-        }
-        .uses(&f.body);
-        for (var, n) in counts {
-            if n > 1 {
-                self.source = None;
-                self.err(format!("continuation {var} may be used more than once"));
-            }
+            over: BTreeSet::new(),
+        };
+        let counts = linear.uses(&f.body);
+        let mut over = linear.over;
+        over.extend(counts.into_iter().filter(|&(_, n)| n > 1).map(|(v, _)| v));
+        for var in over {
+            self.source = None;
+            self.err(format!("continuation {var} may be used more than once"));
         }
     }
 
@@ -736,95 +737,99 @@ impl<P: Program + ?Sized> Cx<'_, P> {
     }
 
     fn block(&mut self, b: &Block) {
-        let known = self.known.len();
-        for l in &b.lets {
-            self.source = l.source;
-            if let Some(tys) = self.atoms(&l.args) {
-                self.op(&l.op, &l.args, &tys, &l.binds);
-            }
-            for &v in &l.binds {
-                self.bind(v);
-            }
-            // What `new` builds is known for as long as it's in scope,
-            // and so is what a constant is.
-            match (&l.op, &l.binds[..]) {
-                (Op::New(c) | Op::Reuse(c), [v]) => self.known.push((*v, *c)),
-                (Op::Const(id), [v]) => {
-                    if let Some(ConstValue::New(c, _)) = const_value(self.p, *id) {
-                        self.known.push((*v, *c));
-                    }
+        crate::deep(|| {
+            let known = self.known.len();
+            for l in &b.lets {
+                self.source = l.source;
+                if let Some(tys) = self.atoms(&l.args) {
+                    self.op(&l.op, &l.args, &tys, &l.binds);
                 }
-                _ => {}
+                for &v in &l.binds {
+                    self.bind(v);
+                }
+                // What `new` builds is known for as long as it's in scope,
+                // and so is what a constant is.
+                match (&l.op, &l.binds[..]) {
+                    (Op::New(c) | Op::Reuse(c), [v]) => self.known.push((*v, *c)),
+                    (Op::Const(id), [v]) => {
+                        if let Some(ConstValue::New(c, _)) = const_value(self.p, *id) {
+                            self.known.push((*v, *c));
+                        }
+                    }
+                    _ => {}
+                }
             }
-        }
-        match &b.tail {
-            Tail::Join { rec, defs, body } => self.join(*rec, defs, body),
-            Tail::Jump {
-                target,
-                args,
-                source,
-            } => {
-                self.source = *source;
-                self.jump(*target, args);
+            match &b.tail {
+                Tail::Join { rec, defs, body } => self.join(*rec, defs, body),
+                Tail::Jump {
+                    target,
+                    args,
+                    source,
+                } => {
+                    self.source = *source;
+                    self.jump(*target, args);
+                }
+                Tail::Case {
+                    scrut,
+                    arms,
+                    default,
+                } => self.case(scrut, arms, default.as_deref()),
+                Tail::Unreachable | Tail::Trap => {}
             }
-            Tail::Case {
-                scrut,
-                arms,
-                default,
-            } => self.case(scrut, arms, default.as_deref()),
-            Tail::Unreachable | Tail::Trap => {}
-        }
-        self.known.truncate(known);
-        for l in &b.lets {
-            for &v in &l.binds {
-                self.unbind(v);
+            self.known.truncate(known);
+            for l in &b.lets {
+                for &v in &l.binds {
+                    self.unbind(v);
+                }
             }
-        }
+        })
     }
 
     fn join(&mut self, rec: bool, defs: &[JoinDef], body: &Block) {
-        let mut labels = Vec::new();
-        for def in defs {
-            let l = def.label;
-            if l == Label::RET || l.0 >= self.f.labels {
-                self.err(format!(
-                    "{l} can't be bound: labels are j1 to j{}",
-                    self.f.labels.saturating_sub(1)
-                ));
-                continue;
+        crate::deep(|| {
+            let mut labels = Vec::new();
+            for def in defs {
+                let l = def.label;
+                if l == Label::RET || l.0 >= self.f.labels {
+                    self.err(format!(
+                        "{l} can't be bound: labels are j1 to j{}",
+                        self.f.labels.saturating_sub(1)
+                    ));
+                    continue;
+                }
+                if self.label_bound[l.0 as usize] {
+                    self.err(format!("{l} is bound more than once"));
+                    continue;
+                }
+                self.label_bound[l.0 as usize] = true;
+                let params = def
+                    .params
+                    .iter()
+                    .filter_map(|&p| self.var_ty(p).cloned())
+                    .collect();
+                labels.push((l, params));
             }
-            if self.label_bound[l.0 as usize] {
-                self.err(format!("{l} is bound more than once"));
-                continue;
-            }
-            self.label_bound[l.0 as usize] = true;
-            let params = def
-                .params
-                .iter()
-                .filter_map(|&p| self.var_ty(p).cloned())
-                .collect();
-            labels.push((l, params));
-        }
 
-        if rec {
-            self.scope_labels(&labels);
-        }
-        for def in defs {
-            for &p in &def.params {
-                self.bind(p);
+            if rec {
+                self.scope_labels(&labels);
             }
-            self.block(&def.body);
-            for &p in &def.params {
-                self.unbind(p);
+            for def in defs {
+                for &p in &def.params {
+                    self.bind(p);
+                }
+                self.block(&def.body);
+                for &p in &def.params {
+                    self.unbind(p);
+                }
             }
-        }
-        if !rec {
-            self.scope_labels(&labels);
-        }
-        self.block(body);
-        for (l, _) in labels {
-            self.label_params[l.0 as usize] = None;
-        }
+            if !rec {
+                self.scope_labels(&labels);
+            }
+            self.block(body);
+            for (l, _) in labels {
+                self.label_params[l.0 as usize] = None;
+            }
+        })
     }
 
     fn scope_labels(&mut self, labels: &[(Label, Vec<Ty>)]) {
@@ -845,25 +850,27 @@ impl<P: Program + ?Sized> Cx<'_, P> {
     }
 
     fn case(&mut self, scrut: &Atom, arms: &[Arm], default: Option<&Block>) {
-        if let Some(ty) = self.atom(scrut) {
-            self.case_tags(&ty, arms, default.is_some());
-        }
-        for arm in arms {
-            let fact = match (scrut, arm.tag) {
-                (Atom::Var(v), Tag::Ctor(c)) => Some((*v, c)),
-                _ => None,
-            };
-            if let Some(fact) = fact {
-                self.known.push(fact);
+        crate::deep(|| {
+            if let Some(ty) = self.atom(scrut) {
+                self.case_tags(&ty, arms, default.is_some());
             }
-            self.block(&arm.body);
-            if fact.is_some() {
-                self.known.pop();
+            for arm in arms {
+                let fact = match (scrut, arm.tag) {
+                    (Atom::Var(v), Tag::Ctor(c)) => Some((*v, c)),
+                    _ => None,
+                };
+                if let Some(fact) = fact {
+                    self.known.push(fact);
+                }
+                self.block(&arm.body);
+                if fact.is_some() {
+                    self.known.pop();
+                }
             }
-        }
-        if let Some(default) = default {
-            self.block(default);
-        }
+            if let Some(default) = default {
+                self.block(default);
+            }
+        })
     }
 
     fn case_tags(&mut self, ty: &Ty, arms: &[Arm], has_default: bool) {
@@ -1156,6 +1163,21 @@ struct Linear<'a> {
     f: &'a Func,
     /// What each join point's body uses, of variables bound outside it.
     labels: BTreeMap<Label, Counts>,
+    /// The continuations bound inside the function that may be used more
+    /// than once, found where they're bound.
+    over: BTreeSet<Var>,
+}
+
+impl Linear<'_> {
+    /// Takes `vars`, which are bound here, out of `c`, which then only
+    /// counts what's bound outside, noting those used more than once.
+    fn bound(&mut self, c: &mut Counts, vars: &[Var]) {
+        for v in vars {
+            if c.remove(v).is_some_and(|n| n > 1) {
+                self.over.insert(*v);
+            }
+        }
+    }
 }
 
 impl Linear<'_> {
@@ -1172,101 +1194,81 @@ impl Linear<'_> {
     }
 
     fn uses(&mut self, b: &Block) -> Counts {
-        let mut c = Counts::new();
-        // Counting a continuation's references isn't using it.
-        for l in b.lets.iter().filter(|l| !l.op.is_count()) {
-            add(&mut c, &self.atoms(&l.args));
-        }
-        let tail = match &b.tail {
-            Tail::Jump { target, args, .. } => {
-                let mut c = self.atoms(args);
-                if let Some(l) = self.labels.get(target) {
-                    add(&mut c, l);
-                }
-                c
+        crate::deep(|| {
+            let mut c = Counts::new();
+            // Counting a continuation's references isn't using it.
+            for l in b.lets.iter().filter(|l| !l.op.is_count()) {
+                add(&mut c, &self.atoms(&l.args));
             }
-            Tail::Case {
-                scrut,
-                arms,
-                default,
-            } => {
-                let mut paths = Counts::new();
-                for arm in arms {
-                    max_into(&mut paths, &self.uses(&arm.body));
-                }
-                if let Some(default) = default {
-                    max_into(&mut paths, &self.uses(default));
-                }
-                let mut c = self.atoms([scrut]);
-                add(&mut c, &paths);
-                c
-            }
-            Tail::Join { rec, defs, body } => {
-                if *rec {
-                    for def in defs {
-                        self.labels.insert(def.label, Counts::new());
+            let tail = match &b.tail {
+                Tail::Jump { target, args, .. } => {
+                    let mut c = self.atoms(args);
+                    if let Some(l) = self.labels.get(target) {
+                        add(&mut c, l);
                     }
-                    // Counts only grow and are capped, so this ends.
-                    loop {
-                        let mut changed = false;
+                    c
+                }
+                Tail::Case {
+                    scrut,
+                    arms,
+                    default,
+                } => {
+                    let mut paths = Counts::new();
+                    for arm in arms {
+                        max_into(&mut paths, &self.uses(&arm.body));
+                    }
+                    if let Some(default) = default {
+                        max_into(&mut paths, &self.uses(default));
+                    }
+                    let mut c = self.atoms([scrut]);
+                    add(&mut c, &paths);
+                    c
+                }
+                Tail::Join { rec, defs, body } => {
+                    if *rec {
                         for def in defs {
-                            let c = self.def_uses(def);
-                            if self.labels.get(&def.label) != Some(&c) {
-                                self.labels.insert(def.label, c);
-                                changed = true;
+                            self.labels.insert(def.label, Counts::new());
+                        }
+                        // Counts only grow and are capped, so this ends.
+                        loop {
+                            let mut changed = false;
+                            for def in defs {
+                                let c = self.def_uses(def);
+                                if self.labels.get(&def.label) != Some(&c) {
+                                    self.labels.insert(def.label, c);
+                                    changed = true;
+                                }
+                            }
+                            if !changed {
+                                break;
                             }
                         }
-                        if !changed {
-                            break;
+                    } else {
+                        for def in defs {
+                            let c = self.def_uses(def);
+                            self.labels.insert(def.label, c);
                         }
                     }
-                } else {
-                    for def in defs {
-                        let c = self.def_uses(def);
-                        self.labels.insert(def.label, c);
-                    }
+                    self.uses(body)
                 }
-                self.uses(body)
+                Tail::Unreachable | Tail::Trap => Counts::new(),
+            };
+            add(&mut c, &tail);
+            for l in &b.lets {
+                self.bound(&mut c, &l.binds);
             }
-            Tail::Unreachable | Tail::Trap => Counts::new(),
-        };
-        add(&mut c, &tail);
-        c
+            c
+        })
     }
 
     /// What a join point's body uses, of variables bound outside it: those
     /// bound inside are new each time the join point is entered.
     fn def_uses(&mut self, def: &JoinDef) -> Counts {
-        let mut c = self.uses(&def.body);
-        let mut inner = BTreeSet::from_iter(def.params.iter().copied());
-        binds(&def.body, &mut inner);
-        c.retain(|v, _| !inner.contains(v));
-        c
-    }
-}
-
-/// Every variable a block binds.
-fn binds(b: &Block, out: &mut BTreeSet<Var>) {
-    for l in &b.lets {
-        out.extend(l.binds.iter().copied());
-    }
-    match &b.tail {
-        Tail::Join { defs, body, .. } => {
-            for def in defs {
-                out.extend(def.params.iter().copied());
-                binds(&def.body, out);
-            }
-            binds(body, out);
-        }
-        Tail::Case { arms, default, .. } => {
-            for arm in arms {
-                binds(&arm.body, out);
-            }
-            if let Some(default) = default {
-                binds(default, out);
-            }
-        }
-        Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
+        crate::deep(|| {
+            let mut c = self.uses(&def.body);
+            self.bound(&mut c, &def.params);
+            c
+        })
     }
 }
 

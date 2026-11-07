@@ -70,70 +70,72 @@ pub(super) struct Specialize<'a> {
 
 impl Specialize<'_> {
     fn block(&mut self, mut b: Block) -> Block {
-        self.push_dups(&mut b);
-        cancel_dups(&mut b.lets);
-        for d in 0..b.lets.len() {
-            if let Some(clone) = self.freezes(&b.lets, d) {
-                let mut rest_lets = b.lets.split_off(clone + 1);
-                rest_lets.remove(d - clone - 1);
-                let l = b.lets.pop().unwrap();
-                let rest = self.block(Block {
-                    lets: rest_lets,
-                    tail: b.tail,
-                });
-                let mut lets = b.lets;
-                let tail = self.freeze(l, rest, &mut lets);
-                return Block { lets, tail };
-            }
-            if let Some((c, sinks)) = self.sinks(&b.lets, d) {
-                let rest_lets = b.lets.split_off(d + 1);
-                let drop = b.lets.pop().unwrap();
-                let rest = self.block(Block {
-                    lets: rest_lets,
-                    tail: b.tail,
-                });
-                let mut lets = b.lets;
-                let moved: Vec<(u32, Var)> = sinks.iter().map(|s| (s.field, s.var)).collect();
-                let mut at: Vec<usize> = sinks.iter().map(|s| s.at).collect();
-                at.sort_unstable();
-                for s in at.into_iter().rev() {
-                    lets.remove(s);
+        conduit_ir::deep(|| {
+            self.push_dups(&mut b);
+            cancel_dups(&mut b.lets);
+            for d in 0..b.lets.len() {
+                if let Some(clone) = self.freezes(&b.lets, d) {
+                    let mut rest_lets = b.lets.split_off(clone + 1);
+                    rest_lets.remove(d - clone - 1);
+                    let l = b.lets.pop().unwrap();
+                    let rest = self.block(Block {
+                        lets: rest_lets,
+                        tail: b.tail,
+                    });
+                    let mut lets = b.lets;
+                    let tail = self.freeze(l, rest, &mut lets);
+                    return Block { lets, tail };
                 }
-                let token = drop.binds.first().copied();
-                let tail = self.expand(&drop.args[0], c, &moved, token, rest, &mut lets);
-                return Block { lets, tail };
+                if let Some((c, sinks)) = self.sinks(&b.lets, d) {
+                    let rest_lets = b.lets.split_off(d + 1);
+                    let drop = b.lets.pop().unwrap();
+                    let rest = self.block(Block {
+                        lets: rest_lets,
+                        tail: b.tail,
+                    });
+                    let mut lets = b.lets;
+                    let moved: Vec<(u32, Var)> = sinks.iter().map(|s| (s.field, s.var)).collect();
+                    let mut at: Vec<usize> = sinks.iter().map(|s| s.at).collect();
+                    at.sort_unstable();
+                    for s in at.into_iter().rev() {
+                        lets.remove(s);
+                    }
+                    let token = drop.binds.first().copied();
+                    let tail = self.expand(&drop.args[0], c, &moved, token, rest, &mut lets);
+                    return Block { lets, tail };
+                }
             }
-        }
-        b.tail = match b.tail {
-            Tail::Case {
-                scrut,
-                arms,
-                default,
-            } => Tail::Case {
-                scrut,
-                arms: arms
-                    .into_iter()
-                    .map(|mut arm| {
-                        arm.body = self.block(arm.body);
-                        arm
-                    })
-                    .collect(),
-                default: default.map(|d| Box::new(self.block(*d))),
-            },
-            Tail::Join { rec, defs, body } => Tail::Join {
-                rec,
-                defs: defs
-                    .into_iter()
-                    .map(|mut def| {
-                        def.body = self.block(def.body);
-                        def
-                    })
-                    .collect(),
-                body: Box::new(self.block(*body)),
-            },
-            tail => tail,
-        };
-        b
+            b.tail = match b.tail {
+                Tail::Case {
+                    scrut,
+                    arms,
+                    default,
+                } => Tail::Case {
+                    scrut,
+                    arms: arms
+                        .into_iter()
+                        .map(|mut arm| {
+                            arm.body = self.block(arm.body);
+                            arm
+                        })
+                        .collect(),
+                    default: default.map(|d| Box::new(self.block(*d))),
+                },
+                Tail::Join { rec, defs, body } => Tail::Join {
+                    rec,
+                    defs: defs
+                        .into_iter()
+                        .map(|mut def| {
+                            def.body = self.block(def.body);
+                            def
+                        })
+                        .collect(),
+                    body: Box::new(self.block(*body)),
+                },
+                tail => tail,
+            };
+            b
+        })
     }
 
     /// Moves the `dup`s at the end of `b` of fields read from an object that
@@ -143,42 +145,54 @@ impl Specialize<'_> {
     /// field nor the object, since a `drop` of the object could free the
     /// field.
     fn push_dups(&self, b: &mut Block) {
-        let Tail::Case { arms, default, .. } = &mut b.tail else {
-            return;
-        };
-        let mut dropped = Set::new();
-        for body in arms.iter().map(|a| &a.body).chain(default.as_deref()) {
-            dropped_in(body, &mut dropped);
-        }
-        let mut moved = Vec::new();
-        for s in (0..b.lets.len()).rev() {
-            let (Op::Dup, [Atom::Var(y)]) = (&b.lets[s].op, &b.lets[s].args[..]) else {
-                continue;
+        conduit_ir::deep(|| {
+            let Tail::Case { arms, default, .. } = &mut b.tail else {
+                return;
             };
-            let Some(&(x, ..)) = self.reads.get(y) else {
-                continue;
-            };
-            let touched = b.lets[s + 1..].iter().any(|l| {
-                (l.args.iter().enumerate()).any(|(p, a)| {
-                    (*a == Atom::Var(*y) || *a == Atom::Var(x))
-                        && (l.op.is_count() || takes(&l.op, p))
-                })
+            // Only a `dup` of a field read can move, so the branches, which
+            // hold every `case` nested in them, are only looked through for
+            // one.
+            let any = b.lets.iter().any(|l| match (&l.op, &l.args[..]) {
+                (Op::Dup, [Atom::Var(y)]) => self.reads.contains_key(y),
+                _ => false,
             });
-            if dropped.contains(&x) && !touched {
-                moved.push(b.lets.remove(s));
+            if !any {
+                return;
             }
-        }
-        if moved.is_empty() {
-            return;
-        }
-        moved.reverse();
-        for body in arms
-            .iter_mut()
-            .map(|a| &mut a.body)
-            .chain(default.as_deref_mut())
-        {
-            body.lets.splice(0..0, moved.iter().cloned());
-        }
+            let mut dropped = Set::new();
+            for body in arms.iter().map(|a| &a.body).chain(default.as_deref()) {
+                dropped_in(body, &mut dropped);
+            }
+            let mut moved = Vec::new();
+            for s in (0..b.lets.len()).rev() {
+                let (Op::Dup, [Atom::Var(y)]) = (&b.lets[s].op, &b.lets[s].args[..]) else {
+                    continue;
+                };
+                let Some(&(x, ..)) = self.reads.get(y) else {
+                    continue;
+                };
+                let touched = b.lets[s + 1..].iter().any(|l| {
+                    (l.args.iter().enumerate()).any(|(p, a)| {
+                        (*a == Atom::Var(*y) || *a == Atom::Var(x))
+                            && (l.op.is_count() || takes(&l.op, p))
+                    })
+                });
+                if dropped.contains(&x) && !touched {
+                    moved.push(b.lets.remove(s));
+                }
+            }
+            if moved.is_empty() {
+                return;
+            }
+            moved.reverse();
+            for body in arms
+                .iter_mut()
+                .map(|a| &mut a.body)
+                .chain(default.as_deref_mut())
+            {
+                body.lets.splice(0..0, moved.iter().cloned());
+            }
+        })
     }
 
     /// If `lets[d]` is a `drop(a)` whose array was last used by an
@@ -415,16 +429,18 @@ pub(super) fn count_atom(op: Op, a: &Atom) -> Let {
 /// The variables a `drop` or `drop_reuse` in `b` takes, in its own block or
 /// in the branches of its `case`s.
 pub(super) fn dropped_in(b: &Block, out: &mut Set) {
-    for l in &b.lets {
-        if let (Op::Drop | Op::DropReuse, [Atom::Var(x)]) = (&l.op, &l.args[..]) {
-            out.insert(*x);
+    conduit_ir::deep(|| {
+        for l in &b.lets {
+            if let (Op::Drop | Op::DropReuse, [Atom::Var(x)]) = (&l.op, &l.args[..]) {
+                out.insert(*x);
+            }
         }
-    }
-    if let Tail::Case { arms, default, .. } = &b.tail {
-        for body in arms.iter().map(|a| &a.body).chain(default.as_deref()) {
-            dropped_in(body, out);
+        if let Tail::Case { arms, default, .. } = &b.tail {
+            for body in arms.iter().map(|a| &a.body).chain(default.as_deref()) {
+                dropped_in(body, out);
+            }
         }
-    }
+    })
 }
 
 /// Removes each `dup(y)` that a `drop(y)` follows in `lets` with no use of

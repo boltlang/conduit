@@ -144,39 +144,41 @@ fn needs(f: &Func, refs: &BTreeSet<Var>) -> Vec<BTreeSet<Var>> {
 /// The promoted refs that a path from the start of `b` reads before
 /// writing, given what each label needs.
 fn live_in(b: &Block, refs: &BTreeSet<Var>, needs: &[BTreeSet<Var>]) -> BTreeSet<Var> {
-    let mut live = match &b.tail {
-        Tail::Jump { target, .. } => needs[target.0 as usize].clone(),
-        Tail::Case { arms, default, .. } => {
-            let mut live = BTreeSet::new();
-            for arm in arms {
-                live.extend(live_in(&arm.body, refs, needs));
-            }
-            if let Some(d) = default {
-                live.extend(live_in(d, refs, needs));
-            }
-            live
-        }
-        // The definitions only run when jumped to.
-        Tail::Join { body, .. } => live_in(body, refs, needs),
-        Tail::Unreachable | Tail::Trap => BTreeSet::new(),
-    };
-    for l in b.lets.iter().rev() {
-        match (&l.op, l.args.first()) {
-            (Op::RefNew, _) => {
-                for v in &l.binds {
-                    live.remove(v);
+    conduit_ir::deep(|| {
+        let mut live = match &b.tail {
+            Tail::Jump { target, .. } => needs[target.0 as usize].clone(),
+            Tail::Case { arms, default, .. } => {
+                let mut live = BTreeSet::new();
+                for arm in arms {
+                    live.extend(live_in(&arm.body, refs, needs));
                 }
+                if let Some(d) = default {
+                    live.extend(live_in(d, refs, needs));
+                }
+                live
             }
-            (Op::RefSet, Some(Atom::Var(r))) => {
-                live.remove(r);
+            // The definitions only run when jumped to.
+            Tail::Join { body, .. } => live_in(body, refs, needs),
+            Tail::Unreachable | Tail::Trap => BTreeSet::new(),
+        };
+        for l in b.lets.iter().rev() {
+            match (&l.op, l.args.first()) {
+                (Op::RefNew, _) => {
+                    for v in &l.binds {
+                        live.remove(v);
+                    }
+                }
+                (Op::RefSet, Some(Atom::Var(r))) => {
+                    live.remove(r);
+                }
+                (Op::RefGet, Some(Atom::Var(r))) if refs.contains(r) => {
+                    live.insert(*r);
+                }
+                _ => {}
             }
-            (Op::RefGet, Some(Atom::Var(r))) if refs.contains(r) => {
-                live.insert(*r);
-            }
-            _ => {}
         }
-    }
-    live
+        live
+    })
 }
 
 struct Rewrite<'a> {
@@ -213,83 +215,85 @@ impl Rewrite<'_> {
     }
 
     fn block(&mut self, b: Block, cur: &mut Current) -> Block {
-        let mut lets = Vec::with_capacity(b.lets.len());
-        for mut l in b.lets {
-            l.args = self.atoms(l.args);
-            let promoted = |a: Option<&Atom>| match a {
-                Some(Atom::Var(r)) if self.refs.contains(r) => Some(*r),
-                _ => None,
-            };
-            match l.op {
-                Op::RefNew if l.binds.len() == 1 && self.refs.contains(&l.binds[0]) => {
-                    cur.insert(l.binds[0], l.args[0].clone());
-                }
-                Op::RefGet if let Some(r) = promoted(l.args.first()) => {
-                    let value = Self::current(cur, r);
-                    for b in l.binds {
-                        self.subst.insert(b, value.clone());
+        conduit_ir::deep(|| {
+            let mut lets = Vec::with_capacity(b.lets.len());
+            for mut l in b.lets {
+                l.args = self.atoms(l.args);
+                let promoted = |a: Option<&Atom>| match a {
+                    Some(Atom::Var(r)) if self.refs.contains(r) => Some(*r),
+                    _ => None,
+                };
+                match l.op {
+                    Op::RefNew if l.binds.len() == 1 && self.refs.contains(&l.binds[0]) => {
+                        cur.insert(l.binds[0], l.args[0].clone());
                     }
+                    Op::RefGet if let Some(r) = promoted(l.args.first()) => {
+                        let value = Self::current(cur, r);
+                        for b in l.binds {
+                            self.subst.insert(b, value.clone());
+                        }
+                    }
+                    Op::RefSet if let Some(r) = promoted(l.args.first()) => {
+                        cur.insert(r, l.args[1].clone());
+                    }
+                    _ => lets.push(l),
                 }
-                Op::RefSet if let Some(r) = promoted(l.args.first()) => {
-                    cur.insert(r, l.args[1].clone());
-                }
-                _ => lets.push(l),
             }
-        }
-        let tail = match b.tail {
-            Tail::Jump {
-                target,
-                args,
-                source,
-            } => {
-                let mut args = self.atoms(args);
-                for &(r, _) in &self.params[target.0 as usize] {
-                    args.push(Self::current(cur, r));
-                }
+            let tail = match b.tail {
                 Tail::Jump {
                     target,
                     args,
                     source,
+                } => {
+                    let mut args = self.atoms(args);
+                    for &(r, _) in &self.params[target.0 as usize] {
+                        args.push(Self::current(cur, r));
+                    }
+                    Tail::Jump {
+                        target,
+                        args,
+                        source,
+                    }
                 }
-            }
-            Tail::Case {
-                scrut,
-                arms,
-                default,
-            } => Tail::Case {
-                scrut: self.atom(scrut),
-                arms: arms
-                    .into_iter()
-                    .map(|mut arm| {
-                        arm.body = self.block(arm.body, &mut cur.clone());
-                        arm
-                    })
-                    .collect(),
-                default: default.map(|d| Box::new(self.block(*d, &mut cur.clone()))),
-            },
-            Tail::Join { rec, defs, body } => {
-                let defs = defs
-                    .into_iter()
-                    .map(|mut def| {
-                        // A definition starts with what's passed to it.
-                        let mut start = Current::new();
-                        for &(r, p) in &self.params[def.label.0 as usize] {
-                            def.params.push(p);
-                            start.insert(r, Atom::Var(p));
-                        }
-                        def.body = self.block(def.body, &mut start);
-                        def
-                    })
-                    .collect();
-                Tail::Join {
-                    rec,
-                    defs,
-                    body: Box::new(self.block(*body, cur)),
+                Tail::Case {
+                    scrut,
+                    arms,
+                    default,
+                } => Tail::Case {
+                    scrut: self.atom(scrut),
+                    arms: arms
+                        .into_iter()
+                        .map(|mut arm| {
+                            arm.body = self.block(arm.body, &mut cur.clone());
+                            arm
+                        })
+                        .collect(),
+                    default: default.map(|d| Box::new(self.block(*d, &mut cur.clone()))),
+                },
+                Tail::Join { rec, defs, body } => {
+                    let defs = defs
+                        .into_iter()
+                        .map(|mut def| {
+                            // A definition starts with what's passed to it.
+                            let mut start = Current::new();
+                            for &(r, p) in &self.params[def.label.0 as usize] {
+                                def.params.push(p);
+                                start.insert(r, Atom::Var(p));
+                            }
+                            def.body = self.block(def.body, &mut start);
+                            def
+                        })
+                        .collect();
+                    Tail::Join {
+                        rec,
+                        defs,
+                        body: Box::new(self.block(*body, cur)),
+                    }
                 }
-            }
-            Tail::Unreachable => Tail::Unreachable,
-            Tail::Trap => Tail::Trap,
-        };
-        Block { lets, tail }
+                Tail::Unreachable => Tail::Unreachable,
+                Tail::Trap => Tail::Trap,
+            };
+            Block { lets, tail }
+        })
     }
 }

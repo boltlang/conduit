@@ -95,61 +95,63 @@ impl Rename<'_> {
     }
 
     pub fn block(&mut self, b: &Block, f: &mut Func) -> Block {
-        let lets = b
-            .lets
-            .iter()
-            .map(|l| Let {
-                args: self.atoms(&l.args, f),
-                binds: l.binds.iter().map(|&v| self.var(v, f)).collect(),
-                op: self.op(&l.op),
-                source: l.source.or(self.source),
-            })
-            .collect();
-        let tail = match &b.tail {
-            Tail::Join { rec, defs, body } => {
-                // Labels first: a recursive definition can jump to itself.
-                let labels: Vec<Label> = defs.iter().map(|d| self.label(d.label, f)).collect();
-                Tail::Join {
-                    rec: *rec,
-                    defs: defs
+        conduit_ir::deep(|| {
+            let lets = b
+                .lets
+                .iter()
+                .map(|l| Let {
+                    args: self.atoms(&l.args, f),
+                    binds: l.binds.iter().map(|&v| self.var(v, f)).collect(),
+                    op: self.op(&l.op),
+                    source: l.source.or(self.source),
+                })
+                .collect();
+            let tail = match &b.tail {
+                Tail::Join { rec, defs, body } => {
+                    // Labels first: a recursive definition can jump to itself.
+                    let labels: Vec<Label> = defs.iter().map(|d| self.label(d.label, f)).collect();
+                    Tail::Join {
+                        rec: *rec,
+                        defs: defs
+                            .iter()
+                            .zip(labels)
+                            .map(|(d, label)| JoinDef {
+                                label,
+                                params: d.params.iter().map(|&v| self.var(v, f)).collect(),
+                                body: self.block(&d.body, f),
+                            })
+                            .collect(),
+                        body: Box::new(self.block(body, f)),
+                    }
+                }
+                Tail::Jump {
+                    target,
+                    args,
+                    source,
+                } => Tail::Jump {
+                    target: self.label(*target, f),
+                    args: self.atoms(args, f),
+                    source: source.or(self.source),
+                },
+                Tail::Case {
+                    scrut,
+                    arms,
+                    default,
+                } => Tail::Case {
+                    scrut: self.atom(scrut.clone(), f),
+                    arms: arms
                         .iter()
-                        .zip(labels)
-                        .map(|(d, label)| JoinDef {
-                            label,
-                            params: d.params.iter().map(|&v| self.var(v, f)).collect(),
-                            body: self.block(&d.body, f),
+                        .map(|a| Arm {
+                            tag: a.tag,
+                            body: self.block(&a.body, f),
                         })
                         .collect(),
-                    body: Box::new(self.block(body, f)),
-                }
-            }
-            Tail::Jump {
-                target,
-                args,
-                source,
-            } => Tail::Jump {
-                target: self.label(*target, f),
-                args: self.atoms(args, f),
-                source: source.or(self.source),
-            },
-            Tail::Case {
-                scrut,
-                arms,
-                default,
-            } => Tail::Case {
-                scrut: self.atom(scrut.clone(), f),
-                arms: arms
-                    .iter()
-                    .map(|a| Arm {
-                        tag: a.tag,
-                        body: self.block(&a.body, f),
-                    })
-                    .collect(),
-                default: default.as_deref().map(|d| Box::new(self.block(d, f))),
-            },
-            Tail::Unreachable => Tail::Unreachable,
-            Tail::Trap => Tail::Trap,
-        };
-        Block { lets, tail }
+                    default: default.as_deref().map(|d| Box::new(self.block(d, f))),
+                },
+                Tail::Unreachable => Tail::Unreachable,
+                Tail::Trap => Tail::Trap,
+            };
+            Block { lets, tail }
+        })
     }
 }

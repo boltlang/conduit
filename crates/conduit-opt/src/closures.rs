@@ -60,46 +60,48 @@ struct Cx<'f> {
 
 impl Cx<'_> {
     fn block(&mut self, b: &mut Block) {
-        for l in &mut b.lets {
-            if l.op == Op::Apply
-                && let Some(Atom::Var(c)) = l.args.first()
-                && let Some(made) = self.closures.get(c)
-            {
-                l.op = Op::Call(made.func, made.margs.clone(), made.rows.clone());
-                l.args.splice(..1, made.captures.iter().cloned());
-                self.changed = true;
-            }
-            let captures_cont = l.args.iter().any(|a| {
+        conduit_ir::deep(|| {
+            for l in &mut b.lets {
+                if l.op == Op::Apply
+                    && let Some(Atom::Var(c)) = l.args.first()
+                    && let Some(made) = self.closures.get(c)
+                {
+                    l.op = Op::Call(made.func, made.margs.clone(), made.rows.clone());
+                    l.args.splice(..1, made.captures.iter().cloned());
+                    self.changed = true;
+                }
+                let captures_cont = l.args.iter().any(|a| {
                 matches!(a, Atom::Var(v) if matches!(self.vars.get(v.0 as usize), Some(Ty::Cont(_))))
             });
-            if let (Op::Closure(g, margs, rows), [v]) = (&l.op, &l.binds[..])
-                && !captures_cont
-            {
-                let made = Made {
-                    func: *g,
-                    margs: margs.clone(),
-                    rows: rows.clone(),
-                    captures: l.args.clone(),
-                };
-                self.closures.insert(*v, made);
-            }
-        }
-        match &mut b.tail {
-            Tail::Join { defs, body, .. } => {
-                for d in defs {
-                    self.block(&mut d.body);
-                }
-                self.block(body);
-            }
-            Tail::Case { arms, default, .. } => {
-                for a in arms {
-                    self.block(&mut a.body);
-                }
-                if let Some(d) = default {
-                    self.block(d);
+                if let (Op::Closure(g, margs, rows), [v]) = (&l.op, &l.binds[..])
+                    && !captures_cont
+                {
+                    let made = Made {
+                        func: *g,
+                        margs: margs.clone(),
+                        rows: rows.clone(),
+                        captures: l.args.clone(),
+                    };
+                    self.closures.insert(*v, made);
                 }
             }
-            Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
-        }
+            match &mut b.tail {
+                Tail::Join { defs, body, .. } => {
+                    for d in defs {
+                        self.block(&mut d.body);
+                    }
+                    self.block(body);
+                }
+                Tail::Case { arms, default, .. } => {
+                    for a in arms {
+                        self.block(&mut a.body);
+                    }
+                    if let Some(d) = default {
+                        self.block(d);
+                    }
+                }
+                Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
+            }
+        })
     }
 }

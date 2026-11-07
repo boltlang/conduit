@@ -153,41 +153,43 @@ struct Cx<'a> {
 
 impl Cx<'_> {
     fn block(&self, mut b: Block) -> Block {
-        let mut lets = Vec::with_capacity(b.lets.len());
-        for l in std::mem::take(&mut b.lets) {
-            self.let_(l, &mut lets);
-        }
-        b.lets = lets;
-        b.tail = match b.tail {
-            Tail::Join { rec, defs, body } => Tail::Join {
-                rec,
-                defs: defs
-                    .into_iter()
-                    .map(|mut d| {
-                        d.body = self.block(d.body);
-                        d
-                    })
-                    .collect(),
-                body: Box::new(self.block(*body)),
-            },
-            Tail::Case {
-                scrut,
-                arms,
-                default,
-            } => Tail::Case {
-                scrut,
-                arms: arms
-                    .into_iter()
-                    .map(|mut a| {
-                        a.body = self.block(a.body);
-                        a
-                    })
-                    .collect(),
-                default: default.map(|d| Box::new(self.block(*d))),
-            },
-            t => t,
-        };
-        b
+        conduit_ir::deep(|| {
+            let mut lets = Vec::with_capacity(b.lets.len());
+            for l in std::mem::take(&mut b.lets) {
+                self.let_(l, &mut lets);
+            }
+            b.lets = lets;
+            b.tail = match b.tail {
+                Tail::Join { rec, defs, body } => Tail::Join {
+                    rec,
+                    defs: defs
+                        .into_iter()
+                        .map(|mut d| {
+                            d.body = self.block(d.body);
+                            d
+                        })
+                        .collect(),
+                    body: Box::new(self.block(*body)),
+                },
+                Tail::Case {
+                    scrut,
+                    arms,
+                    default,
+                } => Tail::Case {
+                    scrut,
+                    arms: arms
+                        .into_iter()
+                        .map(|mut a| {
+                            a.body = self.block(a.body);
+                            a
+                        })
+                        .collect(),
+                    default: default.map(|d| Box::new(self.block(*d))),
+                },
+                t => t,
+            };
+            b
+        })
     }
 
     fn let_(&self, l: Let, lets: &mut Vec<Let>) {

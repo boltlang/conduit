@@ -127,22 +127,24 @@ impl<'f> Cx<'f> {
     }
 
     fn block(&mut self, b: Block) -> Block {
-        let mut lets = Vec::with_capacity(b.lets.len());
-        let mut next = b;
-        loop {
-            for l in next.lets {
-                self.let_(l, &mut lets);
-            }
-            match self.tail(next.tail) {
-                Ok(tail) => return Block { lets, tail },
-                // The arm a `case` takes: its `let`s go after these, and
-                // its tail is this block's.
-                Err(arm) => {
-                    self.changed = true;
-                    next = arm;
+        conduit_ir::deep(|| {
+            let mut lets = Vec::with_capacity(b.lets.len());
+            let mut next = b;
+            loop {
+                for l in next.lets {
+                    self.let_(l, &mut lets);
+                }
+                match self.tail(next.tail) {
+                    Ok(tail) => return Block { lets, tail },
+                    // The arm a `case` takes: its `let`s go after these, and
+                    // its tail is this block's.
+                    Err(arm) => {
+                        self.changed = true;
+                        next = arm;
+                    }
                 }
             }
-        }
+        })
     }
 
     fn let_(&mut self, mut l: Let, lets: &mut Vec<Let>) {
@@ -294,121 +296,125 @@ impl<'f> Cx<'f> {
     /// `t` simplified, or `Err` with the arm it takes if it's a `case` of
     /// a known value.
     fn tail(&mut self, t: Tail) -> Result<Tail, Block> {
-        Ok(match t {
-            Tail::Jump {
-                target,
-                mut args,
-                source,
-            } => {
-                args.iter_mut().for_each(|a| self.atom(a));
+        conduit_ir::deep(|| {
+            Ok(match t {
                 Tail::Jump {
                     target,
-                    args,
+                    mut args,
                     source,
+                } => {
+                    args.iter_mut().for_each(|a| self.atom(a));
+                    Tail::Jump {
+                        target,
+                        args,
+                        source,
+                    }
                 }
-            }
-            Tail::Case {
-                mut scrut,
-                arms,
-                default,
-            } => {
-                self.atom(&mut scrut);
-                if let Some(tag) = self.tag(&scrut) {
-                    let taken = arms.iter().position(|a| a.tag == tag);
-                    match taken {
-                        Some(i) => return Err(arms.into_iter().nth(i).unwrap().body),
-                        None => {
-                            if let Some(d) = default {
-                                return Err(*d);
+                Tail::Case {
+                    mut scrut,
+                    arms,
+                    default,
+                } => {
+                    self.atom(&mut scrut);
+                    if let Some(tag) = self.tag(&scrut) {
+                        let taken = arms.iter().position(|a| a.tag == tag);
+                        match taken {
+                            Some(i) => return Err(arms.into_iter().nth(i).unwrap().body),
+                            None => {
+                                if let Some(d) = default {
+                                    return Err(*d);
+                                }
                             }
                         }
                     }
-                }
-                // An arm that's only `unreachable` is never taken. With
-                // none left, the `case` isn't reached either, and with one,
-                // it's that arm, unless it reads a field of what the
-                // `case` is on, which only the arm shows can be read.
-                let dead = |b: &Block| b.lets.is_empty() && matches!(b.tail, Tail::Unreachable);
-                let total = arms.len() + usize::from(default.is_some());
-                let live = arms.iter().filter(|a| !dead(&a.body)).count()
-                    + usize::from(default.as_deref().is_some_and(|d| !dead(d)));
-                if live == 0 {
-                    self.changed = true;
-                    return Ok(Tail::Unreachable);
-                }
-                if live == 1 && total > 1 {
-                    let only = arms
-                        .iter()
-                        .map(|a| &a.body)
-                        .chain(default.as_deref())
-                        .find(|b| !dead(b))
-                        .unwrap();
-                    if !reads_fields(only, &scrut) {
+                    // An arm that's only `unreachable` is never taken. With
+                    // none left, the `case` isn't reached either, and with one,
+                    // it's that arm, unless it reads a field of what the
+                    // `case` is on, which only the arm shows can be read.
+                    let dead = |b: &Block| b.lets.is_empty() && matches!(b.tail, Tail::Unreachable);
+                    let total = arms.len() + usize::from(default.is_some());
+                    let live = arms.iter().filter(|a| !dead(&a.body)).count()
+                        + usize::from(default.as_deref().is_some_and(|d| !dead(d)));
+                    if live == 0 {
+                        self.changed = true;
+                        return Ok(Tail::Unreachable);
+                    }
+                    if live == 1 && total > 1 {
                         let only = arms
-                            .into_iter()
-                            .map(|a| a.body)
-                            .chain(default.map(|d| *d))
+                            .iter()
+                            .map(|a| &a.body)
+                            .chain(default.as_deref())
                             .find(|b| !dead(b))
                             .unwrap();
-                        return Err(only);
+                        if !reads_fields(only, &scrut) {
+                            let only = arms
+                                .into_iter()
+                                .map(|a| a.body)
+                                .chain(default.map(|d| *d))
+                                .find(|b| !dead(b))
+                                .unwrap();
+                            return Err(only);
+                        }
+                    }
+                    let arms = arms
+                        .into_iter()
+                        .map(|a| Arm {
+                            tag: a.tag,
+                            body: self.arm(&scrut, a.tag, a.body),
+                        })
+                        .collect();
+                    Tail::Case {
+                        scrut,
+                        arms,
+                        default: default.map(|d| Box::new(self.block(*d))),
                     }
                 }
-                let arms = arms
-                    .into_iter()
-                    .map(|a| Arm {
-                        tag: a.tag,
-                        body: self.arm(&scrut, a.tag, a.body),
-                    })
-                    .collect();
-                Tail::Case {
-                    scrut,
-                    arms,
-                    default: default.map(|d| Box::new(self.block(*d))),
-                }
-            }
-            Tail::Join { rec, defs, body } => Tail::Join {
-                rec,
-                defs: defs
-                    .into_iter()
-                    .map(|d| JoinDef {
-                        body: self.block(d.body),
-                        ..d
-                    })
-                    .collect(),
-                body: Box::new(self.block(*body)),
-            },
-            Tail::Unreachable => Tail::Unreachable,
-            Tail::Trap => Tail::Trap,
+                Tail::Join { rec, defs, body } => Tail::Join {
+                    rec,
+                    defs: defs
+                        .into_iter()
+                        .map(|d| JoinDef {
+                            body: self.block(d.body),
+                            ..d
+                        })
+                        .collect(),
+                    body: Box::new(self.block(*body)),
+                },
+                Tail::Unreachable => Tail::Unreachable,
+                Tail::Trap => Tail::Trap,
+            })
         })
     }
 
     /// The arm `tag` of a `case` on `scrut`, simplified knowing that it
     /// matched.
     fn arm(&mut self, scrut: &Atom, tag: Tag, body: Block) -> Block {
-        let Atom::Var(x) = scrut else {
-            return self.block(body);
-        };
-        match tag {
-            Tag::Ctor(c) => {
-                self.arms.push((*x, c));
-                let body = self.block(body);
-                self.arms.pop();
-                body
+        conduit_ir::deep(|| {
+            let Atom::Var(x) = scrut else {
+                return self.block(body);
+            };
+            match tag {
+                Tag::Ctor(c) => {
+                    self.arms.push((*x, c));
+                    let body = self.block(body);
+                    self.arms.pop();
+                    body
+                }
+                Tag::Int(n) => {
+                    let lit = match self.vars[x.0 as usize] {
+                        Ty::I8 => Lit::I8(n as i8),
+                        Ty::I16 => Lit::I16(n as i16),
+                        Ty::I32 => Lit::I32(n as i32),
+                        Ty::I64 => Lit::I64(n),
+                        _ => return self.block(body),
+                    };
+                    self.subst.insert(*x, Atom::Lit(lit));
+                    let body = self.block(body);
+                    self.subst.remove(x);
+                    body
+                }
             }
-            Tag::Int(n) => {
-                let lit = match self.vars[x.0 as usize] {
-                    Ty::I8 => Lit::I8(n as i8),
-                    Ty::I16 => Lit::I16(n as i16),
-                    Ty::I32 => Lit::I32(n as i32),
-                    Ty::I64 => Lit::I64(n),
-                    _ => return self.block(body),
-                };
-                self.subst.insert(*x, Atom::Lit(lit));
-                let body = self.block(body);
-                self.subst.remove(x);
-                body
-            }
-        }
+        })
     }
 
     /// The tag a `case` on `scrut` matches, if it's known.

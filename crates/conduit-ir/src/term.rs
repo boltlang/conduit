@@ -54,10 +54,49 @@ impl std::fmt::Display for Atom {
 /// The `let`s are a list rather than nested, so that a long function is a
 /// long `Vec`: dropping, cloning, comparing or walking it doesn't recurse.
 /// Blocks only nest through `join` and `case`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+///
+/// Cloning, comparing, hashing and printing it for debugging recurse
+/// through nested blocks, on more stack as they need it (see
+/// [`deep`](crate::deep)).
+#[derive(Eq)]
 pub struct Block {
     pub lets: Vec<Let>,
     pub tail: Tail,
+}
+
+impl Clone for Block {
+    fn clone(&self) -> Block {
+        crate::deep(|| Block {
+            lets: self.lets.clone(),
+            tail: self.tail.clone(),
+        })
+    }
+}
+
+impl PartialEq for Block {
+    fn eq(&self, other: &Block) -> bool {
+        crate::deep(|| self.lets == other.lets && self.tail == other.tail)
+    }
+}
+
+impl std::hash::Hash for Block {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        crate::deep(|| {
+            self.lets.hash(state);
+            self.tail.hash(state);
+        })
+    }
+}
+
+impl std::fmt::Debug for Block {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        crate::deep(|| {
+            f.debug_struct("Block")
+                .field("lets", &self.lets)
+                .field("tail", &self.tail)
+                .finish()
+        })
+    }
 }
 
 impl Block {
@@ -122,6 +161,26 @@ impl Block {
             size += b.lets.len() + 1;
             size > n
         })
+    }
+}
+
+/// Drops `b` without recursing as deep as its blocks nest, which dropping
+/// it as Rust does would, and which can't take more stack as it goes the
+/// way [`deep`](crate::deep) does: its nested blocks are taken out first.
+pub(crate) fn drop_block(b: Block) {
+    let mut todo = vec![b];
+    while let Some(mut b) = todo.pop() {
+        match std::mem::replace(&mut b.tail, Tail::Unreachable) {
+            Tail::Join { defs, body, .. } => {
+                todo.extend(defs.into_iter().map(|d| d.body));
+                todo.push(*body);
+            }
+            Tail::Case { arms, default, .. } => {
+                todo.extend(arms.into_iter().map(|a| a.body));
+                todo.extend(default.map(|d| *d));
+            }
+            Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
+        }
     }
 }
 

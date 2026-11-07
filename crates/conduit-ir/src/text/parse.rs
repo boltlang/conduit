@@ -974,113 +974,119 @@ impl Parser {
     }
 
     fn block(&mut self, info: &mut FuncInfo) -> Res<Block> {
-        let mut lets = Vec::new();
-        while self.eat_keyword("let") {
-            let mut binds = Vec::new();
-            if !self.is_punct("=") {
-                loop {
-                    binds.push(self.binder(info)?);
-                    if !self.eat_punct(",") {
-                        break;
+        crate::deep(|| {
+            let mut lets = Vec::new();
+            while self.eat_keyword("let") {
+                let mut binds = Vec::new();
+                if !self.is_punct("=") {
+                    loop {
+                        binds.push(self.binder(info)?);
+                        if !self.eat_punct(",") {
+                            break;
+                        }
                     }
                 }
+                self.punct("=")?;
+                let op = self.op()?;
+                let args = self.list(|p| p.atom(info))?;
+                let source = self.source()?;
+                lets.push(Let {
+                    binds,
+                    op,
+                    args,
+                    source,
+                });
             }
-            self.punct("=")?;
-            let op = self.op()?;
-            let args = self.list(|p| p.atom(info))?;
-            let source = self.source()?;
-            lets.push(Let {
-                binds,
-                op,
-                args,
-                source,
-            });
-        }
-        let tail = self.tail(info)?;
-        Ok(Block { lets, tail })
+            let tail = self.tail(info)?;
+            Ok(Block { lets, tail })
+        })
     }
 
     /// What ends a block.
     fn tail(&mut self, info: &mut FuncInfo) -> Res<Tail> {
-        let pos = self.pos();
-        let name = self.ident("`let`, `join`, `jump`, `case` or `unreachable`")?;
-        match name.as_str() {
-            "join" => {
-                let rec = self.eat_keyword("rec");
-                let mut defs = Vec::new();
-                loop {
-                    let label_pos = self.pos();
-                    let label = self.label(info)?;
-                    if label == Label::RET {
-                        return self.error_at(label_pos, "`ret` can't be defined");
-                    }
-                    info.max_label = info.max_label.max(label.0);
-                    let params = self.list(|p| p.binder(info))?;
-                    self.punct("=")?;
-                    let body = self.block(info)?;
-                    defs.push(JoinDef {
-                        label,
-                        params,
-                        body,
-                    });
-                    if !self.eat_keyword("and") {
-                        break;
-                    }
-                }
-                self.keyword("in")?;
-                let body = Box::new(self.block(info)?);
-                Ok(Tail::Join { rec, defs, body })
-            }
-            "jump" => {
-                let target = self.label(info)?;
-                let args = self.list(|p| p.atom(info))?;
-                let source = self.source()?;
-                Ok(Tail::Jump {
-                    target,
-                    args,
-                    source,
-                })
-            }
-            "case" => {
-                let scrut = self.atom(info)?;
-                self.punct("{")?;
-                let (mut arms, mut default) = (Vec::new(), None);
-                while !self.eat_punct("}") {
-                    let tag_pos = self.pos();
-                    let tag = if self.eat_keyword("_") {
-                        None
-                    } else if let Tok::Num(s) = self.peek() {
-                        let n = s
-                            .parse()
-                            .or_else(|_| self.error(format!("`{s}` isn't a tag")))?;
-                        self.next();
-                        Some(Tag::Int(n))
-                    } else {
-                        Some(Tag::Ctor(self.ctor()?))
-                    };
-                    self.punct("=>")?;
-                    let body = self.block(info)?;
-                    match tag {
-                        Some(tag) => arms.push(Arm { tag, body }),
-                        None if default.is_some() => {
-                            return self.error_at(tag_pos, "a case has one `_` arm at most");
+        crate::deep(|| {
+            let pos = self.pos();
+            let name = self.ident("`let`, `join`, `jump`, `case` or `unreachable`")?;
+            match name.as_str() {
+                "join" => {
+                    let rec = self.eat_keyword("rec");
+                    let mut defs = Vec::new();
+                    loop {
+                        let label_pos = self.pos();
+                        let label = self.label(info)?;
+                        if label == Label::RET {
+                            return self.error_at(label_pos, "`ret` can't be defined");
                         }
-                        None => default = Some(Box::new(body)),
+                        info.max_label = info.max_label.max(label.0);
+                        let params = self.list(|p| p.binder(info))?;
+                        self.punct("=")?;
+                        let body = self.block(info)?;
+                        defs.push(JoinDef {
+                            label,
+                            params,
+                            body,
+                        });
+                        if !self.eat_keyword("and") {
+                            break;
+                        }
                     }
+                    self.keyword("in")?;
+                    let body = Box::new(self.block(info)?);
+                    Ok(Tail::Join { rec, defs, body })
                 }
-                Ok(Tail::Case {
-                    scrut,
-                    arms,
-                    default,
-                })
+                "jump" => {
+                    let target = self.label(info)?;
+                    let args = self.list(|p| p.atom(info))?;
+                    let source = self.source()?;
+                    Ok(Tail::Jump {
+                        target,
+                        args,
+                        source,
+                    })
+                }
+                "case" => {
+                    let scrut = self.atom(info)?;
+                    self.punct("{")?;
+                    let (mut arms, mut default) = (Vec::new(), None);
+                    while !self.eat_punct("}") {
+                        let tag_pos = self.pos();
+                        let tag = if self.eat_keyword("_") {
+                            None
+                        } else if let Tok::Num(s) = self.peek() {
+                            let n = s
+                                .parse()
+                                .or_else(|_| self.error(format!("`{s}` isn't a tag")))?;
+                            self.next();
+                            Some(Tag::Int(n))
+                        } else {
+                            Some(Tag::Ctor(self.ctor()?))
+                        };
+                        self.punct("=>")?;
+                        let body = self.block(info)?;
+                        match tag {
+                            Some(tag) => arms.push(Arm { tag, body }),
+                            None if default.is_some() => {
+                                return self.error_at(tag_pos, "a case has one `_` arm at most");
+                            }
+                            None => default = Some(Box::new(body)),
+                        }
+                    }
+                    Ok(Tail::Case {
+                        scrut,
+                        arms,
+                        default,
+                    })
+                }
+                "unreachable" => Ok(Tail::Unreachable),
+                "trap" => Ok(Tail::Trap),
+                _ => self.error_at(
+                    pos,
+                    format!(
+                        "expected `let`, `join`, `jump`, `case` or `unreachable`, found `{name}`"
+                    ),
+                ),
             }
-            "unreachable" => Ok(Tail::Unreachable),
-            "trap" => Ok(Tail::Trap),
-            _ => self.error_at(
-                pos,
-                format!("expected `let`, `join`, `jump`, `case` or `unreachable`, found `{name}`"),
-            ),
-        }
+        })
     }
 
     /// `data10.1`

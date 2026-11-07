@@ -69,84 +69,88 @@ impl Order {
     }
 
     fn block(&mut self, b: &Block) {
-        for l in &b.lets {
-            for &v in &l.binds {
-                self.var(v);
+        conduit_ir::deep(|| {
+            for l in &b.lets {
+                for &v in &l.binds {
+                    self.var(v);
+                }
+                self.atoms(&l.args);
             }
-            self.atoms(&l.args);
+            match &b.tail {
+                Tail::Join { defs, body, .. } => {
+                    for d in defs {
+                        self.labels.push(d.label);
+                        for &v in &d.params {
+                            self.var(v);
+                        }
+                        self.block(&d.body);
+                    }
+                    self.block(body);
+                }
+                Tail::Case {
+                    scrut,
+                    arms,
+                    default,
+                } => {
+                    self.atoms(std::slice::from_ref(scrut));
+                    for a in arms {
+                        self.block(&a.body);
+                    }
+                    if let Some(d) = default {
+                        self.block(d);
+                    }
+                }
+                Tail::Jump { args, .. } => self.atoms(args),
+                Tail::Unreachable | Tail::Trap => {}
+            }
+        })
+    }
+}
+
+fn rename(b: &mut Block, vars: &HashMap<Var, Var>, labels: &HashMap<Label, Label>) {
+    conduit_ir::deep(|| {
+        let atoms = |atoms: &mut [Atom]| {
+            for a in atoms {
+                if let Atom::Var(v) = a {
+                    *v = vars[v];
+                }
+            }
+        };
+        for l in &mut b.lets {
+            for v in &mut l.binds {
+                *v = vars[v];
+            }
+            atoms(&mut l.args);
         }
-        match &b.tail {
+        match &mut b.tail {
             Tail::Join { defs, body, .. } => {
                 for d in defs {
-                    self.labels.push(d.label);
-                    for &v in &d.params {
-                        self.var(v);
+                    d.label = labels[&d.label];
+                    for v in &mut d.params {
+                        *v = vars[v];
                     }
-                    self.block(&d.body);
+                    rename(&mut d.body, vars, labels);
                 }
-                self.block(body);
+                rename(body, vars, labels);
             }
             Tail::Case {
                 scrut,
                 arms,
                 default,
             } => {
-                self.atoms(std::slice::from_ref(scrut));
+                atoms(std::slice::from_mut(scrut));
                 for a in arms {
-                    self.block(&a.body);
+                    rename(&mut a.body, vars, labels);
                 }
                 if let Some(d) = default {
-                    self.block(d);
+                    rename(d, vars, labels);
                 }
             }
-            Tail::Jump { args, .. } => self.atoms(args),
+            Tail::Jump { target, args, .. } => {
+                *target = labels.get(target).copied().unwrap_or(*target);
+                atoms(args);
+            }
             Tail::Unreachable | Tail::Trap => {}
         }
-    }
-}
-
-fn rename(b: &mut Block, vars: &HashMap<Var, Var>, labels: &HashMap<Label, Label>) {
-    let atoms = |atoms: &mut [Atom]| {
-        for a in atoms {
-            if let Atom::Var(v) = a {
-                *v = vars[v];
-            }
-        }
-    };
-    for l in &mut b.lets {
-        for v in &mut l.binds {
-            *v = vars[v];
-        }
-        atoms(&mut l.args);
-    }
-    match &mut b.tail {
-        Tail::Join { defs, body, .. } => {
-            for d in defs {
-                d.label = labels[&d.label];
-                for v in &mut d.params {
-                    *v = vars[v];
-                }
-                rename(&mut d.body, vars, labels);
-            }
-            rename(body, vars, labels);
-        }
-        Tail::Case {
-            scrut,
-            arms,
-            default,
-        } => {
-            atoms(std::slice::from_mut(scrut));
-            for a in arms {
-                rename(&mut a.body, vars, labels);
-            }
-            if let Some(d) = default {
-                rename(d, vars, labels);
-            }
-        }
-        Tail::Jump { target, args, .. } => {
-            *target = labels.get(target).copied().unwrap_or(*target);
-            atoms(args);
-        }
-        Tail::Unreachable | Tail::Trap => {}
-    }
+    })
 }

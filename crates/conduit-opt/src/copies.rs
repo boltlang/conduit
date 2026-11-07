@@ -300,24 +300,26 @@ impl RegionCx<'_> {
 
     /// The `let`s and tail of `b`, but not the blocks nested in it.
     fn block(&mut self, b: &Block) {
-        for l in &b.lets {
-            self.let_(l);
-        }
-        if let Tail::Jump { target, args, .. } = &b.tail {
-            if *target == Label::RET {
-                for v in vars(args) {
-                    self.escape(v);
-                }
-            } else {
-                let params = std::mem::take(&mut self.label_params[target.0 as usize]);
-                for (a, &param) in args.iter().zip(&params) {
-                    if let Atom::Var(v) = a {
-                        self.unite([*v, param]);
-                    }
-                }
-                self.label_params[target.0 as usize] = params;
+        conduit_ir::deep(|| {
+            for l in &b.lets {
+                self.let_(l);
             }
-        }
+            if let Tail::Jump { target, args, .. } = &b.tail {
+                if *target == Label::RET {
+                    for v in vars(args) {
+                        self.escape(v);
+                    }
+                } else {
+                    let params = std::mem::take(&mut self.label_params[target.0 as usize]);
+                    for (a, &param) in args.iter().zip(&params) {
+                        if let Atom::Var(v) = a {
+                            self.unite([*v, param]);
+                        }
+                    }
+                    self.label_params[target.0 as usize] = params;
+                }
+            }
+        })
     }
 
     fn let_(&mut self, l: &Let) {
@@ -366,70 +368,74 @@ impl Liveness<'_> {
 
     /// The tracked variables live where `b` starts.
     fn block(&mut self, b: &Block) -> BTreeSet<Var> {
-        let mut live = self.tail(&b.tail);
-        for l in b.lets.iter().rev() {
-            // `live` is what's live after `l`.
-            if let [y] = l.binds[..]
-                && let Some(&r) = self.candidates.get(&y)
-                && live.iter().any(|&v| self.regions.of(v) == r)
-            {
-                self.blocked.insert(y);
+        conduit_ir::deep(|| {
+            let mut live = self.tail(&b.tail);
+            for l in b.lets.iter().rev() {
+                // `live` is what's live after `l`.
+                if let [y] = l.binds[..]
+                    && let Some(&r) = self.candidates.get(&y)
+                    && live.iter().any(|&v| self.regions.of(v) == r)
+                {
+                    self.blocked.insert(y);
+                }
+                for b in &l.binds {
+                    live.remove(b);
+                }
+                self.add_uses(&mut live, &l.args);
             }
-            for b in &l.binds {
-                live.remove(b);
-            }
-            self.add_uses(&mut live, &l.args);
-        }
-        live
+            live
+        })
     }
 
     fn tail(&mut self, t: &Tail) -> BTreeSet<Var> {
-        match t {
-            Tail::Jump { target, args, .. } => {
-                let mut live = self.label_live[target.0 as usize].clone();
-                self.add_uses(&mut live, args);
-                live
-            }
-            Tail::Case {
-                scrut,
-                arms,
-                default,
-            } => {
-                let mut live = BTreeSet::new();
-                for a in arms {
-                    live.extend(self.block(&a.body));
+        conduit_ir::deep(|| {
+            match t {
+                Tail::Jump { target, args, .. } => {
+                    let mut live = self.label_live[target.0 as usize].clone();
+                    self.add_uses(&mut live, args);
+                    live
                 }
-                if let Some(d) = default {
-                    live.extend(self.block(d));
+                Tail::Case {
+                    scrut,
+                    arms,
+                    default,
+                } => {
+                    let mut live = BTreeSet::new();
+                    for a in arms {
+                        live.extend(self.block(&a.body));
+                    }
+                    if let Some(d) = default {
+                        live.extend(self.block(d));
+                    }
+                    self.add_uses(&mut live, std::slice::from_ref(scrut));
+                    live
                 }
-                self.add_uses(&mut live, std::slice::from_ref(scrut));
-                live
-            }
-            Tail::Unreachable | Tail::Trap => BTreeSet::new(),
-            Tail::Join { rec, defs, body } => {
-                // Live sets only grow, so a recursive group reaches a fixed
-                // point. A copy blocked on an earlier round would be on the
-                // last one too, so blocking as we go is fine.
-                loop {
-                    let mut changed = false;
-                    for d in defs {
-                        let mut live = self.block(&d.body);
-                        for p in &d.params {
-                            live.remove(p);
+                Tail::Unreachable | Tail::Trap => BTreeSet::new(),
+                Tail::Join { rec, defs, body } => {
+                    // Live sets only grow, so a recursive group reaches a fixed
+                    // point. A copy blocked on an earlier round would be on the
+                    // last one too, so blocking as we go is fine.
+                    loop {
+                        let mut changed = false;
+                        for d in defs {
+                            let mut live = self.block(&d.body);
+                            for p in &d.params {
+                                live.remove(p);
+                            }
+                            let slot = &mut self.label_live[d.label.0 as usize];
+                            if live != *slot {
+                                *slot = live;
+                                changed = true;
+                            }
                         }
-                        let slot = &mut self.label_live[d.label.0 as usize];
-                        if live != *slot {
-                            *slot = live;
-                            changed = true;
+                        if !rec || !changed {
+                            break;
                         }
                     }
-                    if !rec || !changed {
-                        break;
-                    }
+                    self.block(body)
                 }
-                self.block(body)
             }
-        }
+        })
     }
 }
 
@@ -442,66 +448,72 @@ fn vars(atoms: &[Atom]) -> impl Iterator<Item = Var> + '_ {
 
 /// Calls `f` on `b` and every block nested in it.
 fn for_each_block(b: &Block, f: &mut impl FnMut(&Block)) {
-    f(b);
-    match &b.tail {
-        Tail::Join { defs, body, .. } => {
-            for d in defs {
-                for_each_block(&d.body, f);
+    conduit_ir::deep(|| {
+        f(b);
+        match &b.tail {
+            Tail::Join { defs, body, .. } => {
+                for d in defs {
+                    for_each_block(&d.body, f);
+                }
+                for_each_block(body, f);
             }
-            for_each_block(body, f);
+            Tail::Case { arms, default, .. } => {
+                for a in arms {
+                    for_each_block(&a.body, f);
+                }
+                if let Some(d) = default {
+                    for_each_block(d, f);
+                }
+            }
+            Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
         }
-        Tail::Case { arms, default, .. } => {
-            for a in arms {
-                for_each_block(&a.body, f);
-            }
-            if let Some(d) = default {
-                for_each_block(d, f);
-            }
-        }
-        Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
-    }
+    })
 }
 
 /// Calls `f` on `b` and every block nested in it.
 fn for_each_block_mut(b: &mut Block, f: &mut impl FnMut(&mut Block)) {
-    f(b);
-    match &mut b.tail {
-        Tail::Join { defs, body, .. } => {
-            for d in defs {
-                for_each_block_mut(&mut d.body, f);
+    conduit_ir::deep(|| {
+        f(b);
+        match &mut b.tail {
+            Tail::Join { defs, body, .. } => {
+                for d in defs {
+                    for_each_block_mut(&mut d.body, f);
+                }
+                for_each_block_mut(body, f);
             }
-            for_each_block_mut(body, f);
+            Tail::Case { arms, default, .. } => {
+                for a in arms {
+                    for_each_block_mut(&mut a.body, f);
+                }
+                if let Some(d) = default {
+                    for_each_block_mut(d, f);
+                }
+            }
+            Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
         }
-        Tail::Case { arms, default, .. } => {
-            for a in arms {
-                for_each_block_mut(&mut a.body, f);
-            }
-            if let Some(d) = default {
-                for_each_block_mut(d, f);
-            }
-        }
-        Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
-    }
+    })
 }
 
 /// Replaces every use of a variable in `subst` with what it maps to.
 fn substitute(b: &mut Block, subst: &BTreeMap<Var, Atom>) {
-    // A copy's argument may itself be a removed copy's result.
-    let resolve = |a: &mut Atom| {
-        while let Atom::Var(v) = a
-            && let Some(to) = subst.get(v)
-        {
-            *a = to.clone();
-        }
-    };
-    for_each_block_mut(b, &mut |b| {
-        for l in &mut b.lets {
-            l.args.iter_mut().for_each(resolve);
-        }
-        match &mut b.tail {
-            Tail::Jump { args, .. } => args.iter_mut().for_each(resolve),
-            Tail::Case { scrut, .. } => resolve(scrut),
-            Tail::Join { .. } | Tail::Unreachable | Tail::Trap => {}
-        }
-    });
+    conduit_ir::deep(|| {
+        // A copy's argument may itself be a removed copy's result.
+        let resolve = |a: &mut Atom| {
+            while let Atom::Var(v) = a
+                && let Some(to) = subst.get(v)
+            {
+                *a = to.clone();
+            }
+        };
+        for_each_block_mut(b, &mut |b| {
+            for l in &mut b.lets {
+                l.args.iter_mut().for_each(resolve);
+            }
+            match &mut b.tail {
+                Tail::Jump { args, .. } => args.iter_mut().for_each(resolve),
+                Tail::Case { scrut, .. } => resolve(scrut),
+                Tail::Join { .. } | Tail::Unreachable | Tail::Trap => {}
+            }
+        });
+    })
 }

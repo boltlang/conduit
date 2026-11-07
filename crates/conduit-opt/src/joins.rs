@@ -152,141 +152,147 @@ struct Cx {
 
 impl Cx {
     fn block(&mut self, mut b: Block, f: &mut Func) -> Block {
-        loop {
-            match self.tail(b.tail, f) {
-                Ok(tail) => {
-                    b.tail = tail;
-                    return b;
-                }
-                // A definition in place of a jump: its `let`s go after
-                // these, and its tail is looked at in turn.
-                Err(def) => {
-                    self.changed = true;
-                    b.lets.extend(def.lets);
-                    b.tail = def.tail;
+        conduit_ir::deep(|| {
+            loop {
+                match self.tail(b.tail, f) {
+                    Ok(tail) => {
+                        b.tail = tail;
+                        return b;
+                    }
+                    // A definition in place of a jump: its `let`s go after
+                    // these, and its tail is looked at in turn.
+                    Err(def) => {
+                        self.changed = true;
+                        b.lets.extend(def.lets);
+                        b.tail = def.tail;
+                    }
                 }
             }
-        }
+        })
     }
 
     /// `t` with its join points inlined, or `Err` with the block that
     /// replaces it if it's a jump to one.
     fn tail(&mut self, t: Tail, f: &mut Func) -> Result<Tail, Block> {
-        Ok(match t {
-            Tail::Join { rec, defs, body } => {
-                let mut kept = Vec::new();
-                for d in defs {
-                    if !rec && self.jumps.get(&d.label) == Some(&1) {
-                        self.moving.insert(d.label, d);
-                    } else {
-                        kept.push(d);
+        conduit_ir::deep(|| {
+            Ok(match t {
+                Tail::Join { rec, defs, body } => {
+                    let mut kept = Vec::new();
+                    for d in defs {
+                        if !rec && self.jumps.get(&d.label) == Some(&1) {
+                            self.moving.insert(d.label, d);
+                        } else {
+                            kept.push(d);
+                        }
                     }
-                }
-                let kept: Vec<JoinDef> = kept
-                    .into_iter()
-                    .map(|d| JoinDef {
-                        body: self.block(d.body, f),
-                        ..d
-                    })
-                    .collect();
-                let body = self.block(*body, f);
-                if kept.is_empty() {
-                    return Err(body);
-                }
-                Tail::Join {
-                    rec,
-                    defs: kept,
-                    body: Box::new(body),
-                }
-            }
-            Tail::Jump {
-                target,
-                args,
-                source,
-            } => {
-                if let Some(d) = self.moving.remove(&target) {
-                    let mut s = Subst::default();
-                    s.vars.extend(d.params.iter().copied().zip(args));
-                    return Err(s.block(d.body));
-                }
-                if let Some(copy) = self.copy(target, &args, f) {
-                    return Err(copy);
+                    let kept: Vec<JoinDef> = kept
+                        .into_iter()
+                        .map(|d| JoinDef {
+                            body: self.block(d.body, f),
+                            ..d
+                        })
+                        .collect();
+                    let body = self.block(*body, f);
+                    if kept.is_empty() {
+                        return Err(body);
+                    }
+                    Tail::Join {
+                        rec,
+                        defs: kept,
+                        body: Box::new(body),
+                    }
                 }
                 Tail::Jump {
                     target,
                     args,
                     source,
+                } => {
+                    if let Some(d) = self.moving.remove(&target) {
+                        let mut s = Subst::default();
+                        s.vars.extend(d.params.iter().copied().zip(args));
+                        return Err(s.block(d.body));
+                    }
+                    if let Some(copy) = self.copy(target, &args, f) {
+                        return Err(copy);
+                    }
+                    Tail::Jump {
+                        target,
+                        args,
+                        source,
+                    }
                 }
-            }
-            Tail::Case {
-                scrut,
-                arms,
-                default,
-            } => Tail::Case {
-                scrut,
-                arms: arms
-                    .into_iter()
-                    .map(|a| Arm {
-                        tag: a.tag,
-                        body: self.block(a.body, f),
-                    })
-                    .collect(),
-                default: default.map(|d| Box::new(self.block(*d, f))),
-            },
-            Tail::Unreachable => Tail::Unreachable,
-            Tail::Trap => Tail::Trap,
+                Tail::Case {
+                    scrut,
+                    arms,
+                    default,
+                } => Tail::Case {
+                    scrut,
+                    arms: arms
+                        .into_iter()
+                        .map(|a| Arm {
+                            tag: a.tag,
+                            body: self.block(a.body, f),
+                        })
+                        .collect(),
+                    default: default.map(|d| Box::new(self.block(*d, f))),
+                },
+                Tail::Unreachable => Tail::Unreachable,
+                Tail::Trap => Tail::Trap,
+            })
         })
     }
 
     /// A copy of the definition of `target` for a jump with `args`, if one
     /// of the parameters it `case`s on gets a known value.
     fn copy(&mut self, target: Label, args: &[Atom], f: &mut Func) -> Option<Block> {
-        let (d, scrutinized) = self.copyable.get(&target)?;
-        let is_known = |a: &Atom| match a {
-            Atom::Lit(_) => true,
-            Atom::Var(v) => self.known.contains(v),
-        };
-        if !scrutinized
-            .iter()
-            .any(|&i| args.get(i).is_some_and(is_known))
-        {
-            return None;
-        }
-        let grown = d.body.size();
-        if self.size + grown > MAX_CALLER_SIZE {
-            return None;
-        }
-        self.size += grown;
-        let mut s = Subst::default();
-        s.vars
-            .extend(d.params.iter().copied().zip(args.iter().cloned()));
-        // Fresh variables and labels for what the copy binds and defines.
-        d.body.walk(|b| {
-            for l in &b.lets {
-                s.fresh.extend(l.binds.iter().copied());
+        conduit_ir::deep(|| {
+            let (d, scrutinized) = self.copyable.get(&target)?;
+            let is_known = |a: &Atom| match a {
+                Atom::Lit(_) => true,
+                Atom::Var(v) => self.known.contains(v),
+            };
+            if !scrutinized
+                .iter()
+                .any(|&i| args.get(i).is_some_and(is_known))
+            {
+                return None;
             }
-            if let Tail::Join { defs, .. } = &b.tail {
-                for d in defs {
-                    s.fresh.extend(d.params.iter().copied());
-                    s.fresh_labels.push(d.label);
+            let grown = d.body.size();
+            if self.size + grown > MAX_CALLER_SIZE {
+                return None;
+            }
+            self.size += grown;
+            let mut s = Subst::default();
+            s.vars
+                .extend(d.params.iter().copied().zip(args.iter().cloned()));
+            // Fresh variables and labels for what the copy binds and defines.
+            d.body.walk(|b| {
+                for l in &b.lets {
+                    s.fresh.extend(l.binds.iter().copied());
                 }
+                if let Tail::Join { defs, .. } = &b.tail {
+                    for d in defs {
+                        s.fresh.extend(d.params.iter().copied());
+                        s.fresh_labels.push(d.label);
+                    }
+                }
+            });
+            for v in std::mem::take(&mut s.fresh) {
+                let new = f.new_var(f.var_ty(v).clone());
+                if let Some(name) = f.debug.vars.get(&v).cloned() {
+                    f.debug.vars.insert(new, name);
+                }
+                s.vars.insert(v, Atom::Var(new));
             }
-        });
-        for v in std::mem::take(&mut s.fresh) {
-            let new = f.new_var(f.var_ty(v).clone());
-            if let Some(name) = f.debug.vars.get(&v).cloned() {
-                f.debug.vars.insert(new, name);
+            for l in std::mem::take(&mut s.fresh_labels) {
+                let new = f.new_label();
+                if let Some(name) = f.debug.labels.get(&l).cloned() {
+                    f.debug.labels.insert(new, name);
+                }
+                s.labels.insert(l, new);
             }
-            s.vars.insert(v, Atom::Var(new));
-        }
-        for l in std::mem::take(&mut s.fresh_labels) {
-            let new = f.new_label();
-            if let Some(name) = f.debug.labels.get(&l).cloned() {
-                f.debug.labels.insert(new, name);
-            }
-            s.labels.insert(l, new);
-        }
-        Some(s.block(d.body.clone()))
+            Some(s.block(d.body.clone()))
+        })
     }
 }
 
@@ -322,61 +328,63 @@ impl Subst {
     }
 
     fn block(&self, mut b: Block) -> Block {
-        for l in &mut b.lets {
-            l.args.iter_mut().for_each(|a| self.atom(a));
-            l.binds.iter_mut().for_each(|v| self.var(v));
-        }
-        b.tail = match b.tail {
-            Tail::Join { rec, defs, body } => Tail::Join {
-                rec,
-                defs: defs
-                    .into_iter()
-                    .map(|mut d| {
-                        self.label(&mut d.label);
-                        d.params.iter_mut().for_each(|v| self.var(v));
-                        JoinDef {
-                            body: self.block(d.body),
-                            ..d
-                        }
-                    })
-                    .collect(),
-                body: Box::new(self.block(*body)),
-            },
-            Tail::Jump {
-                mut target,
-                mut args,
-                source,
-            } => {
-                self.label(&mut target);
-                args.iter_mut().for_each(|a| self.atom(a));
-                Tail::Jump {
-                    target,
-                    args,
-                    source,
-                }
+        conduit_ir::deep(|| {
+            for l in &mut b.lets {
+                l.args.iter_mut().for_each(|a| self.atom(a));
+                l.binds.iter_mut().for_each(|v| self.var(v));
             }
-            Tail::Case {
-                mut scrut,
-                arms,
-                default,
-            } => {
-                self.atom(&mut scrut);
-                Tail::Case {
-                    scrut,
-                    arms: arms
+            b.tail = match b.tail {
+                Tail::Join { rec, defs, body } => Tail::Join {
+                    rec,
+                    defs: defs
                         .into_iter()
-                        .map(|a| Arm {
-                            tag: a.tag,
-                            body: self.block(a.body),
+                        .map(|mut d| {
+                            self.label(&mut d.label);
+                            d.params.iter_mut().for_each(|v| self.var(v));
+                            JoinDef {
+                                body: self.block(d.body),
+                                ..d
+                            }
                         })
                         .collect(),
-                    default: default.map(|d| Box::new(self.block(*d))),
+                    body: Box::new(self.block(*body)),
+                },
+                Tail::Jump {
+                    mut target,
+                    mut args,
+                    source,
+                } => {
+                    self.label(&mut target);
+                    args.iter_mut().for_each(|a| self.atom(a));
+                    Tail::Jump {
+                        target,
+                        args,
+                        source,
+                    }
                 }
-            }
-            Tail::Unreachable => Tail::Unreachable,
-            Tail::Trap => Tail::Trap,
-        };
-        b
+                Tail::Case {
+                    mut scrut,
+                    arms,
+                    default,
+                } => {
+                    self.atom(&mut scrut);
+                    Tail::Case {
+                        scrut,
+                        arms: arms
+                            .into_iter()
+                            .map(|a| Arm {
+                                tag: a.tag,
+                                body: self.block(a.body),
+                            })
+                            .collect(),
+                        default: default.map(|d| Box::new(self.block(*d))),
+                    }
+                }
+                Tail::Unreachable => Tail::Unreachable,
+                Tail::Trap => Tail::Trap,
+            };
+            b
+        })
     }
 }
 

@@ -54,7 +54,33 @@ pub struct FuncDebug {
     pub labels: BTreeMap<Label, Box<str>>,
 }
 
+/// A function's body is dropped without recursing as deep as its blocks
+/// nest, which can be as deep as the function is long.
+impl Drop for Func {
+    fn drop(&mut self) {
+        let body = std::mem::replace(&mut self.body, Tail::Unreachable.into());
+        crate::term::drop_block(body);
+    }
+}
+
 impl Func {
+    /// A copy of this function with an `unreachable` body, for a function
+    /// made from it with a body of its own: copying the body only to
+    /// replace it would take as long as the body is, and drop it whole.
+    pub fn without_body(&self) -> Func {
+        Func {
+            mut_params: self.mut_params.clone(),
+            effect_params: self.effect_params,
+            vars: self.vars.clone(),
+            labels: self.labels,
+            params: self.params.clone(),
+            results: self.results.clone(),
+            row: self.row.clone(),
+            body: Tail::Unreachable.into(),
+            debug: self.debug.clone(),
+        }
+    }
+
     /// A function with the given parameter types and nothing else, so its
     /// body is `unreachable` until it's set.
     pub fn new(params: Vec<Ty>, results: Vec<Ty>) -> Func {

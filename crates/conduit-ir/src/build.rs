@@ -1271,53 +1271,55 @@ fn tag_text(tag: Tag) -> String {
 /// Builds the block tree from `b` down. Every block has a tail, which
 /// `finish` checks first.
 fn assemble(blocks: &mut [Open], cases: &[OpenCase], b: BlockRef) -> Block {
-    let open = &mut blocks[b.0 as usize];
-    let lets = std::mem::take(&mut open.lets);
-    let tail = match open
-        .tail
-        .take()
-        .expect("finish checks that every block ends")
-    {
-        Pending::Join { rec, defs, body } => Tail::Join {
-            rec,
-            defs: defs
-                .into_iter()
-                .map(|(label, params, block)| JoinDef {
-                    label,
-                    params,
-                    body: assemble(blocks, cases, block),
-                })
-                .collect(),
-            body: Box::new(assemble(blocks, cases, body)),
-        },
-        Pending::Jump {
-            target,
-            args,
-            source,
-        } => Tail::Jump {
-            target,
-            args,
-            source,
-        },
-        Pending::Case(c) => {
-            let c = &cases[c.0 as usize];
-            Tail::Case {
-                scrut: c.scrut.clone(),
-                arms: c
-                    .arms
-                    .iter()
-                    .map(|&(tag, block)| Arm {
-                        tag,
+    crate::deep(|| {
+        let open = &mut blocks[b.0 as usize];
+        let lets = std::mem::take(&mut open.lets);
+        let tail = match open
+            .tail
+            .take()
+            .expect("finish checks that every block ends")
+        {
+            Pending::Join { rec, defs, body } => Tail::Join {
+                rec,
+                defs: defs
+                    .into_iter()
+                    .map(|(label, params, block)| JoinDef {
+                        label,
+                        params,
                         body: assemble(blocks, cases, block),
                     })
                     .collect(),
-                default: c.default.map(|d| Box::new(assemble(blocks, cases, d))),
+                body: Box::new(assemble(blocks, cases, body)),
+            },
+            Pending::Jump {
+                target,
+                args,
+                source,
+            } => Tail::Jump {
+                target,
+                args,
+                source,
+            },
+            Pending::Case(c) => {
+                let c = &cases[c.0 as usize];
+                Tail::Case {
+                    scrut: c.scrut.clone(),
+                    arms: c
+                        .arms
+                        .iter()
+                        .map(|&(tag, block)| Arm {
+                            tag,
+                            body: assemble(blocks, cases, block),
+                        })
+                        .collect(),
+                    default: c.default.map(|d| Box::new(assemble(blocks, cases, d))),
+                }
             }
-        }
-        Pending::Unreachable => Tail::Unreachable,
-        Pending::Trap => Tail::Trap,
-    };
-    Block { lets, tail }
+            Pending::Unreachable => Tail::Unreachable,
+            Pending::Trap => Tail::Trap,
+        };
+        Block { lets, tail }
+    })
 }
 
 #[cfg(test)]

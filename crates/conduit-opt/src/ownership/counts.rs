@@ -52,10 +52,10 @@ pub fn count_func(id: FuncId, f: &mut Func, borrows: &Borrows) -> Result<(), Str
         borrows,
         free: BTreeMap::new(),
     };
-    cx.find_free(&f.body);
+    let live = cx.liveness(&f.body);
     let owned: Set = f.params.iter().copied().filter(|v| cx.is(*v)).collect();
     let body = std::mem::replace(&mut f.body, Tail::Unreachable.into());
-    f.body = cx.block(body, &owned);
+    f.body = cx.block(body, &owned, &live, &mut 0);
     Ok(())
 }
 
@@ -85,40 +85,87 @@ impl Counts<'_> {
     /// Finds what each join point's body uses from outside: a fixpoint,
     /// since a body can jump to itself, or to another join that uses more.
     pub(super) fn find_free(&mut self, body: &Block) {
-        let mut defs = Vec::new();
-        let mut todo = vec![body];
-        while let Some(b) = todo.pop() {
-            if let Tail::Join { defs: ds, .. } = &b.tail {
-                defs.extend(ds);
-            }
-            todo.extend(b.children());
-        }
+        self.liveness(body);
+    }
+
+    /// What's live in each block of `body`, in the order [`Self::block`]
+    /// meets them: when it starts, and when its tail does. Finds
+    /// [`free`](Self::free) too, walking `body` once a round until it
+    /// stops changing, so that each block's liveness is found once a
+    /// round, not again for each block it's nested in.
+    pub(super) fn liveness(&mut self, body: &Block) -> Vec<(Set, Set)> {
         loop {
+            let mut live = Vec::new();
             let mut changed = false;
-            for def in &defs {
-                let mut free = self.live(&def.body);
-                for p in &def.params {
-                    free.remove(p);
-                }
-                let old = self.free.entry(def.label).or_default();
-                if *old != free {
-                    *old = free;
-                    changed = true;
-                }
-            }
+            self.live_all(body, &mut live, &mut changed);
             if !changed {
-                break;
+                return live;
             }
         }
     }
 
+    /// The counted variables live when `b` starts, with what's live in `b`
+    /// and the blocks in it added to `out`, and the join points' `free`
+    /// updated, noting in `changed` if it did.
+    fn live_all(&mut self, b: &Block, out: &mut Vec<(Set, Set)>, changed: &mut bool) -> Set {
+        conduit_ir::deep(|| {
+            let at = out.len();
+            out.push((Set::new(), Set::new()));
+            let tail = match &b.tail {
+                Tail::Jump { target, args, .. } => {
+                    let mut live: Set = args.iter().filter_map(|a| self.var(a)).collect();
+                    if let Some(free) = self.free.get(target) {
+                        live.extend(free);
+                    }
+                    live
+                }
+                Tail::Case {
+                    scrut,
+                    arms,
+                    default,
+                } => {
+                    let mut live: Set = self.var(scrut).into_iter().collect();
+                    for arm in arms {
+                        live.extend(self.live_all(&arm.body, out, changed));
+                    }
+                    if let Some(d) = default {
+                        live.extend(self.live_all(d, out, changed));
+                    }
+                    live
+                }
+                Tail::Join { defs, body, .. } => {
+                    for def in defs {
+                        let mut free = self.live_all(&def.body, out, changed);
+                        for p in &def.params {
+                            free.remove(p);
+                        }
+                        if self.free.get(&def.label) != Some(&free) {
+                            self.free.insert(def.label, free);
+                            *changed = true;
+                        }
+                    }
+                    self.live_all(body, out, changed)
+                }
+                Tail::Unreachable | Tail::Trap => Set::new(),
+            };
+            let mut live = tail.clone();
+            for l in b.lets.iter().rev() {
+                self.step_back(l, &mut live);
+            }
+            out[at] = (live.clone(), tail);
+            live
+        })
+    }
+
     /// The counted variables live when `b` starts.
     pub(super) fn live(&self, b: &Block) -> Set {
-        let mut live = self.live_tail(&b.tail);
-        for l in b.lets.iter().rev() {
-            self.step_back(l, &mut live);
-        }
-        live
+        conduit_ir::deep(|| {
+            let mut live = self.live_tail(&b.tail);
+            for l in b.lets.iter().rev() {
+                self.step_back(l, &mut live);
+            }
+            live
+        })
     }
 
     /// `live` after `l` becomes `live` before it.
@@ -130,7 +177,7 @@ impl Counts<'_> {
     }
 
     pub(super) fn live_tail(&self, tail: &Tail) -> Set {
-        match tail {
+        conduit_ir::deep(|| match tail {
             Tail::Jump { target, args, .. } => {
                 let mut live: Set = args.iter().filter_map(|a| self.var(a)).collect();
                 if let Some(free) = self.free.get(target) {
@@ -154,90 +201,100 @@ impl Counts<'_> {
             }
             Tail::Join { body, .. } => self.live(body),
             Tail::Unreachable | Tail::Trap => Set::new(),
-        }
+        })
     }
 
-    /// `b` with its counts, given what's owned when it starts.
-    pub(super) fn block(&self, b: Block, owned: &Set) -> Block {
-        let live_in = self.live(&b);
-        let mut lets = Vec::new();
-        // A block that only stops needs nothing dropped first.
-        let stops = b.lets.is_empty() && matches!(b.tail, Tail::Unreachable | Tail::Trap);
-        if !stops {
-            lets.extend(owned.difference(&live_in).map(|v| count(Op::Drop, *v)));
-        }
-        let tail_live = self.live_tail(&b.tail);
-        let mut afters = vec![Set::new(); b.lets.len()];
-        let mut live = tail_live.clone();
-        for (i, l) in b.lets.iter().enumerate().rev() {
-            afters[i] = live.clone();
-            self.step_back(l, &mut live);
-        }
-        for (l, after) in b.lets.into_iter().zip(afters) {
-            self.let_(l, &after, &mut lets);
-        }
-        let tail = match b.tail {
-            Tail::Jump {
-                target,
-                args,
-                source,
-            } => {
-                let keeps = self.free.get(&target);
-                let mut taken: BTreeMap<Var, u32> = BTreeMap::new();
-                for v in args.iter().filter_map(|a| self.var(a)) {
-                    *taken.entry(v).or_default() += 1;
-                }
-                for (v, n) in taken {
-                    let keep = keeps.is_some_and(|k| k.contains(&v)) as u32;
-                    dups(v, n + keep, &mut lets);
-                }
-                for a in &args {
-                    if let Atom::Var(v) = a
-                        && self.lent.contains(v)
-                    {
-                        lets.push(count(Op::Dup, *v));
-                    }
-                }
+    /// `b` with its counts, given what's owned when it starts, and what's
+    /// live in it, from [`Self::liveness`], in `table` at `next`, which it
+    /// moves past the blocks it meets.
+    pub(super) fn block(
+        &self,
+        b: Block,
+        owned: &Set,
+        table: &[(Set, Set)],
+        next: &mut usize,
+    ) -> Block {
+        conduit_ir::deep(|| {
+            let (live_in, tail_live) = &table[*next];
+            *next += 1;
+            let mut lets = Vec::new();
+            // A block that only stops needs nothing dropped first.
+            let stops = b.lets.is_empty() && matches!(b.tail, Tail::Unreachable | Tail::Trap);
+            if !stops {
+                lets.extend(owned.difference(live_in).map(|v| count(Op::Drop, *v)));
+            }
+            let mut afters = vec![Set::new(); b.lets.len()];
+            let mut live = tail_live.clone();
+            for (i, l) in b.lets.iter().enumerate().rev() {
+                afters[i] = live.clone();
+                self.step_back(l, &mut live);
+            }
+            for (l, after) in b.lets.into_iter().zip(afters) {
+                self.let_(l, &after, &mut lets);
+            }
+            let tail = match b.tail {
                 Tail::Jump {
                     target,
                     args,
                     source,
-                }
-            }
-            Tail::Case {
-                scrut,
-                arms,
-                default,
-            } => Tail::Case {
-                scrut,
-                arms: arms
-                    .into_iter()
-                    .map(|mut arm| {
-                        arm.body = self.block(arm.body, &tail_live);
-                        arm
-                    })
-                    .collect(),
-                default: default.map(|d| Box::new(self.block(*d, &tail_live))),
-            },
-            Tail::Join { rec, defs, body } => Tail::Join {
-                rec,
-                defs: defs
-                    .into_iter()
-                    .map(|mut def| {
-                        let mut owned: Set =
-                            def.params.iter().copied().filter(|v| self.is(*v)).collect();
-                        if let Some(free) = self.free.get(&def.label) {
-                            owned.extend(free);
+                } => {
+                    let keeps = self.free.get(&target);
+                    let mut taken: BTreeMap<Var, u32> = BTreeMap::new();
+                    for v in args.iter().filter_map(|a| self.var(a)) {
+                        *taken.entry(v).or_default() += 1;
+                    }
+                    for (v, n) in taken {
+                        let keep = keeps.is_some_and(|k| k.contains(&v)) as u32;
+                        dups(v, n + keep, &mut lets);
+                    }
+                    for a in &args {
+                        if let Atom::Var(v) = a
+                            && self.lent.contains(v)
+                        {
+                            lets.push(count(Op::Dup, *v));
                         }
-                        def.body = self.block(def.body, &owned);
-                        def
-                    })
-                    .collect(),
-                body: Box::new(self.block(*body, &tail_live)),
-            },
-            tail @ (Tail::Unreachable | Tail::Trap) => tail,
-        };
-        Block { lets, tail }
+                    }
+                    Tail::Jump {
+                        target,
+                        args,
+                        source,
+                    }
+                }
+                Tail::Case {
+                    scrut,
+                    arms,
+                    default,
+                } => Tail::Case {
+                    scrut,
+                    arms: arms
+                        .into_iter()
+                        .map(|mut arm| {
+                            arm.body = self.block(arm.body, tail_live, table, next);
+                            arm
+                        })
+                        .collect(),
+                    default: default.map(|d| Box::new(self.block(*d, tail_live, table, next))),
+                },
+                Tail::Join { rec, defs, body } => Tail::Join {
+                    rec,
+                    defs: defs
+                        .into_iter()
+                        .map(|mut def| {
+                            let mut owned: Set =
+                                def.params.iter().copied().filter(|v| self.is(*v)).collect();
+                            if let Some(free) = self.free.get(&def.label) {
+                                owned.extend(free);
+                            }
+                            def.body = self.block(def.body, &owned, table, next);
+                            def
+                        })
+                        .collect(),
+                    body: Box::new(self.block(*body, tail_live, table, next)),
+                },
+                tail @ (Tail::Unreachable | Tail::Trap) => tail,
+            };
+            Block { lets, tail }
+        })
     }
 
     /// `l` with its counts, given what's live after it, into `out`.

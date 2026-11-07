@@ -454,24 +454,24 @@ impl Printer<'_> {
     /// Prints `head`, followed by `b` on the same line if it's a single
     /// line, or indented below it otherwise.
     fn nested(&mut self, depth: usize, head: &str, b: &Block) {
-        match self.simple(b) {
+        crate::deep(|| match self.simple(b) {
             Some(text) => self.line(depth, &format!("{head} {text}")),
             None => {
                 self.line(depth, head);
                 self.block(b, depth + 1);
             }
-        }
+        })
     }
 
     /// The text of a block that fits on one line: one without `let`s that
     /// ends in a jump or `unreachable`.
     fn simple(&self, b: &Block) -> Option<String> {
-        match &b.tail {
+        crate::deep(|| match &b.tail {
             tail @ (Tail::Jump { .. } | Tail::Unreachable | Tail::Trap) if b.lets.is_empty() => {
                 Some(self.tail_text(tail))
             }
             _ => None,
-        }
+        })
     }
 
     fn tail_text(&self, tail: &Tail) -> String {
@@ -492,70 +492,72 @@ impl Printer<'_> {
     }
 
     fn block(&mut self, b: &Block, depth: usize) {
-        for l in &b.lets {
-            let binds = l
-                .binds
-                .iter()
-                .map(|&v| self.binder(v))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let space = if binds.is_empty() { "" } else { " " };
-            let text = format!(
-                "let {binds}{space}= {}({}){}",
-                self.names.op(&l.op),
-                self.atoms(&l.args),
-                at(l.source)
-            );
-            self.line(depth, &text);
-        }
-        match &b.tail {
-            Tail::Join { rec, defs, body } => {
-                for (i, def) in defs.iter().enumerate() {
-                    let keyword = match (i, rec) {
-                        (0, true) => "join rec",
-                        (0, false) => "join",
-                        _ => "and",
-                    };
-                    let params = def
-                        .params
-                        .iter()
-                        .map(|&v| self.binder(v))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    let head = format!("{keyword} {}({params}) =", self.label(def.label));
-                    self.nested(depth, &head, &def.body);
-                }
-                match self.simple(body) {
-                    Some(text) => self.line(depth, &format!("in {text}")),
-                    None => {
-                        self.line(depth, "in");
-                        self.block(body, depth);
-                    }
-                }
-            }
-            Tail::Case {
-                scrut,
-                arms,
-                default,
-            } => {
-                self.line(depth, &format!("case {} {{", self.atom(scrut)));
-                for arm in arms {
-                    let tag = match arm.tag {
-                        Tag::Int(n) => n.to_string(),
-                        Tag::Ctor(c) => self.names.ctor(c),
-                    };
-                    self.nested(depth + 1, &format!("{tag} =>"), &arm.body);
-                }
-                if let Some(default) = default {
-                    self.nested(depth + 1, "_ =>", default);
-                }
-                self.line(depth, "}");
-            }
-            tail @ (Tail::Jump { .. } | Tail::Unreachable | Tail::Trap) => {
-                let text = self.tail_text(tail);
+        crate::deep(|| {
+            for l in &b.lets {
+                let binds = l
+                    .binds
+                    .iter()
+                    .map(|&v| self.binder(v))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let space = if binds.is_empty() { "" } else { " " };
+                let text = format!(
+                    "let {binds}{space}= {}({}){}",
+                    self.names.op(&l.op),
+                    self.atoms(&l.args),
+                    at(l.source)
+                );
                 self.line(depth, &text);
             }
-        }
+            match &b.tail {
+                Tail::Join { rec, defs, body } => {
+                    for (i, def) in defs.iter().enumerate() {
+                        let keyword = match (i, rec) {
+                            (0, true) => "join rec",
+                            (0, false) => "join",
+                            _ => "and",
+                        };
+                        let params = def
+                            .params
+                            .iter()
+                            .map(|&v| self.binder(v))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        let head = format!("{keyword} {}({params}) =", self.label(def.label));
+                        self.nested(depth, &head, &def.body);
+                    }
+                    match self.simple(body) {
+                        Some(text) => self.line(depth, &format!("in {text}")),
+                        None => {
+                            self.line(depth, "in");
+                            self.block(body, depth);
+                        }
+                    }
+                }
+                Tail::Case {
+                    scrut,
+                    arms,
+                    default,
+                } => {
+                    self.line(depth, &format!("case {} {{", self.atom(scrut)));
+                    for arm in arms {
+                        let tag = match arm.tag {
+                            Tag::Int(n) => n.to_string(),
+                            Tag::Ctor(c) => self.names.ctor(c),
+                        };
+                        self.nested(depth + 1, &format!("{tag} =>"), &arm.body);
+                    }
+                    if let Some(default) = default {
+                        self.nested(depth + 1, "_ =>", default);
+                    }
+                    self.line(depth, "}");
+                }
+                tail @ (Tail::Jump { .. } | Tail::Unreachable | Tail::Trap) => {
+                    let text = self.tail_text(tail);
+                    self.line(depth, &text);
+                }
+            }
+        })
     }
 }
 

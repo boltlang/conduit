@@ -34,6 +34,15 @@ pub use module::{
 pub use op::{Effects, Memory, Op, Prim, Sign};
 pub use row::Row;
 pub use term::{Arm, Atom, Block, Blocks, JoinDef, Let, Lit, Tag, Tail};
+
+/// Runs `f`, on more stack if what's left is low. A function recurses as
+/// deep as the blocks it walks nest, which is as deep as the function is
+/// long when a frontend puts the rest of it in each `if`'s join point, so
+/// every recursive walk of blocks goes through this, as rustc's do. On a
+/// target where the stack can't grow, such as wasm32, it just runs `f`.
+pub fn deep<R>(f: impl FnOnce() -> R) -> R {
+    stacker::maybe_grow(128 * 1024, 2 * 1024 * 1024, f)
+}
 pub use ty::{CtorDecl, Mutability, Sig, Ty};
 
 /// How passes reach items other than the function they work on. Each

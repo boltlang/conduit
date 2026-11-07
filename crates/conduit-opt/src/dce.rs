@@ -68,37 +68,39 @@ impl Cx {
     }
 
     fn block(&mut self, b: Block) -> Block {
-        // Bottom-up: the tail first, then the `let`s from the last one, so
-        // each `let` is seen after everything that could use its results.
-        // A join whose definitions are all dead is left without any: its
-        // body then runs right after this block's `let`s, so it becomes
-        // the rest of this block.
-        let mut after = Vec::new();
-        let tail = match self.tail(b.tail) {
-            Tail::Join { defs, body, .. } if defs.is_empty() => {
-                let body = *body;
-                after = body.lets;
-                body.tail
+        conduit_ir::deep(|| {
+            // Bottom-up: the tail first, then the `let`s from the last one, so
+            // each `let` is seen after everything that could use its results.
+            // A join whose definitions are all dead is left without any: its
+            // body then runs right after this block's `let`s, so it becomes
+            // the rest of this block.
+            let mut after = Vec::new();
+            let tail = match self.tail(b.tail) {
+                Tail::Join { defs, body, .. } if defs.is_empty() => {
+                    let body = *body;
+                    after = body.lets;
+                    body.tail
+                }
+                tail => tail,
+            };
+            let mut lets = Vec::with_capacity(b.lets.len() + after.len());
+            for l in b.lets.into_iter().rev() {
+                let droppable = l.op.effects().is_removable();
+                if droppable && !l.binds.iter().any(|&v| self.is_used(v)) {
+                    self.changed = true;
+                    continue;
+                }
+                self.use_atoms(&l.args);
+                lets.push(l);
             }
-            tail => tail,
-        };
-        let mut lets = Vec::with_capacity(b.lets.len() + after.len());
-        for l in b.lets.into_iter().rev() {
-            let droppable = l.op.effects().is_removable();
-            if droppable && !l.binds.iter().any(|&v| self.is_used(v)) {
-                self.changed = true;
-                continue;
-            }
-            self.use_atoms(&l.args);
-            lets.push(l);
-        }
-        lets.reverse();
-        lets.extend(after);
-        Block { lets, tail }
+            lets.reverse();
+            lets.extend(after);
+            Block { lets, tail }
+        })
     }
 
     fn tail(&mut self, t: Tail) -> Tail {
-        match t {
+        conduit_ir::deep(|| match t {
             Tail::Jump {
                 target,
                 args,
@@ -135,50 +137,52 @@ impl Cx {
             Tail::Join { rec, defs, body } => self.join(rec, defs, *body),
             Tail::Unreachable => Tail::Unreachable,
             Tail::Trap => Tail::Trap,
-        }
+        })
     }
 
     /// A join without live definitions is left without any, for
     /// [`Cx::block`] to replace with its body.
     fn join(&mut self, rec: bool, defs: Vec<JoinDef>, body: Block) -> Tail {
-        let body = self.block(body);
-        let mut defs: Vec<(bool, JoinDef)> = defs.into_iter().map(|d| (false, d)).collect();
-        // A definition is live once the body or a live definition jumps to
-        // it. Only recursive definitions can jump to each other, so others
-        // need one round.
-        loop {
-            let mut found = false;
-            for (live, def) in &mut defs {
-                if !*live && self.is_jumped_to(def.label) {
-                    *live = true;
-                    found = true;
-                    let body = std::mem::replace(&mut def.body, Tail::Unreachable.into());
-                    def.body = self.block(body);
+        conduit_ir::deep(|| {
+            let body = self.block(body);
+            let mut defs: Vec<(bool, JoinDef)> = defs.into_iter().map(|d| (false, d)).collect();
+            // A definition is live once the body or a live definition jumps to
+            // it. Only recursive definitions can jump to each other, so others
+            // need one round.
+            loop {
+                let mut found = false;
+                for (live, def) in &mut defs {
+                    if !*live && self.is_jumped_to(def.label) {
+                        *live = true;
+                        found = true;
+                        let body = std::mem::replace(&mut def.body, Tail::Unreachable.into());
+                        def.body = self.block(body);
+                    }
+                }
+                if !rec || !found {
+                    break;
                 }
             }
-            if !rec || !found {
-                break;
+            let before = defs.len();
+            let defs: Vec<JoinDef> = defs
+                .into_iter()
+                .filter_map(|(live, def)| live.then_some(def))
+                .collect();
+            if defs.len() != before {
+                self.changed = true;
             }
-        }
-        let before = defs.len();
-        let defs: Vec<JoinDef> = defs
-            .into_iter()
-            .filter_map(|(live, def)| live.then_some(def))
-            .collect();
-        if defs.len() != before {
-            self.changed = true;
-        }
-        if defs.is_empty() {
-            return Tail::Join {
+            if defs.is_empty() {
+                return Tail::Join {
+                    rec,
+                    defs,
+                    body: Box::new(body),
+                };
+            }
+            Tail::Join {
                 rec,
                 defs,
                 body: Box::new(body),
-            };
-        }
-        Tail::Join {
-            rec,
-            defs,
-            body: Box::new(body),
-        }
+            }
+        })
     }
 }

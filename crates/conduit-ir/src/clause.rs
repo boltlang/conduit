@@ -131,66 +131,68 @@ impl Rewrite<'_> {
     /// `false` if `k` is used any other way, or a way out doesn't resume or
     /// discontinue.
     fn block(&mut self, b: &mut Block) -> bool {
-        let k = self.k;
-        let uses = |args: &[Atom]| args.contains(&Atom::Var(k));
-        match &mut b.tail {
-            Tail::Jump { target, args, .. } if *target == Label::RET => {
-                let Some(last) = b.lets.last_mut() else {
-                    return false;
-                };
-                let passes_on = args.len() == last.binds.len()
-                    && args
-                        .iter()
-                        .zip(&last.binds)
-                        .all(|(a, &r)| *a == Atom::Var(r));
-                let ends = matches!(last.op, Op::Resume | Op::Discontinue(..))
-                    && last.args.first() == Some(&Atom::Var(k))
-                    && passes_on;
-                if !ends || uses(&last.args[1..]) {
-                    return false;
+        crate::deep(|| {
+            let k = self.k;
+            let uses = |args: &[Atom]| args.contains(&Atom::Var(k));
+            match &mut b.tail {
+                Tail::Jump { target, args, .. } if *target == Label::RET => {
+                    let Some(last) = b.lets.last_mut() else {
+                        return false;
+                    };
+                    let passes_on = args.len() == last.binds.len()
+                        && args
+                            .iter()
+                            .zip(&last.binds)
+                            .all(|(a, &r)| *a == Atom::Var(r));
+                    let ends = matches!(last.op, Op::Resume | Op::Discontinue(..))
+                        && last.args.first() == Some(&Atom::Var(k))
+                        && passes_on;
+                    if !ends || uses(&last.args[1..]) {
+                        return false;
+                    }
+                    if last.op == Op::Resume {
+                        *args = b.lets.pop().unwrap().args.split_off(1);
+                    } else {
+                        last.args.remove(0);
+                        last.binds = self
+                            .takes
+                            .iter()
+                            .map(|ty| {
+                                self.vars.push(ty.clone());
+                                Var(self.vars.len() as u32 - 1)
+                            })
+                            .collect();
+                        *args = last.binds.iter().map(|&v| Atom::Var(v)).collect();
+                    }
                 }
-                if last.op == Op::Resume {
-                    *args = b.lets.pop().unwrap().args.split_off(1);
-                } else {
-                    last.args.remove(0);
-                    last.binds = self
-                        .takes
-                        .iter()
-                        .map(|ty| {
-                            self.vars.push(ty.clone());
-                            Var(self.vars.len() as u32 - 1)
-                        })
-                        .collect();
-                    *args = last.binds.iter().map(|&v| Atom::Var(v)).collect();
+                Tail::Jump { args, .. } => {
+                    if uses(args) {
+                        return false;
+                    }
                 }
+                Tail::Join { defs, body, .. } => {
+                    if !defs.iter_mut().all(|d| self.block(&mut d.body)) || !self.block(body) {
+                        return false;
+                    }
+                }
+                Tail::Case {
+                    scrut,
+                    arms,
+                    default,
+                } => {
+                    if *scrut == Atom::Var(k)
+                        || !arms.iter_mut().all(|a| self.block(&mut a.body))
+                        || !default.as_deref_mut().is_none_or(|d| self.block(d))
+                    {
+                        return false;
+                    }
+                }
+                Tail::Unreachable | Tail::Trap => {}
             }
-            Tail::Jump { args, .. } => {
-                if uses(args) {
-                    return false;
-                }
-            }
-            Tail::Join { defs, body, .. } => {
-                if !defs.iter_mut().all(|d| self.block(&mut d.body)) || !self.block(body) {
-                    return false;
-                }
-            }
-            Tail::Case {
-                scrut,
-                arms,
-                default,
-            } => {
-                if *scrut == Atom::Var(k)
-                    || !arms.iter_mut().all(|a| self.block(&mut a.body))
-                    || !default.as_deref_mut().is_none_or(|d| self.block(d))
-                {
-                    return false;
-                }
-            }
-            Tail::Unreachable | Tail::Trap => {}
-        }
-        // The `resume` or `discontinue` before a `jump ret` has no `k` by
-        // now.
-        !b.lets.iter().any(|l| uses(&l.args))
+            // The `resume` or `discontinue` before a `jump ret` has no `k` by
+            // now.
+            !b.lets.iter().any(|l| uses(&l.args))
+        })
     }
 }
 

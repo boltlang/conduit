@@ -50,56 +50,58 @@ pub fn unused_handlers(p: &dyn Program, f: &mut Func) -> bool {
 }
 
 fn block(p: &dyn Program, b: &mut Block, f: &mut Func) -> bool {
-    let mut changed = false;
-    let mut lets = Vec::with_capacity(b.lets.len());
-    for l in std::mem::take(&mut b.lets) {
-        match unused(p, &l, f) {
-            Some((ret, rows)) => {
-                changed = true;
-                let (c, env) = l.args.split_last().expect("a handle has a body");
-                let Ty::Fn(sig, _) = f.var_ty(var(c)).clone() else {
-                    unreachable!("checked by `unused`")
-                };
-                let xs: Vec<_> = sig.results.iter().map(|t| f.new_var(t.clone())).collect();
-                lets.push(Let {
-                    binds: xs.clone(),
-                    op: Op::Apply,
-                    args: vec![c.clone()],
-                    source: l.source,
-                });
-                let mut args = env.to_vec();
-                args.extend(xs.into_iter().map(Atom::Var));
-                lets.push(Let {
-                    binds: l.binds,
-                    // The return clause has the handler's effect
-                    // parameters, which the `handle` gave rows for.
-                    op: Op::Call(ret, Vec::new(), rows),
-                    args,
-                    source: l.source,
-                });
-            }
-            None => lets.push(l),
-        }
-    }
-    b.lets = lets;
-    match &mut b.tail {
-        Tail::Join { defs, body, .. } => {
-            for d in defs {
-                changed |= block(p, &mut d.body, f);
-            }
-            changed |= block(p, body, f);
-        }
-        Tail::Case { arms, default, .. } => {
-            for a in arms {
-                changed |= block(p, &mut a.body, f);
-            }
-            if let Some(d) = default {
-                changed |= block(p, d, f);
+    conduit_ir::deep(|| {
+        let mut changed = false;
+        let mut lets = Vec::with_capacity(b.lets.len());
+        for l in std::mem::take(&mut b.lets) {
+            match unused(p, &l, f) {
+                Some((ret, rows)) => {
+                    changed = true;
+                    let (c, env) = l.args.split_last().expect("a handle has a body");
+                    let Ty::Fn(sig, _) = f.var_ty(var(c)).clone() else {
+                        unreachable!("checked by `unused`")
+                    };
+                    let xs: Vec<_> = sig.results.iter().map(|t| f.new_var(t.clone())).collect();
+                    lets.push(Let {
+                        binds: xs.clone(),
+                        op: Op::Apply,
+                        args: vec![c.clone()],
+                        source: l.source,
+                    });
+                    let mut args = env.to_vec();
+                    args.extend(xs.into_iter().map(Atom::Var));
+                    lets.push(Let {
+                        binds: l.binds,
+                        // The return clause has the handler's effect
+                        // parameters, which the `handle` gave rows for.
+                        op: Op::Call(ret, Vec::new(), rows),
+                        args,
+                        source: l.source,
+                    });
+                }
+                None => lets.push(l),
             }
         }
-        Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
-    }
-    changed
+        b.lets = lets;
+        match &mut b.tail {
+            Tail::Join { defs, body, .. } => {
+                for d in defs {
+                    changed |= block(p, &mut d.body, f);
+                }
+                changed |= block(p, body, f);
+            }
+            Tail::Case { arms, default, .. } => {
+                for a in arms {
+                    changed |= block(p, &mut a.body, f);
+                }
+                if let Some(d) = default {
+                    changed |= block(p, d, f);
+                }
+            }
+            Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
+        }
+        changed
+    })
 }
 
 /// The return clause of the handler `l` runs its body under, and the rows

@@ -295,10 +295,16 @@ fn any_let(b: &Block, test: &mut impl FnMut(&Let) -> bool) -> bool {
 
 /// The variables `b` uses but doesn't bind, in order.
 fn free_vars(b: &Block) -> BTreeSet<Var> {
+    free_vars_of(&b.lets, &b.tail)
+}
+
+/// [`free_vars`] of the block that `lets` and `tail` would make, without
+/// making it, which would copy what's nested in `tail`.
+fn free_vars_of(lets: &[Let], tail: &Tail) -> BTreeSet<Var> {
     let mut used = BTreeSet::new();
     let mut bound = BTreeSet::new();
-    b.walk(|b| {
-        for l in &b.lets {
+    let mut visit = |lets: &[Let], tail: &Tail| {
+        for l in lets {
             for a in &l.args {
                 if let Atom::Var(x) = a {
                     used.insert(*x);
@@ -306,7 +312,7 @@ fn free_vars(b: &Block) -> BTreeSet<Var> {
             }
             bound.extend(l.binds.iter().copied());
         }
-        match &b.tail {
+        match tail {
             Tail::Jump { args, .. } => {
                 for a in args {
                     if let Atom::Var(x) = a {
@@ -326,7 +332,18 @@ fn free_vars(b: &Block) -> BTreeSet<Var> {
             }
             Tail::Unreachable | Tail::Trap => {}
         }
-    });
+    };
+    visit(lets, tail);
+    let children: Vec<&Block> = match tail {
+        Tail::Join { defs, body, .. } => defs.iter().map(|d| &d.body).chain([&**body]).collect(),
+        Tail::Case { arms, default, .. } => (arms.iter().map(|a| &a.body))
+            .chain(default.as_deref())
+            .collect(),
+        Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => Vec::new(),
+    };
+    for c in children {
+        c.walk(|b| visit(&b.lets, &b.tail));
+    }
     used.difference(&bound).copied().collect()
 }
 
@@ -651,8 +668,10 @@ impl Lower {
     /// Whether the `i`th `let` of `b` is a site: one that may yield and
     /// isn't a tail call.
     fn is_site(&self, b: &Block, i: usize, vars: &[Ty]) -> bool {
-        let l = &b.lets[i];
-        self.may_yield(l, vars) && !is_tail(b, i)
+        conduit_ir::deep(|| {
+            let l = &b.lets[i];
+            self.may_yield(l, vars) && !is_tail(b, i)
+        })
     }
 }
 
@@ -687,7 +706,7 @@ impl Lower {
         }
         // The labels in scope at a site.
         let mut lifted: BTreeSet<Label> = BTreeSet::new();
-        let mut defs: BTreeMap<Label, JoinDef> = BTreeMap::new();
+        let mut defs: BTreeMap<Label, &JoinDef> = BTreeMap::new();
         self.scope_at_sites(&f.body, &mut Vec::new(), &f.vars, &mut lifted, &mut defs);
         if lifted.is_empty() {
             return;
@@ -741,6 +760,11 @@ impl Lower {
                 break;
             }
         }
+        // Only the lifted definitions are copied: each holds what's nested
+        // in it, which for all of them would take as long as the
+        // function's depth squared.
+        let defs: BTreeMap<Label, JoinDef> =
+            (lifted.iter()).map(|l| (*l, defs[l].clone())).collect();
         let mut table = BTreeMap::new();
         for &l in &lifted {
             let func = self.fresh_func();
@@ -755,7 +779,7 @@ impl Lower {
         let f = self.src.funcs[&id].clone();
         for (&l, lifted_def) in &table {
             let d = &defs[&l];
-            let mut j = f.clone();
+            let mut j = f.without_body();
             j.params = lifted_def.free.clone();
             j.params.extend(d.params.iter().copied());
             let body = rewrite_jumps(d.body.clone(), &table, &mut j, &f);
@@ -773,57 +797,59 @@ impl Lower {
             j.debug.name = Some(format!("{name}_{label}").into());
             self.src.funcs.insert(lifted_def.func, j);
         }
-        let mut f2 = f.clone();
+        let mut f2 = f.without_body();
         f2.body = rewrite_jumps(f.body.clone(), &table, &mut f2, &f);
         self.src.funcs.insert(id, f2);
     }
 
     /// Adds to `lifted` the labels in scope at each site of `b`, and to
     /// `defs` the definition of every label.
-    fn scope_at_sites(
+    fn scope_at_sites<'b>(
         &self,
-        b: &Block,
+        b: &'b Block,
         scope: &mut Vec<Label>,
         vars: &[Ty],
         lifted: &mut BTreeSet<Label>,
-        defs: &mut BTreeMap<Label, JoinDef>,
+        defs: &mut BTreeMap<Label, &'b JoinDef>,
     ) {
-        for i in 0..b.lets.len() {
-            if self.is_site(b, i, vars) {
-                lifted.extend(scope.iter().copied());
-            }
-        }
-        match &b.tail {
-            Tail::Join {
-                rec,
-                defs: ds,
-                body,
-            } => {
-                for d in ds {
-                    defs.insert(d.label, d.clone());
+        conduit_ir::deep(|| {
+            for i in 0..b.lets.len() {
+                if self.is_site(b, i, vars) {
+                    lifted.extend(scope.iter().copied());
                 }
-                let n = scope.len();
-                if *rec {
+            }
+            match &b.tail {
+                Tail::Join {
+                    rec,
+                    defs: ds,
+                    body,
+                } => {
+                    for d in ds {
+                        defs.insert(d.label, d);
+                    }
+                    let n = scope.len();
+                    if *rec {
+                        scope.extend(ds.iter().map(|d| d.label));
+                    }
+                    for d in ds {
+                        self.scope_at_sites(&d.body, scope, vars, lifted, defs);
+                    }
+                    scope.truncate(n);
                     scope.extend(ds.iter().map(|d| d.label));
+                    self.scope_at_sites(body, scope, vars, lifted, defs);
+                    scope.truncate(n);
                 }
-                for d in ds {
-                    self.scope_at_sites(&d.body, scope, vars, lifted, defs);
+                Tail::Case { arms, default, .. } => {
+                    for a in arms {
+                        self.scope_at_sites(&a.body, scope, vars, lifted, defs);
+                    }
+                    if let Some(d) = default {
+                        self.scope_at_sites(d, scope, vars, lifted, defs);
+                    }
                 }
-                scope.truncate(n);
-                scope.extend(ds.iter().map(|d| d.label));
-                self.scope_at_sites(body, scope, vars, lifted, defs);
-                scope.truncate(n);
+                Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
             }
-            Tail::Case { arms, default, .. } => {
-                for a in arms {
-                    self.scope_at_sites(&a.body, scope, vars, lifted, defs);
-                }
-                if let Some(d) = default {
-                    self.scope_at_sites(d, scope, vars, lifted, defs);
-                }
-            }
-            Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
-        }
+        })
     }
 }
 
@@ -832,75 +858,77 @@ impl Lower {
 /// which gets the variables for the calls' results, and `orig` the one the
 /// join points are from.
 fn rewrite_jumps(b: Block, table: &BTreeMap<Label, Lifted>, into: &mut Func, orig: &Func) -> Block {
-    let mut lets = b.lets;
-    let tail = match b.tail {
-        Tail::Jump {
-            target,
-            args,
-            source,
-        } => match table.get(&target) {
-            Some(lifted) => {
-                let rows: Vec<Row> = (1..=orig.effect_params).map(Row::param).collect();
-                let mut all = vs(&lifted.free);
-                all.extend(args);
-                let rs = letn(
-                    into,
-                    &mut lets,
-                    orig.results.clone(),
-                    Op::Call(lifted.func, same_margs(orig), rows),
-                    all,
-                );
-                Tail::Jump {
-                    target: Label::RET,
-                    args: vs(&rs),
-                    source,
-                }
-            }
-            None => Tail::Jump {
+    conduit_ir::deep(|| {
+        let mut lets = b.lets;
+        let tail = match b.tail {
+            Tail::Jump {
                 target,
                 args,
                 source,
+            } => match table.get(&target) {
+                Some(lifted) => {
+                    let rows: Vec<Row> = (1..=orig.effect_params).map(Row::param).collect();
+                    let mut all = vs(&lifted.free);
+                    all.extend(args);
+                    let rs = letn(
+                        into,
+                        &mut lets,
+                        orig.results.clone(),
+                        Op::Call(lifted.func, same_margs(orig), rows),
+                        all,
+                    );
+                    Tail::Jump {
+                        target: Label::RET,
+                        args: vs(&rs),
+                        source,
+                    }
+                }
+                None => Tail::Jump {
+                    target,
+                    args,
+                    source,
+                },
             },
-        },
-        Tail::Join { rec, defs, body } => {
-            let defs: Vec<JoinDef> = defs
-                .into_iter()
-                .filter(|d| !table.contains_key(&d.label))
-                .map(|d| JoinDef {
-                    body: rewrite_jumps(d.body, table, into, orig),
-                    ..d
-                })
-                .collect();
-            let body = rewrite_jumps(*body, table, into, orig);
-            if defs.is_empty() {
-                lets.extend(body.lets);
-                return block(lets, body.tail);
+            Tail::Join { rec, defs, body } => {
+                let defs: Vec<JoinDef> = defs
+                    .into_iter()
+                    .filter(|d| !table.contains_key(&d.label))
+                    .map(|d| JoinDef {
+                        body: rewrite_jumps(d.body, table, into, orig),
+                        ..d
+                    })
+                    .collect();
+                let body = rewrite_jumps(*body, table, into, orig);
+                if defs.is_empty() {
+                    lets.extend(body.lets);
+                    return block(lets, body.tail);
+                }
+                Tail::Join {
+                    rec,
+                    defs,
+                    body: Box::new(body),
+                }
             }
-            Tail::Join {
-                rec,
-                defs,
-                body: Box::new(body),
-            }
-        }
-        Tail::Case {
-            scrut,
-            arms,
-            default,
-        } => Tail::Case {
-            scrut,
-            arms: arms
-                .into_iter()
-                .map(|a| Arm {
-                    tag: a.tag,
-                    body: rewrite_jumps(a.body, table, into, orig),
-                })
-                .collect(),
-            default: default.map(|d| Box::new(rewrite_jumps(*d, table, into, orig))),
-        },
-        Tail::Unreachable => Tail::Unreachable,
-        Tail::Trap => Tail::Trap,
-    };
-    block(lets, tail)
+            Tail::Case {
+                scrut,
+                arms,
+                default,
+            } => Tail::Case {
+                scrut,
+                arms: arms
+                    .into_iter()
+                    .map(|a| Arm {
+                        tag: a.tag,
+                        body: rewrite_jumps(a.body, table, into, orig),
+                    })
+                    .collect(),
+                default: default.map(|d| Box::new(rewrite_jumps(*d, table, into, orig))),
+            },
+            Tail::Unreachable => Tail::Unreachable,
+            Tail::Trap => Tail::Trap,
+        };
+        block(lets, tail)
+    })
 }
 
 // ---------------------------------------------------------------------
@@ -1084,8 +1112,10 @@ impl Lower {
 
     /// `ret` with an undefined `ro any`.
     fn ret_undefined_any(&self, f: &mut Func, lets: &mut Vec<Let>) -> Tail {
-        let u = self.undefineds(f, lets, &[any()]);
-        ret(u)
+        conduit_ir::deep(|| {
+            let u = self.undefineds(f, lets, &[any()]);
+            ret(u)
+        })
     }
 
     /// The runtime's own functions.
@@ -1337,7 +1367,7 @@ impl Lower {
         if let Some(&id) = self.ev_wrappers.get(&g) {
             return id;
         }
-        let src = self.src.funcs[&g].clone();
+        let src = self.src.funcs[&g].without_body();
         let id = self.fresh_func();
         let params = self.tys(&src.sig().params);
         let results = self.tys(&src.results);
@@ -1767,7 +1797,7 @@ impl Lower {
     /// The lowered function of `src`, with its body still to fill in, and
     /// the variable of its evidence if it takes some.
     fn out_func(&self, src: &Func, with_ev: bool) -> (Func, Option<Var>) {
-        let mut f = src.clone();
+        let mut f = src.without_body();
         f.vars = self.tys(&src.vars);
         f.results = self.tys(&src.results);
         f.row = Row::NOTHING;
@@ -1846,31 +1876,33 @@ impl Lower {
 
     /// The lowered `lets[start..]` and tail of `b`.
     fn block_from(&mut self, o: &mut Out<'_>, b: &Block, start: usize) -> Block {
-        let mut lets = Vec::new();
-        for i in start..b.lets.len() {
-            let l = &b.lets[i];
-            if let Op::Perform(e, op) = l.op
-                && self.yields.contains(&e)
-            {
-                return self.perform_site(o, b, i, e, op, lets);
+        conduit_ir::deep(|| {
+            let mut lets = Vec::new();
+            for i in start..b.lets.len() {
+                let l = &b.lets[i];
+                if let Op::Perform(e, op) = l.op
+                    && self.yields.contains(&e)
+                {
+                    return self.perform_site(o, b, i, e, op, lets);
+                }
+                self.lower_let(o, l, &mut lets);
+                if let Some(ev) = o.ev
+                    && self.is_site(b, i, &o.src.vars)
+                {
+                    let site = self.site(o, b, i);
+                    let y = self.yielding(&mut o.f, &mut lets, v(ev));
+                    let go = self.continue_after(o, b, i, &site);
+                    let stop = self.yield_block(o, &site);
+                    return block(lets, case_zero(y, go, stop));
+                }
             }
-            self.lower_let(o, l, &mut lets);
-            if let Some(ev) = o.ev
-                && self.is_site(b, i, &o.src.vars)
-            {
-                let site = self.site(o, b, i);
-                let y = self.yielding(&mut o.f, &mut lets, v(ev));
-                let go = self.continue_after(o, b, i, &site);
-                let stop = self.yield_block(o, &site);
-                return block(lets, case_zero(y, go, stop));
-            }
-        }
-        let tail = self.lower_tail(o, &b.tail, &mut lets);
-        block(lets, tail)
+            let tail = self.lower_tail(o, &b.tail, &mut lets);
+            block(lets, tail)
+        })
     }
 
     fn lower_tail(&mut self, o: &mut Out<'_>, t: &Tail, lets: &mut Vec<Let>) -> Tail {
-        match t {
+        conduit_ir::deep(|| match t {
             Tail::Jump {
                 target,
                 args,
@@ -1914,52 +1946,58 @@ impl Lower {
                     .as_deref()
                     .map(|d| Box::new(self.block_from(o, d, 0))),
             },
-        }
+        })
     }
 
     /// What follows a site when it isn't yielding: the rest, here or, in
     /// a rest, as a tail call of the site's own rest.
     fn continue_after(&mut self, o: &mut Out<'_>, b: &Block, i: usize, site: &Site) -> Block {
-        if !o.boxed {
-            return self.block_from(o, b, i + 1);
-        }
-        let ev = o.ev.expect("a rest has evidence");
-        let tys: Vec<Ty> = site.binds.iter().map(|x| o.f.var_ty(*x).clone()).collect();
-        let mut lets = Vec::new();
-        let bx = self.box_vals(&mut o.f, &mut lets, vs(&site.binds), &tys);
-        let mut args = vs(&site.free);
-        args.extend([v(ev), bx, v(ev)]);
-        let margs = same_margs(&o.f);
-        let r = let1(
-            &mut o.f,
-            &mut lets,
-            any(),
-            Op::Call(site.rest, margs, Vec::new()),
-            args,
-        );
-        block(lets, ret(vec![v(r)]))
+        conduit_ir::deep(|| {
+            if !o.boxed {
+                return self.block_from(o, b, i + 1);
+            }
+            let ev = o.ev.expect("a rest has evidence");
+            let tys: Vec<Ty> = site.binds.iter().map(|x| o.f.var_ty(*x).clone()).collect();
+            let mut lets = Vec::new();
+            let bx = self.box_vals(&mut o.f, &mut lets, vs(&site.binds), &tys);
+            let mut args = vs(&site.free);
+            args.extend([v(ev), bx, v(ev)]);
+            let margs = same_margs(&o.f);
+            let r = let1(
+                &mut o.f,
+                &mut lets,
+                any(),
+                Op::Call(site.rest, margs, Vec::new()),
+                args,
+            );
+            block(lets, ret(vec![v(r)]))
+        })
     }
 
     /// A site's way out when yielding: the rest goes on the continuation,
     /// and undefined results back.
     fn yield_block(&mut self, o: &mut Out<'_>, site: &Site) -> Block {
-        let ev = o.ev.expect("a site has evidence");
-        let mut lets = Vec::new();
-        let piece = self.rest_closure(o, &mut lets, site);
-        self.extend(&mut o.f, &mut lets, v(ev), v(piece));
-        let tail = self.undefined_ret(o, &mut lets);
-        block(lets, tail)
+        conduit_ir::deep(|| {
+            let ev = o.ev.expect("a site has evidence");
+            let mut lets = Vec::new();
+            let piece = self.rest_closure(o, &mut lets, site);
+            self.extend(&mut o.f, &mut lets, v(ev), v(piece));
+            let tail = self.undefined_ret(o, &mut lets);
+            block(lets, tail)
+        })
     }
 
     /// `ret` with undefined results of the function, or an undefined box
     /// in a rest.
     fn undefined_ret(&self, o: &mut Out<'_>, lets: &mut Vec<Let>) -> Tail {
-        if o.boxed {
-            return self.ret_undefined_any(&mut o.f, lets);
-        }
-        let tys = o.f.results.clone();
-        let us = self.undefineds(&mut o.f, lets, &tys);
-        ret(us)
+        conduit_ir::deep(|| {
+            if o.boxed {
+                return self.ret_undefined_any(&mut o.f, lets);
+            }
+            let tys = o.f.results.clone();
+            let us = self.undefineds(&mut o.f, lets, &tys);
+            ret(us)
+        })
     }
 
     /// A closure of a site's rest, holding what it needs.
@@ -1980,55 +2018,53 @@ impl Lower {
     /// The site at the `i`th `let` of `b`, with its rest, made the first
     /// time it's asked for.
     fn site(&mut self, o: &Out<'_>, b: &Block, i: usize) -> Site {
-        let key = &b.lets[i] as *const Let;
-        if let Some(site) = self.sites.get(&key) {
-            return site.clone();
-        }
-        let after = Block {
-            lets: b.lets[i + 1..].to_vec(),
-            tail: b.tail.clone(),
-        };
-        let binds = b.lets[i].binds.clone();
-        let mut free = free_vars(&after);
-        for x in &binds {
-            free.remove(x);
-        }
-        let free: Vec<Var> = free.into_iter().collect();
-        let rest = self.fresh_func();
-        let site = Site {
-            free: free.clone(),
-            binds: binds.clone(),
-            rest,
-        };
-        self.sites.insert(key, site.clone());
+        conduit_ir::deep(|| {
+            let key = &b.lets[i] as *const Let;
+            if let Some(site) = self.sites.get(&key) {
+                return site.clone();
+            }
+            let binds = b.lets[i].binds.clone();
+            let mut free = free_vars_of(&b.lets[i + 1..], &b.tail);
+            for x in &binds {
+                free.remove(x);
+            }
+            let free: Vec<Var> = free.into_iter().collect();
+            let rest = self.fresh_func();
+            let site = Site {
+                free: free.clone(),
+                binds: binds.clone(),
+                rest,
+            };
+            self.sites.insert(key, site.clone());
 
-        // rest(free.., ev, x, ev') -> any
-        let mut f = o.src.clone();
-        f.vars = self.tys(&o.src.vars);
-        f.results = vec![any()];
-        f.row = Row::NOTHING;
-        f.effect_params = 0;
-        f.params = free;
-        let ev = f.new_var(self.rt.ev_ty());
-        let x = f.new_var(any());
-        let ev2 = f.new_var(self.rt.ev_ty());
-        f.params.extend([ev, x, ev2]);
-        let name = o.src.debug.name.as_deref().unwrap_or("fn");
-        f.debug.name = Some(format!("{name}_rest").into());
-        let mut r = Out {
-            src: o.src,
-            f,
-            ev: Some(ev),
-            boxed: true,
-        };
-        let tys: Vec<Ty> = binds.iter().map(|b| r.f.var_ty(*b).clone()).collect();
-        let mut lets = Vec::new();
-        self.unbox_vals(&mut r.f, &mut lets, v(x), &tys, binds);
-        let mut body = self.block_from(&mut r, b, i + 1);
-        lets.append(&mut body.lets);
-        r.f.body = block(lets, body.tail);
-        self.out.funcs.insert(rest, r.f);
-        site
+            // rest(free.., ev, x, ev') -> any
+            let mut f = o.src.without_body();
+            f.vars = self.tys(&o.src.vars);
+            f.results = vec![any()];
+            f.row = Row::NOTHING;
+            f.effect_params = 0;
+            f.params = free;
+            let ev = f.new_var(self.rt.ev_ty());
+            let x = f.new_var(any());
+            let ev2 = f.new_var(self.rt.ev_ty());
+            f.params.extend([ev, x, ev2]);
+            let name = o.src.debug.name.as_deref().unwrap_or("fn");
+            f.debug.name = Some(format!("{name}_rest").into());
+            let mut r = Out {
+                src: o.src,
+                f,
+                ev: Some(ev),
+                boxed: true,
+            };
+            let tys: Vec<Ty> = binds.iter().map(|b| r.f.var_ty(*b).clone()).collect();
+            let mut lets = Vec::new();
+            self.unbox_vals(&mut r.f, &mut lets, v(x), &tys, binds);
+            let mut body = self.block_from(&mut r, b, i + 1);
+            lets.append(&mut body.lets);
+            r.f.body = block(lets, body.tail);
+            self.out.funcs.insert(rest, r.f);
+            site
+        })
     }
 
     /// `perform E.op(args)` at the `i`th `let` of `b`, of an effect that
@@ -2043,91 +2079,93 @@ impl Lower {
         op: u32,
         mut lets: Vec<Let>,
     ) -> Block {
-        let l = &b.lets[i];
-        let ev = o.ev.expect("a perform has evidence");
-        let (node, slot) = self.lookup(o, &mut lets, e, op);
-        let kinds = let1(
-            &mut o.f,
-            &mut lets,
-            Ty::Array(Box::new(Ty::I32), Mutability::Mut),
-            Op::Get(self.rt.node(), 2),
-            vec![v(node)],
-        );
-        let kind = let1(
-            &mut o.f,
-            &mut lets,
-            Ty::I32,
-            Op::ArrayGet,
-            vec![v(kinds), v(slot)],
-        );
-        let after = o.f.new_label();
-        let site = self.site(o, b, i);
-        let after_body = if self.is_site(b, i, &o.src.vars) {
-            let mut alets = Vec::new();
-            let y = self.yielding(&mut o.f, &mut alets, v(ev));
-            let go = self.continue_after(o, b, i, &site);
-            let stop = self.yield_block(o, &site);
-            block(alets, case_zero(y, go, stop))
-        } else {
-            self.block_from(o, b, i + 1)
-        };
-        // Tail-resumptive: call the clause under the handlers outside it.
-        let mut fast = Vec::new();
-        let xs = self.fast_call(o, &mut fast, (node, slot), (e, op), l.args.clone(), None);
-        let fast = block(
-            fast,
-            Tail::Jump {
-                target: after,
-                args: vs(&xs),
-                source: l.source,
-            },
-        );
-        // Otherwise yield to it.
-        let mut slow = Vec::new();
-        let yc = Runtime::ctor(self.rt.yield_d, 0);
-        let st = let1(
-            &mut o.f,
-            &mut slow,
-            self.rt.yield_ty(),
-            Op::Get(Runtime::ctor(self.rt.ev_d, 0), 0),
-            vec![v(ev)],
-        );
-        let mk = let1(
-            &mut o.f,
-            &mut slow,
-            Ty::I32,
-            Op::Get(self.rt.node(), 1),
-            vec![v(node)],
-        );
-        let0(&mut slow, Op::Set(yc, 0), vec![v(st), v(mk)]);
-        let0(&mut slow, Op::Set(yc, 1), vec![v(st), v(slot)]);
-        let ptys = self.tys(&self.src.effects[&e].ops[op as usize].params);
-        let a = self.box_vals(&mut o.f, &mut slow, l.args.clone(), &ptys);
-        let0(&mut slow, Op::Set(yc, 2), vec![v(st), a]);
-        let piece = self.rest_closure(o, &mut slow, &site);
-        let force = self.force_func(e, op);
-        let fz = let1(
-            &mut o.f,
-            &mut slow,
-            self.rt.piece_ty(),
-            Op::Closure(force, Vec::new(), Vec::new()),
-            vec![v(piece), v(ev)],
-        );
-        let0(&mut slow, Op::Set(yc, 3), vec![v(st), v(fz)]);
-        let tail = self.undefined_ret(o, &mut slow);
-        let slow = block(slow, tail);
-        block(
-            lets,
-            Tail::Join {
-                rec: false,
-                defs: vec![JoinDef {
-                    label: after,
-                    params: l.binds.clone(),
-                    body: after_body,
-                }],
-                body: Box::new(block(vec![], case_zero(kind, slow, fast))),
-            },
-        )
+        conduit_ir::deep(|| {
+            let l = &b.lets[i];
+            let ev = o.ev.expect("a perform has evidence");
+            let (node, slot) = self.lookup(o, &mut lets, e, op);
+            let kinds = let1(
+                &mut o.f,
+                &mut lets,
+                Ty::Array(Box::new(Ty::I32), Mutability::Mut),
+                Op::Get(self.rt.node(), 2),
+                vec![v(node)],
+            );
+            let kind = let1(
+                &mut o.f,
+                &mut lets,
+                Ty::I32,
+                Op::ArrayGet,
+                vec![v(kinds), v(slot)],
+            );
+            let after = o.f.new_label();
+            let site = self.site(o, b, i);
+            let after_body = if self.is_site(b, i, &o.src.vars) {
+                let mut alets = Vec::new();
+                let y = self.yielding(&mut o.f, &mut alets, v(ev));
+                let go = self.continue_after(o, b, i, &site);
+                let stop = self.yield_block(o, &site);
+                block(alets, case_zero(y, go, stop))
+            } else {
+                self.block_from(o, b, i + 1)
+            };
+            // Tail-resumptive: call the clause under the handlers outside it.
+            let mut fast = Vec::new();
+            let xs = self.fast_call(o, &mut fast, (node, slot), (e, op), l.args.clone(), None);
+            let fast = block(
+                fast,
+                Tail::Jump {
+                    target: after,
+                    args: vs(&xs),
+                    source: l.source,
+                },
+            );
+            // Otherwise yield to it.
+            let mut slow = Vec::new();
+            let yc = Runtime::ctor(self.rt.yield_d, 0);
+            let st = let1(
+                &mut o.f,
+                &mut slow,
+                self.rt.yield_ty(),
+                Op::Get(Runtime::ctor(self.rt.ev_d, 0), 0),
+                vec![v(ev)],
+            );
+            let mk = let1(
+                &mut o.f,
+                &mut slow,
+                Ty::I32,
+                Op::Get(self.rt.node(), 1),
+                vec![v(node)],
+            );
+            let0(&mut slow, Op::Set(yc, 0), vec![v(st), v(mk)]);
+            let0(&mut slow, Op::Set(yc, 1), vec![v(st), v(slot)]);
+            let ptys = self.tys(&self.src.effects[&e].ops[op as usize].params);
+            let a = self.box_vals(&mut o.f, &mut slow, l.args.clone(), &ptys);
+            let0(&mut slow, Op::Set(yc, 2), vec![v(st), a]);
+            let piece = self.rest_closure(o, &mut slow, &site);
+            let force = self.force_func(e, op);
+            let fz = let1(
+                &mut o.f,
+                &mut slow,
+                self.rt.piece_ty(),
+                Op::Closure(force, Vec::new(), Vec::new()),
+                vec![v(piece), v(ev)],
+            );
+            let0(&mut slow, Op::Set(yc, 3), vec![v(st), v(fz)]);
+            let tail = self.undefined_ret(o, &mut slow);
+            let slow = block(slow, tail);
+            block(
+                lets,
+                Tail::Join {
+                    rec: false,
+                    defs: vec![JoinDef {
+                        label: after,
+                        params: l.binds.clone(),
+                        body: after_body,
+                    }],
+                    body: Box::new(block(vec![], case_zero(kind, slow, fast))),
+                },
+            )
+        })
     }
 
     /// The nearest handler node of `e`, and where the clause for `e.op` is

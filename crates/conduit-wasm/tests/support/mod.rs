@@ -2,6 +2,7 @@
 
 use wasmtime::{Engine, Instance, Store};
 
+#[allow(unused_imports)]
 pub use conduit_test::wasm::call;
 
 /// Instantiates `bytes`, with stack switching if `stack_switching`.

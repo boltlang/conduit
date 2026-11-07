@@ -93,35 +93,37 @@ impl<'p> Cx<'p> {
     }
 
     fn block(&mut self, b: Block, f: &mut Func) -> Block {
-        let mut lets = Vec::with_capacity(b.lets.len());
-        let mut rest = b.lets.into_iter();
-        while let Some(l) = rest.next() {
-            let Some(callee) = self.callee(&l) else {
-                lets.push(l);
-                continue;
-            };
-            let after = self.block(
-                Block {
-                    lets: rest.collect(),
-                    tail: b.tail,
-                },
-                f,
-            );
-            let inlined = self.inline_call(callee, l, after, f);
-            lets.extend(inlined.lets);
-            return Block {
+        conduit_ir::deep(|| {
+            let mut lets = Vec::with_capacity(b.lets.len());
+            let mut rest = b.lets.into_iter();
+            while let Some(l) = rest.next() {
+                let Some(callee) = self.callee(&l) else {
+                    lets.push(l);
+                    continue;
+                };
+                let after = self.block(
+                    Block {
+                        lets: rest.collect(),
+                        tail: b.tail,
+                    },
+                    f,
+                );
+                let inlined = self.inline_call(callee, l, after, f);
+                lets.extend(inlined.lets);
+                return Block {
+                    lets,
+                    tail: inlined.tail,
+                };
+            }
+            Block {
                 lets,
-                tail: inlined.tail,
-            };
-        }
-        Block {
-            lets,
-            tail: self.tail(b.tail, f),
-        }
+                tail: self.tail(b.tail, f),
+            }
+        })
     }
 
     fn tail(&mut self, t: Tail, f: &mut Func) -> Tail {
-        match t {
+        conduit_ir::deep(|| match t {
             Tail::Join { rec, defs, body } => Tail::Join {
                 rec,
                 defs: defs
@@ -149,53 +151,55 @@ impl<'p> Cx<'p> {
                 default: default.map(|d| Box::new(self.block(*d, f))),
             },
             t @ (Tail::Jump { .. } | Tail::Unreachable | Tail::Trap) => t,
-        }
+        })
     }
 
     /// The block that replaces `call`, of `callee`, and `after`, the rest
     /// of the block it's in.
     fn inline_call(&mut self, callee: &Func, call: Let, after: Block, f: &mut Func) -> Block {
-        self.changed = true;
-        self.size += callee.body.size();
-        let Op::Call(_, margs, rows) = call.op else {
-            unreachable!("only calls are inlined")
-        };
-        let binds_args: Vec<Atom> = call.binds.iter().map(|&b| Atom::Var(b)).collect();
-        // After a tail call, or anything else that only passes the results
-        // on, the callee can jump where they go.
-        let direct = match &after.tail {
-            Tail::Jump { target, args, .. } if after.lets.is_empty() && *args == binds_args => {
-                Some(*target)
+        conduit_ir::deep(|| {
+            self.changed = true;
+            self.size += callee.body.size();
+            let Op::Call(_, margs, rows) = call.op else {
+                unreachable!("only calls are inlined")
+            };
+            let binds_args: Vec<Atom> = call.binds.iter().map(|&b| Atom::Var(b)).collect();
+            // After a tail call, or anything else that only passes the results
+            // on, the callee can jump where they go.
+            let direct = match &after.tail {
+                Tail::Jump { target, args, .. } if after.lets.is_empty() && *args == binds_args => {
+                    Some(*target)
+                }
+                _ => None,
+            };
+            let ret = direct.unwrap_or_else(|| f.new_label());
+            let mut r = Rename {
+                vars: callee
+                    .params
+                    .iter()
+                    .copied()
+                    .zip(call.args.iter().cloned())
+                    .collect(),
+                labels: BTreeMap::from([(Label::RET, ret)]),
+                margs,
+                rows,
+                source: call.source,
+                callee,
+            };
+            let body = r.block(&callee.body, f);
+            if direct.is_some() {
+                return body;
             }
-            _ => None,
-        };
-        let ret = direct.unwrap_or_else(|| f.new_label());
-        let mut r = Rename {
-            vars: callee
-                .params
-                .iter()
-                .copied()
-                .zip(call.args.iter().cloned())
-                .collect(),
-            labels: BTreeMap::from([(Label::RET, ret)]),
-            margs,
-            rows,
-            source: call.source,
-            callee,
-        };
-        let body = r.block(&callee.body, f);
-        if direct.is_some() {
-            return body;
-        }
-        Tail::Join {
-            rec: false,
-            defs: vec![JoinDef {
-                label: ret,
-                params: call.binds,
-                body: after,
-            }],
-            body: Box::new(body),
-        }
-        .into()
+            Tail::Join {
+                rec: false,
+                defs: vec![JoinDef {
+                    label: ret,
+                    params: call.binds,
+                    body: after,
+                }],
+                body: Box::new(body),
+            }
+            .into()
+        })
     }
 }

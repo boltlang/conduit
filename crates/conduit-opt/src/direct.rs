@@ -179,140 +179,144 @@ impl<'p> Cx<'p> {
     }
 
     fn block(&mut self, b: Block, f: &mut Func) -> Block {
-        let mut lets = Vec::with_capacity(b.lets.len());
-        let mut rest = b.lets.into_iter();
-        while let Some(l) = rest.next() {
-            let Some(handled) = self.handled(&l) else {
-                lets.push(l);
-                continue;
-            };
-            let after = self.block(
-                Block {
-                    lets: rest.collect(),
-                    tail: b.tail,
+        conduit_ir::deep(|| {
+            let mut lets = Vec::with_capacity(b.lets.len());
+            let mut rest = b.lets.into_iter();
+            while let Some(l) = rest.next() {
+                let Some(handled) = self.handled(&l) else {
+                    lets.push(l);
+                    continue;
+                };
+                let after = self.block(
+                    Block {
+                        lets: rest.collect(),
+                        tail: b.tail,
+                    },
+                    f,
+                );
+                let direct = self.run_directly(handled, l, after, f);
+                lets.extend(direct.lets);
+                return Block {
+                    lets,
+                    tail: direct.tail,
+                };
+            }
+            let tail = match b.tail {
+                Tail::Join { rec, defs, body } => Tail::Join {
+                    rec,
+                    defs: defs
+                        .into_iter()
+                        .map(|d| JoinDef {
+                            body: self.block(d.body, f),
+                            ..d
+                        })
+                        .collect(),
+                    body: Box::new(self.block(*body, f)),
                 },
-                f,
-            );
-            let direct = self.run_directly(handled, l, after, f);
-            lets.extend(direct.lets);
-            return Block {
-                lets,
-                tail: direct.tail,
+                Tail::Case {
+                    scrut,
+                    arms,
+                    default,
+                } => Tail::Case {
+                    scrut,
+                    arms: arms
+                        .into_iter()
+                        .map(|mut a| {
+                            a.body = self.block(a.body, f);
+                            a
+                        })
+                        .collect(),
+                    default: default.map(|d| Box::new(self.block(*d, f))),
+                },
+                t => t,
             };
-        }
-        let tail = match b.tail {
-            Tail::Join { rec, defs, body } => Tail::Join {
-                rec,
-                defs: defs
-                    .into_iter()
-                    .map(|d| JoinDef {
-                        body: self.block(d.body, f),
-                        ..d
-                    })
-                    .collect(),
-                body: Box::new(self.block(*body, f)),
-            },
-            Tail::Case {
-                scrut,
-                arms,
-                default,
-            } => Tail::Case {
-                scrut,
-                arms: arms
-                    .into_iter()
-                    .map(|mut a| {
-                        a.body = self.block(a.body, f);
-                        a
-                    })
-                    .collect(),
-                default: default.map(|d| Box::new(self.block(*d, f))),
-            },
-            t => t,
-        };
-        Block { lets, tail }
+            Block { lets, tail }
+        })
     }
 
     /// The block that replaces `handle`, of what `h` describes, and `after`,
     /// the rest of the block it's in.
     fn run_directly(&mut self, h: Handled<'_>, handle: Let, after: Block, f: &mut Func) -> Block {
-        self.changed = true;
-        let (_, margs, rows, caps) = h.closure;
-        let env = handle.args[..handle.args.len() - 1].to_vec();
-        let rs_args: Vec<Atom> = handle.binds.iter().map(|&v| Atom::Var(v)).collect();
-        // What follows the `handle`: where its results go.
-        let direct = match &after.tail {
-            Tail::Jump { target, args, .. } if after.lets.is_empty() && *args == rs_args => {
-                Some(*target)
+        conduit_ir::deep(|| {
+            self.changed = true;
+            let (_, margs, rows, caps) = h.closure;
+            let env = handle.args[..handle.args.len() - 1].to_vec();
+            let rs_args: Vec<Atom> = handle.binds.iter().map(|&v| Atom::Var(v)).collect();
+            // What follows the `handle`: where its results go.
+            let direct = match &after.tail {
+                Tail::Jump { target, args, .. } if after.lets.is_empty() && *args == rs_args => {
+                    Some(*target)
+                }
+                _ => None,
+            };
+            let after_label = direct.unwrap_or_else(|| f.new_label());
+            // `done(xs..)`: the body returned, so the return clause runs.
+            let done = f.new_label();
+            let xs: Vec<Var> = (h.body.results.iter())
+                .map(|t| f.new_var(subst_all(t, &margs, &rows)))
+                .collect();
+            let rs2: Vec<Var> = (handle.binds.iter())
+                .map(|v| f.new_var(f.var_ty(*v).clone()))
+                .collect();
+            let mut ret_args = env.clone();
+            ret_args.extend(xs.iter().map(|&v| Atom::Var(v)));
+            let done_body = Block {
+                lets: vec![Let {
+                    binds: rs2.clone(),
+                    op: Op::Call(h.ret, Vec::new(), Vec::new()),
+                    args: ret_args,
+                    source: handle.source,
+                }],
+                tail: Tail::Jump {
+                    target: after_label,
+                    args: rs2.into_iter().map(Atom::Var).collect(),
+                    source: handle.source,
+                },
+            };
+            let mut r = Rename {
+                vars: h.body.params.iter().copied().zip(caps).collect(),
+                labels: BTreeMap::from([(Label::RET, done)]),
+                margs,
+                rows,
+                source: handle.source,
+                callee: h.body,
+            };
+            let body = r.block(&h.body.body, f);
+            self.size += body.size();
+            let mut clauses = Clauses {
+                ops: &h.ops,
+                clauses: &h.clauses,
+                env: &env,
+                after: after_label,
+                source: handle.source,
+                size: 0,
+            };
+            let body = clauses.block(body, f);
+            self.size += clauses.size;
+            let inner: Block = Tail::Join {
+                rec: false,
+                defs: vec![JoinDef {
+                    label: done,
+                    params: xs,
+                    body: done_body,
+                }],
+                body: Box::new(body),
             }
-            _ => None,
-        };
-        let after_label = direct.unwrap_or_else(|| f.new_label());
-        // `done(xs..)`: the body returned, so the return clause runs.
-        let done = f.new_label();
-        let xs: Vec<Var> = (h.body.results.iter())
-            .map(|t| f.new_var(subst_all(t, &margs, &rows)))
-            .collect();
-        let rs2: Vec<Var> = (handle.binds.iter())
-            .map(|v| f.new_var(f.var_ty(*v).clone()))
-            .collect();
-        let mut ret_args = env.clone();
-        ret_args.extend(xs.iter().map(|&v| Atom::Var(v)));
-        let done_body = Block {
-            lets: vec![Let {
-                binds: rs2.clone(),
-                op: Op::Call(h.ret, Vec::new(), Vec::new()),
-                args: ret_args,
-                source: handle.source,
-            }],
-            tail: Tail::Jump {
-                target: after_label,
-                args: rs2.into_iter().map(Atom::Var).collect(),
-                source: handle.source,
-            },
-        };
-        let mut r = Rename {
-            vars: h.body.params.iter().copied().zip(caps).collect(),
-            labels: BTreeMap::from([(Label::RET, done)]),
-            margs,
-            rows,
-            source: handle.source,
-            callee: h.body,
-        };
-        let body = r.block(&h.body.body, f);
-        self.size += body.size();
-        let mut clauses = Clauses {
-            ops: &h.ops,
-            clauses: &h.clauses,
-            env: &env,
-            after: after_label,
-            source: handle.source,
-            size: 0,
-        };
-        let body = clauses.block(body, f);
-        self.size += clauses.size;
-        let inner: Block = Tail::Join {
-            rec: false,
-            defs: vec![JoinDef {
-                label: done,
-                params: xs,
-                body: done_body,
-            }],
-            body: Box::new(body),
-        }
-        .into();
-        if direct.is_some() {
-            return inner;
-        }
-        Tail::Join {
-            rec: false,
-            defs: vec![JoinDef {
-                label: after_label,
-                params: handle.binds,
-                body: after,
-            }],
-            body: Box::new(inner),
-        }
-        .into()
+            .into();
+            if direct.is_some() {
+                return inner;
+            }
+            Tail::Join {
+                rec: false,
+                defs: vec![JoinDef {
+                    label: after_label,
+                    params: handle.binds,
+                    body: after,
+                }],
+                body: Box::new(inner),
+            }
+            .into()
+        })
     }
 }
 
@@ -329,57 +333,59 @@ struct Clauses<'a> {
 
 impl Clauses<'_> {
     fn block(&mut self, b: Block, f: &mut Func) -> Block {
-        let mut lets = Vec::with_capacity(b.lets.len());
-        let mut rest = b.lets.into_iter();
-        while let Some(l) = rest.next() {
-            let Op::Perform(e, i) = l.op else {
-                lets.push(l);
-                continue;
-            };
-            let after = self.block(
-                Block {
-                    lets: rest.collect(),
-                    tail: b.tail,
+        conduit_ir::deep(|| {
+            let mut lets = Vec::with_capacity(b.lets.len());
+            let mut rest = b.lets.into_iter();
+            while let Some(l) = rest.next() {
+                let Op::Perform(e, i) = l.op else {
+                    lets.push(l);
+                    continue;
+                };
+                let after = self.block(
+                    Block {
+                        lets: rest.collect(),
+                        tail: b.tail,
+                    },
+                    f,
+                );
+                let copy = self.clause((e, i), l, after, f);
+                lets.extend(copy.lets);
+                return Block {
+                    lets,
+                    tail: copy.tail,
+                };
+            }
+            let tail = match b.tail {
+                Tail::Join { rec, defs, body } => Tail::Join {
+                    rec,
+                    defs: defs
+                        .into_iter()
+                        .map(|d| JoinDef {
+                            body: self.block(d.body, f),
+                            ..d
+                        })
+                        .collect(),
+                    body: Box::new(self.block(*body, f)),
                 },
-                f,
-            );
-            let copy = self.clause((e, i), l, after, f);
-            lets.extend(copy.lets);
-            return Block {
-                lets,
-                tail: copy.tail,
+                Tail::Case {
+                    scrut,
+                    arms,
+                    default,
+                } => Tail::Case {
+                    scrut,
+                    arms: arms
+                        .into_iter()
+                        .map(|mut a| {
+                            a.body = self.block(a.body, f);
+                            a
+                        })
+                        .collect(),
+                    default: default.map(|d| Box::new(self.block(*d, f))),
+                },
+                t => t,
             };
-        }
-        let tail = match b.tail {
-            Tail::Join { rec, defs, body } => Tail::Join {
-                rec,
-                defs: defs
-                    .into_iter()
-                    .map(|d| JoinDef {
-                        body: self.block(d.body, f),
-                        ..d
-                    })
-                    .collect(),
-                body: Box::new(self.block(*body, f)),
-            },
-            Tail::Case {
-                scrut,
-                arms,
-                default,
-            } => Tail::Case {
-                scrut,
-                arms: arms
-                    .into_iter()
-                    .map(|mut a| {
-                        a.body = self.block(a.body, f);
-                        a
-                    })
-                    .collect(),
-                default: default.map(|d| Box::new(self.block(*d, f))),
-            },
-            t => t,
-        };
-        Block { lets, tail }
+            Block { lets, tail }
+        })
     }
 
     /// A copy of the clause for `e.i` for `perform`, with `rest` what
@@ -391,51 +397,55 @@ impl Clauses<'_> {
         rest: Block,
         f: &mut Func,
     ) -> Block {
-        let mut args = self.env.to_vec();
-        args.extend(perform.args.iter().cloned());
-        let slot = (self.ops.iter())
-            .position(|&op| op == (e, i))
-            .expect("the body performs only the handled effects");
-        let (cf, resumes) = match &self.clauses[slot] {
-            Clause::Resumes(cf) => (cf, true),
-            Clause::Aborts(cf) => (cf, false),
-        };
-        self.size += cf.body.size();
-        let xs: Vec<Atom> = perform.binds.iter().map(|&v| Atom::Var(v)).collect();
-        // A resuming clause gives what the `perform` gives, to the rest; an
-        // aborting one what the `handle` gives.
-        let direct = match &rest.tail {
-            Tail::Jump { target, args, .. } if resumes && rest.lets.is_empty() && *args == xs => {
-                Some(*target)
+        conduit_ir::deep(|| {
+            let mut args = self.env.to_vec();
+            args.extend(perform.args.iter().cloned());
+            let slot = (self.ops.iter())
+                .position(|&op| op == (e, i))
+                .expect("the body performs only the handled effects");
+            let (cf, resumes) = match &self.clauses[slot] {
+                Clause::Resumes(cf) => (cf, true),
+                Clause::Aborts(cf) => (cf, false),
+            };
+            self.size += cf.body.size();
+            let xs: Vec<Atom> = perform.binds.iter().map(|&v| Atom::Var(v)).collect();
+            // A resuming clause gives what the `perform` gives, to the rest; an
+            // aborting one what the `handle` gives.
+            let direct = match &rest.tail {
+                Tail::Jump { target, args, .. }
+                    if resumes && rest.lets.is_empty() && *args == xs =>
+                {
+                    Some(*target)
+                }
+                _ => None,
+            };
+            let ret = if resumes {
+                direct.unwrap_or_else(|| f.new_label())
+            } else {
+                self.after
+            };
+            let mut r = Rename {
+                vars: cf.params.iter().copied().zip(args).collect(),
+                labels: BTreeMap::from([(Label::RET, ret)]),
+                margs: Vec::new(),
+                rows: Vec::new(),
+                source: perform.source.or(self.source),
+                callee: cf,
+            };
+            let copy = r.block(&cf.body, f);
+            if !resumes || direct.is_some() {
+                return copy;
             }
-            _ => None,
-        };
-        let ret = if resumes {
-            direct.unwrap_or_else(|| f.new_label())
-        } else {
-            self.after
-        };
-        let mut r = Rename {
-            vars: cf.params.iter().copied().zip(args).collect(),
-            labels: BTreeMap::from([(Label::RET, ret)]),
-            margs: Vec::new(),
-            rows: Vec::new(),
-            source: perform.source.or(self.source),
-            callee: cf,
-        };
-        let copy = r.block(&cf.body, f);
-        if !resumes || direct.is_some() {
-            return copy;
-        }
-        Tail::Join {
-            rec: false,
-            defs: vec![JoinDef {
-                label: ret,
-                params: perform.binds,
-                body: rest,
-            }],
-            body: Box::new(copy),
-        }
-        .into()
+            Tail::Join {
+                rec: false,
+                defs: vec![JoinDef {
+                    label: ret,
+                    params: perform.binds,
+                    body: rest,
+                }],
+                body: Box::new(copy),
+            }
+            .into()
+        })
     }
 }

@@ -159,47 +159,49 @@ impl Cx<'_> {
     }
 
     fn block(&mut self, b: &mut Block) {
-        let (fixed, changing) = (self.fixed_order.len(), self.changing.clone());
-        let mut lets = Vec::with_capacity(b.lets.len());
-        for mut l in std::mem::take(&mut b.lets) {
-            self.atoms(&mut l.args);
-            if self.let_(&l) {
-                self.changed = true;
-            } else {
-                lets.push(l);
-            }
-        }
-        b.lets = lets;
-        match &mut b.tail {
-            Tail::Jump { args, .. } => self.atoms(args),
-            Tail::Case {
-                scrut,
-                arms,
-                default,
-            } => {
-                self.atom(scrut);
-                for a in arms {
-                    self.block(&mut a.body);
-                }
-                if let Some(d) = default {
-                    self.block(d);
+        conduit_ir::deep(|| {
+            let (fixed, changing) = (self.fixed_order.len(), self.changing.clone());
+            let mut lets = Vec::with_capacity(b.lets.len());
+            for mut l in std::mem::take(&mut b.lets) {
+                self.atoms(&mut l.args);
+                if self.let_(&l) {
+                    self.changed = true;
+                } else {
+                    lets.push(l);
                 }
             }
-            Tail::Join { defs, body, .. } => {
-                for d in defs {
-                    // Anything may have run before a jump to it.
-                    let changing = std::mem::take(&mut self.changing);
-                    self.block(&mut d.body);
-                    self.changing = changing;
+            b.lets = lets;
+            match &mut b.tail {
+                Tail::Jump { args, .. } => self.atoms(args),
+                Tail::Case {
+                    scrut,
+                    arms,
+                    default,
+                } => {
+                    self.atom(scrut);
+                    for a in arms {
+                        self.block(&mut a.body);
+                    }
+                    if let Some(d) = default {
+                        self.block(d);
+                    }
                 }
-                self.block(body);
+                Tail::Join { defs, body, .. } => {
+                    for d in defs {
+                        // Anything may have run before a jump to it.
+                        let changing = std::mem::take(&mut self.changing);
+                        self.block(&mut d.body);
+                        self.changing = changing;
+                    }
+                    self.block(body);
+                }
+                Tail::Unreachable | Tail::Trap => {}
             }
-            Tail::Unreachable | Tail::Trap => {}
-        }
-        for key in self.fixed_order.drain(fixed..) {
-            self.fixed.remove(&key);
-        }
-        self.changing = changing;
+            for key in self.fixed_order.drain(fixed..) {
+                self.fixed.remove(&key);
+            }
+            self.changing = changing;
+        })
     }
 
     /// Records what `l` gives, or replaces it with an earlier `let`'s

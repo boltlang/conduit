@@ -343,26 +343,28 @@ impl<'m> FuncCx<'_, 'm> {
     }
 
     fn block(&mut self, b: &'m Block) -> Result<(), String> {
-        for (i, l) in b.lets.iter().enumerate() {
-            if self.let_(&l.binds, &l.op, &l.args, b, i + 1)? {
-                return Ok(());
+        conduit_ir::deep(|| {
+            for (i, l) in b.lets.iter().enumerate() {
+                if self.let_(&l.binds, &l.op, &l.args, b, i + 1)? {
+                    return Ok(());
+                }
             }
-        }
-        match &b.tail {
-            Tail::Join { rec, defs, body } => self.join(*rec, defs, body),
-            Tail::Jump { target, args, .. } => self.jump(*target, args),
-            Tail::Case {
-                scrut,
-                arms,
-                default,
-            } => self.case(scrut, arms, default.as_deref()),
-            // Wasm's `unreachable` traps, which is what `trap` does, and
-            // one of the things undefined behavior can do.
-            Tail::Unreachable | Tail::Trap => {
-                self.emit(I::Unreachable);
-                Ok(())
+            match &b.tail {
+                Tail::Join { rec, defs, body } => self.join(*rec, defs, body),
+                Tail::Jump { target, args, .. } => self.jump(*target, args),
+                Tail::Case {
+                    scrut,
+                    arms,
+                    default,
+                } => self.case(scrut, arms, default.as_deref()),
+                // Wasm's `unreachable` traps, which is what `trap` does, and
+                // one of the things undefined behavior can do.
+                Tail::Unreachable | Tail::Trap => {
+                    self.emit(I::Unreachable);
+                    Ok(())
+                }
             }
-        }
+        })
     }
 
     fn jump(&mut self, target: Label, args: &[Atom]) -> Result<(), String> {
@@ -394,60 +396,62 @@ impl<'m> FuncCx<'_, 'm> {
     }
 
     fn join(&mut self, rec: bool, defs: &'m [JoinDef], body: &'m Block) -> Result<(), String> {
-        let base = self.depth;
-        if !rec {
-            // The innermost block is `defs[0]`'s, so that its body comes
-            // right after the join body.
-            for (i, def) in defs.iter().enumerate() {
-                self.set_label(def, base + (defs.len() - 1 - i) as u32, None);
-            }
-            for _ in defs {
-                self.open(I::Block(BlockType::Empty));
-            }
-            self.block(body)?;
-            for def in defs {
-                self.close();
-                self.block(&def.body)?;
-            }
-            return Ok(());
-        }
-
-        let which = match defs {
-            [def] => {
-                self.set_label(def, base, None);
-                None
-            }
-            _ => {
-                let which = self.new_local(ValType::I32);
+        conduit_ir::deep(|| {
+            let base = self.depth;
+            if !rec {
+                // The innermost block is `defs[0]`'s, so that its body comes
+                // right after the join body.
                 for (i, def) in defs.iter().enumerate() {
-                    self.set_label(def, base, Some((which, i as i32)));
+                    self.set_label(def, base + (defs.len() - 1 - i) as u32, None);
                 }
-                Some(which)
-            }
-        };
-        self.open(I::Block(BlockType::Empty));
-        self.block(body)?;
-        self.close();
-        self.open(I::Loop(BlockType::Empty));
-        match which {
-            None => self.block(&defs[0].body)?,
-            Some(which) => {
                 for _ in defs {
                     self.open(I::Block(BlockType::Empty));
                 }
-                self.emit(I::LocalGet(which));
-                let targets: Vec<u32> = (0..defs.len() as u32).collect();
-                self.emit(I::BrTable(Cow::Owned(targets), defs.len() as u32 - 1));
+                self.block(body)?;
                 for def in defs {
                     self.close();
                     self.block(&def.body)?;
                 }
+                return Ok(());
             }
-        }
-        self.close();
-        // The loop's body never falls through, but Wasm doesn't know that.
-        self.emit(I::Unreachable);
-        Ok(())
+
+            let which = match defs {
+                [def] => {
+                    self.set_label(def, base, None);
+                    None
+                }
+                _ => {
+                    let which = self.new_local(ValType::I32);
+                    for (i, def) in defs.iter().enumerate() {
+                        self.set_label(def, base, Some((which, i as i32)));
+                    }
+                    Some(which)
+                }
+            };
+            self.open(I::Block(BlockType::Empty));
+            self.block(body)?;
+            self.close();
+            self.open(I::Loop(BlockType::Empty));
+            match which {
+                None => self.block(&defs[0].body)?,
+                Some(which) => {
+                    for _ in defs {
+                        self.open(I::Block(BlockType::Empty));
+                    }
+                    self.emit(I::LocalGet(which));
+                    let targets: Vec<u32> = (0..defs.len() as u32).collect();
+                    self.emit(I::BrTable(Cow::Owned(targets), defs.len() as u32 - 1));
+                    for def in defs {
+                        self.close();
+                        self.block(&def.body)?;
+                    }
+                }
+            }
+            self.close();
+            // The loop's body never falls through, but Wasm doesn't know that.
+            self.emit(I::Unreachable);
+            Ok(())
+        })
     }
 
     fn new_local(&mut self, ty: ValType) -> u32 {
@@ -461,71 +465,73 @@ impl<'m> FuncCx<'_, 'm> {
         arms: &'m [conduit_ir::Arm],
         default: Option<&'m Block>,
     ) -> Result<(), String> {
-        let ty = self.atom_ty(scrut);
-        let data = match ty {
-            Ty::Data(d, ..) => Some(d),
-            _ => None,
-        };
-        // A value of an ADT with one constructor can only be that one.
-        let only = match data {
-            Some(d)
-                if self
-                    .cx
-                    .m
-                    .data
-                    .get(&d)
-                    .is_some_and(|decl| decl.ctors.len() == 1) =>
-            {
-                Some(arms.first().map(|a| &a.body).or(default))
-            }
-            _ if arms.is_empty() => Some(default),
-            _ => None,
-        };
-        if let Some(only) = only {
-            return match only {
-                Some(t) => self.block(t),
-                None => {
-                    self.emit(I::Unreachable);
-                    Ok(())
-                }
+        conduit_ir::deep(|| {
+            let ty = self.atom_ty(scrut);
+            let data = match ty {
+                Ty::Data(d, ..) => Some(d),
+                _ => None,
             };
-        }
-
-        // One block per arm, then one for the default: breaking out of the
-        // `i`th block from the innermost runs arm `i`.
-        let n = arms.len();
-        let targets = n + default.is_some() as usize;
-        for _ in 0..targets {
-            self.open(I::Block(BlockType::Empty));
-        }
-        let fallback = if default.is_some() { n as u32 } else { 0 };
-        match data {
-            Some(d) => {
-                let ctors = self.cx.m.data[&d].ctors.len() as u32;
-                let table = (0..ctors)
-                    .map(|index| {
-                        let tag = Tag::Ctor(CtorId { data: d, index });
-                        arms.iter()
-                            .position(|a| a.tag == tag)
-                            .map_or(fallback, |i| i as u32)
-                    })
-                    .collect();
-                // The constructor's index is at 4.
-                self.atom(scrut);
-                self.emit(I::I32Load(mem(4, Storage::I32)));
-                self.emit(I::BrTable(Cow::Owned(table), fallback));
+            // A value of an ADT with one constructor can only be that one.
+            let only = match data {
+                Some(d)
+                    if self
+                        .cx
+                        .m
+                        .data
+                        .get(&d)
+                        .is_some_and(|decl| decl.ctors.len() == 1) =>
+                {
+                    Some(arms.first().map(|a| &a.body).or(default))
+                }
+                _ if arms.is_empty() => Some(default),
+                _ => None,
+            };
+            if let Some(only) = only {
+                return match only {
+                    Some(t) => self.block(t),
+                    None => {
+                        self.emit(I::Unreachable);
+                        Ok(())
+                    }
+                };
             }
-            None => self.int_dispatch(scrut, &ty, arms, default.is_some())?,
-        }
-        for arm in arms {
-            self.close();
-            self.block(&arm.body)?;
-        }
-        if let Some(default) = default {
-            self.close();
-            self.block(default)?;
-        }
-        Ok(())
+
+            // One block per arm, then one for the default: breaking out of the
+            // `i`th block from the innermost runs arm `i`.
+            let n = arms.len();
+            let targets = n + default.is_some() as usize;
+            for _ in 0..targets {
+                self.open(I::Block(BlockType::Empty));
+            }
+            let fallback = if default.is_some() { n as u32 } else { 0 };
+            match data {
+                Some(d) => {
+                    let ctors = self.cx.m.data[&d].ctors.len() as u32;
+                    let table = (0..ctors)
+                        .map(|index| {
+                            let tag = Tag::Ctor(CtorId { data: d, index });
+                            arms.iter()
+                                .position(|a| a.tag == tag)
+                                .map_or(fallback, |i| i as u32)
+                        })
+                        .collect();
+                    // The constructor's index is at 4.
+                    self.atom(scrut);
+                    self.emit(I::I32Load(mem(4, Storage::I32)));
+                    self.emit(I::BrTable(Cow::Owned(table), fallback));
+                }
+                None => self.int_dispatch(scrut, &ty, arms, default.is_some())?,
+            }
+            for arm in arms {
+                self.close();
+                self.block(&arm.body)?;
+            }
+            if let Some(default) = default {
+                self.close();
+                self.block(default)?;
+            }
+            Ok(())
+        })
     }
 
     fn int_dispatch(
@@ -591,515 +597,518 @@ impl<'m> FuncCx<'_, 'm> {
         block: &Block,
         next: usize,
     ) -> Result<bool, String> {
-        let tail = self.is_tail(binds, block, next)?;
-        match op {
-            Op::Prim(p) => self.prim(p, args)?,
-            Op::Call(f, ..) => {
-                let idx = self.cx.func_index(*f)?;
-                self.atoms(args);
-                self.emit(if tail {
-                    I::ReturnCall(idx)
-                } else {
-                    I::Call(idx)
-                });
-                return Ok(self.bind(binds, tail));
-            }
-            Op::CallExtern(e) => {
-                let idx = self.cx.extern_index(*e)?;
-                let ext = self.cx.m.externs.get(e).ok_or("unknown extern")?;
-                if ext.abi == Abi::Flat {
-                    self.call_flat(idx, ext, args)?;
-                    return Ok(self.bind(binds, false));
+        conduit_ir::deep(|| {
+            let tail = self.is_tail(binds, block, next)?;
+            match op {
+                Op::Prim(p) => self.prim(p, args)?,
+                Op::Call(f, ..) => {
+                    let idx = self.cx.func_index(*f)?;
+                    self.atoms(args);
+                    self.emit(if tail {
+                        I::ReturnCall(idx)
+                    } else {
+                        I::Call(idx)
+                    });
+                    return Ok(self.bind(binds, tail));
                 }
-                self.atoms(args);
-                self.emit(if tail {
-                    I::ReturnCall(idx)
-                } else {
-                    I::Call(idx)
-                });
-                return Ok(self.bind(binds, tail));
-            }
-            Op::Closure(f, ..) => {
-                let slot = self.cx.entry(*f, args.len());
-                let tys: Vec<Ty> = args.iter().map(|a| self.atom_ty(a)).collect();
-                let (offsets, size) = layout(&tys);
-                let p = self.alloc_const(size);
-                self.emit(I::LocalGet(p));
-                self.emit(I::I32Const(slot as i32));
-                self.emit(store(Storage::I32, 4));
-                self.store_all(p, &offsets, args);
-                self.emit(I::LocalGet(p));
-            }
-            Op::Apply => {
-                let Some((c, rest)) = args.split_first() else {
-                    return Err("apply needs a closure".into());
-                };
-                let Ty::Fn(sig, _) = self.atom_ty(c) else {
-                    return Err("apply of a value that isn't a closure".into());
-                };
-                let ty = self.cx.entry_sig(&sig);
-                self.atom(c);
-                self.atoms(rest);
-                self.atom(c);
-                self.emit(load(Storage::I32, 4));
-                self.emit(if tail {
-                    I::ReturnCallIndirect {
-                        type_index: ty,
-                        table_index: 0,
+                Op::CallExtern(e) => {
+                    let idx = self.cx.extern_index(*e)?;
+                    let ext = self.cx.m.externs.get(e).ok_or("unknown extern")?;
+                    if ext.abi == Abi::Flat {
+                        self.call_flat(idx, ext, args)?;
+                        return Ok(self.bind(binds, false));
                     }
-                } else {
-                    I::CallIndirect {
-                        type_index: ty,
-                        table_index: 0,
-                    }
-                });
-                return Ok(self.bind(binds, tail));
-            }
-            // The object's own memory, unless it's buffered, which is the
-            // collector's to give back: then it's freed for it, and the token
-            // holds none.
-            Op::ReuseToken => match self.counted(&self.atom_ty(&args[0])) {
-                Some(k) => {
-                    let t = self.new_local(ValType::I32);
-                    self.atom(&args[0]);
-                    self.emit(I::LocalTee(t));
-                    self.emit(load(Storage::I32, 0));
-                    self.emit(I::I32Const(0x4000_0000));
-                    self.emit(I::I32And);
-                    self.open(I::If(BlockType::Result(ValType::I32)));
-                    self.emit(I::LocalGet(t));
-                    self.call_rt(|rt| rt.free(&k));
-                    self.emit(I::I32Const(0));
-                    self.emit(I::Else);
-                    self.emit(I::LocalGet(t));
-                    self.close();
+                    self.atoms(args);
+                    self.emit(if tail {
+                        I::ReturnCall(idx)
+                    } else {
+                        I::Call(idx)
+                    });
+                    return Ok(self.bind(binds, tail));
                 }
-                None => self.emit(I::I32Const(0)),
-            },
-            Op::DropReuse => match self.counted(&self.atom_ty(&args[0])) {
-                Some(k) => {
-                    self.atom(&args[0]);
-                    self.call_rt(|rt| rt.drop_reuse(&k));
+                Op::Closure(f, ..) => {
+                    let slot = self.cx.entry(*f, args.len());
+                    let tys: Vec<Ty> = args.iter().map(|a| self.atom_ty(a)).collect();
+                    let (offsets, size) = layout(&tys);
+                    let p = self.alloc_const(size);
+                    self.emit(I::LocalGet(p));
+                    self.emit(I::I32Const(slot as i32));
+                    self.emit(store(Storage::I32, 4));
+                    self.store_all(p, &offsets, args);
+                    self.emit(I::LocalGet(p));
                 }
-                // Without counting, there's never memory to reuse.
-                None => self.emit(I::I32Const(0)),
-            },
-            Op::New(c) | Op::Reuse(c) => {
-                let (offsets, size) = layout(self.cx.fields(*c)?);
-                let (token, args) = match op {
-                    Op::Reuse(_) => (args.first(), &args[1..]),
-                    _ => (None, args),
-                };
-                let p = match token {
-                    // The token's memory, with a count of 1, or else new.
-                    Some(t) if self.cx.rt.is_some() => {
-                        let p = self.new_local(ValType::I32);
-                        self.atom(t);
-                        self.emit(I::LocalTee(p));
-                        self.emit(I::I32Eqz);
-                        self.open(I::If(BlockType::Empty));
-                        self.emit(I::I32Const(size as i32));
-                        self.emit(I::Call(self.cx.alloc));
-                        self.emit(I::LocalSet(p));
+                Op::Apply => {
+                    let Some((c, rest)) = args.split_first() else {
+                        return Err("apply needs a closure".into());
+                    };
+                    let Ty::Fn(sig, _) = self.atom_ty(c) else {
+                        return Err("apply of a value that isn't a closure".into());
+                    };
+                    let ty = self.cx.entry_sig(&sig);
+                    self.atom(c);
+                    self.atoms(rest);
+                    self.atom(c);
+                    self.emit(load(Storage::I32, 4));
+                    self.emit(if tail {
+                        I::ReturnCallIndirect {
+                            type_index: ty,
+                            table_index: 0,
+                        }
+                    } else {
+                        I::CallIndirect {
+                            type_index: ty,
+                            table_index: 0,
+                        }
+                    });
+                    return Ok(self.bind(binds, tail));
+                }
+                // The object's own memory, unless it's buffered, which is the
+                // collector's to give back: then it's freed for it, and the token
+                // holds none.
+                Op::ReuseToken => match self.counted(&self.atom_ty(&args[0])) {
+                    Some(k) => {
+                        let t = self.new_local(ValType::I32);
+                        self.atom(&args[0]);
+                        self.emit(I::LocalTee(t));
+                        self.emit(load(Storage::I32, 0));
+                        self.emit(I::I32Const(0x4000_0000));
+                        self.emit(I::I32And);
+                        self.open(I::If(BlockType::Result(ValType::I32)));
+                        self.emit(I::LocalGet(t));
+                        self.call_rt(|rt| rt.free(&k));
+                        self.emit(I::I32Const(0));
                         self.emit(I::Else);
-                        self.emit(I::LocalGet(p));
-                        self.emit(I::I32Const(1));
-                        self.emit(store(Storage::I32, 0));
+                        self.emit(I::LocalGet(t));
                         self.close();
-                        p
                     }
-                    _ => self.alloc_const(size),
-                };
-                self.emit(I::LocalGet(p));
-                self.emit(I::I32Const(c.index as i32));
-                self.emit(store(Storage::I32, 4));
-                self.store_all(p, &offsets, args);
-                self.emit(I::LocalGet(p));
-            }
-            Op::Get(c, i) => {
-                let (at, s) = self.field(*c, *i)?;
-                self.atom(&args[0]);
-                self.emit(load(s, at));
-            }
-            Op::Set(c, i) => {
-                let (at, s) = self.field(*c, *i)?;
-                let field = self.cx.fields(*c)?[*i as usize].clone();
-                let old = self.counted(&field).map(|k| {
-                    let old = self.new_local(ValType::I32);
+                    None => self.emit(I::I32Const(0)),
+                },
+                Op::DropReuse => match self.counted(&self.atom_ty(&args[0])) {
+                    Some(k) => {
+                        self.atom(&args[0]);
+                        self.call_rt(|rt| rt.drop_reuse(&k));
+                    }
+                    // Without counting, there's never memory to reuse.
+                    None => self.emit(I::I32Const(0)),
+                },
+                Op::New(c) | Op::Reuse(c) => {
+                    let (offsets, size) = layout(self.cx.fields(*c)?);
+                    let (token, args) = match op {
+                        Op::Reuse(_) => (args.first(), &args[1..]),
+                        _ => (None, args),
+                    };
+                    let p = match token {
+                        // The token's memory, with a count of 1, or else new.
+                        Some(t) if self.cx.rt.is_some() => {
+                            let p = self.new_local(ValType::I32);
+                            self.atom(t);
+                            self.emit(I::LocalTee(p));
+                            self.emit(I::I32Eqz);
+                            self.open(I::If(BlockType::Empty));
+                            self.emit(I::I32Const(size as i32));
+                            self.emit(I::Call(self.cx.alloc));
+                            self.emit(I::LocalSet(p));
+                            self.emit(I::Else);
+                            self.emit(I::LocalGet(p));
+                            self.emit(I::I32Const(1));
+                            self.emit(store(Storage::I32, 0));
+                            self.close();
+                            p
+                        }
+                        _ => self.alloc_const(size),
+                    };
+                    self.emit(I::LocalGet(p));
+                    self.emit(I::I32Const(c.index as i32));
+                    self.emit(store(Storage::I32, 4));
+                    self.store_all(p, &offsets, args);
+                    self.emit(I::LocalGet(p));
+                }
+                Op::Get(c, i) => {
+                    let (at, s) = self.field(*c, *i)?;
                     self.atom(&args[0]);
                     self.emit(load(s, at));
-                    self.emit(I::LocalSet(old));
-                    (old, k)
-                });
-                self.atom(&args[0]);
-                self.atom(&args[1]);
-                self.emit(store(s, at));
-                // It drops the value it replaces.
-                if let Some((old, k)) = old {
-                    self.drop_local(old, &k, is_imm(&field));
                 }
-            }
-            Op::Const(id) => match self.cx.constant(*id)? {
-                Ok(addr) => self.emit(I::I32Const(addr as i32)),
-                Err(lit) => self.atom(&Atom::Lit(lit)),
-            },
-            // 0 is no object, and every value has it.
-            Op::Undefined => {
-                let ty = val(self.var_ty(binds[0]));
-                self.emit(zero(ty));
-            }
-            Op::ArrayNew => {
-                let s = self.elem_of(self.var_ty(binds[0]))?;
-                let size = (8 + s.size() * args.len() as u32).next_multiple_of(8);
-                let p = self.alloc_const(size);
-                self.emit(I::LocalGet(p));
-                self.emit(I::I32Const(args.len() as i32));
-                self.emit(store(Storage::I32, 4));
-                for (i, a) in args.iter().enumerate() {
-                    self.emit(I::LocalGet(p));
-                    self.atom(a);
-                    self.emit(store(s, 8 + s.size() * i as u32));
-                }
-                self.emit(I::LocalGet(p));
-            }
-            Op::ArrayFill | Op::ArrayAlloc => {
-                let s = self.elem_of(self.var_ty(binds[0]))?;
-                let n = self.new_local(ValType::I32);
-                self.atom(&args[0]);
-                self.emit(I::LocalSet(n));
-                let p = self.alloc_array(n, s);
-                let (elem, imm) = match self.var_ty(binds[0]) {
-                    Ty::Array(e, _) => (self.counted(e), is_imm(e)),
-                    _ => (None, false),
-                };
-                if *op == Op::ArrayFill
-                    && let Some(k) = elem
-                {
-                    // It holds its value once per element: it takes one
-                    // reference and adds the rest, or drops it for none.
-                    self.emit(I::LocalGet(n));
-                    self.emit(I::I32Eqz);
-                    self.open(I::If(BlockType::Empty));
-                    self.atom(&args[1]);
-                    self.call_rt(|rt| rt.drop(&k, imm));
-                    self.emit(I::Else);
-                    self.atom(&args[1]);
-                    self.emit(I::LocalGet(n));
-                    self.emit(I::I32Const(1));
-                    self.emit(I::I32Sub);
-                    self.call_rt(|rt| rt.add());
-                    self.close();
-                }
-                if *op == Op::ArrayFill {
-                    // Every element, from the last.
-                    self.open(I::Block(BlockType::Empty));
-                    self.open(I::Loop(BlockType::Empty));
-                    self.emit(I::LocalGet(n));
-                    self.emit(I::I32Eqz);
-                    self.emit(I::BrIf(1));
-                    self.emit(I::LocalGet(n));
-                    self.emit(I::I32Const(1));
-                    self.emit(I::I32Sub);
-                    self.emit(I::LocalTee(n));
-                    self.elem_addr_of(p, s);
-                    self.atom(&args[1]);
-                    self.emit(store(s, 8));
-                    self.emit(I::Br(0));
-                    self.close();
-                    self.close();
-                }
-                self.emit(I::LocalGet(p));
-            }
-            Op::ArrayGet => {
-                let s = self.elem_of(&self.atom_ty(&args[0]))?;
-                self.elem_addr(&args[0], &args[1], s);
-                self.emit(load(s, 8));
-            }
-            Op::ArraySet => {
-                let ty = self.atom_ty(&args[0]);
-                let s = self.elem_of(&ty)?;
-                let (elem, imm) = match &ty {
-                    Ty::Array(e, _) => (self.counted(e), is_imm(e)),
-                    _ => (None, false),
-                };
-                self.elem_addr(&args[0], &args[1], s);
-                match elem {
-                    // It drops the element it replaces.
-                    Some(k) => {
-                        let (at, old) =
-                            (self.new_local(ValType::I32), self.new_local(ValType::I32));
-                        self.emit(I::LocalTee(at));
-                        self.emit(load(s, 8));
+                Op::Set(c, i) => {
+                    let (at, s) = self.field(*c, *i)?;
+                    let field = self.cx.fields(*c)?[*i as usize].clone();
+                    let old = self.counted(&field).map(|k| {
+                        let old = self.new_local(ValType::I32);
+                        self.atom(&args[0]);
+                        self.emit(load(s, at));
                         self.emit(I::LocalSet(old));
-                        self.emit(I::LocalGet(at));
-                        self.atom(&args[2]);
-                        self.emit(store(s, 8));
-                        self.drop_local(old, &k, imm);
-                    }
-                    None => {
-                        self.atom(&args[2]);
-                        self.emit(store(s, 8));
+                        (old, k)
+                    });
+                    self.atom(&args[0]);
+                    self.atom(&args[1]);
+                    self.emit(store(s, at));
+                    // It drops the value it replaces.
+                    if let Some((old, k)) = old {
+                        self.drop_local(old, &k, is_imm(&field));
                     }
                 }
-            }
-            Op::ArrayLen => {
-                self.atom(&args[0]);
-                self.emit(load(Storage::I32, 4));
-            }
-            Op::ArrayClone => {
-                let s = self.elem_of(&self.atom_ty(&args[0]))?;
-                let n = self.new_local(ValType::I32);
-                self.atom(&args[0]);
-                self.emit(load(Storage::I32, 4));
-                self.emit(I::LocalSet(n));
-                let p = self.alloc_array(n, s);
-                self.emit(I::LocalGet(p));
-                self.emit(I::I32Const(8));
-                self.emit(I::I32Add);
-                self.atom(&args[0]);
-                self.emit(I::I32Const(8));
-                self.emit(I::I32Add);
-                self.emit(I::LocalGet(n));
-                self.scale(s);
-                self.emit(I::MemoryCopy {
-                    src_mem: 0,
-                    dst_mem: 0,
-                });
-                // The new array shares the elements.
-                if let Ty::Array(e, _) = self.atom_ty(&args[0])
-                    && self.counted(&e).is_some()
-                {
+                Op::Const(id) => match self.cx.constant(*id)? {
+                    Ok(addr) => self.emit(I::I32Const(addr as i32)),
+                    Err(lit) => self.atom(&Atom::Lit(lit)),
+                },
+                // 0 is no object, and every value has it.
+                Op::Undefined => {
+                    let ty = val(self.var_ty(binds[0]));
+                    self.emit(zero(ty));
+                }
+                Op::ArrayNew => {
+                    let s = self.elem_of(self.var_ty(binds[0]))?;
+                    let size = (8 + s.size() * args.len() as u32).next_multiple_of(8);
+                    let p = self.alloc_const(size);
+                    self.emit(I::LocalGet(p));
+                    self.emit(I::I32Const(args.len() as i32));
+                    self.emit(store(Storage::I32, 4));
+                    for (i, a) in args.iter().enumerate() {
+                        self.emit(I::LocalGet(p));
+                        self.atom(a);
+                        self.emit(store(s, 8 + s.size() * i as u32));
+                    }
+                    self.emit(I::LocalGet(p));
+                }
+                Op::ArrayFill | Op::ArrayAlloc => {
+                    let s = self.elem_of(self.var_ty(binds[0]))?;
+                    let n = self.new_local(ValType::I32);
+                    self.atom(&args[0]);
+                    self.emit(I::LocalSet(n));
+                    let p = self.alloc_array(n, s);
+                    let (elem, imm) = match self.var_ty(binds[0]) {
+                        Ty::Array(e, _) => (self.counted(e), is_imm(e)),
+                        _ => (None, false),
+                    };
+                    if *op == Op::ArrayFill
+                        && let Some(k) = elem
+                    {
+                        // It holds its value once per element: it takes one
+                        // reference and adds the rest, or drops it for none.
+                        self.emit(I::LocalGet(n));
+                        self.emit(I::I32Eqz);
+                        self.open(I::If(BlockType::Empty));
+                        self.atom(&args[1]);
+                        self.call_rt(|rt| rt.drop(&k, imm));
+                        self.emit(I::Else);
+                        self.atom(&args[1]);
+                        self.emit(I::LocalGet(n));
+                        self.emit(I::I32Const(1));
+                        self.emit(I::I32Sub);
+                        self.call_rt(|rt| rt.add());
+                        self.close();
+                    }
+                    if *op == Op::ArrayFill {
+                        // Every element, from the last.
+                        self.open(I::Block(BlockType::Empty));
+                        self.open(I::Loop(BlockType::Empty));
+                        self.emit(I::LocalGet(n));
+                        self.emit(I::I32Eqz);
+                        self.emit(I::BrIf(1));
+                        self.emit(I::LocalGet(n));
+                        self.emit(I::I32Const(1));
+                        self.emit(I::I32Sub);
+                        self.emit(I::LocalTee(n));
+                        self.elem_addr_of(p, s);
+                        self.atom(&args[1]);
+                        self.emit(store(s, 8));
+                        self.emit(I::Br(0));
+                        self.close();
+                        self.close();
+                    }
+                    self.emit(I::LocalGet(p));
+                }
+                Op::ArrayGet => {
+                    let s = self.elem_of(&self.atom_ty(&args[0]))?;
+                    self.elem_addr(&args[0], &args[1], s);
+                    self.emit(load(s, 8));
+                }
+                Op::ArraySet => {
+                    let ty = self.atom_ty(&args[0]);
+                    let s = self.elem_of(&ty)?;
+                    let (elem, imm) = match &ty {
+                        Ty::Array(e, _) => (self.counted(e), is_imm(e)),
+                        _ => (None, false),
+                    };
+                    self.elem_addr(&args[0], &args[1], s);
+                    match elem {
+                        // It drops the element it replaces.
+                        Some(k) => {
+                            let (at, old) =
+                                (self.new_local(ValType::I32), self.new_local(ValType::I32));
+                            self.emit(I::LocalTee(at));
+                            self.emit(load(s, 8));
+                            self.emit(I::LocalSet(old));
+                            self.emit(I::LocalGet(at));
+                            self.atom(&args[2]);
+                            self.emit(store(s, 8));
+                            self.drop_local(old, &k, imm);
+                        }
+                        None => {
+                            self.atom(&args[2]);
+                            self.emit(store(s, 8));
+                        }
+                    }
+                }
+                Op::ArrayLen => {
+                    self.atom(&args[0]);
+                    self.emit(load(Storage::I32, 4));
+                }
+                Op::ArrayClone => {
+                    let s = self.elem_of(&self.atom_ty(&args[0]))?;
+                    let n = self.new_local(ValType::I32);
+                    self.atom(&args[0]);
+                    self.emit(load(Storage::I32, 4));
+                    self.emit(I::LocalSet(n));
+                    let p = self.alloc_array(n, s);
                     self.emit(I::LocalGet(p));
                     self.emit(I::I32Const(8));
                     self.emit(I::I32Add);
-                    self.emit(I::LocalGet(n));
-                    self.call_rt(|rt| rt.dup_range());
-                }
-                self.emit(I::LocalGet(p));
-            }
-            // Mutability doesn't exist at run time.
-            Op::ArrayFreeze => self.atoms(args),
-            // Without counting, nothing is freed, and no object is unique,
-            // so code that specialized a `drop` takes the branch that only
-            // decrements.
-            Op::Dup | Op::Drop | Op::Free | Op::DecRef => {
-                if let Some(k) = self.counted(&self.atom_ty(&args[0])) {
                     self.atom(&args[0]);
-                    // `decref` is a `drop` of a shared object, which may be
-                    // the root of a garbage cycle.
-                    let imm = is_imm(&self.atom_ty(&args[0]));
-                    self.call_rt(|rt| match op {
-                        Op::Dup => rt.dup(),
-                        Op::Free => rt.free(&k),
-                        _ => rt.drop(&k, imm),
-                    });
-                }
-            }
-            Op::IsUnique => {
-                self.atom(&args[0]);
-                if !self.call_rt(|rt| rt.is_unique()) {
-                    self.emit(I::Drop);
-                    self.emit(I::I32Const(0));
-                }
-            }
-            Op::ArrayCopy => {
-                let s = self.elem_of(&self.atom_ty(&args[0]))?;
-                // Both ranges must fit, their starts and count read as
-                // unsigned, as Wasm's `array.copy` does.
-                for (array, start) in [(&args[0], &args[1]), (&args[2], &args[3])] {
-                    self.atom(start);
-                    self.emit(I::I64ExtendI32U);
-                    self.atom(&args[4]);
-                    self.emit(I::I64ExtendI32U);
-                    self.emit(I::I64Add);
-                    self.atom(array);
-                    self.emit(load(Storage::I32, 4));
-                    self.emit(I::I64ExtendI32U);
-                    self.emit(I::I64GtU);
-                    self.trap_if();
-                }
-                let mut addrs = Vec::new();
-                for (array, start) in [(&args[0], &args[1]), (&args[2], &args[3])] {
-                    self.atom(array);
                     self.emit(I::I32Const(8));
                     self.emit(I::I32Add);
-                    self.atom(start);
+                    self.emit(I::LocalGet(n));
                     self.scale(s);
-                    self.emit(I::I32Add);
-                    let a = self.new_local(ValType::I32);
-                    self.emit(I::LocalSet(a));
-                    addrs.push(a);
+                    self.emit(I::MemoryCopy {
+                        src_mem: 0,
+                        dst_mem: 0,
+                    });
+                    // The new array shares the elements.
+                    if let Ty::Array(e, _) = self.atom_ty(&args[0])
+                        && self.counted(&e).is_some()
+                    {
+                        self.emit(I::LocalGet(p));
+                        self.emit(I::I32Const(8));
+                        self.emit(I::I32Add);
+                        self.emit(I::LocalGet(n));
+                        self.call_rt(|rt| rt.dup_range());
+                    }
+                    self.emit(I::LocalGet(p));
                 }
-                // It dups what it copies, then drops what it overwrites.
-                if let Ty::Array(e, _) = self.atom_ty(&args[0])
-                    && let Some(k) = self.counted(&e)
-                {
+                // Mutability doesn't exist at run time.
+                Op::ArrayFreeze => self.atoms(args),
+                // Without counting, nothing is freed, and no object is unique,
+                // so code that specialized a `drop` takes the branch that only
+                // decrements.
+                Op::Dup | Op::Drop | Op::Free | Op::DecRef => {
+                    if let Some(k) = self.counted(&self.atom_ty(&args[0])) {
+                        self.atom(&args[0]);
+                        // `decref` is a `drop` of a shared object, which may be
+                        // the root of a garbage cycle.
+                        let imm = is_imm(&self.atom_ty(&args[0]));
+                        self.call_rt(|rt| match op {
+                            Op::Dup => rt.dup(),
+                            Op::Free => rt.free(&k),
+                            _ => rt.drop(&k, imm),
+                        });
+                    }
+                }
+                Op::IsUnique => {
+                    self.atom(&args[0]);
+                    if !self.call_rt(|rt| rt.is_unique()) {
+                        self.emit(I::Drop);
+                        self.emit(I::I32Const(0));
+                    }
+                }
+                Op::ArrayCopy => {
+                    let s = self.elem_of(&self.atom_ty(&args[0]))?;
+                    // Both ranges must fit, their starts and count read as
+                    // unsigned, as Wasm's `array.copy` does.
+                    for (array, start) in [(&args[0], &args[1]), (&args[2], &args[3])] {
+                        self.atom(start);
+                        self.emit(I::I64ExtendI32U);
+                        self.atom(&args[4]);
+                        self.emit(I::I64ExtendI32U);
+                        self.emit(I::I64Add);
+                        self.atom(array);
+                        self.emit(load(Storage::I32, 4));
+                        self.emit(I::I64ExtendI32U);
+                        self.emit(I::I64GtU);
+                        self.trap_if();
+                    }
+                    let mut addrs = Vec::new();
+                    for (array, start) in [(&args[0], &args[1]), (&args[2], &args[3])] {
+                        self.atom(array);
+                        self.emit(I::I32Const(8));
+                        self.emit(I::I32Add);
+                        self.atom(start);
+                        self.scale(s);
+                        self.emit(I::I32Add);
+                        let a = self.new_local(ValType::I32);
+                        self.emit(I::LocalSet(a));
+                        addrs.push(a);
+                    }
+                    // It dups what it copies, then drops what it overwrites.
+                    if let Ty::Array(e, _) = self.atom_ty(&args[0])
+                        && let Some(k) = self.counted(&e)
+                    {
+                        self.emit(I::LocalGet(addrs[1]));
+                        self.atom(&args[4]);
+                        self.call_rt(|rt| rt.dup_range());
+                        self.emit(I::LocalGet(addrs[0]));
+                        self.atom(&args[4]);
+                        self.call_rt(|rt| rt.drop_range(&k, is_imm(&e)));
+                    }
+                    self.emit(I::LocalGet(addrs[0]));
                     self.emit(I::LocalGet(addrs[1]));
                     self.atom(&args[4]);
-                    self.call_rt(|rt| rt.dup_range());
-                    self.emit(I::LocalGet(addrs[0]));
-                    self.atom(&args[4]);
-                    self.call_rt(|rt| rt.drop_range(&k, is_imm(&e)));
+                    self.scale(s);
+                    self.emit(I::MemoryCopy {
+                        src_mem: 0,
+                        dst_mem: 0,
+                    });
                 }
-                self.emit(I::LocalGet(addrs[0]));
-                self.emit(I::LocalGet(addrs[1]));
-                self.atom(&args[4]);
-                self.scale(s);
-                self.emit(I::MemoryCopy {
-                    src_mem: 0,
-                    dst_mem: 0,
-                });
-            }
-            Op::RefNew => {
-                let s = Storage::of(&self.atom_ty(&args[0]));
-                let p = self.alloc_const(16);
-                self.emit(I::LocalGet(p));
-                self.atom(&args[0]);
-                self.emit(store(s, 8));
-                self.emit(I::LocalGet(p));
-            }
-            Op::RefGet => {
-                let Ty::Ref(inner) = self.atom_ty(&args[0]) else {
-                    return Err("ref get of something that isn't a ref".into());
-                };
-                self.atom(&args[0]);
-                self.emit(load(Storage::of(&inner), 8));
-            }
-            Op::RefSet => {
-                let Ty::Ref(inner) = self.atom_ty(&args[0]) else {
-                    return Err("ref set of something that isn't a ref".into());
-                };
-                let s = Storage::of(&inner);
-                let old = self.counted(&inner).map(|k| {
-                    let old = self.new_local(ValType::I32);
-                    self.atom(&args[0]);
-                    self.emit(load(s, 8));
-                    self.emit(I::LocalSet(old));
-                    (old, k)
-                });
-                self.atom(&args[0]);
-                self.atom(&args[1]);
-                self.emit(store(s, 8));
-                if let Some((old, k)) = old {
-                    self.drop_local(old, &k, is_imm(&inner));
-                }
-            }
-            // When counting, everything goes in a box, which holds the kind
-            // of what it holds, plus 1, or 0 for a scalar, so that dropping
-            // the box can drop it.
-            Op::Box(ty) if self.cx.rt.is_some() => {
-                let kind = key_of(ty).map_or(0, |k| self.cx.rt.as_ref().unwrap().number(&k) + 1);
-                let p = self.alloc_const(16);
-                self.emit(I::LocalGet(p));
-                self.emit(I::I32Const(kind as i32));
-                self.emit(store(Storage::I32, 4));
-                self.emit(I::LocalGet(p));
-                self.atom(&args[0]);
-                self.emit(store(Storage::of(ty), 8));
-                self.emit(I::LocalGet(p));
-            }
-            Op::Unbox(ty) if self.cx.rt.is_some() => {
-                self.atom(&args[0]);
-                self.emit(load(Storage::of(ty), 8));
-            }
-            // A reference is already an `any`; a scalar goes in a box.
-            Op::Box(ty) => {
-                if ty.is_scalar() {
+                Op::RefNew => {
+                    let s = Storage::of(&self.atom_ty(&args[0]));
                     let p = self.alloc_const(16);
+                    self.emit(I::LocalGet(p));
+                    self.atom(&args[0]);
+                    self.emit(store(s, 8));
+                    self.emit(I::LocalGet(p));
+                }
+                Op::RefGet => {
+                    let Ty::Ref(inner) = self.atom_ty(&args[0]) else {
+                        return Err("ref get of something that isn't a ref".into());
+                    };
+                    self.atom(&args[0]);
+                    self.emit(load(Storage::of(&inner), 8));
+                }
+                Op::RefSet => {
+                    let Ty::Ref(inner) = self.atom_ty(&args[0]) else {
+                        return Err("ref set of something that isn't a ref".into());
+                    };
+                    let s = Storage::of(&inner);
+                    let old = self.counted(&inner).map(|k| {
+                        let old = self.new_local(ValType::I32);
+                        self.atom(&args[0]);
+                        self.emit(load(s, 8));
+                        self.emit(I::LocalSet(old));
+                        (old, k)
+                    });
+                    self.atom(&args[0]);
+                    self.atom(&args[1]);
+                    self.emit(store(s, 8));
+                    if let Some((old, k)) = old {
+                        self.drop_local(old, &k, is_imm(&inner));
+                    }
+                }
+                // When counting, everything goes in a box, which holds the kind
+                // of what it holds, plus 1, or 0 for a scalar, so that dropping
+                // the box can drop it.
+                Op::Box(ty) if self.cx.rt.is_some() => {
+                    let kind =
+                        key_of(ty).map_or(0, |k| self.cx.rt.as_ref().unwrap().number(&k) + 1);
+                    let p = self.alloc_const(16);
+                    self.emit(I::LocalGet(p));
+                    self.emit(I::I32Const(kind as i32));
+                    self.emit(store(Storage::I32, 4));
                     self.emit(I::LocalGet(p));
                     self.atom(&args[0]);
                     self.emit(store(Storage::of(ty), 8));
                     self.emit(I::LocalGet(p));
-                } else {
-                    self.atom(&args[0]);
                 }
-            }
-            Op::Unbox(ty) => {
-                self.atom(&args[0]);
-                if ty.is_scalar() {
+                Op::Unbox(ty) if self.cx.rt.is_some() => {
+                    self.atom(&args[0]);
                     self.emit(load(Storage::of(ty), 8));
                 }
-            }
-            Op::Handle(h, _) => {
-                let tail = self.handle(*h, args, tail)?;
-                return Ok(self.bind(binds, tail));
-            }
-            Op::Perform(e, i) => self.perform(*e, *i, args)?,
-            // A continuation is a closure: resuming it calls it.
-            Op::Resume => {
-                let Some((k, rest)) = args.split_first() else {
-                    return Err("resume without a continuation".into());
-                };
-                let Ty::Cont(sig) = self.atom_ty(k) else {
-                    return Err("resume of something that isn't a continuation".into());
-                };
-                let ty = self.cx.entry_sig(&sig);
-                self.atom(k);
-                self.atoms(rest);
-                self.atom(k);
-                self.emit(load(Storage::I32, 4));
-                self.emit(if tail {
-                    I::ReturnCallIndirect {
-                        type_index: ty,
-                        table_index: 0,
+                // A reference is already an `any`; a scalar goes in a box.
+                Op::Box(ty) => {
+                    if ty.is_scalar() {
+                        let p = self.alloc_const(16);
+                        self.emit(I::LocalGet(p));
+                        self.atom(&args[0]);
+                        self.emit(store(Storage::of(ty), 8));
+                        self.emit(I::LocalGet(p));
+                    } else {
+                        self.atom(&args[0]);
                     }
-                } else {
-                    I::CallIndirect {
-                        type_index: ty,
-                        table_index: 0,
+                }
+                Op::Unbox(ty) => {
+                    self.atom(&args[0]);
+                    if ty.is_scalar() {
+                        self.emit(load(Storage::of(ty), 8));
                     }
-                });
-                return Ok(self.bind(binds, tail));
+                }
+                Op::Handle(h, _) => {
+                    let tail = self.handle(*h, args, tail)?;
+                    return Ok(self.bind(binds, tail));
+                }
+                Op::Perform(e, i) => self.perform(*e, *i, args)?,
+                // A continuation is a closure: resuming it calls it.
+                Op::Resume => {
+                    let Some((k, rest)) = args.split_first() else {
+                        return Err("resume without a continuation".into());
+                    };
+                    let Ty::Cont(sig) = self.atom_ty(k) else {
+                        return Err("resume of something that isn't a continuation".into());
+                    };
+                    let ty = self.cx.entry_sig(&sig);
+                    self.atom(k);
+                    self.atoms(rest);
+                    self.atom(k);
+                    self.emit(load(Storage::I32, 4));
+                    self.emit(if tail {
+                        I::ReturnCallIndirect {
+                            type_index: ty,
+                            table_index: 0,
+                        }
+                    } else {
+                        I::CallIndirect {
+                            type_index: ty,
+                            table_index: 0,
+                        }
+                    });
+                    return Ok(self.bind(binds, tail));
+                }
+                // A continuation's: throws a closure that performs the
+                // operation into it.
+                Op::Discontinue(e, i)
+                    if args
+                        .first()
+                        .is_some_and(|k| matches!(self.atom_ty(k), Ty::Cont(_))) =>
+                {
+                    let (k, rest) = args.split_first().unwrap();
+                    let Ty::Cont(sig) = self.atom_ty(k) else {
+                        unreachable!()
+                    };
+                    let thunk = self.cx.thunk(*e, *i)?;
+                    let slot = self.cx.entry(thunk, rest.len());
+                    let tys: Vec<Ty> = rest.iter().map(|a| self.atom_ty(a)).collect();
+                    let (offsets, size) = layout(&tys);
+                    let t = self.alloc_const(size);
+                    self.emit(I::LocalGet(t));
+                    self.emit(I::I32Const(slot as i32));
+                    self.emit(store(Storage::I32, 4));
+                    self.store_all(t, &offsets, rest);
+                    let results = sig.results.iter().map(val).collect();
+                    let ty = self.cx.disc_sig(results);
+                    self.atom(k);
+                    self.emit(I::LocalGet(t));
+                    self.atom(k);
+                    self.emit(load(Storage::I32, 8));
+                    self.emit(if tail {
+                        I::ReturnCallIndirect {
+                            type_index: ty,
+                            table_index: 0,
+                        }
+                    } else {
+                        I::CallIndirect {
+                            type_index: ty,
+                            table_index: 0,
+                        }
+                    });
+                    return Ok(self.bind(binds, tail));
+                }
+                // In a tail-resumptive clause, without its continuation: the
+                // `perform` it handles performs this instead, under its
+                // handlers.
+                Op::Discontinue(e, i) => {
+                    self.emit(I::GlobalGet(SITE));
+                    self.emit(I::GlobalSet(HANDLERS));
+                    self.perform(*e, *i, args)?;
+                }
             }
-            // A continuation's: throws a closure that performs the
-            // operation into it.
-            Op::Discontinue(e, i)
-                if args
-                    .first()
-                    .is_some_and(|k| matches!(self.atom_ty(k), Ty::Cont(_))) =>
-            {
-                let (k, rest) = args.split_first().unwrap();
-                let Ty::Cont(sig) = self.atom_ty(k) else {
-                    unreachable!()
-                };
-                let thunk = self.cx.thunk(*e, *i)?;
-                let slot = self.cx.entry(thunk, rest.len());
-                let tys: Vec<Ty> = rest.iter().map(|a| self.atom_ty(a)).collect();
-                let (offsets, size) = layout(&tys);
-                let t = self.alloc_const(size);
-                self.emit(I::LocalGet(t));
-                self.emit(I::I32Const(slot as i32));
-                self.emit(store(Storage::I32, 4));
-                self.store_all(t, &offsets, rest);
-                let results = sig.results.iter().map(val).collect();
-                let ty = self.cx.disc_sig(results);
-                self.atom(k);
-                self.emit(I::LocalGet(t));
-                self.atom(k);
-                self.emit(load(Storage::I32, 8));
-                self.emit(if tail {
-                    I::ReturnCallIndirect {
-                        type_index: ty,
-                        table_index: 0,
-                    }
-                } else {
-                    I::CallIndirect {
-                        type_index: ty,
-                        table_index: 0,
-                    }
-                });
-                return Ok(self.bind(binds, tail));
-            }
-            // In a tail-resumptive clause, without its continuation: the
-            // `perform` it handles performs this instead, under its
-            // handlers.
-            Op::Discontinue(e, i) => {
-                self.emit(I::GlobalGet(SITE));
-                self.emit(I::GlobalSet(HANDLERS));
-                self.perform(*e, *i, args)?;
-            }
-        }
-        Ok(self.bind(binds, false))
+            Ok(self.bind(binds, false))
+        })
     }
 
     /// Gives a handler's frame back when counting, once its `handle` is
