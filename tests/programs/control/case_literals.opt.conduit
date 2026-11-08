@@ -1,0 +1,25 @@
+fn pick8(%x: i8) -> (i32) {
+  case %x {
+    -1 => jump ret(1i32)
+    _ => jump ret(0i32)
+  }
+}
+
+fn pick16(%x: i16) -> (i32) {
+  case %x {
+    300 => jump ret(1i32)
+    _ => jump ret(0i32)
+  }
+}
+
+fn pick64(%x: i64) -> (i32) {
+  case %x {
+    5000000000 => jump ret(1i32)
+    _ => jump ret(0i32)
+  }
+}
+
+#[export(emu)]
+fn all() -> (i32) {
+  jump ret(11i32)
+}

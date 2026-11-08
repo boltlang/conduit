@@ -788,3 +788,152 @@ fn one_result_effects() {
 }"
     );
 }
+
+const MORE_DECLS: &str = "
+data data0 {
+  (i32)
+}
+
+fn fn1(%0: i32) -> (i32) {
+  jump ret(%0)
+}
+";
+
+/// Closures and `apply`, arrays that `array_alloc` makes and `array_copy`
+/// fills, the ops that count, `undefined`, boxes, a ref whose type comes
+/// from what it holds, and `trap`.
+#[test]
+fn more_ops() {
+    let cell = CtorId {
+        data: DataId(0),
+        index: 0,
+    };
+    let m = module(MORE_DECLS, vec![I32], vec![I32]);
+    let mut f = FuncBuilder::new(&m, vec![I32], vec![I32]);
+    let [x] = f.params();
+    let c = f.closure(FuncId(1), Mutability::Imm, ());
+    let y = f.apply1(c, [x]);
+    let src = f.array_alloc(I32, 2i32);
+    f.array_set(src, 0i32, y);
+    f.array_set(src, 1i32, x);
+    let dst = f.array_alloc(I32, 2i32);
+    f.array_copy(dst, 0i32, src, 0i32, 2i32);
+    let obj = f.new_object(cell, Mutability::Imm, [x]);
+    f.dup(obj);
+    let u = f.is_unique(obj);
+    f.decref(obj);
+    f.free(obj);
+    let _ = f.undefined(Ty::I64);
+    let b = f.boxed(I32, y);
+    let back = f.unbox(I32, b);
+    f.drop(b);
+    let r = f.ref_new(back);
+    assert_eq!(f.var_ty(r), Some(&Ty::Ref(Box::new(I32))));
+    let got = f.ref_get(r);
+    let case = f.case(u);
+    f.arm(case, 0);
+    f.trap();
+    f.default(case);
+    f.ret([got]);
+    assert_eq!(
+        text(f),
+        "fn fn0(%0: i32) -> (i32) {
+  let %1: imm fn(i32) -> (i32) = closure fn1()
+  let %2: i32 = apply(%1, %0)
+  let %3: mut [i32] = array_alloc(2i32)
+  let = array_set(%3, 0i32, %2)
+  let = array_set(%3, 1i32, %0)
+  let %4: mut [i32] = array_alloc(2i32)
+  let = array_copy(%4, 0i32, %3, 0i32, 2i32)
+  let %5: imm data0 = new data0.0(%0)
+  let = dup(%5)
+  let %6: i32 = is_unique(%5)
+  let = decref(%5)
+  let = free(%5)
+  let %7: i64 = undefined()
+  let %8: imm any = box[i32](%2)
+  let %9: i32 = unbox[i32](%8)
+  let = drop(%8)
+  let %10: ref i32 = ref_new(%9)
+  let %11: i32 = ref_get(%10)
+  case %6 {
+    0 => trap
+    _ => jump ret(%11)
+  }
+}"
+    );
+}
+
+const HANDLER_DECLS: &str = "
+effect effect0 {
+  (i32) -> (i32)
+}
+
+handler handler0 for effect0 env() ops(fn1) ret fn2
+
+fn fn1(%0: i32, %1: cont(i32) -> (i32)) -> (i32) {
+  let %2: i32 = resume(%1, %0)
+  jump ret(%2)
+}
+
+fn fn2(%0: i32) -> (i32) {
+  jump ret(%0)
+}
+
+fn fn3() -> (i32) does effect0 {
+  let %0: i32 = perform effect0.0(1i32)
+  jump ret(%0)
+}
+
+fn fn4[E1]() -> (i32) does E1 {
+  jump ret(0i32)
+}
+";
+
+/// `handle` of a closure, `discontinue`, and a call that gives a row for
+/// an effect parameter, from a function that has one.
+#[test]
+fn handlers_and_effect_params() {
+    let m = module(HANDLER_DECLS, vec![], vec![I32]);
+    let mut f = FuncBuilder::new(&m, vec![], vec![I32]);
+    let body = f.closure(FuncId(3), Mutability::Imm, ());
+    let r = f.handle(HandlerId(0), [body]);
+    f.ret([r[0]]);
+    assert_eq!(
+        text(f),
+        "fn fn0() -> (i32) {
+  let %0: imm fn() -> (i32) does effect0 = closure fn3()
+  let %1: i32 = handle handler0(%0)
+  jump ret(%1)
+}"
+    );
+
+    let k_ty = Ty::Cont(Box::new(Sig::new(vec![I32], vec![I32])));
+    let m = module(HANDLER_DECLS, vec![k_ty.clone()], vec![I32]);
+    let mut f = FuncBuilder::new(&m, vec![k_ty], vec![I32]);
+    f.set_row(Row::one(EffectId(0)));
+    let [k] = f.params();
+    let r = f.discontinue1(k, EffectId(0), 0, [5i32]);
+    f.ret([r]);
+    assert_eq!(
+        text(f),
+        "fn fn0(%0: cont(i32) -> (i32)) -> (i32) does effect0 {
+  let %1: i32 = discontinue effect0.0(%0, 5i32)
+  jump ret(%1)
+}"
+    );
+
+    let m = module(HANDLER_DECLS, vec![], vec![I32]);
+    let mut f = FuncBuilder::new(&m, vec![], vec![I32]);
+    f.set_effect_params(1);
+    f.set_row(Row::param(1));
+    let r = f.call_with(FuncId(4), vec![], vec![Row::param(1)], ());
+    f.ret([r[0]]);
+    assert_eq!(
+        text(f),
+        "fn fn0[E1]() -> (i32) does E1 {
+  let %0: i32 = call fn4[E1]()
+  jump ret(%0)
+}"
+    );
+}

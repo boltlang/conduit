@@ -1141,6 +1141,7 @@ fn cycles_are_reported_apart() {
     let (_, leaks) = counted(src, vec![]).unwrap();
     assert!(leaks.counts_ok(), "{leaks}");
     assert_eq!(leaks.cycles, vec![ObjId(0), ObjId(1)]);
+    assert_eq!(leaks.to_string(), "kept alive by cycles: #0, #1");
 }
 
 /// Constants are never counted, and `dup` and `drop` of an undefined value
@@ -1365,6 +1366,14 @@ fn stats_count_what_a_run_does() {
     // A drop per cell, and a dup per tail kept.
     assert_eq!(stats.count_ops, 4 + 3);
     assert!(stats.steps > 0);
+    // As benchmarks show it: everything but the steps is known here.
+    let shown = stats.to_string();
+    assert!(
+        shown.ends_with(
+            ", allocs 4, frees 4, peak live 4, count ops 7, reused 0 of 0, collections 0"
+        ),
+        "{shown}"
+    );
 }
 
 /// A host function can end the program with an exit code, which no
@@ -1417,4 +1426,177 @@ fn main(%n: i32) -> (i32) {
         .call(main, vec![Value::I32(3)])
         .unwrap_err();
     assert_eq!(error.kind, ErrorKind::Exit(3));
+}
+
+/// Every op that counts finds an object that's been freed, not only `drop`
+/// and uses: each is undefined behavior, named after the op.
+#[test]
+fn counting_a_freed_object_is_undefined() {
+    let ops = [
+        ("dup", "let = dup(%l)"),
+        ("drop_reuse", "let %t: reuse List.0 = drop_reuse(%l)"),
+        ("is_unique", "let %u: i32 = is_unique(%l)"),
+        ("free", "let = free(%l)"),
+        ("decref", "let = decref(%l)"),
+    ];
+    for (op, line) in ops {
+        let src = format!(
+            "{LIST_TEXT}
+fn fn0() -> () {{
+  let %l: imm List = new List.0()
+  let = drop(%l)
+  {line}
+  jump ret()
+}}"
+        );
+        let error = counted(&src, vec![]).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!("fn0: undefined behavior: {op} of a freed object")
+        );
+    }
+}
+
+/// A reuse token that no `reuse` takes holds memory that's never given
+/// back, which is reported as undropped.
+#[test]
+fn unused_reuse_token_is_reported() {
+    let src = format!(
+        "{LIST_TEXT}
+fn fn0() -> () {{
+  let %l: imm List = new List.0()
+  let %t: reuse List.0 = drop_reuse(%l)
+  jump ret()
+}}"
+    );
+    let (_, leaks) = counted(&src, vec![]).unwrap();
+    assert_eq!(leaks.to_string(), "undropped: #0 (+1)");
+}
+
+/// Without counting, the ops that count do nothing: `drop_reuse` gives no
+/// memory, so `reuse` allocates, and `free` and `decref` change nothing,
+/// even of an object that's shared or unique.
+#[test]
+fn counting_ops_without_counting_do_nothing() {
+    let src = format!(
+        "{LIST_TEXT}
+fn fn0() -> (i32) {{
+  let %nil: imm List = new List.0()
+  let %l: imm List = new List.1(7i32, %nil)
+  let = decref(%l)
+  let = free(%nil)
+  let %t: reuse List.1 = drop_reuse(%l)
+  let %l2: imm List = reuse List.1(%t, 8i32, %nil)
+  let %x: i32 = get List.1.0(%l2)
+  let %u: i32 = is_unique(%l2)
+  let %r: i32 = add(%x, %u)
+  jump ret(%r)
+}}"
+    );
+    let m = conduit_ir::text::parse(&src).unwrap();
+    verify_module(&m).unwrap();
+    let mut machine = Machine::new(&m, NoHost);
+    assert_eq!(
+        machine.call(FuncId(0), vec![]).unwrap(),
+        vec![Value::I32(8)]
+    );
+    assert_eq!(machine.stats.reused, 0);
+    assert_eq!(machine.stats.fresh, 1);
+}
+
+/// What a continuation that's dropped without being resumed held is lost
+/// with it: its frames aren't dropped, so the list the body was holding at
+/// the `perform` is reported apart.
+#[test]
+fn what_a_dropped_continuation_held_is_reported() {
+    let src = format!(
+        "{LIST_TEXT}
+effect Fail {{
+  () -> ()
+}}
+
+handler stop for Fail env() ops(fail) ret done
+
+fn fn0() -> (i32) {{
+  let %b: imm fn() -> (i32) does Fail = closure body()
+  let %r: i32 = handle stop(%b)
+  jump ret(%r)
+}}
+
+fn fail(%k: cont() -> (i32)) -> (i32) {{
+  let = drop(%k)
+  jump ret(0i32)
+}}
+
+fn done(%r: i32) -> (i32) {{
+  jump ret(%r)
+}}
+
+fn body() -> (i32) does Fail {{
+  let %l: imm List = new List.0()
+  let = perform Fail.0()
+  let = drop(%l)
+  jump ret(1i32)
+}}"
+    );
+    let (results, leaks) = counted(&src, vec![]).unwrap();
+    assert_eq!(results, vec![Value::I32(0)]);
+    assert!(leaks.counts_ok(), "{leaks}");
+    assert_eq!(leaks.to_string(), "lost with continuations: #1 (+1)");
+}
+
+/// A host function must give what its extern says: as many results, and
+/// host values exactly where it has `host`.
+#[test]
+fn host_results_must_fit_the_extern() {
+    struct Wrong;
+    impl Host for Wrong {
+        fn call(
+            &mut self,
+            name: &str,
+            _: &Extern,
+            _: &[Value],
+            _: &mut Arrays<'_, '_>,
+        ) -> Result<Vec<Value>, HostError> {
+            Ok(match name {
+                "two" => vec![Value::I32(1), Value::I32(2)],
+                "host_for_i32" => vec![Value::Host(3)],
+                _ => vec![Value::I32(4)],
+            })
+        }
+    }
+    let src = "#[link(emu)]
+extern two() -> (i32)
+#[link(emu)]
+extern host_for_i32() -> (i32)
+#[link(emu)]
+extern i32_for_host() -> (host)
+
+fn fn0() -> () {
+  let %a: i32 = call_extern two()
+  jump ret()
+}
+
+fn fn1() -> () {
+  let %a: i32 = call_extern host_for_i32()
+  jump ret()
+}
+
+fn fn2() -> () {
+  let %a: host = call_extern i32_for_host()
+  jump ret()
+}";
+    let m = conduit_ir::text::parse(src).unwrap();
+    verify_module(&m).unwrap();
+    let expected = [
+        "two gave 2 results instead of 1",
+        "host_for_i32 gave a host result where its extern has a i32",
+        "i32_for_host gave a non-host result where its extern has a host",
+    ];
+    for (f, message) in expected.iter().enumerate() {
+        let error = Machine::new(&m, Wrong)
+            .call(FuncId(f as u64), vec![])
+            .unwrap_err();
+        assert!(error.to_string().contains(message), "{error}");
+    }
 }

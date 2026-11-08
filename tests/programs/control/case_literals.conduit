@@ -1,0 +1,39 @@
+// A `case` on a literal of each integer width picks its arm, which
+// `simplify` does at compile time: once inlining puts a literal argument
+// where a parameter was, as here.
+
+fn pick8(%x: i8) -> (i32) {
+  case %x {
+    -1 => jump ret(1i32)
+    _ => jump ret(0i32)
+  }
+}
+
+fn pick16(%x: i16) -> (i32) {
+  case %x {
+    300 => jump ret(1i32)
+    _ => jump ret(0i32)
+  }
+}
+
+fn pick64(%x: i64) -> (i32) {
+  case %x {
+    5000000000 => jump ret(1i32)
+    _ => jump ret(0i32)
+  }
+}
+
+// 1 + 10 + 0: the last one misses.
+fn all() -> (i32) {
+  let %a: i32 = call pick8(255i8)
+  let %b: i32 = call pick16(300i16)
+  let %c: i32 = call pick64(5000000001i64)
+  let %b10: i32 = mul(%b, 10i32)
+  let %c100: i32 = mul(%c, 100i32)
+  let %ab: i32 = add(%a, %b10)
+  let %r: i32 = add(%ab, %c100)
+  jump ret(%r)
+}
+
+//# run all() == 11i32
+//# opt

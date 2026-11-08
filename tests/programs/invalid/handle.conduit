@@ -1,0 +1,48 @@
+// What `handle` needs: its handler's environment, then a closure that
+// takes nothing and gives what the return clause takes after the
+// environment.
+
+effect effect0 {
+  () -> ()
+}
+
+handler handler0 for effect0 env(i32) ops(fn1) ret fn2
+
+fn fn1(%0: i32, %1: cont() -> (i64)) -> (i64) {
+  let %2: i64 = resume(%1)
+  jump ret(%2)
+}
+
+fn fn2(%0: i32, %1: i32) -> (i64) {
+  let %2: i64 = convert.s[i64](%1)
+  jump ret(%2)
+}
+
+// The body takes a parameter.
+fn fn3(%0: imm fn(i32) -> (i32) does effect0) -> () {
+  let %1: i64 = handle handler0(1i32, %0)
+  jump ret()
+}
+
+// The body gives an i64, but the return clause takes an i32.
+fn fn4(%0: imm fn() -> (i64) does effect0) -> () {
+  let %1: i64 = handle handler0(1i32, %0)
+  jump ret()
+}
+
+// No body.
+fn fn5() -> () {
+  let %0: i64 = handle handler0(1i32)
+  jump ret()
+}
+
+// The environment is an i64.
+fn fn6(%0: imm fn() -> (i32) does effect0) -> () {
+  let %1: i64 = handle handler0(1i64, %0)
+  jump ret()
+}
+
+//# verify-error: fn3: the body of handle handler0 has type fn(i32) -> (i32) does effect0, but should have fn() -> (i32)
+//# verify-error: fn4: the body of handle handler0 has type fn() -> (i64) does effect0, but should have fn() -> (i32)
+//# verify-error: fn5: handle handler0 needs its environment, then a closure
+//# verify-error: fn6: environment of handler0: value 0 has type i64, but should have i32

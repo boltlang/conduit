@@ -975,3 +975,55 @@ extern put(imm [i8]) -> (i32)
     );
     assert_eq!(print(&m), src);
 }
+
+/// Errors of parameters and labels that the others don't reach.
+#[test]
+fn errors_of_params_and_labels() {
+    let handler = "effect e { () -> () }
+fn c(%k: cont() -> ()) -> () { jump ret() }
+fn r() -> () { jump ret() }
+handler h['m1] for e env() ops(c) ret r";
+    assert_eq!(
+        error(handler),
+        "4:1: a handler has no mutability parameters, but 'm1 is one"
+    );
+    assert_eq!(
+        error("fn f[E1, 'm1]() -> () { jump ret() }"),
+        "1:10: mutability parameter `'m1` comes after an effect parameter"
+    );
+    assert_eq!(
+        error("fn f() -> () {\n  jump rec()\n}"),
+        "2:8: expected a label like `j1`, `loop` or `ret`, found `rec`"
+    );
+}
+
+/// `find_func`, which tests use to name what they call: by number, by
+/// name, by both, and what's wrong otherwise.
+#[test]
+fn finding_functions() {
+    let m = parse(
+        "fn sum#1() -> () { jump ret() }
+fn sum#2() -> () { jump ret() }
+fn product#3() -> () { jump ret() }",
+    )
+    .unwrap();
+    assert_eq!(crate::text::find_func(&m, "fn3"), Ok(FuncId(3)));
+    assert_eq!(crate::text::find_func(&m, "product"), Ok(FuncId(3)));
+    assert_eq!(crate::text::find_func(&m, "sum#2"), Ok(FuncId(2)));
+    assert_eq!(
+        crate::text::find_func(&m, "sum"),
+        Err("more than one function is `sum`: say which, like `sum#1`".into())
+    );
+    assert_eq!(
+        crate::text::find_func(&m, "fn9"),
+        Err("there's no function `fn9`".into())
+    );
+    assert_eq!(
+        crate::text::find_func(&m, "quotient"),
+        Err("there's no function `quotient`".into())
+    );
+    assert_eq!(
+        crate::text::find_func(&m, "%1"),
+        Err("`%1` isn't a function: expected `fn1` or a name".into())
+    );
+}

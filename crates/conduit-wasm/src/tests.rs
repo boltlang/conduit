@@ -850,3 +850,42 @@ fn sum(%l: imm List) -> (i32) {
     assert_eq!(sum.call(&mut store, l).unwrap(), 6);
     assert_eq!(live.get(&mut store).unwrap_i32(), 0);
 }
+
+/// What the backend can't lower, with what it says: a module that counts,
+/// with handlers that need evidence passing, whose effects weren't lowered
+/// before its counts were inserted, and exports and externs for another
+/// target.
+#[test]
+fn errors_for_what_it_cant_lower() {
+    let message = |src: &str, options: &crate::Options| {
+        let m = text::parse(src).unwrap();
+        crate::emit_module_with(&m, options).unwrap_err().message
+    };
+    let general = include_str!("../../../tests/programs/handlers/not_tail_resumptive.conduit");
+    let counted = crate::Options {
+        stack_switching: false,
+        counts: true,
+        cycles: false,
+        ..Default::default()
+    };
+    assert!(
+        message(general, &counted).contains("must have its effects lowered before its counts"),
+        "{}",
+        message(general, &counted)
+    );
+    let plain = crate::Options::default();
+    assert_eq!(
+        message(
+            "#[export(emu, name = \"f\")]\nfn f() -> () { jump ret() }",
+            &plain
+        ),
+        "can't export a function as emu `f`: only with a `#[export(wasm, ..)]`"
+    );
+    assert_eq!(
+        message(
+            "#[link(emu)]\nextern double(i32) -> (i32)\nfn f() -> () { jump ret() }",
+            &plain
+        ),
+        "can't import a emu extern: only one with a `#[link(wasm, ..)]`"
+    );
+}

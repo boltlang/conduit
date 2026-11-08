@@ -1,0 +1,58 @@
+// `array_copy` of objects: what it copies gets a reference more, and what
+// it overwrites one less, which frees it if that was the last. The counted
+// runs check every count. An overlapping copy, within one array, too.
+
+data Cell {
+  (i32)
+}
+
+fn cell(%n: i32) -> (imm Cell) {
+  let %c: imm Cell = new Cell.0(%n)
+  jump ret(%c)
+}
+
+// The digits of the three cells, as `a + 10 b + 100 c`.
+fn digits(%xs: mut [imm Cell]) -> (i32) {
+  let %c0: imm Cell = array_get(%xs, 0i32)
+  let %c1: imm Cell = array_get(%xs, 1i32)
+  let %c2: imm Cell = array_get(%xs, 2i32)
+  let %a: i32 = get Cell.0.0(%c0)
+  let %b: i32 = get Cell.0.0(%c1)
+  let %c: i32 = get Cell.0.0(%c2)
+  let %b10: i32 = mul(%b, 10i32)
+  let %c100: i32 = mul(%c, 100i32)
+  let %ab: i32 = add(%a, %b10)
+  let %r: i32 = add(%ab, %c100)
+  jump ret(%r)
+}
+
+// [4, 5, 6] with the first two of [1, 2, 3] from 1: [4, 1, 2]. 5 and 6
+// are overwritten, and freed, and 3 is freed with its array.
+fn between() -> (i32) {
+  let %one: imm Cell = call cell(1i32)
+  let %two: imm Cell = call cell(2i32)
+  let %three: imm Cell = call cell(3i32)
+  let %src: mut [imm Cell] = array_new(%one, %two, %three)
+  let %four: imm Cell = call cell(4i32)
+  let %five: imm Cell = call cell(5i32)
+  let %six: imm Cell = call cell(6i32)
+  let %dst: mut [imm Cell] = array_new(%four, %five, %six)
+  let = array_copy(%dst, 1i32, %src, 0i32, 2i32)
+  let %r: i32 = call digits(%dst)
+  jump ret(%r)
+}
+
+// [1, 2, 3] with its first two moved up by one: [1, 1, 2], which frees 3
+// and keeps 1 twice.
+fn within() -> (i32) {
+  let %one: imm Cell = call cell(1i32)
+  let %two: imm Cell = call cell(2i32)
+  let %three: imm Cell = call cell(3i32)
+  let %xs: mut [imm Cell] = array_new(%one, %two, %three)
+  let = array_copy(%xs, 1i32, %xs, 0i32, 2i32)
+  let %r: i32 = call digits(%xs)
+  jump ret(%r)
+}
+
+//# run between() == 214i32
+//# run within() == 211i32

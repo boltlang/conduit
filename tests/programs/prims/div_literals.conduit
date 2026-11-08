@@ -1,0 +1,35 @@
+// Division and remainder by a literal, which the Wasm backend lowers
+// apart: by 0 it's the result without the instruction, 0 for division and
+// the dividend for the remainder, and by anything else it's the
+// instruction alone, with nothing to check. For each width that has its
+// own lowering: `i8` and `i16`, read as `i32`s, and `i64`.
+
+fn div8(%x: i8) -> (i8, i8, i8, i8) {
+  let %a: i8 = div.s(%x, 3i8)
+  let %b: i8 = div.u(%x, 0i8)
+  let %c: i8 = rem.s(%x, 0i8)
+  let %d: i8 = rem.u(%x, 5i8)
+  jump ret(%a, %b, %c, %d)
+}
+
+fn div16(%x: i16) -> (i16, i16, i16, i16) {
+  let %a: i16 = div.s(%x, 3i16)
+  let %b: i16 = div.u(%x, 0i16)
+  let %c: i16 = rem.s(%x, 0i16)
+  let %d: i16 = rem.u(%x, 5i16)
+  jump ret(%a, %b, %c, %d)
+}
+
+fn div64(%x: i64) -> (i64, i64, i64, i64) {
+  let %a: i64 = div.s(%x, 7i64)
+  let %b: i64 = div.u(%x, 0i64)
+  let %c: i64 = rem.s(%x, 0i64)
+  let %d: i64 = rem.u(%x, 10i64)
+  jump ret(%a, %b, %c, %d)
+}
+
+// `-7i8` is 249 unsigned, `-1000i16` is 64536, and `-100i64` is
+// 18446744073709551516.
+//# run div8(-7i8) == (-2i8, 0i8, -7i8, 4i8)
+//# run div16(-1000i16) == (-333i16, 0i16, -1000i16, 1i16)
+//# run div64(-100i64) == (-14i64, 0i64, -100i64, 6i64)
