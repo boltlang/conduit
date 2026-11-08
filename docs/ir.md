@@ -954,7 +954,27 @@ fn sum[E1](%0: ro fn() -> () does Yield + E1) -> (i32) does E1 {
 A frontend that monomorphizes types can keep effect parameters, as it
 keeps mutability parameters, so that one instance of a function like
 `map` serves callbacks with any effects. An effect with type parameters
-becomes one effect per instance, as a generic data type does.
+becomes one effect per instance, as a generic data type does, and so
+does a handler, as the generic function it's in does.
+
+An operation with type parameters of its own, like Bolt's
+`fn fail[T](error: E) -> T` or `fn choose[T](a: T, b: T) -> T`, is erased
+instead: what has one of its types is `ro any` in the operation's
+signature, which holds both `imm` and `mut` boxes. A `perform` boxes what
+it passes at the type it's used at and unboxes what it gets, and a
+clause, with `k: cont(ro any) -> R`, serves every type. That's safe for
+the same reason as the rest of erasure: the frontend's type checker
+checked the clause for every `T`, so it can only resume with what it was
+given at `T`, and the `unbox` gets the type that was boxed. It costs
+little: a clause that never resumes, like `fail`'s, never gives a box,
+and once `direct` and `inline` put a clause where it's performed,
+`simplify` folds `unbox(box(x))` to `x`. One operation per instance
+would avoid boxing, but needs the whole program to know the instances,
+copies every clause per instance, and erased code would need an `any`
+instance anyway. If an operation's type parameter has a constraint,
+like a type class, the frontend passes its instance as an argument, a
+data type of closures, as erased code does.
+`tests/programs/handlers/erased_ops.conduit` has both kinds.
 
 The verifier's rules are under "Effect types" in [verify.md](verify.md).
 In short, every op's row must be in the function's, rows are compared by
@@ -1005,9 +1025,6 @@ Still to decide:
 
 - Effects whose parameters are rows, like one whose operation starts a
   task that performs some row of effects.
-- Operations with type parameters of their own, like a `raise` that can
-  give any type: erase the type to `Any`, or make one operation per
-  instance.
 - Externs that suspend, through JSPI.
 - Whether handler clauses can also have mutability parameters, now that
   `handle` gives arguments.

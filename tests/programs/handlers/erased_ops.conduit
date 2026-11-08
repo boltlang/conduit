@@ -1,0 +1,116 @@
+// Operations with type parameters of their own, like Bolt's
+// `fn choose[T](a: T, b: T) -> T` and `fn fail[T](error: E) -> T`, are
+// erased: what has the operation's type is `ro any`. A `perform` boxes what
+// it passes and unboxes what it gets, at the type it's used at, so one
+// operation serves every type. A clause can only give back what it was
+// given, so the unbox gets the type that was boxed.
+effect Choose {
+  (ro any, ro any) -> (ro any)
+}
+
+// Fail[i32]: the error has a type the effect fixes, the result is erased.
+effect Fail {
+  (i32) -> (ro any)
+}
+
+data Pair {
+  (i32, i32)
+}
+
+// Picks the first or the second, by the environment.
+handler pick for Choose env(i32) ops(choose) ret pick_done
+
+// Gives (0, the error) for a failure, and (1, the result) otherwise.
+handler attempt for Fail env() ops(fail) ret attempt_done
+
+fn choose(%second: i32, %a: ro any, %b: ro any, %k: cont(ro any) -> (i32)) -> (i32) {
+  case %second {
+    0 =>
+      let %ra: i32 = resume(%k, %a)
+      jump ret(%ra)
+    _ =>
+      let %rb: i32 = resume(%k, %b)
+      jump ret(%rb)
+  }
+}
+
+fn pick_done(%second: i32, %r: i32) -> (i32) {
+  jump ret(%r)
+}
+
+fn fail(%error: i32, %k: cont(ro any) -> (i32, i32)) -> (i32, i32) {
+  jump ret(0i32, %error)
+}
+
+fn attempt_done(%r: i32) -> (i32, i32) {
+  jump ret(1i32, %r)
+}
+
+// Chooses at i32, at i64 and at a Pair: x + y * 10 + a * 100 + b * 1000,
+// where (a, b) is the chosen pair.
+fn choices() -> (i32) does Choose {
+  let %1: imm any = box[i32](1i32)
+  let %2: imm any = box[i32](2i32)
+  let %c: ro any = perform Choose.0(%1, %2)
+  let %x: i32 = unbox[i32](%c)
+  let %3: imm any = box[i64](3i64)
+  let %4: imm any = box[i64](4i64)
+  let %c64: ro any = perform Choose.0(%3, %4)
+  let %y64: i64 = unbox[i64](%c64)
+  let %y: i32 = convert.s[i32](%y64)
+  let %p: imm Pair = new Pair.0(5i32, 6i32)
+  let %q: imm Pair = new Pair.0(7i32, 8i32)
+  let %pa: imm any = box[imm Pair](%p)
+  let %qa: imm any = box[imm Pair](%q)
+  let %cp: ro any = perform Choose.0(%pa, %qa)
+  let %chosen: imm Pair = unbox[imm Pair](%cp)
+  let %a: i32 = get Pair.0.0(%chosen)
+  let %b: i32 = get Pair.0.1(%chosen)
+  let %y10: i32 = mul(%y, 10i32)
+  let %a100: i32 = mul(%a, 100i32)
+  let %b1000: i32 = mul(%b, 1000i32)
+  let %s1: i32 = add(%x, %y10)
+  let %s2: i32 = add(%s1, %a100)
+  let %s3: i32 = add(%s2, %b1000)
+  jump ret(%s3)
+}
+
+fn run_choices(%second: i32) -> (i32) {
+  let %body: imm fn() -> (i32) does Choose = closure choices()
+  let %r: i32 = handle pick(%second, %body)
+  jump ret(%r)
+}
+
+// 100 / %x, failing with %x if it's negative, and with -1 for 0, where the
+// result of `fail` stands for an i32.
+fn checked(%x: i32) -> (i32) does Fail {
+  let %negative: i32 = lt.s(%x, 0i32)
+  case %negative {
+    0 =>
+      case %x {
+        0 =>
+          let %zero: ro any = perform Fail.0(-1i32)
+          let %rz: i32 = unbox[i32](%zero)
+          jump ret(%rz)
+        _ =>
+          let %q: i32 = div.s(100i32, %x)
+          jump ret(%q)
+      }
+    _ =>
+      let %neg: ro any = perform Fail.0(%x)
+      let %rn: i32 = unbox[i32](%neg)
+      jump ret(%rn)
+  }
+}
+
+fn run_checked(%x: i32) -> (i32, i32) {
+  let %body: imm fn() -> (i32) does Fail = closure checked(%x)
+  let %ok: i32, %r: i32 = handle attempt(%body)
+  jump ret(%ok, %r)
+}
+
+//# run run_choices(0i32) == 6531i32
+//# run run_choices(1i32) == 8742i32
+//# run run_checked(4i32) == (1i32, 25i32)
+//# run run_checked(0i32) == (0i32, -1i32)
+//# run run_checked(-3i32) == (0i32, -3i32)
