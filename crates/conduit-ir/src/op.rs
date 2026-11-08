@@ -121,6 +121,14 @@ pub enum Op {
     /// dropping the fields. Args: the object. Undefined behavior if its
     /// count isn't 1. What specializing `DropReuse` makes.
     ReuseToken,
+    /// A null `NullableHost`. Args: none.
+    HostNull,
+    /// Whether a `NullableHost` is null, as an `i32`: 1 if it is, 0 if
+    /// not. Args: the value.
+    HostIsNull,
+    /// A `NullableHost` that isn't null as a `Host`, the same value; it
+    /// traps if it's null. Args: the value, whose reference it takes.
+    HostUnwrap,
     /// `New`, in the memory of a reuse token if it has some. Args: the
     /// token, of a constructor of the same shape (see
     /// [`same_shape`](crate::types::same_shape)), then the fields.
@@ -217,6 +225,8 @@ impl Op {
             Op::Prim(p) => (None, p.may_trap()),
             Op::Closure(..) | Op::Box(_) | Op::New(_) | Op::ArrayNew | Op::RefNew => (None, false),
             Op::Const(_) | Op::Undefined => (None, false),
+            Op::HostNull | Op::HostIsNull => (None, false),
+            Op::HostUnwrap => (None, true),
             // Its length may be negative or too big.
             Op::ArrayFill | Op::ArrayAlloc => (None, true),
             Op::Get(..) | Op::ArrayLen | Op::ArrayClone | Op::RefGet => (Reads, false),

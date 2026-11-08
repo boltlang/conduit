@@ -631,10 +631,11 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                         decl.link.kind()
                     )));
                 };
-                // A host value is the host's number, both ways.
+                // A host value is the host's number, both ways, and a null
+                // is itself.
                 let mut args = args;
                 for (a, ty) in args.iter_mut().zip(&decl.sig.params) {
-                    if *ty == Ty::Host {
+                    if ty.is_host() && *a != Value::Null {
                         *a = match self.object_ref(obj(*a)?)? {
                             Object::Host(n) => Value::Host(*n),
                             _ => return Err(unverified("a host argument that isn't one")),
@@ -655,16 +656,20 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                     )));
                 }
                 for (r, ty) in results.iter_mut().zip(&decl.sig.results) {
-                    match (*ty == Ty::Host, *r) {
-                        (true, Value::Host(n)) => *r = self.alloc(Object::Host(n)),
-                        (false, Value::Host(_)) | (true, _) => {
-                            return Err(ErrorKind::Host(format!(
-                                "{name} gave a {} result where its extern has a {ty}",
-                                if *ty == Ty::Host { "non-host" } else { "host" }
-                            )));
+                    let what = match *r {
+                        Value::Host(n) if ty.is_host() => {
+                            *r = self.alloc(Object::Host(n));
+                            continue;
                         }
-                        (false, _) => {}
-                    }
+                        Value::Null if *ty == Ty::NullableHost => continue,
+                        Value::Host(_) => "host",
+                        Value::Null => "null",
+                        _ if ty.is_host() => "non-host",
+                        _ => continue,
+                    };
+                    return Err(ErrorKind::Host(format!(
+                        "{name} gave a {what} result where its extern has a {ty}"
+                    )));
                 }
                 results
             }
@@ -709,6 +714,12 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
             }
             Op::Const(id) => vec![self.constant(*id)?],
             Op::Undefined => vec![Value::Unset],
+            Op::HostNull => vec![Value::Null],
+            Op::HostIsNull => vec![Value::I32(i32::from(arg(&args, 0)? == Value::Null))],
+            Op::HostUnwrap => match arg(&args, 0)? {
+                Value::Null => return Err(ErrorKind::Trap),
+                v => vec![v],
+            },
             Op::Get(c, i) => match self.object_ref(obj(arg(&args, 0)?)?)? {
                 Object::Data { ctor, fields, .. } if ctor == c => {
                     vec![

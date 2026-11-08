@@ -170,7 +170,7 @@ fn at_most_in<P: Program + ?Sized>(
         Ty::Fn(_, m) | Ty::Any(m) => le(*m),
         Ty::Ref(_) | Ty::Cont(_) => le(Mutability::Mut),
         // A token holds nothing, and Conduit sees nothing in a host value.
-        Ty::Reuse(_) | Ty::Host => true,
+        Ty::Reuse(_) | Ty::Host | Ty::NullableHost => true,
     }
 }
 

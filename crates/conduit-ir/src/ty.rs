@@ -35,8 +35,13 @@ pub enum Ty {
     /// can't look into: it only holds it and gives it to externs. It's an
     /// object, so it's counted, and its host can let go of it once nothing
     /// refers to it. It counts as `Imm`, since nothing Conduit does can
-    /// change it, though the host's own code may.
+    /// change it, though the host's own code may. It's never null.
     Host,
+    /// A host value, or null, like what a JavaScript function that may give
+    /// `null` gives. A `Host` fits where one is expected. `HostIsNull` tells
+    /// which it is, and `HostUnwrap` gives the `Host`. A null isn't an
+    /// object, so it isn't counted.
+    NullableHost,
     /// A reuse token, from `DropReuse` of an object built by this
     /// constructor: its memory, if it was unique, or none. Only `Reuse` of
     /// a constructor of the same shape takes it. It isn't an object, so it
@@ -64,6 +69,11 @@ impl Ty {
         !self.is_scalar() && !matches!(self, Ty::Reuse(_))
     }
 
+    /// Whether this is a host value, `Host` or `NullableHost`.
+    pub fn is_host(&self) -> bool {
+        matches!(self, Ty::Host | Ty::NullableHost)
+    }
+
     /// Whether this is an integer type: `i8`, `i16`, `i32` or `i64`.
     pub fn is_int(&self) -> bool {
         matches!(self, Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64)
@@ -82,14 +92,15 @@ impl Ty {
             | Ty::Reuse(_) => None,
             Ty::Data(_, m, ..) | Ty::Array(_, m) | Ty::Fn(_, m) | Ty::Any(m) => Some(*m),
             Ty::Ref(_) => Some(Mutability::Mut),
-            Ty::Host => Some(Mutability::Imm),
+            Ty::Host | Ty::NullableHost => Some(Mutability::Imm),
         }
     }
 
     /// Whether a value of this type can be used where `other` is expected.
     /// Only an object's own mutability can differ: `Imm` and `Mut` both fit
     /// `ReadOnly`, and the row of a closure or continuation: a smaller one
-    /// fits a bigger one. A data type's arguments, mutabilities and rows,
+    /// fits a bigger one, and a `Host` fits a `NullableHost`. A data type's
+    /// arguments, mutabilities and rows,
     /// must be equal, and so must the types inside a closure or
     /// continuation type.
     pub fn is_subtype(&self, other: &Ty) -> bool {
@@ -101,6 +112,7 @@ impl Ty {
             (Ty::Fn(s1, m1), Ty::Fn(s2, m2)) => s1.is_sub(s2) && m1.is_sub(*m2),
             (Ty::Cont(s1), Ty::Cont(s2)) => s1.is_sub(s2),
             (Ty::Any(m1), Ty::Any(m2)) => m1.is_sub(*m2),
+            (Ty::Host, Ty::NullableHost) => true,
             _ => self == other,
         }
     }
@@ -222,6 +234,7 @@ impl fmt::Display for Ty {
             Ty::Ref(ty) => write!(f, "ref {ty}"),
             Ty::Any(m) => write!(f, "{m} any"),
             Ty::Host => write!(f, "host"),
+            Ty::NullableHost => write!(f, "nullable host"),
             Ty::Reuse(c) => write!(f, "reuse {c}"),
         }
     }

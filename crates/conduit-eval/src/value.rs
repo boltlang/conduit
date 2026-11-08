@@ -16,6 +16,9 @@ pub enum Value {
     /// host chose when it gave the value. In the machine, a value of type
     /// `host` is an [`Object::Host`] instead, counted like other objects.
     Host(u64),
+    /// A null `nullable host`, which isn't an object, so it isn't counted.
+    /// A host function sees it, and gives it, as itself.
+    Null,
     /// What `Undefined` gives, or an element of an array that
     /// `ArrayAlloc` made and nothing has set yet. Passing it on is fine,
     /// but using it is undefined behavior, which stops the machine. An

@@ -234,11 +234,27 @@ pub(crate) struct Hosts {
     pub free: Option<u32>,
 }
 
-/// What a value of type `ty` is in an import's signature: a host value is
-/// an `externref` there, and everywhere else the slot's box.
-fn import_val(ty: &Ty) -> ValType {
+/// What a parameter of type `ty` is in an import's signature: a host value
+/// is an `externref` there, and everywhere else the slot's box. One that's
+/// never null is an `externref` too, which the JS String Builtins want.
+fn import_param(ty: &Ty) -> ValType {
     match ty {
-        Ty::Host => ValType::EXTERNREF,
+        Ty::Host | Ty::NullableHost => ValType::EXTERNREF,
+        ty => val(ty),
+    }
+}
+
+/// What a result of type `ty` is in an import's signature: a host value is
+/// a `(ref extern)`, which can't be null, so a JavaScript function that
+/// gives `null` there throws at the call, and the JS String Builtins that
+/// give a string have that type. A nullable one is an `externref`.
+fn import_result(ty: &Ty) -> ValType {
+    match ty {
+        Ty::Host => ValType::Ref(RefType {
+            nullable: false,
+            heap_type: wasm_encoder::HeapType::EXTERN,
+        }),
+        Ty::NullableHost => ValType::EXTERNREF,
         ty => val(ty),
     }
 }
@@ -643,7 +659,7 @@ pub fn emit_module_with(m: &Module, options: &Options) -> Result<Vec<u8>, Error>
                 .iter()
                 .map(|v| f.var_ty(*v))
                 .chain(results)
-                .any(|t| *t == Ty::Host)
+                .any(Ty::is_host)
         });
         if takes_host {
             return Err(Error {
@@ -812,16 +828,14 @@ pub fn emit_module_with(m: &Module, options: &Options) -> Result<Vec<u8>, Error>
     }
     // The table of host values, after the continuations', and its free
     // list after the other globals.
-    let uses_hosts = m.externs.values().any(|e| {
-        e.sig
-            .params
-            .iter()
-            .chain(&e.sig.results)
-            .any(|t| *t == Ty::Host)
-    }) || cx
-        .rt
-        .as_ref()
-        .is_some_and(|rt| rt.keys.contains(&counts::DropKey::Host));
+    let uses_hosts = m
+        .externs
+        .values()
+        .any(|e| e.sig.params.iter().chain(&e.sig.results).any(Ty::is_host))
+        || cx
+            .rt
+            .as_ref()
+            .is_some_and(|rt| rt.keys.contains(&counts::DropKey::Host));
     if uses_hosts {
         let conts: usize = cx.switches.values().map(|sw| sw.conts.len()).sum();
         let free = cx.rt.is_some().then(|| match (&cx.slot_lists, cx.stack) {
@@ -851,8 +865,8 @@ pub fn emit_module_with(m: &Module, options: &Options) -> Result<Vec<u8>, Error>
         };
         let sig = match ext.abi {
             Abi::Conduit => FnSig {
-                params: ext.sig.params.iter().map(import_val).collect(),
-                results: ext.sig.results.iter().map(import_val).collect(),
+                params: ext.sig.params.iter().map(import_param).collect(),
+                results: ext.sig.results.iter().map(import_result).collect(),
             },
             Abi::Flat => flat_sig(ext),
         };

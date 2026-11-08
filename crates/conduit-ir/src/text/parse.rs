@@ -821,6 +821,10 @@ impl Parser {
             "ref" => Ty::Ref(Box::new(self.ty()?)),
             "reuse" => Ty::Reuse(self.ctor()?),
             "host" => Ty::Host,
+            "nullable" => {
+                self.keyword("host")?;
+                Ty::NullableHost
+            }
             m if matches!(m, "imm" | "mut" | "ro" | "inherit") || m.starts_with('\'') => {
                 self.i -= 1;
                 let m = self.mutability()?;
@@ -1309,6 +1313,9 @@ impl Parser {
             "new" => Op::New(self.ctor()?),
             "const" => Op::Const(ConstId(self.item("const")?)),
             "undefined" => Op::Undefined,
+            "host_null" => Op::HostNull,
+            "host_is_null" => Op::HostIsNull,
+            "host_unwrap" => Op::HostUnwrap,
             "get" | "set" => {
                 let c = self.ctor()?;
                 self.punct(".")?;

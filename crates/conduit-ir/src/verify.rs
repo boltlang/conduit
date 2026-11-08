@@ -522,7 +522,7 @@ fn ty_ok<P: Program + ?Sized>(p: &P, ty: &Ty, allowed: Allowed) -> Result<(), St
             ty_ok(p, ty, Allowed { ..allowed })
         }
         Ty::Any(m) => mut_ok(m),
-        Ty::Host => Ok(()),
+        Ty::Host | Ty::NullableHost => Ok(()),
         Ty::Reuse(c) => match p.data(c.data).and_then(|d| d.ctors.get(c.index as usize)) {
             Some(_) => Ok(()),
             None => Err(format!("unknown constructor {c}")),

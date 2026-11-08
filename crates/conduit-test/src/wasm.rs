@@ -11,7 +11,10 @@ use crate::Outcome;
 /// in Wasm 3.0. Runners add what else they want.
 pub fn config() -> wasmtime::Config {
     let mut config = wasmtime::Config::new();
-    config.wasm_tail_call(true).wasm_exceptions(true);
+    config
+        .wasm_tail_call(true)
+        .wasm_exceptions(true)
+        .wasm_function_references(true);
     config
 }
 
@@ -28,8 +31,37 @@ pub fn linker(engine: &Engine) -> Result<Linker<()>, String> {
         .func_wrap(
             "test",
             "wrap",
+            |mut c: Caller<'_, ()>, n: i32| -> wasmtime::Result<Rooted<ExternRef>> {
+                ExternRef::new(&mut c, n)
+            },
+        )
+        .map_err(e)?;
+    // A nullable host value: null for a negative number.
+    linker
+        .func_wrap(
+            "test",
+            "maybe",
             |mut c: Caller<'_, ()>, n: i32| -> wasmtime::Result<Option<Rooted<ExternRef>>> {
-                Ok(Some(ExternRef::new(&mut c, n)?))
+                if n < 0 {
+                    Ok(None)
+                } else {
+                    Ok(Some(ExternRef::new(&mut c, n)?))
+                }
+            },
+        )
+        .map_err(e)?;
+    linker
+        .func_wrap(
+            "test",
+            "unwrap_or",
+            |c: Caller<'_, ()>, r: Option<Rooted<ExternRef>>, d: i32| -> wasmtime::Result<i32> {
+                let Some(r) = r else { return Ok(d) };
+                let data = r.data(&c)?;
+                data.and_then(|d| d.downcast_ref::<i32>())
+                    .copied()
+                    .ok_or_else(|| {
+                        wasmtime::Error::msg("unwrap_or of an externref that isn't maybe's")
+                    })
             },
         )
         .map_err(e)?;

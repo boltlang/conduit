@@ -139,7 +139,7 @@ pub(crate) fn key_of(ty: &Ty) -> Option<DropKey> {
         Ty::Ref(t) => DropKey::Ref(Storage::of(t), key_of(t).map(Box::new), is_imm(t)),
         Ty::Fn(..) => DropKey::Closure,
         Ty::Any(_) => DropKey::Any,
-        Ty::Host => DropKey::Host,
+        Ty::Host | Ty::NullableHost => DropKey::Host,
     })
 }
 

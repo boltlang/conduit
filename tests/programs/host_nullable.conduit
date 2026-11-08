@@ -1,0 +1,68 @@
+// Nullable host values: `test.maybe` gives null for a negative number and
+// a host value that holds it otherwise, and `test.unwrap_or` gives the
+// number back, or its default for a null. A `host` fits where a `nullable
+// host` goes, `host_is_null` tells them apart, and `host_unwrap` gives the
+// `host`, or traps on a null. In Wasm a null is the address 0, which no box
+// has, so it's never counted.
+
+#[link(emu)]
+extern wrap(i32) -> (host)
+#[link(emu)]
+extern unwrap(host) -> (i32)
+#[link(emu)]
+extern maybe(i32) -> (nullable host)
+#[link(emu)]
+extern unwrap_or(nullable host, i32) -> (i32)
+
+data Slot {
+  (nullable host)
+}
+
+// 1 for a null, 0 otherwise.
+fn is_null(%n: i32) -> (i32) {
+  let %h: nullable host = call_extern maybe(%n)
+  let %r: i32 = host_is_null(%h)
+  jump ret(%r)
+}
+
+// The number, through `host_unwrap` and `unwrap`: traps on a null.
+fn unwrapped(%n: i32) -> (i32) {
+  let %h: nullable host = call_extern maybe(%n)
+  let %u: host = host_unwrap(%h)
+  let %r: i32 = call_extern unwrap(%u)
+  jump ret(%r)
+}
+
+// A null of Conduit's own, and a `host` where a `nullable host` goes, both
+// to an extern: -1, then the number.
+fn passed(%n: i32) -> (i32, i32) {
+  let %none: nullable host = host_null()
+  let %a: i32 = call_extern unwrap_or(%none, -1i32)
+  let %h: host = call_extern wrap(%n)
+  let %b: i32 = call_extern unwrap_or(%h, -1i32)
+  jump ret(%a, %b)
+}
+
+// A field that holds a null or not, and is read back: `%n`, or 99 for a
+// negative one.
+fn in_a_field(%n: i32) -> (i32) {
+  let %h: nullable host = call_extern maybe(%n)
+  let %s: imm Slot = new Slot.0(%h)
+  let %back: nullable host = get Slot.0.0(%s)
+  let %null: i32 = host_is_null(%back)
+  case %null {
+    0 =>
+      let %u: host = host_unwrap(%back)
+      let %r: i32 = call_extern unwrap(%u)
+      jump ret(%r)
+    _ => jump ret(99i32)
+  }
+}
+
+//# run is_null(-1i32) == 1i32
+//# run is_null(4i32) == 0i32
+//# run unwrapped(4i32) == 4i32
+//# run unwrapped(-1i32) traps
+//# run passed(6i32) == (-1i32, 6i32)
+//# run in_a_field(7i32) == 7i32
+//# run in_a_field(-3i32) == 99i32

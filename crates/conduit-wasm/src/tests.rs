@@ -889,3 +889,50 @@ fn errors_for_what_it_cant_lower() {
         "can't import a emu extern: only one with a `#[link(wasm, ..)]`"
     );
 }
+
+/// An import's `host` results are `(ref extern)`, which can't be null,
+/// and its parameters `externref`, which is what the JS String Builtins
+/// check: `substring` is `(externref, i32, i32) -> (ref extern)`. A
+/// `nullable host` result is an `externref`.
+#[test]
+fn host_imports_have_the_builtins_signatures() {
+    let wat = names(
+        "#[link(wasm, module = \"wasm:js-string\", name = \"substring\")]
+extern substring(host, i32, i32) -> (host)
+#[link(wasm, module = \"wasm:js-string\", name = \"length\")]
+extern length(host) -> (i32)
+#[link(wasm, module = \"env\", name = \"find\")]
+extern find(nullable host) -> (nullable host)
+
+#[export(wasm)]
+fn main(%n: i32) -> (i32) {
+  let %none: nullable host = host_null()
+  let %found: nullable host = call_extern find(%none)
+  let %s: host = host_unwrap(%found)
+  let %t: host = call_extern substring(%s, 0i32, %n)
+  let %r: i32 = call_extern length(%t)
+  jump ret(%r)
+}",
+    );
+    let import = |name: &str| {
+        wat.lines()
+            .find(|l| l.contains("(import") && l.contains(&format!("\"{name}\"")))
+            .unwrap_or_else(|| panic!("no import {name} in\n{wat}"))
+            .to_string()
+    };
+    assert!(
+        import("substring").contains("(param externref i32 i32) (result (ref extern))"),
+        "{}",
+        import("substring")
+    );
+    assert!(
+        import("length").contains("(param externref) (result i32)"),
+        "{}",
+        import("length")
+    );
+    assert!(
+        import("find").contains("(param externref) (result externref)"),
+        "{}",
+        import("find")
+    );
+}

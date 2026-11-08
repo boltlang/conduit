@@ -294,6 +294,23 @@ pub(crate) fn op_results<P: Program + ?Sized>(
             [ty] => Err(format!("{} of a {ty}, which isn't an object", op_word(op))),
             _ => Err(format!("{} needs one object", op_word(op))),
         },
+        Op::HostNull => match tys {
+            [] => Ok(vec![Ty::NullableHost]),
+            _ => Err("host_null takes nothing".into()),
+        },
+        Op::HostIsNull | Op::HostUnwrap => {
+            let name = if *op == Op::HostIsNull {
+                "host_is_null"
+            } else {
+                "host_unwrap"
+            };
+            match tys {
+                [ty] if ty.is_host() && *op == Op::HostIsNull => Ok(vec![Ty::I32]),
+                [ty] if ty.is_host() => Ok(vec![Ty::Host]),
+                [ty] => Err(format!("{name} of a {ty}, which isn't a host value")),
+                _ => Err(format!("{name} needs one host value")),
+            }
+        }
         Op::ArrayClone => array_clone(p, mp, tys, out, false),
         Op::ArrayFreeze => array_clone(p, mp, tys, out, true),
         Op::Handle(h, rows) => {

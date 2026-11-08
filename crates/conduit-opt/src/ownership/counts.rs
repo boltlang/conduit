@@ -376,6 +376,7 @@ pub(super) fn takes(op: &Op, i: usize) -> bool {
         | Op::RefNew
         | Op::Box(_)
         | Op::ArrayFreeze
+        | Op::HostUnwrap
         | Op::DropReuse
         | Op::ReuseToken
         | Op::Reuse(_) => true,

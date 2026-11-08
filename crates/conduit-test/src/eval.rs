@@ -111,7 +111,7 @@ fn lit(v: Value) -> Result<Lit, String> {
         Value::I64(n) => Lit::I64(n),
         Value::F32(x) => Lit::f32(x),
         Value::F64(x) => Lit::f64(x),
-        Value::Obj(_) | Value::Host(_) => {
+        Value::Obj(_) | Value::Host(_) | Value::Null => {
             return Err("gave an object, but a test can only check scalars".into());
         }
         Value::Unset => return Err("gave an unset array element".into()),
@@ -160,6 +160,11 @@ impl Host for TestHost {
             // A host value that holds a number, and the number back.
             ("wrap", [Value::I32(n)]) => Ok(vec![Value::Host(*n as u32 as u64)]),
             ("unwrap", [Value::Host(n)]) => Ok(vec![Value::I32(*n as u32 as i32)]),
+            // A nullable host value: null for a negative number.
+            ("maybe", [Value::I32(n)]) if *n < 0 => Ok(vec![Value::Null]),
+            ("maybe", [Value::I32(n)]) => Ok(vec![Value::Host(*n as u32 as u64)]),
+            ("unwrap_or", [Value::Null, d]) => Ok(vec![*d]),
+            ("unwrap_or", [Value::Host(n), _]) => Ok(vec![Value::I32(*n as u32 as i32)]),
             ("sum", [a]) => Ok(vec![Value::I32(bytes(arrays, a)?)]),
             ("fill", [a, Value::I32(b)]) => {
                 for e in arrays.get_mut(a).ok_or("not a mut array")? {

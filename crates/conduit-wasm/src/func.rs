@@ -669,7 +669,7 @@ impl<'m> FuncCx<'_, 'm> {
                         .params
                         .iter()
                         .chain(&ext.sig.results)
-                        .any(|t| *t == Ty::Host)
+                        .any(Ty::is_host)
                     {
                         self.call_with_hosts(idx, ext, args, binds)?;
                         return Ok(self.bind(binds, false));
@@ -810,6 +810,22 @@ impl<'m> FuncCx<'_, 'm> {
                 Op::Undefined => {
                     let ty = val(self.var_ty(binds[0]));
                     self.emit(zero(ty));
+                }
+                // A null host value is the address 0, which no box has.
+                Op::HostNull => self.emit(I::I32Const(0)),
+                Op::HostIsNull => {
+                    self.atom(&args[0]);
+                    self.emit(I::I32Eqz);
+                }
+                Op::HostUnwrap => {
+                    let p = self.new_local(ValType::I32);
+                    self.atom(&args[0]);
+                    self.emit(I::LocalTee(p));
+                    self.emit(I::I32Eqz);
+                    self.emit(I::If(BlockType::Empty));
+                    self.emit(I::Unreachable);
+                    self.emit(I::End);
+                    self.emit(I::LocalGet(p));
                 }
                 Op::ArrayNew => {
                     let s = self.elem_of(self.var_ty(binds[0]))?;
@@ -1765,9 +1781,24 @@ impl<'m> FuncCx<'_, 'm> {
         let hosts = self.cx.hosts.ok_or("no table of host values")?;
         for (a, t) in args.iter().zip(&ext.sig.params) {
             self.atom(a);
-            if *t == Ty::Host {
-                self.emit(load(Storage::I32, 8));
-                self.emit(I::TableGet(hosts.table));
+            match t {
+                Ty::Host => {
+                    self.emit(load(Storage::I32, 8));
+                    self.emit(I::TableGet(hosts.table));
+                }
+                // A null is the address 0.
+                Ty::NullableHost => {
+                    let p = self.new_local(ValType::I32);
+                    self.emit(I::LocalTee(p));
+                    self.emit(I::If(BlockType::Result(ValType::EXTERNREF)));
+                    self.emit(I::LocalGet(p));
+                    self.emit(load(Storage::I32, 8));
+                    self.emit(I::TableGet(hosts.table));
+                    self.emit(I::Else);
+                    self.emit(I::RefNull(wasm_encoder::HeapType::EXTERN));
+                    self.emit(I::End);
+                }
+                _ => {}
             }
         }
         self.emit(I::Call(idx));
@@ -1778,21 +1809,37 @@ impl<'m> FuncCx<'_, 'm> {
         // to be boxed, which needs the stack.
         let mut held = Vec::with_capacity(binds.len());
         for t in ext.sig.results.iter().rev() {
-            let l = self.new_local(if *t == Ty::Host {
+            let l = self.new_local(if t.is_host() {
                 ValType::EXTERNREF
             } else {
                 crate::val(t)
             });
             self.emit(I::LocalSet(l));
-            held.push((l, *t == Ty::Host));
+            held.push((l, t.clone()));
         }
         held.reverse();
-        for (l, host) in held {
-            if host {
-                let b = self.new_host(hosts, l);
-                self.emit(I::LocalGet(b));
-            } else {
-                self.emit(I::LocalGet(l));
+        for (l, t) in held {
+            match t {
+                Ty::Host => {
+                    let b = self.new_host(hosts, l);
+                    self.emit(I::LocalGet(b));
+                }
+                // A null gets no box: it's the address 0.
+                Ty::NullableHost => {
+                    let out = self.new_local(ValType::I32);
+                    self.emit(I::LocalGet(l));
+                    self.emit(I::RefIsNull);
+                    self.emit(I::If(BlockType::Empty));
+                    self.emit(I::I32Const(0));
+                    self.emit(I::LocalSet(out));
+                    self.emit(I::Else);
+                    let b = self.new_host(hosts, l);
+                    self.emit(I::LocalGet(b));
+                    self.emit(I::LocalSet(out));
+                    self.emit(I::End);
+                    self.emit(I::LocalGet(out));
+                }
+                _ => self.emit(I::LocalGet(l)),
             }
         }
         Ok(())

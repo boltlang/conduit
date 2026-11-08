@@ -173,6 +173,7 @@ pub enum Ty {
     Ref(Box<Ty>),                 // mutable cell holding one value: always Mut
     Any(Mutability),              // a boxed value of any type: see "Polymorphism"
     Host,                         // a value of the host, like a JS object: see below
+    NullableHost,                 // a host value, or null
     Reuse(CtorId),                // a reuse token: see "Reference counts"
 }
 
@@ -214,6 +215,17 @@ change it, though the host's own code may, as an extern call may change
 anything. Each backend picks how it holds one: the Wasm backend as a slot
 in a table of `externref`s (see "Operations per target"), the evaluator as
 a number its host gives.
+
+A `host` is never null. A `nullable host` is a host value or null, like
+what a JavaScript function that may give `null` gives, such as
+`getElementById`. A `host` fits where a `nullable host` is expected, and
+three ops go the other way: `host_null()` gives a null, `host_is_null(x)`
+is 1 for a null and 0 otherwise, and `host_unwrap(x)` gives the `host`,
+taking `x`'s reference, and traps on a null. A null isn't an object, so
+it isn't counted. Wasm's own types only tell a host value from a null,
+not a string from a DOM node, so these two are all Conduit needs: what
+kind of value a host value is, the frontend's types and the host's own
+checks say.
 
 A tuple or struct is a `DataDecl` with one constructor. `Bool` and
 field-less enums are `I32`. Unit is zero values and `!` is zero results, so
@@ -907,8 +919,13 @@ let %3: imm fn(i32) -> (i32) does Effect20 = closure fn2()
   row has no effect parameters, since externs aren't generic.
 - **An extern's ABI** says how a backend passes its arguments and
   results. By default it's how the backend represents values: an object
-  is its address, and a `host` value is the host's own reference, an
-  `externref` in Wasm. With `#[abi(flat)]`, it's how C compilers for wasm32 pass
+  is its address, and a `host` value is the host's own reference. In
+  Wasm, a `host` or `nullable host` parameter is an `externref`, a `host`
+  result a `(ref extern)`, which can't be null, and a `nullable host`
+  result an `externref`. Those are the JS String Builtins' types, whose
+  functions take `externref`s and give strings as `(ref extern)`, and a
+  JavaScript function that gives `null` for a `host` result throws at the
+  call. With `#[abi(flat)]`, it's how C compilers for wasm32 pass
   them, for WASI and other C-like hosts. Only scalars, arrays of scalars
   and arrays of `[i8]` can be passed, and only scalars given back:
   - a scalar is itself, an `i8` or `i16` zero-extended;
@@ -1407,7 +1424,10 @@ exception handling, both part of Wasm 3.0.
   collect what it held, and goes on the free list. The table never
   shrinks, but its slots are reused, so it's as big as the most host
   values alive at once. Without counts, nothing is freed, slots neither.
-  An exported function can't take or give a host value yet.
+  A null `nullable host` is the address 0, which no box has, so it costs
+  nothing, and `dup` and `drop` skip it: `host_null` is `i32.const 0`,
+  `host_is_null` is `i32.eqz`, and `host_unwrap` traps on 0. An exported
+  function can't take or give a host value yet.
 - With `Options::cycles` too, cycles are collected by trial deletion.
   The header's count is then 28 bits, with the collector's color and a
   "buffered" bit above it, and the sign bit for immortal. A `drop` that
@@ -1602,7 +1622,7 @@ fn fn1(%0: i32) -> (i32) {
 
 - **Types** are written as the verifier prints them: `i32`, `mut data10`,
   `imm [i32]`, `ro fn(i32) -> ()`, `cont() -> ()`, `ref i32`, `imm any`,
-  `host`.
+  `host`, `nullable host`.
   A closure or continuation type with effects has them after its
   results, `imm fn() -> (i32) does effect20 + effect21`, and so does a
   function, `fn fn1() -> (i32) does effect20 {`, and a handler,
@@ -1636,8 +1656,9 @@ fn fn1(%0: i32) -> (i32) {
   `ref_new`, `ref_get`, `ref_set`, `box[i32](..)`, `unbox[i32](..)`,
   `handle handler30(..)`, `perform effect20.0(..)`, `resume(..)`,
   `discontinue effect20.0(..)`, `dup(..)`, `drop(..)`, `is_unique(..)`,
-  `free(..)`, `decref(..)`, `drop_reuse(..)`, `reuse_token(..)` and
-  `reuse data10.1(..)`.
+  `free(..)`, `decref(..)`, `drop_reuse(..)`, `reuse_token(..)`,
+  `reuse data10.1(..)`, `host_null()`, `host_is_null(..)` and
+  `host_unwrap(..)`.
   A reuse token's type is `reuse data10.1`.
 - **Literals** carry their type: `5i32`, `-1i64`, `1.5f32`, `1e300f64`.
   Finite floats are printed in the shortest form that reads back exactly.
@@ -1681,7 +1702,9 @@ doesn't need a deep stack.
 - **Host values** are objects too, which hold the number their host gave
   them, so they're counted, and leaks of them are found, like other
   objects'. A host function sees `Value::Host(n)` instead, both as an
-  argument and as what it gives.
+  argument and as what it gives, and a null as `Value::Null`, which isn't
+  an object. It must give what its extern says: as many results, and a
+  null only for a `nullable host`.
 - **Objects know their mutability.** Every object that can be `Imm` or
   `Mut` carries an "is mut" flag. A write to an `Imm` object is an error,
   which can only happen if an optimization broke the mutability rules.
