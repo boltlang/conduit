@@ -84,6 +84,35 @@ fn sum_to(%n: i32) -> (i32) {
 }
 
 #[export(emu)]
+fn moved_copy(%c: i32) -> (i32) {
+  let %c1: i32 = add(%c, 100i32)
+  join inner(%n: i32) =
+    case %n {
+      0 => jump ret(%c1)
+      _ =>
+        let %m#3: i32 = add(%n, %c1)
+        jump ret(%m#3)
+    }
+  in
+  case %c {
+    0 =>
+      case 0i32 {
+        0 => jump ret(%c1)
+        _ =>
+          let %m#4: i32 = add(0i32, %c1)
+          jump ret(%m#4)
+      }
+    _ =>
+      case 5i32 {
+        0 => jump ret(%c1)
+        _ =>
+          let %m#5: i32 = add(5i32, %c1)
+          jump ret(%m#5)
+      }
+  }
+}
+
+#[export(emu)]
 fn objects_of(%c: i32) -> (i32) {
   let %p: imm Pair = new Pair.0()
   let %r: i32 = call objects(%c, %p)
@@ -141,6 +170,17 @@ fn sum_to(%n: i32) -> (i32) {
         jump go(%i1, %acc1)
     }
   in jump go(%n, 0i32)
+}
+
+#[export(emu)]
+fn moved_copy(%c: i32) -> (i32) {
+  let %c1: i32 = add(%c, 100i32)
+  case %c {
+    0 => jump ret(%c1)
+    _ =>
+      let %m: i32 = add(5i32, %c1)
+      jump ret(%m)
+  }
 }
 
 #[export(emu)]

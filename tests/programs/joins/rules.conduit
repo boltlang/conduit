@@ -72,6 +72,28 @@ fn sum_to(%n: i32) -> (i32) {
   in jump go(%n, 0i32)
 }
 
+// A definition copied into jumps inside one that's moved: the copies use
+// the moved one's parameter, which the move replaces by its argument, so
+// they must get the argument too.
+fn moved_copy(%c: i32) -> (i32) {
+  join outer(%k: i32) =
+    join inner(%n: i32) =
+      case %n {
+        0 => jump ret(%k)
+        _ =>
+          let %m: i32 = add(%n, %k)
+          jump ret(%m)
+      }
+    in
+    case %c {
+      0 => jump inner(0i32)
+      _ => jump inner(5i32)
+    }
+  in
+  let %c1: i32 = add(%c, 100i32)
+  jump outer(%c1)
+}
+
 fn objects_of(%c: i32) -> (i32) {
   let %p: imm Pair = new Pair.0()
   let %r: i32 = call objects(%c, %p)
@@ -85,5 +107,7 @@ fn objects_of(%c: i32) -> (i32) {
 //# run objects_of(1i32) == 0i32
 //# run objects_of(2i32) == -1i32
 //# run sum_to(4i32) == 10i32
+//# run moved_copy(0i32) == 100i32
+//# run moved_copy(1i32) == 106i32
 //# opt: joins
 //# opt: joins, simplify, dce

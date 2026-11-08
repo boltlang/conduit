@@ -210,6 +210,15 @@ impl Cx {
                     if let Some(d) = self.moving.remove(&target) {
                         let mut s = Subst::default();
                         s.vars.extend(d.params.iter().copied().zip(args));
+                        // The copyable definitions inside it were taken
+                        // before the move, and their copies are made after
+                        // it, so they need the arguments too.
+                        for l in defined_labels(&d.body) {
+                            if let Some((c, _)) = self.copyable.get_mut(&l) {
+                                let body = std::mem::replace(&mut c.body, Tail::Unreachable.into());
+                                c.body = s.block(body);
+                            }
+                        }
                         return Err(s.block(d.body));
                     }
                     if let Some(copy) = self.copy(target, &args, f) {
