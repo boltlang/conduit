@@ -31,6 +31,12 @@ pub enum Ty {
     /// A boxed value of any type. `Imm` means it holds a value that's `Imm`
     /// all the way down.
     Any(Mutability),
+    /// A value of the host, like a JavaScript object in Wasm, which Conduit
+    /// can't look into: it only holds it and gives it to externs. It's an
+    /// object, so it's counted, and its host can let go of it once nothing
+    /// refers to it. It counts as `Imm`, since nothing Conduit does can
+    /// change it, though the host's own code may.
+    Host,
     /// A reuse token, from `DropReuse` of an object built by this
     /// constructor: its memory, if it was unique, or none. Only `Reuse` of
     /// a constructor of the same shape takes it. It isn't an object, so it
@@ -76,6 +82,7 @@ impl Ty {
             | Ty::Reuse(_) => None,
             Ty::Data(_, m, ..) | Ty::Array(_, m) | Ty::Fn(_, m) | Ty::Any(m) => Some(*m),
             Ty::Ref(_) => Some(Mutability::Mut),
+            Ty::Host => Some(Mutability::Imm),
         }
     }
 
@@ -99,7 +106,7 @@ impl Ty {
     }
 
     /// This type with mutability `m`, or the same type if it has no
-    /// mutability of its own (scalars, `Cont`, `Ref`).
+    /// mutability of its own (scalars, `Cont`, `Ref`, `Host`).
     pub fn with_mutability(&self, m: Mutability) -> Ty {
         match self {
             Ty::Data(d, _, args, rows) => Ty::Data(*d, m, args.clone(), rows.clone()),
@@ -214,6 +221,7 @@ impl fmt::Display for Ty {
             Ty::Cont(sig) => write!(f, "cont{sig}"),
             Ty::Ref(ty) => write!(f, "ref {ty}"),
             Ty::Any(m) => write!(f, "{m} any"),
+            Ty::Host => write!(f, "host"),
             Ty::Reuse(c) => write!(f, "reuse {c}"),
         }
     }

@@ -169,8 +169,8 @@ fn at_most_in<P: Program + ?Sized>(
         Ty::Array(elem, m) => le(*m) && at_most_in(p, &inherit(elem, *m), bound, assumes, seen),
         Ty::Fn(_, m) | Ty::Any(m) => le(*m),
         Ty::Ref(_) | Ty::Cont(_) => le(Mutability::Mut),
-        // A token holds nothing.
-        Ty::Reuse(_) => true,
+        // A token holds nothing, and Conduit sees nothing in a host value.
+        Ty::Reuse(_) | Ty::Host => true,
     }
 }
 

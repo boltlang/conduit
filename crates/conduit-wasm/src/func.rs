@@ -664,6 +664,16 @@ impl<'m> FuncCx<'_, 'm> {
                         self.call_flat(idx, ext, args)?;
                         return Ok(self.bind(binds, false));
                     }
+                    if ext
+                        .sig
+                        .params
+                        .iter()
+                        .chain(&ext.sig.results)
+                        .any(|t| *t == Ty::Host)
+                    {
+                        self.call_with_hosts(idx, ext, args, binds)?;
+                        return Ok(self.bind(binds, false));
+                    }
                     self.atoms(args);
                     self.emit(if tail {
                         I::ReturnCall(idx)
@@ -1742,6 +1752,94 @@ impl<'m> FuncCx<'_, 'm> {
 
     /// Allocates `size` bytes, into a new local: on the shadow stack if
     /// the `let` being lowered says so.
+    /// Calls the extern `idx`, which takes or gives host values: each host
+    /// argument is its box's `externref`, and each host result gets a box.
+    /// Leaves the results on the stack, for `bind`.
+    fn call_with_hosts(
+        &mut self,
+        idx: u32,
+        ext: &conduit_ir::Extern,
+        args: &[Atom],
+        binds: &[Var],
+    ) -> Result<(), String> {
+        let hosts = self.cx.hosts.ok_or("no table of host values")?;
+        for (a, t) in args.iter().zip(&ext.sig.params) {
+            self.atom(a);
+            if *t == Ty::Host {
+                self.emit(load(Storage::I32, 8));
+                self.emit(I::TableGet(hosts.table));
+            }
+        }
+        self.emit(I::Call(idx));
+        if binds.len() != ext.sig.results.len() {
+            return Err("an extern call binds as many variables as it gives results".into());
+        }
+        // The results, from the last, into locals: host ones as they are,
+        // to be boxed, which needs the stack.
+        let mut held = Vec::with_capacity(binds.len());
+        for t in ext.sig.results.iter().rev() {
+            let l = self.new_local(if *t == Ty::Host {
+                ValType::EXTERNREF
+            } else {
+                crate::val(t)
+            });
+            self.emit(I::LocalSet(l));
+            held.push((l, *t == Ty::Host));
+        }
+        held.reverse();
+        for (l, host) in held {
+            if host {
+                let b = self.new_host(hosts, l);
+                self.emit(I::LocalGet(b));
+            } else {
+                self.emit(I::LocalGet(l));
+            }
+        }
+        Ok(())
+    }
+
+    /// A box for the `externref` in local `x`, in a new local: one from the
+    /// free list, which has a slot, or a new one, with a new slot.
+    fn new_host(&mut self, hosts: crate::Hosts, x: u32) -> u32 {
+        let p = self.new_local(ValType::I32);
+        let fresh = |me: &mut Self| {
+            me.emit(I::I32Const(16));
+            me.emit(I::Call(me.cx.alloc));
+            me.emit(I::LocalSet(p));
+            me.emit(I::LocalGet(p));
+            me.emit(I::LocalGet(x));
+            me.emit(I::I32Const(1));
+            me.emit(I::TableGrow(hosts.table));
+            me.emit(store(Storage::I32, 8));
+        };
+        let Some(free) = hosts.free else {
+            fresh(self);
+            return p;
+        };
+        self.emit(I::GlobalGet(free));
+        self.emit(I::LocalTee(p));
+        self.emit(I::If(BlockType::Empty));
+        // From the free list: counted once again, and live.
+        self.emit(I::LocalGet(p));
+        self.emit(load(Storage::I32, 4));
+        self.emit(I::GlobalSet(free));
+        self.emit(I::LocalGet(p));
+        self.emit(I::I32Const(1));
+        self.emit(store(Storage::I32, 0));
+        self.emit(I::GlobalGet(crate::counts::LIVE));
+        self.emit(I::I32Const(1));
+        self.emit(I::I32Add);
+        self.emit(I::GlobalSet(crate::counts::LIVE));
+        self.emit(I::LocalGet(p));
+        self.emit(load(Storage::I32, 8));
+        self.emit(I::LocalGet(x));
+        self.emit(I::TableSet(hosts.table));
+        self.emit(I::Else);
+        fresh(self);
+        self.emit(I::End);
+        p
+    }
+
     fn alloc_const(&mut self, size: u32) -> u32 {
         let p = self.new_local(ValType::I32);
         if self.push_object(&[I::I32Const(size.next_multiple_of(8) as i32)], p) {

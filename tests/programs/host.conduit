@@ -1,0 +1,90 @@
+// Host values: `test.wrap` gives one that holds a number, which Conduit
+// can't look into, and `test.unwrap` gives the number back. In Wasm a host
+// value is an `externref` in a table, and Conduit holds the slot's box,
+// which fields, `any`s, closures and refs hold like any other object.
+
+#[link(emu)]
+extern wrap(i32) -> (host)
+#[link(emu)]
+extern unwrap(host) -> (i32)
+
+data Pair {
+  (host, host)
+}
+
+fn round_trip(%n: i32) -> (i32) {
+  let %h: host = call_extern wrap(%n)
+  let %r: i32 = call_extern unwrap(%h)
+  jump ret(%r)
+}
+
+// Two in a data object: `%a` * 10 + `%b`.
+fn pair(%a: i32, %b: i32) -> (i32) {
+  let %x: host = call_extern wrap(%a)
+  let %y: host = call_extern wrap(%b)
+  let %p: imm Pair = new Pair.0(%x, %y)
+  let %first: host = get Pair.0.0(%p)
+  let %second: host = get Pair.0.1(%p)
+  let %f: i32 = call_extern unwrap(%first)
+  let %s: i32 = call_extern unwrap(%second)
+  let %f10: i32 = mul(%f, 10i32)
+  let %r: i32 = add(%f10, %s)
+  jump ret(%r)
+}
+
+fn boxed(%n: i32) -> (i32) {
+  let %h: host = call_extern wrap(%n)
+  let %a: imm any = box[host](%h)
+  let %back: host = unbox[host](%a)
+  let %r: i32 = call_extern unwrap(%back)
+  jump ret(%r)
+}
+
+fn read(%h: host) -> (i32) {
+  let %r: i32 = call_extern unwrap(%h)
+  jump ret(%r)
+}
+
+// A host value is `imm`, so an `imm` closure can capture it.
+fn captured(%n: i32) -> (i32) {
+  let %h: host = call_extern wrap(%n)
+  let %c: imm fn() -> (i32) = closure read(%h)
+  let %r: i32 = apply(%c)
+  jump ret(%r)
+}
+
+// The ref holds the first, then the second, which is what it gives.
+fn in_ref(%a: i32, %b: i32) -> (i32) {
+  let %x: host = call_extern wrap(%a)
+  let %y: host = call_extern wrap(%b)
+  let %cell: ref host = ref_new(%x)
+  let = ref_set(%cell, %y)
+  let %got: host = ref_get(%cell)
+  let %r: i32 = call_extern unwrap(%got)
+  jump ret(%r)
+}
+
+// 0 + 1 + .. + (`%n` - 1), each through a host value of its own, which is
+// dropped before the next: with counts, they all share one slot.
+fn many(%n: i32) -> (i32) {
+  join rec again(%i: i32, %sum: i32) =
+    let %more: i32 = lt.s(%i, %n)
+    case %more {
+      0 => jump ret(%sum)
+      _ =>
+        let %h: host = call_extern wrap(%i)
+        let %v: i32 = call_extern unwrap(%h)
+        let %sum1: i32 = add(%sum, %v)
+        let %i1: i32 = add(%i, 1i32)
+        jump again(%i1, %sum1)
+    }
+  in jump again(0i32, 0i32)
+}
+
+//# run round_trip(42i32) == 42i32
+//# run round_trip(-7i32) == -7i32
+//# run pair(3i32, 4i32) == 34i32
+//# run boxed(9i32) == 9i32
+//# run captured(5i32) == 5i32
+//# run in_ref(1i32, 2i32) == 2i32
+//# run many(1000i32) == 499500i32

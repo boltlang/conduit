@@ -216,6 +216,31 @@ pub(crate) struct Cx<'m> {
     pub stack_objects: std::collections::HashSet<*const conduit_ir::Let>,
     /// The free lists of continuations' table slots, when counting.
     pub slot_lists: Option<SlotLists>,
+    /// The table of host values, if the module has any.
+    pub hosts: Option<Hosts>,
+}
+
+/// Host values, `Ty::Host`: each is a box, an object of 16 bytes holding
+/// the number of its slot in a table of `externref`s at 8, which only an
+/// extern's arguments and results see. So a host value is an `i32` like
+/// any other object, which fields, closures and `any`s hold as they are,
+/// and which is counted as an object. A box whose count gets to 0 clears
+/// its slot, so the host can collect what it held, and goes on a free list,
+/// linked at 4, which the next host value takes from, keeping its slot.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Hosts {
+    pub table: u32,
+    /// The global holding the free list, when counting.
+    pub free: Option<u32>,
+}
+
+/// What a value of type `ty` is in an import's signature: a host value is
+/// an `externref` there, and everywhere else the slot's box.
+fn import_val(ty: &Ty) -> ValType {
+    match ty {
+        Ty::Host => ValType::EXTERNREF,
+        ty => val(ty),
+    }
 }
 
 /// The functions, table slots and tables of a handler that switches
@@ -611,6 +636,24 @@ pub fn emit_module_with(m: &Module, options: &Options) -> Result<Vec<u8>, Error>
                 ),
             });
         };
+        let sig = m.funcs.get(&f).map(|f| (&f.params, &f.results));
+        let takes_host = sig.is_some_and(|(params, results)| {
+            let f = &m.funcs[&f];
+            params
+                .iter()
+                .map(|v| f.var_ty(*v))
+                .chain(results)
+                .any(|t| *t == Ty::Host)
+        });
+        if takes_host {
+            return Err(Error {
+                item: Item::Func(f),
+                message: format!(
+                    "can't export `{name}`, which takes or gives a host value: only externs can, \
+                     for now"
+                ),
+            });
+        }
         exported.push((f, &**name));
     }
     let exports: &[(FuncId, &str)] = &exported;
@@ -696,6 +739,7 @@ pub fn emit_module_with(m: &Module, options: &Options) -> Result<Vec<u8>, Error>
         stack: None,
         stack_objects: Default::default(),
         slot_lists: None,
+        hosts: None,
     };
     if options.counts {
         cx.rt = Some(counts::Runtime::new(m, cx.alloc + 1, options.cycles));
@@ -766,6 +810,30 @@ pub fn emit_module_with(m: &Module, options: &Options) -> Result<Vec<u8>, Error>
             heads: (next + 1..next + 1 + tables as u32).collect(),
         });
     }
+    // The table of host values, after the continuations', and its free
+    // list after the other globals.
+    let uses_hosts = m.externs.values().any(|e| {
+        e.sig
+            .params
+            .iter()
+            .chain(&e.sig.results)
+            .any(|t| *t == Ty::Host)
+    }) || cx
+        .rt
+        .as_ref()
+        .is_some_and(|rt| rt.keys.contains(&counts::DropKey::Host));
+    if uses_hosts {
+        let conts: usize = cx.switches.values().map(|sw| sw.conts.len()).sum();
+        let free = cx.rt.is_some().then(|| match (&cx.slot_lists, cx.stack) {
+            (Some(lists), _) => lists.spare + 1 + lists.heads.len() as u32,
+            (None, Some(stack)) => stack.free + 1,
+            (None, None) => 9,
+        });
+        cx.hosts = Some(Hosts {
+            table: 1 + conts as u32,
+            free,
+        });
+    }
     let data = data[CONST_BASE as usize..].to_vec();
 
     let mut imports = Vec::new();
@@ -783,8 +851,8 @@ pub fn emit_module_with(m: &Module, options: &Options) -> Result<Vec<u8>, Error>
         };
         let sig = match ext.abi {
             Abi::Conduit => FnSig {
-                params: ext.sig.params.iter().map(val).collect(),
-                results: ext.sig.results.iter().map(val).collect(),
+                params: ext.sig.params.iter().map(import_val).collect(),
+                results: ext.sig.results.iter().map(import_val).collect(),
             },
             Abi::Flat => flat_sig(ext),
         };
@@ -1141,6 +1209,16 @@ pub fn emit_module_with(m: &Module, options: &Options) -> Result<Vec<u8>, Error>
                 shared: false,
             });
         }
+        if let Some(hosts) = cx.hosts {
+            debug_assert_eq!(hosts.table as usize, 1 + cont_tables.len());
+            tables.table(TableType {
+                element_type: RefType::EXTERNREF,
+                table64: false,
+                minimum: 0,
+                maximum: None,
+                shared: false,
+            });
+        }
         module.section(&tables);
     }
     let pages = u64::from(heap_base.div_ceil(65536)).max(1);
@@ -1185,6 +1263,10 @@ pub fn emit_module_with(m: &Module, options: &Options) -> Result<Vec<u8>, Error>
     if let Some(lists) = &cx.slot_lists {
         debug_assert_eq!(lists.spare as usize, inits.len());
         inits.extend(std::iter::repeat_n(0, 1 + lists.heads.len()));
+    }
+    if let Some(free) = cx.hosts.and_then(|h| h.free) {
+        debug_assert_eq!(free as usize, inits.len());
+        inits.push(0);
     }
     for init in inits {
         globals.global(

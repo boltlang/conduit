@@ -3,7 +3,7 @@
 //! and turning literals into Wasm values and back.
 
 use conduit_ir::{FuncId, Lit, Module, Ty};
-use wasmtime::{Caller, Engine, Instance, Linker, Memory, Store, Val};
+use wasmtime::{Caller, Engine, ExternRef, Instance, Linker, Memory, Rooted, Store, Val};
 
 use crate::Outcome;
 
@@ -22,6 +22,29 @@ pub fn linker(engine: &Engine) -> Result<Linker<()>, String> {
     let e = |e: wasmtime::Error| e.to_string();
     linker
         .func_wrap("test", "double", |n: i32| n.wrapping_mul(2))
+        .map_err(e)?;
+    // A host value that holds a number, and the number back.
+    linker
+        .func_wrap(
+            "test",
+            "wrap",
+            |mut c: Caller<'_, ()>, n: i32| -> wasmtime::Result<Option<Rooted<ExternRef>>> {
+                Ok(Some(ExternRef::new(&mut c, n)?))
+            },
+        )
+        .map_err(e)?;
+    linker
+        .func_wrap(
+            "test",
+            "unwrap",
+            |c: Caller<'_, ()>, r: Option<Rooted<ExternRef>>| -> wasmtime::Result<i32> {
+                let r = r.ok_or_else(|| wasmtime::Error::msg("unwrap of a null externref"))?;
+                let data = r.data(&c)?;
+                data.and_then(|d| d.downcast_ref::<i32>())
+                    .copied()
+                    .ok_or_else(|| wasmtime::Error::msg("unwrap of an externref that isn't wrap's"))
+            },
+        )
         .map_err(e)?;
     // The flat-ABI ones, which take addresses into the module's memory.
     linker

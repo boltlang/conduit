@@ -172,6 +172,7 @@ pub enum Ty {
     Cont(Box<Sig>),               // one-shot continuation captured by a handler
     Ref(Box<Ty>),                 // mutable cell holding one value: always Mut
     Any(Mutability),              // a boxed value of any type: see "Polymorphism"
+    Host,                         // a value of the host, like a JS object: see below
     Reuse(CtorId),                // a reuse token: see "Reference counts"
 }
 
@@ -202,6 +203,17 @@ a wider one extends as its sign says: `convert.u[i32](255i8)` is `255i32`,
 `convert.s[i32](255i8)` is `-1i32`. Literals can be written either way:
 `255i8` is `-1i8`. `case` tags are read as signed, so a `case` on an `i8`
 has tags from `-128` to `127`.
+
+`Host` is a value of the host, like a JavaScript object or string when
+the target is Wasm in a browser, a DOM node among them. Conduit can't
+look into one: it only holds it, in variables, fields, closures, refs and
+`any`s, and passes it to externs, which is where host values come from.
+It's an object, so it's counted, and once nothing refers to one the host
+can collect what it holds. It's `Imm`, since nothing Conduit does can
+change it, though the host's own code may, as an extern call may change
+anything. Each backend picks how it holds one: the Wasm backend as a slot
+in a table of `externref`s (see "Operations per target"), the evaluator as
+a number its host gives.
 
 A tuple or struct is a `DataDecl` with one constructor. `Bool` and
 field-less enums are `I32`. Unit is zero values and `!` is zero results, so
@@ -887,7 +899,8 @@ let %3: imm fn(i32) -> (i32) does Effect20 = closure fn2()
   row has no effect parameters, since externs aren't generic.
 - **An extern's ABI** says how a backend passes its arguments and
   results. By default it's how the backend represents values: an object
-  is its address. With `#[abi(flat)]`, it's how C compilers for wasm32 pass
+  is its address, and a `host` value is the host's own reference, an
+  `externref` in Wasm. With `#[abi(flat)]`, it's how C compilers for wasm32 pass
   them, for WASI and other C-like hosts. Only scalars, arrays of scalars
   and arrays of `[i8]` can be passed, and only scalars given back:
   - a scalar is itself, an `i8` or `i16` zero-extended;
@@ -1376,6 +1389,17 @@ exception handling, both part of Wasm 3.0.
   the handler's frame and its shadow stack segment when it's freed
   unused. The module exports `conduit_live`, the number of
   objects not yet freed.
+- **Host values** are boxes of 16 bytes, counted like other objects, that
+  hold the number of a slot in a table of `externref`s. So a `host` is an
+  `i32` like any other object, wherever it's held. An extern call gives
+  its host arguments as `table.get` of their slots, and puts each host
+  result in a box: one from a free list of boxes, which has a slot
+  already, or a new one, with a slot that `table.grow` adds. A box whose
+  count gets to 0 sets its slot to null, so the JS garbage collector can
+  collect what it held, and goes on the free list. The table never
+  shrinks, but its slots are reused, so it's as big as the most host
+  values alive at once. Without counts, nothing is freed, slots neither.
+  An exported function can't take or give a host value yet.
 - With `Options::cycles` too, cycles are collected by trial deletion.
   The header's count is then 28 bits, with the collector's color and a
   "buffered" bit above it, and the sign bit for immortal. A `drop` that
@@ -1407,6 +1431,7 @@ Status:
 | `Call` | `call` | ✅ |
 | `Call` in tail position | `return_call` | ✅ (tail calls, Wasm 3.0) |
 | `CallExtern` | `call` of an import | ✅ |
+| `CallExtern` with `host` values | `call`, with `table.get` of each host argument's slot and a box for each host result | ✅ |
 | `CallExtern` of an `#[abi(flat)]` extern | `call`, with addresses and lengths for arrays, an iovec list and out-parameters on the shadow stack | ✅ |
 | `Closure` | allocate, store the wrapper's table slot and the captures | ✅ |
 | `Apply` | `call_indirect` | ✅ |
@@ -1568,7 +1593,8 @@ fn fn1(%0: i32) -> (i32) {
 ```
 
 - **Types** are written as the verifier prints them: `i32`, `mut data10`,
-  `imm [i32]`, `ro fn(i32) -> ()`, `cont() -> ()`, `ref i32`, `imm any`.
+  `imm [i32]`, `ro fn(i32) -> ()`, `cont() -> ()`, `ref i32`, `imm any`,
+  `host`.
   A closure or continuation type with effects has them after its
   results, `imm fn() -> (i32) does effect20 + effect21`, and so does a
   function, `fn fn1() -> (i32) does effect20 {`, and a handler,
@@ -1644,6 +1670,10 @@ doesn't need a deep stack.
   continuation, and `resume` moves them back. `discontinue` moves them
   back too, and then performs in the frame that was waiting. A second use
   finds the frames gone, which is an error (rule 7).
+- **Host values** are objects too, which hold the number their host gave
+  them, so they're counted, and leaks of them are found, like other
+  objects'. A host function sees `Value::Host(n)` instead, both as an
+  argument and as what it gives.
 - **Objects know their mutability.** Every object that can be `Imm` or
   `Mut` carries an "is mut" flag. A write to an `Imm` object is an error,
   which can only happen if an optimization broke the mutability rules.

@@ -1,0 +1,14 @@
+// An exported function can't take or give a host value yet: the host
+// would call it with an `externref`, which needs a box at the export, as
+// an extern's result gets one.
+
+#[link(emu)]
+extern unwrap(host) -> (i32)
+
+#[export(wasm, name = "read")]
+fn read(%h: host) -> (i32) {
+  let %r: i32 = call_extern unwrap(%h)
+  jump ret(%r)
+}
+
+//# wasm-error: can't export `read`, which takes or gives a host value

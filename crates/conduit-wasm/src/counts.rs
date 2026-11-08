@@ -116,6 +116,10 @@ pub(crate) enum DropKey {
     /// it, found in the table from its wrapper's slot (see `switch.rs`).
     Cont,
     Any,
+    /// A box of a host value: its slot in the table of `externref`s (see
+    /// [`Hosts`](crate::Hosts)). It holds nothing that's counted, so it's
+    /// never in a cycle.
+    Host,
 }
 
 /// How a value of type `ty` is dropped, or `None` if it isn't counted.
@@ -130,6 +134,7 @@ pub(crate) fn key_of(ty: &Ty) -> Option<DropKey> {
         Ty::Ref(t) => DropKey::Ref(Storage::of(t), key_of(t).map(Box::new), is_imm(t)),
         Ty::Fn(..) => DropKey::Closure,
         Ty::Any(_) => DropKey::Any,
+        Ty::Host => DropKey::Host,
     })
 }
 
@@ -238,7 +243,7 @@ impl Runtime {
                 DropKey::Array(_, Some(e), false) | DropKey::Ref(_, Some(e), false) => {
                     vec![rt.index[e.as_ref()] as usize]
                 }
-                DropKey::Array(..) | DropKey::Ref(..) => Vec::new(),
+                DropKey::Array(..) | DropKey::Ref(..) | DropKey::Host => Vec::new(),
                 DropKey::Closure | DropKey::Cont | DropKey::Any => (0..n).collect(),
             })
             .collect();
@@ -1044,6 +1049,7 @@ impl Runtime {
                     table_index: 0,
                 },
             ]),
+            DropKey::Host => code.extend(recycle_host(cx, p)),
             DropKey::Any => {
                 let (kind, v) = (2, 3);
                 locals.extend([ValType::I32, ValType::I32]);
@@ -1119,6 +1125,7 @@ impl Runtime {
             // A closure's size is its wrapper's to know, and nothing frees
             // one without dropping it, nor a continuation.
             DropKey::Closure | DropKey::Cont => code.push(I::Unreachable),
+            DropKey::Host => code.extend(recycle_host(cx, p)),
         }
         code.push(I::End);
         Body {
@@ -1391,6 +1398,18 @@ impl Runtime {
                     table_index: 0,
                 },
             ]),
+            // It's never white, since it's never in a cycle, but if the
+            // collector frees it, its slot goes too.
+            DropKey::Host => {
+                code.extend([
+                    I::LocalGet(op),
+                    I::I32Const(OP_WHITE),
+                    I::I32GeU,
+                    I::If(BlockType::Empty),
+                ]);
+                code.extend(recycle_host(cx, p));
+                code.push(I::End);
+            }
             DropKey::Any => {
                 code.extend(free_only.clone());
                 code.extend([
@@ -1757,4 +1776,30 @@ pub(crate) fn lower_alloc(heads: u32) -> Body {
         locals: vec![ValType::I32, ValType::I32, ValType::I32],
         code,
     }
+}
+
+/// Lets go of the host value of the box in local `p`, whose count is 0:
+/// clears its slot, so the host can collect what it held, and puts the box
+/// on the free list, slot and all, for the next host value. Its memory
+/// stays a box, so it no longer counts as live.
+fn recycle_host(cx: &Cx<'_>, p: u32) -> Vec<I<'static>> {
+    let Some(hosts) = &cx.hosts else {
+        return vec![I::Unreachable];
+    };
+    let free = hosts.free.expect("a free list of host boxes, with counts");
+    vec![
+        I::LocalGet(p),
+        load(Storage::I32, 8),
+        I::RefNull(wasm_encoder::HeapType::EXTERN),
+        I::TableSet(hosts.table),
+        I::LocalGet(p),
+        I::GlobalGet(free),
+        store(Storage::I32, 4),
+        I::LocalGet(p),
+        I::GlobalSet(free),
+        I::GlobalGet(LIVE),
+        I::I32Const(1),
+        I::I32Sub,
+        I::GlobalSet(LIVE),
+    ]
 }

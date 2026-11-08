@@ -820,6 +820,7 @@ impl Parser {
             "cont" => Ty::Cont(Box::new(self.sig()?)),
             "ref" => Ty::Ref(Box::new(self.ty()?)),
             "reuse" => Ty::Reuse(self.ctor()?),
+            "host" => Ty::Host,
             m if matches!(m, "imm" | "mut" | "ro" | "inherit") || m.starts_with('\'') => {
                 self.i -= 1;
                 let m = self.mutability()?;

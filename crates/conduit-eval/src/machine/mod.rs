@@ -631,12 +631,42 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                         decl.link.kind()
                     )));
                 };
+                // A host value is the host's number, both ways.
+                let mut args = args;
+                for (a, ty) in args.iter_mut().zip(&decl.sig.params) {
+                    if *ty == Ty::Host {
+                        *a = match self.object_ref(obj(*a)?)? {
+                            Object::Host(n) => Value::Host(*n),
+                            _ => return Err(unverified("a host argument that isn't one")),
+                        };
+                    }
+                }
                 let mut arrays = Arrays {
                     heap: &mut self.heap,
                 };
-                (self.host)
+                let mut results = (self.host)
                     .call(name, decl, &args, &mut arrays)
-                    .map_err(ErrorKind::from)?
+                    .map_err(ErrorKind::from)?;
+                if results.len() != decl.sig.results.len() {
+                    return Err(ErrorKind::Host(format!(
+                        "{name} gave {} results instead of {}",
+                        results.len(),
+                        decl.sig.results.len()
+                    )));
+                }
+                for (r, ty) in results.iter_mut().zip(&decl.sig.results) {
+                    match (*ty == Ty::Host, *r) {
+                        (true, Value::Host(n)) => *r = self.alloc(Object::Host(n)),
+                        (false, Value::Host(_)) | (true, _) => {
+                            return Err(ErrorKind::Host(format!(
+                                "{name} gave a {} result where its extern has a {ty}",
+                                if *ty == Ty::Host { "non-host" } else { "host" }
+                            )));
+                        }
+                        (false, _) => {}
+                    }
+                }
+                results
             }
             Op::Closure(f, margs, _) => {
                 let is_mut = self.binds_mut(binds)?;

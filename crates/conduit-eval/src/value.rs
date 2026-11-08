@@ -12,6 +12,10 @@ pub enum Value {
     F32(f32),
     F64(f64),
     Obj(ObjId),
+    /// A host value, as a host function sees one: its number, which the
+    /// host chose when it gave the value. In the machine, a value of type
+    /// `host` is an [`Object::Host`] instead, counted like other objects.
+    Host(u64),
     /// What `Undefined` gives, or an element of an array that
     /// `ArrayAlloc` made and nothing has set yet. Passing it on is fine,
     /// but using it is undefined behavior, which stops the machine. An
@@ -63,6 +67,8 @@ pub enum Object<'p> {
         value: Value,
     },
     Cont(Continuation<'p>),
+    /// A host value, by the number its host gave it.
+    Host(u64),
 }
 
 impl Object<'_> {
@@ -73,7 +79,7 @@ impl Object<'_> {
             Object::Array { elems, .. } => elems,
             Object::Ref(v) | Object::Any { value: v, .. } => std::slice::from_ref(v),
             Object::Closure { captures, .. } => captures,
-            Object::Cont(_) => &[],
+            Object::Cont(_) | Object::Host(_) => &[],
         }
     }
 }
