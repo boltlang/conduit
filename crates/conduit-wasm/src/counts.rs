@@ -6,7 +6,9 @@
 //! - **The header word** is the count, in bits 0 to 27, then the color of
 //!   trial deletion in bits 28 and 29, whether the object is buffered as a
 //!   possible root of a cycle in bit 30, and in bit 31, whether it's
-//!   immortal, as constants are, which counting skips.
+//!   immortal, as constants are, which counting skips. A count that
+//!   would pass its 28 bits saturates: the object turns immortal and
+//!   leaks, rather than being freed while it's still in use.
 //! - **Memory** comes back through `release`, onto a free list per size,
 //!   one for each multiple of 8 up to 256 bytes and one for bigger blocks,
 //!   whose heads are a table in memory after the constants. `alloc` takes
@@ -76,6 +78,9 @@ const BUFFER: u32 = 256;
 const COUNT: i32 = 0x0fff_ffff;
 const COLOR: i32 = 0x3000_0000;
 const BUFFERED: i32 = 0x4000_0000;
+/// The sign bit: the object is never counted, as constants and objects
+/// whose count saturated aren't.
+const IMMORTAL: i32 = i32::MIN;
 /// The count and whether it's immortal, without the collector's bits.
 const COUNTED: i32 = 0x8fff_ffffu32 as i32;
 
@@ -429,10 +434,34 @@ impl Runtime {
     /// (undefined) or immortal. It's black then, as trial deletion wants.
     fn change(&self, add: bool) -> Body {
         let (p, h) = (0, if add { 2 } else { 1 });
+        let n = if add { I::LocalGet(1) } else { I::I32Const(1) };
         let mut code = skip_uncounted(p, h);
-        code.extend([I::LocalGet(p), I::LocalGet(h)]);
-        code.push(if add { I::LocalGet(1) } else { I::I32Const(1) });
+        // A count that would pass its bits saturates: the object turns
+        // immortal, which every count skips, so it's never freed. It
+        // leaks, but nothing it holds is freed early. Its count bits stay
+        // set, so that the collector takes it out of the buffer without
+        // freeing it, and its color is black, as for any `dup`.
         code.extend([
+            I::LocalGet(h),
+            I::I32Const(COUNT),
+            I::I32And,
+            n.clone(),
+            I::I32Add,
+            I::I32Const(COUNT),
+            I::I32GtU,
+            I::If(BlockType::Empty),
+            I::LocalGet(p),
+            I::LocalGet(h),
+            I::I32Const(!COLOR),
+            I::I32And,
+            I::I32Const(COUNT | IMMORTAL),
+            I::I32Or,
+            store(Storage::I32, 0),
+            I::Return,
+            I::End,
+            I::LocalGet(p),
+            I::LocalGet(h),
+            n,
             I::I32Add,
             I::I32Const(!COLOR),
             I::I32And,

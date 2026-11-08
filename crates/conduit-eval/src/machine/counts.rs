@@ -4,6 +4,12 @@
 
 use super::*;
 
+/// The most a reference count can be: a `dup` past it makes the object
+/// immortal instead, so that it leaks rather than being freed while it's
+/// still in use. It's what fits in the 28 bits of a Wasm object's header,
+/// so that the evaluator and Wasm free the same objects.
+pub const MAX_COUNT: u32 = 0x0fff_ffff;
+
 impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
     /// An object's reference count.
     pub fn count(&self, id: ObjId) -> Option<Count> {
@@ -124,10 +130,16 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
             *color = Color::Black;
         }
         match self.counts.get_mut(id.0 as usize) {
-            Some(Count::Live(c)) => {
-                *c = c
-                    .checked_add(n)
-                    .ok_or_else(|| ErrorKind::Undefined("a reference count overflowed".into()))?;
+            Some(count @ Count::Live(_)) => {
+                let Count::Live(c) = *count else {
+                    unreachable!()
+                };
+                // Past the most a count can be, it saturates: the object is
+                // never freed, as in Wasm, whose header has 28 bits for it.
+                *count = match c.checked_add(n) {
+                    Some(sum) if sum <= MAX_COUNT => Count::Live(sum),
+                    _ => Count::Immortal,
+                };
                 Ok(())
             }
             Some(Count::Immortal) => Ok(()),

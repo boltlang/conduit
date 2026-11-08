@@ -15,7 +15,7 @@ use crate::value::{Continuation, ObjId, Object, Value};
 mod counts;
 mod cycles;
 
-pub use counts::{Count, Leaks, Stats};
+pub use counts::{Count, Leaks, MAX_COUNT, Stats};
 use cycles::Color;
 
 /// Provides the functions of [`Op::CallExtern`]: those of the externs

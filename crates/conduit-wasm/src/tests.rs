@@ -182,6 +182,55 @@ fn run_counted_in(src: &str, expected: i32, count: bool) {
     assert_eq!(live.get(&mut store).unwrap_i32(), 0);
 }
 
+/// A count that would pass the header's 28 bits saturates instead: the
+/// object turns immortal, and is never freed. `array_fill` puts 2^28 + 1
+/// references to `%p` in an array, one more than a count can hold. Dropping
+/// the array must leave `%p` alone, so the `new` after it can't take its
+/// memory: `%p` still holds 7, and the new object 9. The array takes 1 GiB.
+#[test]
+fn counts_saturate() {
+    let src = "data Cell {
+  (i32)
+}
+
+#[export(wasm)]
+fn main() -> (i32) {
+  let %p: imm Cell = new Cell.0(7i32)
+  let %a: imm [imm Cell] = array_fill(268435457i32, %p)
+  let %n: i32 = array_len(%a)
+  let %q: imm Cell = new Cell.0(9i32)
+  let %x: i32 = get Cell.0.0(%p)
+  let %y: i32 = get Cell.0.0(%q)
+  let %x100: i32 = mul(%x, 100i32)
+  let %r0: i32 = add(%x100, %y)
+  let %big: i32 = gt.s(%n, 268435456i32)
+  let %r: i32 = mul(%r0, %big)
+  jump ret(%r)
+}";
+    let mut m = text::parse(src).unwrap();
+    conduit_opt::ownership::insert_counts(&mut m).unwrap();
+    let options = crate::Options {
+        stack_switching: false,
+        counts: true,
+        cycles: true,
+        ..Default::default()
+    };
+    let bytes = crate::emit_module_with(&m, &options).unwrap();
+    let mut config = wasmtime::Config::new();
+    config.wasm_tail_call(true).wasm_exceptions(true);
+    let engine = wasmtime::Engine::new(&config).unwrap();
+    let module = wasmtime::Module::new(&engine, &bytes).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+    let f = instance
+        .get_typed_func::<(), i32>(&mut store, "main")
+        .unwrap();
+    assert_eq!(f.call(&mut store, ()).unwrap(), 709);
+    // `%p` is immortal, so it's left: only it.
+    let live = instance.get_global(&mut store, "conduit_live").unwrap();
+    assert_eq!(live.get(&mut store).unwrap_i32(), 1);
+}
+
 /// A ref that holds a box of itself, built 1000 times, is a cycle each
 /// time, which the collector frees.
 #[test]

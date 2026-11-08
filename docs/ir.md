@@ -535,6 +535,14 @@ both take one object: any value whose type isn't a scalar. Their effect
 is `Writes`, so passes keep them. Code without them is still valid; it
 just never frees.
 
+A count has a limit, 2^28 - 1, what fits in a Wasm object's header. A
+`Dup` past it **saturates**: the object becomes immortal, like a
+constant's, and nothing counts it again, so it's never freed. It leaks,
+but nothing is freed while it's still in use. Only an object with more
+than 268 million references at once can get there, like one that
+`array_fill` puts in every element of a big array. The evaluator
+saturates at the same count, so that both free the same objects.
+
 A new object has a count of 1, owned by the variable it binds. Each
 reference is owned by one variable, field, element, capture or frame,
 and an op either **takes** an argument's reference, moving it, or
