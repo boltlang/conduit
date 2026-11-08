@@ -58,6 +58,9 @@ fn runs(
     for run in p.runs(m)? {
         let mut machine = Machine::new(m, TestHost);
         machine.fuel = Some(FUEL);
+        if let Some(n) = p.max_frames() {
+            machine.max_frames = n;
+        }
         machine.counting = counting;
         // Cycles too, collected often, so that collections run in the
         // middle of the program.

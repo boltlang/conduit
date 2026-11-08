@@ -1,0 +1,130 @@
+// A scheduler of tasks that pause, like Bolt's `Async` (issue #34): each
+// clause puts a closure that resumes the task in a queue, and runs the next
+// one. Every resume and every call on the way is the last thing its
+// function does, so switching tasks over and over runs in constant stack:
+// the clause, `run_next` and the resuming closure are all gone by the time
+// the next task runs. `run_next` ends with a jump to a join point that only
+// returns, as a frontend makes for an `if`, which is still a tail call.
+effect Async {
+  () -> ()
+  (mut fn() -> () does Async) -> ()
+}
+
+// A queue of at most four closures, in a ring: the closures, where the
+// first is, and how many there are.
+data Queue {
+  (mut [mut fn() -> ()], i32, i32)
+}
+
+handler scheduler for Async env(mut Queue) ops(pause, fork) ret finished
+
+fn push(%q: mut Queue, %f: mut fn() -> ()) -> () {
+  let %items: mut [mut fn() -> ()] = get Queue.0.0(%q)
+  let %first: i32 = get Queue.0.1(%q)
+  let %len: i32 = get Queue.0.2(%q)
+  let %end: i32 = add(%first, %len)
+  let %at: i32 = and(%end, 3i32)
+  let = array_set(%items, %at, %f)
+  let %len1: i32 = add(%len, 1i32)
+  let = set Queue.0.2(%q, %len1)
+  jump ret()
+}
+
+fn pop(%q: mut Queue) -> (mut fn() -> ()) {
+  let %items: mut [mut fn() -> ()] = get Queue.0.0(%q)
+  let %first: i32 = get Queue.0.1(%q)
+  let %f: mut fn() -> () = array_get(%items, %first)
+  let %next: i32 = add(%first, 1i32)
+  let %first1: i32 = and(%next, 3i32)
+  let = set Queue.0.1(%q, %first1)
+  let %len: i32 = get Queue.0.2(%q)
+  let %len1: i32 = sub(%len, 1i32)
+  let = set Queue.0.2(%q, %len1)
+  jump ret(%f)
+}
+
+// Runs the next task, if there's one.
+fn run_next(%q: mut Queue) -> () {
+  join done() = jump ret()
+  in
+  let %len: i32 = get Queue.0.2(%q)
+  case %len {
+    0 => jump done()
+    _ =>
+      let %f: mut fn() -> () = call pop(%q)
+      let = apply(%f)
+      jump done()
+  }
+}
+
+fn resume_task(%k: cont() -> ()) -> () {
+  let = resume(%k)
+  jump ret()
+}
+
+fn pause(%q: mut Queue, %k: cont() -> ()) -> () {
+  let %later: mut fn() -> () = closure resume_task(%k)
+  let = call push(%q, %later)
+  let = call run_next(%q)
+  jump ret()
+}
+
+// Runs the new task now, under a scheduler of its own, and the one that
+// forked it later.
+fn fork(%q: mut Queue, %task: mut fn() -> () does Async, %k: cont() -> ()) -> () {
+  let %later: mut fn() -> () = closure resume_task(%k)
+  let = call push(%q, %later)
+  let = call run(%q, %task)
+  jump ret()
+}
+
+fn finished(%q: mut Queue) -> () {
+  let = call run_next(%q)
+  jump ret()
+}
+
+fn run(%q: mut Queue, %task: mut fn() -> () does Async) -> () {
+  let = handle scheduler(%q, %task)
+  jump ret()
+}
+
+// Adds 1 to `%count` `%n` times, pausing before each.
+fn task(%n: i32, %count: ref i32) -> () does Async {
+  join rec again(%i: i32) =
+    let %more: i32 = lt.s(%i, %n)
+    case %more {
+      0 => jump ret()
+      _ =>
+        let = perform Async.0()
+        let %c: i32 = ref_get(%count)
+        let %c1: i32 = add(%c, 1i32)
+        let = ref_set(%count, %c1)
+        let %i1: i32 = add(%i, 1i32)
+        jump again(%i1)
+    }
+  in jump again(0i32)
+}
+
+// Forks a task, then does the same itself.
+fn main(%n: i32, %count: ref i32) -> () does Async {
+  let %other: mut fn() -> () does Async = closure task(%n, %count)
+  let = perform Async.1(%other)
+  let = call task(%n, %count)
+  jump ret()
+}
+
+// Two tasks that each pause `%n` times: 2 * `%n` switches.
+fn switches(%n: i32) -> (i32) {
+  let %items: mut [mut fn() -> ()] = array_alloc(4i32)
+  let %q: mut Queue = new Queue.0(%items, 0i32, 0i32)
+  let %count: ref i32 = ref_new(0i32)
+  let %body: mut fn() -> () does Async = closure main(%n, %count)
+  let = call run(%q, %body)
+  let %r: i32 = ref_get(%count)
+  jump ret(%r)
+}
+
+//# run switches(0i32) == 0i32
+//# run switches(3i32) == 6i32
+//# run switches(30000i32) == 60000i32
+//# max-frames: 100

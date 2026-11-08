@@ -115,6 +115,7 @@ impl Flow {
                 }
             }
         }
+        let defs = conduit_ir::tail::join_defs(&f.body, f.labels);
         let mut escaping = Vec::new();
         for b in f.body.blocks() {
             for (i, l) in b.lets.iter().enumerate() {
@@ -123,7 +124,7 @@ impl Flow {
                 {
                     flow.union(*to, *from);
                 }
-                let tail = is_tail(b, i);
+                let tail = is_tail(b, i, &defs);
                 for (p, a) in l.args.iter().enumerate() {
                     if let Atom::Var(v) = a
                         && (tail || kept(&l.op, p, keeps))
@@ -178,16 +179,9 @@ impl Flow {
 
 /// Whether the `i`th `let` of `b` is in tail position, which the backend
 /// lowers as a tail call when it's a call: the last, with `b` returning
-/// just what it binds.
-fn is_tail(b: &Block, i: usize) -> bool {
-    let Tail::Jump { target, args, .. } = &b.tail else {
-        return false;
-    };
-    let l = &b.lets[i];
-    i + 1 == b.lets.len()
-        && *target == Label::RET
-        && args.len() == l.binds.len()
-        && args.iter().zip(&l.binds).all(|(a, v)| *a == Atom::Var(*v))
+/// just what it binds, as `conduit_ir::tail::returns` has it.
+fn is_tail(b: &Block, i: usize, defs: &[Option<&conduit_ir::JoinDef>]) -> bool {
+    i + 1 == b.lets.len() && conduit_ir::tail::returns(&b.lets[i].binds, &b.tail, defs)
 }
 
 /// Whether `op` may keep its `p`th argument after it's done: store it,

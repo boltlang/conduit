@@ -40,6 +40,8 @@ struct FuncCx<'a, 'm> {
     extra: Vec<ValType>,
     results: Vec<ValType>,
     labels: Vec<Option<Target>>,
+    /// The join definitions, by label, to tell which calls are tail calls.
+    defs: Vec<Option<&'m conduit_ir::JoinDef>>,
     depth: u32,
     code: Vec<I<'static>>,
     /// Whether the object of the `let` being lowered goes on the shadow
@@ -109,6 +111,7 @@ pub(crate) fn lower_func<'m>(cx: &mut Cx<'m>, f: &'m Func) -> Result<Body, Strin
         extra,
         results,
         labels: vec![None; f.labels.max(1) as usize],
+        defs: conduit_ir::tail::join_defs(&f.body, f.labels),
         depth: 0,
         code: Vec::new(),
         on_stack: false,
@@ -1873,18 +1876,10 @@ impl<'m> FuncCx<'_, 'm> {
 
     /// Whether a call bound by `binds`, followed by what's at `next` in
     /// `block`, can be a tail call: what follows returns exactly what the
-    /// call gives.
+    /// call gives, straight to `ret` or through join points that only pass
+    /// it on.
     fn is_tail(&mut self, binds: &[Var], block: &Block, next: usize) -> Result<bool, String> {
-        let Tail::Jump { target, args, .. } = &block.tail else {
-            return Ok(false);
-        };
-        if next != block.lets.len() {
-            return Ok(false);
-        }
-        if *target != Label::RET
-            || args.len() != binds.len()
-            || !args.iter().zip(binds).all(|(a, b)| *a == Atom::Var(*b))
-        {
+        if next != block.lets.len() || !conduit_ir::tail::returns(binds, &block.tail, &self.defs) {
             return Ok(false);
         }
         let mut tys = Vec::with_capacity(binds.len());

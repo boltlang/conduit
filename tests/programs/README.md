@@ -40,6 +40,7 @@ checks apply to that crate.
 | `//# opt: dce, copies` | The same, but after only those passes, in that order, each run until nothing changes. |
 | `//# counted` | The program counts its references by hand: the evaluator runs its `run` checks counting, and each run must free everything but its results. |
 | `//# counts` | The program with reuse and counts inserted and drops specialized matches `<name>.counts.conduit`. |
+| `//# max-frames: 100` | The evaluator runs each `run` check with at most that many frames, and stops with a stack overflow past them, instead of its default of 100000. A program that must run in constant stack, like a loop written as tail calls, checks it with a small limit. |
 | `//# bench` | What each `run` check does in the evaluator matches `<name>.bench`: steps, allocations, frees, the most objects live at once, count ops, reuse and cycle collections. A row for each way of compiling it, each adding one thing after the optimizer: no counts (`optimized`), `counts` with every parameter owned, `+borrows`, `+reuse`, `+specialized` drops, and `+cycles` collected. These are the same every time, so a pass that makes a program do more shows up as a diff. `bench/` has benchmarks from the Perceus paper's set. |
 
 Arguments and results are literals as the text format writes them: `5i32`,

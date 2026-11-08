@@ -36,11 +36,14 @@ impl Borrows {
 ///   know whom they call, and a caller from outside the module isn't
 ///   counted with the module, so they always give their arguments away.
 /// - A recursive tail call keeps being one: a call `f(.., y, ..)` whose
-///   results the caller returns, where `f` can call the caller back, makes
-///   `f`'s parameter owned if `y` is, since otherwise the caller would drop
-///   `y` after the call, and a loop written as tail calls would grow the
-///   stack. Other tail calls can lose that: one frame more is cheaper than
-///   counting in every call of `f`.
+///   results the caller returns (see `conduit_ir::tail`), where `f` can
+///   call the caller back, makes `f`'s parameter owned if `y` is, since
+///   otherwise the caller would drop `y` after the call, and a loop
+///   written as tail calls would grow the stack. Calling back includes
+///   through closures and handlers, as a scheduler's tasks and
+///   continuations do (see [`reaches`]). Other tail
+///   calls can lose that: one frame more is cheaper than counting in every
+///   call of `f`.
 pub fn borrows(m: &Module) -> Borrows {
     let mut always_owned: BTreeSet<FuncId> = BTreeSet::new();
     for f in m.funcs.values() {
@@ -70,6 +73,7 @@ pub fn borrows(m: &Module) -> Borrows {
         for (id, f) in &m.funcs {
             let index = |v: &Var| f.params.iter().position(|p| p == v);
             let all_lent = lent_vars(*id, f, &b);
+            let defs = conduit_ir::tail::join_defs(&f.body, f.labels);
             let lent = |v: &Var| index(v).is_some_and(|i| b.is_borrowed(*id, i));
             let give = |a: &Atom, owned: &mut Vec<(FuncId, usize)>| {
                 if let Atom::Var(v) = a
@@ -89,7 +93,7 @@ pub fn borrows(m: &Module) -> Borrows {
                     let last = n + 1 == block.lets.len();
                     if let Op::Call(g, ..) = l.op
                         && last
-                        && returns(&block.tail, &l.binds)
+                        && conduit_ir::tail::returns(&l.binds, &block.tail, &defs)
                         && reaches[&g].contains(id)
                     {
                         for (i, a) in l.args.iter().enumerate() {
@@ -151,17 +155,38 @@ pub(super) fn lent_vars(id: FuncId, f: &Func, b: &Borrows) -> Set {
     lent
 }
 
-/// The functions each function can call, directly or not.
+/// The functions each function can call, directly or not. An `apply` can
+/// call any function that's made into a closure, and the ops of handlers
+/// any clause: `perform` runs one, `resume` and `discontinue` run code that
+/// can perform, and `handle` runs a body that can, and a return clause.
 pub(super) fn reaches(m: &Module) -> BTreeMap<FuncId, BTreeSet<FuncId>> {
+    let mut closures = BTreeSet::new();
+    for f in m.funcs.values() {
+        each_let(&f.body, &mut |l| {
+            if let Op::Closure(g, ..) = l.op {
+                closures.insert(g);
+            }
+        });
+    }
+    let mut clauses: BTreeSet<FuncId> = closures.clone();
+    for h in m.handlers.values() {
+        clauses.extend(h.clauses().map(|(_, _, c)| c));
+        clauses.insert(h.ret);
+    }
     let calls: BTreeMap<FuncId, BTreeSet<FuncId>> = m
         .funcs
         .iter()
         .map(|(id, f)| {
             let mut callees = BTreeSet::new();
-            each_let(&f.body, &mut |l| {
-                if let Op::Call(g, ..) = l.op {
+            each_let(&f.body, &mut |l| match l.op {
+                Op::Call(g, ..) => {
                     callees.insert(g);
                 }
+                Op::Apply => callees.extend(closures.iter().copied()),
+                Op::Perform(..) | Op::Resume | Op::Discontinue(..) | Op::Handle(..) => {
+                    callees.extend(clauses.iter().copied());
+                }
+                _ => {}
             });
             (*id, callees)
         })
@@ -179,18 +204,6 @@ pub(super) fn reaches(m: &Module) -> BTreeMap<FuncId, BTreeSet<FuncId>> {
             (id, seen)
         })
         .collect()
-}
-
-/// Whether `tail` only returns `binds`.
-pub(super) fn returns(tail: &Tail, binds: &[Var]) -> bool {
-    match tail {
-        Tail::Jump {
-            target: Label::RET,
-            args,
-            ..
-        } => args.len() == binds.len() && args.iter().zip(binds).all(|(a, b)| *a == Atom::Var(*b)),
-        _ => false,
-    }
 }
 
 pub(super) fn each_let(b: &Block, f: &mut impl FnMut(&Let)) {

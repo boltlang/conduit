@@ -44,6 +44,10 @@ pub enum CheckKind {
     /// optimizer and with counts, matches `<name>.bench`: steps,
     /// allocations and so on, which are the same every time.
     Bench,
+    /// `//# max-frames: 100`: the evaluator stops each `run` check with a
+    /// stack overflow past that many frames, instead of its default, so a
+    /// test can show that a program runs in constant stack.
+    MaxFrames(usize),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -95,9 +99,13 @@ fn check(s: &str) -> Result<CheckKind, String> {
         "counted" => none(CheckKind::Counted),
         "counts" => none(CheckKind::Counts),
         "bench" => none(CheckKind::Bench),
+        "max-frames" => match rest.trim().parse() {
+            Ok(n) => Ok(CheckKind::MaxFrames(n)),
+            Err(_) => Err("`max-frames` needs a number after `:`, like `max-frames: 100`".into()),
+        },
         _ => Err(format!(
             "unknown check `{word}`: expected `run`, `verify-error`, `wasm-error`, \
-             `wasm-skip`, `wat`, `opt`, `counted`, `counts` or `bench`"
+             `wasm-skip`, `wat`, `opt`, `counted`, `counts`, `bench` or `max-frames`"
         )),
     }
 }

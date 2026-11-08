@@ -614,7 +614,15 @@ The verifier checks these rules, and the types of every op: see
 4. **Returning is jumping.** Every function body has the label `ret` in
    scope, whose parameters are the function's results. So return needs no
    tail of its own. A tail call is just `let r = call f(..); jump ret(r)`,
-   which a backend can recognize and emit as `return_call`.
+   which a backend can recognize and emit as `return_call`. A jump to a
+   join point that only passes its parameters on to `ret`, like the
+   `join j1(%x) = jump ret(%x)` a frontend makes for the value of an `if`,
+   counts too, through any number of them: `conduit_ir::tail::returns`
+   decides it, for the evaluator, the Wasm backend and counting alike.
+   Calls in tail position don't grow the stack, and neither do
+   `apply` and `resume` there, so a loop written as tail calls through closures
+   and continuations, like a scheduler that resumes tasks from a queue,
+   runs in constant stack (`tests/programs/handlers/scheduler.conduit`).
 5. **Field reads happen where they're written.** A `Case` on an ADT binds
    no fields. `Get(C, i)` on `x` is valid in an arm `C` of a case on `x`,
    after `x` is bound by `New(C)`, or when `x`'s type has a single

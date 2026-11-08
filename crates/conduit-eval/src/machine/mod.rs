@@ -552,7 +552,7 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
     /// wait for the `let`'s results, or, if the `let` only returns them,
     /// removes the function so the results go straight to its caller.
     fn wait_or_leave(&mut self, binds: &'p [Var], next: At<'p>) -> Step<()> {
-        if is_tail(binds, next) {
+        if is_tail(binds, next, &self.code()?.labels) {
             self.stack.pop();
         } else {
             self.code()?.waiting = Some((binds, next));
@@ -1109,18 +1109,10 @@ fn bind(code: &mut Code, vars: &[Var], values: Vec<Value>) -> Step<()> {
 }
 
 /// Whether what follows a `let`, at `next`, only returns what the `let`
-/// binds.
-fn is_tail(binds: &[Var], next: At) -> bool {
-    match &next.block.tail {
-        Tail::Jump {
-            target: Label::RET,
-            args,
-            ..
-        } if next.index == next.block.lets.len() => {
-            args.len() == binds.len() && args.iter().zip(binds).all(|(a, b)| *a == Atom::Var(*b))
-        }
-        _ => false,
-    }
+/// binds, straight to `ret` or through join points that only pass it on.
+fn is_tail(binds: &[Var], next: At, labels: &[Option<&JoinDef>]) -> bool {
+    next.index == next.block.lets.len()
+        && conduit_ir::tail::returns(binds, &next.block.tail, labels)
 }
 
 fn arg(args: &[Value], i: usize) -> Step<Value> {
@@ -1154,27 +1146,7 @@ fn out_of_bounds(index: usize, len: usize) -> ErrorKind {
 
 /// Finds every join definition of a function, without recursion.
 fn join_defs(f: &Func) -> Labels<'_> {
-    let mut table = vec![None; f.labels as usize];
-    let mut todo = vec![&f.body];
-    while let Some(block) = todo.pop() {
-        match &block.tail {
-            Tail::Join { defs, body, .. } => {
-                for def in defs {
-                    if let Some(slot) = table.get_mut(def.label.0 as usize) {
-                        *slot = Some(def);
-                    }
-                    todo.push(&def.body);
-                }
-                todo.push(body);
-            }
-            Tail::Case { arms, default, .. } => {
-                todo.extend(arms.iter().map(|arm| &arm.body));
-                todo.extend(default.as_deref());
-            }
-            Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
-        }
-    }
-    table.into()
+    conduit_ir::tail::join_defs(&f.body, f.labels).into()
 }
 
 /// `ty` with every row `Any`. Rows don't exist at run time, and a frame

@@ -124,6 +124,14 @@ impl Program {
         self.checks.iter().any(|c| f(&c.kind))
     }
 
+    /// The evaluator's frame limit that a `max-frames` check gives, if any.
+    pub fn max_frames(&self) -> Option<usize> {
+        self.checks.iter().find_map(|c| match c.kind {
+            CheckKind::MaxFrames(n) => Some(n),
+            _ => None,
+        })
+    }
+
     pub fn has_runs(&self) -> bool {
         self.has(|k| matches!(k, CheckKind::Run { .. }))
     }

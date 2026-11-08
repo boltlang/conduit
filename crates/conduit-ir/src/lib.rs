@@ -18,6 +18,7 @@ pub mod id;
 mod module;
 mod op;
 mod row;
+pub mod tail;
 mod term;
 pub mod text;
 mod ty;
