@@ -15,6 +15,9 @@ use std::process::Command;
 
 use conduit_ir::{Lit, Module, Ty};
 use conduit_llvm::Options;
+use conduit_llvm::ir::{
+    Call, CallConv, CastOp, Declare, FnBuilder, Global, Item, Label, Type, Value,
+};
 use conduit_test::{CheckKind, Outcome, Program, Run};
 
 fn main() {
@@ -80,8 +83,9 @@ fn test(p: &Program) -> Result<(), String> {
 fn check(p: &Program, m: &Module, when: &str, options: Options) -> Result<(), String> {
     let runs = p.runs(m)?;
     let counts = options.counts;
-    let mut text = conduit_llvm::emit_module_with(m, &options).map_err(|e| e.to_string())?;
-    text.push_str(&driver(m, &runs, counts)?);
+    let mut module = conduit_llvm::lower_module_with(m, &options).map_err(|e| e.to_string())?;
+    module.items.extend(driver(m, &runs, counts)?);
+    let text = module.to_string();
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("llvm");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let stem = format!(
@@ -164,88 +168,97 @@ fn evaluator_live(m: &Module, run: &Run<'_>, cycles: bool) -> Result<i64, String
 
 /// A C `main` that calls the function of run check `argv[1]` and prints
 /// the bits of what it gives, in hex.
-fn driver(m: &Module, runs: &[Run<'_>], counts: bool) -> Result<String, String> {
-    let mut s = String::from(
-        "\n@.fmt = private unnamed_addr constant [6 x i8] c\"%llx \\00\"\n\
-         declare i32 @printf(ptr, ...)\n\
-         declare i32 @atoi(ptr)\n\n\
-         define i32 @main(i32 %argc, ptr %argv) {\n\
-         entry:\n  \
-         %p = getelementptr ptr, ptr %argv, i64 1\n  \
-         %a = load ptr, ptr %p\n  \
-         %k = call i32 @atoi(ptr %a)\n",
-    );
-    let cases: Vec<String> = (0..runs.len())
-        .map(|i| format!("i32 {i}, label %c{i}"))
-        .collect();
-    s.push_str(&format!(
-        "  switch i32 %k, label %done [ {} ]\n",
-        cases.join(" ")
+fn driver(m: &Module, runs: &[Run<'_>], counts: bool) -> Result<Vec<Item>, String> {
+    let fmt = Value::global(".fmt");
+    let printf = |b: &mut FnBuilder, bits: Value| {
+        let call = Call {
+            variadic: Some(vec![Type::Ptr]),
+            ..Call::c(
+                Type::I32,
+                Value::global("printf"),
+                vec![Type::Ptr.val(&fmt), Type::I64.val(bits)],
+            )
+        };
+        b.call(call);
+    };
+    let params = vec![(Type::I32, "argc".into()), (Type::Ptr, "argv".into())];
+    let mut b = FnBuilder::new(CallConv::C, Type::I32, "main", params);
+    let argv = b.param(1);
+    let p = b.gep(Type::Ptr, argv, vec![Type::I64.val(1)]);
+    let a = b.load(Type::Ptr, p);
+    let k = b.call_value(Call::c(
+        Type::I32,
+        Value::global("atoi"),
+        vec![Type::Ptr.val(a)],
     ));
-    for (i, run) in runs.iter().enumerate() {
+    let labels: Vec<Label> = runs.iter().map(|_| b.new_block()).collect();
+    let done = b.new_block();
+    let cases = labels.iter().cloned().enumerate();
+    b.switch(
+        Type::I32.val(k),
+        &done,
+        cases.map(|(i, l)| (i as i64, l)).collect(),
+    );
+    for (run, label) in runs.iter().zip(&labels) {
+        b.start(label);
         let f = &m.funcs[&run.func];
         let ret = conduit_llvm::ret_ty(&f.results)?;
-        let args: Vec<String> = (f.params.iter().zip(run.args))
-            .map(|(v, a)| {
-                Ok(format!(
-                    "{} {}",
-                    conduit_llvm::ty(f.var_ty(*v))?,
-                    conduit_llvm::lit(a)
-                ))
-            })
+        let args = (f.params.iter().zip(run.args))
+            .map(|(v, a)| Ok(conduit_llvm::ty(f.var_ty(*v))?.val(conduit_llvm::lit(a))))
             .collect::<Result<_, String>>()?;
-        s.push_str(&format!("c{i}:\n"));
-        let call = format!(
-            "call tailcc {ret} {}({})",
+        let r = b.call(Call::tailcc(
+            ret.clone(),
             conduit_llvm::symbol(run.func),
-            args.join(", ")
-        );
-        if f.results.is_empty() {
-            s.push_str(&format!("  {call}\n"));
-        } else {
-            s.push_str(&format!("  %r{i} = {call}\n"));
-        }
+            args,
+        ));
         for (j, t) in f.results.iter().enumerate() {
+            let r = r.clone().expect("a call with results");
             let v = if f.results.len() == 1 {
-                format!("%r{i}")
+                r
             } else {
-                s.push_str(&format!("  %x{i}_{j} = extractvalue {ret} %r{i}, {j}\n"));
-                format!("%x{i}_{j}")
+                b.extract_value(ret.clone(), r, j as u32)
             };
-            let tt = conduit_llvm::ty(t)?;
             let bits = match t {
                 Ty::I64 => v,
-                Ty::F64 => {
-                    s.push_str(&format!("  %b{i}_{j} = bitcast double {v} to i64\n"));
-                    format!("%b{i}_{j}")
-                }
+                Ty::F64 => b.cast(CastOp::Bitcast, Type::Double, v, Type::I64),
                 Ty::F32 => {
-                    s.push_str(&format!("  %c{i}_{j} = bitcast float {v} to i32\n"));
-                    s.push_str(&format!("  %b{i}_{j} = zext i32 %c{i}_{j} to i64\n"));
-                    format!("%b{i}_{j}")
+                    let c = b.cast(CastOp::Bitcast, Type::Float, v, Type::I32);
+                    b.cast(CastOp::ZExt, Type::I32, c, Type::I64)
                 }
-                _ => {
-                    s.push_str(&format!("  %b{i}_{j} = zext {tt} {v} to i64\n"));
-                    format!("%b{i}_{j}")
-                }
+                _ => b.cast(CastOp::ZExt, conduit_llvm::ty(t)?, v, Type::I64),
             };
-            s.push_str(&format!(
-                "  call i32 (ptr, ...) @printf(ptr @.fmt, i64 {bits})\n"
-            ));
+            printf(&mut b, bits);
         }
         // Then how many objects are left live, once cycles are collected,
         // if they are.
         if counts {
-            s.push_str("  call void @conduit_collect()\n");
-            s.push_str(&format!("  %live{i} = load i64, ptr @conduit_live\n"));
-            s.push_str(&format!(
-                "  call i32 (ptr, ...) @printf(ptr @.fmt, i64 %live{i})\n"
+            b.call(Call::c(
+                Type::Void,
+                Value::global("conduit_collect"),
+                vec![],
             ));
+            let live = b.load(Type::I64, Value::global("conduit_live"));
+            printf(&mut b, live);
         }
-        s.push_str("  br label %done\n");
+        b.br(&done);
     }
-    s.push_str("done:\n  ret i32 0\n}\n");
-    Ok(s)
+    b.start(&done);
+    b.ret(Some(Type::I32.val(0)));
+    Ok(vec![
+        Global::constant(
+            ".fmt",
+            Type::Array(6, Box::new(Type::I8)),
+            Value::Bytes(b"%llx \0".to_vec()),
+        )
+        .into(),
+        Declare {
+            variadic: true,
+            ..Declare::new(Type::I32, "printf", vec![Type::Ptr])
+        }
+        .into(),
+        Declare::new(Type::I32, "atoi", vec![Type::Ptr]).into(),
+        b.finish().into(),
+    ])
 }
 
 /// The results the driver printed, as literals of their types.

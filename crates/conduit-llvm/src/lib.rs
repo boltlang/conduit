@@ -6,6 +6,8 @@
 //! what it doesn't handle yet: handlers, which lowering effects removes
 //! first, host values, and freeing memory. See `docs/llvm.md`.
 //!
+//! The lowering builds an [`ir::Module`], which printing makes text.
+//!
 //! - **Functions** are `tailcc`, LLVM's calling convention that guarantees
 //!   a call marked `tail` right before a `ret` is a tail call, as Conduit
 //!   promises (see `conduit_ir::tail`). Several results are a struct.
@@ -30,11 +32,15 @@
 //!   accesses out of bounds trap.
 
 mod counts;
+pub mod ir;
 
 use std::collections::BTreeSet;
-use std::fmt::Write;
 
 use counts::Kind;
+use ir::{
+    BinOp, Call, CallConv, CastOp, Declare, FloatPred, FnBuilder, Global, IntPred, Item, Type,
+    Typed, Value,
+};
 
 use conduit_ir::{
     Atom, Block, ConstId, ConstValue, CtorId, ExternId, Func, FuncId, JoinDef, Label, Link, Lit,
@@ -75,74 +81,77 @@ pub struct Options {
     pub cycles: bool,
 }
 
+fn fn_name(f: FuncId) -> String {
+    format!("fn{}", f.0)
+}
+
 /// The LLVM symbol of function `f`.
-pub fn symbol(f: FuncId) -> String {
-    format!("@fn{}", f.0)
+pub fn symbol(f: FuncId) -> Value {
+    Value::Global(fn_name(f))
 }
 
 /// The entry function of `f`'s closures with `n` captures.
-fn entry_symbol(f: FuncId, n: usize) -> String {
-    format!("@fn{}_entry{n}", f.0)
+fn entry_name(f: FuncId, n: usize) -> String {
+    format!("fn{}_entry{n}", f.0)
 }
 
 /// The function that frees a closure of `f` with `n` captures.
-fn free_symbol(f: FuncId, n: usize) -> String {
-    format!("@fn{}_free{n}", f.0)
+fn free_name(f: FuncId, n: usize) -> String {
+    format!("fn{}_free{n}", f.0)
 }
 
 /// The collector's visit function of a closure of `f` with `n` captures.
-fn visit_symbol(f: FuncId, n: usize) -> String {
-    format!("@fn{}_visit{n}", f.0)
+fn visit_name(f: FuncId, n: usize) -> String {
+    format!("fn{}_visit{n}", f.0)
 }
 
 /// What a closure of `f` with `n` captures holds at 16, with counts: its
 /// free and visit functions.
-fn desc_symbol(f: FuncId, n: usize) -> String {
-    format!("@fn{}_desc{n}", f.0)
+fn desc_name(f: FuncId, n: usize) -> String {
+    format!("fn{}_desc{n}", f.0)
 }
 
-fn const_symbol(c: ConstId) -> String {
-    format!("@const{}", c.0)
+fn const_name(c: ConstId) -> String {
+    format!("const{}", c.0)
 }
 
 /// The LLVM type of a value of type `ty`, if it's one this backend
 /// handles yet: an object is a `ptr`.
-pub fn ty(ty: &Ty) -> Result<&'static str, String> {
+pub fn ty(ty: &Ty) -> Result<Type, String> {
     Ok(match ty {
-        Ty::I8 => "i8",
-        Ty::I16 => "i16",
-        Ty::I32 => "i32",
-        Ty::I64 => "i64",
-        Ty::F32 => "float",
-        Ty::F64 => "double",
-        Ty::Data(..) | Ty::Array(..) | Ty::Fn(..) | Ty::Ref(_) | Ty::Any(_) | Ty::Reuse(_) => "ptr",
+        Ty::I8 => Type::I8,
+        Ty::I16 => Type::I16,
+        Ty::I32 => Type::I32,
+        Ty::I64 => Type::I64,
+        Ty::F32 => Type::Float,
+        Ty::F64 => Type::Double,
+        Ty::Data(..) | Ty::Array(..) | Ty::Fn(..) | Ty::Ref(_) | Ty::Any(_) | Ty::Reuse(_) => {
+            Type::Ptr
+        }
         other => return Err(format!("values of type {other} aren't supported yet")),
     })
 }
 
 /// What a function giving `results` returns: `void`, the one result, or a
 /// struct of them.
-pub fn ret_ty(results: &[Ty]) -> Result<String, String> {
+pub fn ret_ty(results: &[Ty]) -> Result<Type, String> {
     Ok(match results {
-        [] => "void".into(),
-        [one] => ty(one)?.into(),
-        many => {
-            let tys: Vec<&str> = many.iter().map(ty).collect::<Result<_, _>>()?;
-            format!("{{ {} }}", tys.join(", "))
-        }
+        [] => Type::Void,
+        [one] => ty(one)?,
+        many => Type::Struct(many.iter().map(ty).collect::<Result<_, _>>()?),
     })
 }
 
-/// A literal as LLVM writes it. Floats are hexadecimal, of the double
-/// that has the same value, which is how LLVM writes a `float` too.
-pub fn lit(l: &Lit) -> String {
+/// A literal as an LLVM constant. A float is the double that has the
+/// same value, which is how LLVM writes a `float` too.
+pub fn lit(l: &Lit) -> Value {
     match *l {
-        Lit::I8(n) => n.to_string(),
-        Lit::I16(n) => n.to_string(),
-        Lit::I32(n) => n.to_string(),
-        Lit::I64(n) => n.to_string(),
-        Lit::F32(bits) => format!("0x{:016X}", f64::from(f32::from_bits(bits)).to_bits()),
-        Lit::F64(bits) => format!("0x{bits:016X}"),
+        Lit::I8(n) => Value::Int(n.into()),
+        Lit::I16(n) => Value::Int(n.into()),
+        Lit::I32(n) => Value::Int(n.into()),
+        Lit::I64(n) => Value::Int(n),
+        Lit::F32(bits) => Value::Float(f64::from(f32::from_bits(bits)).to_bits()),
+        Lit::F64(bits) => Value::Float(bits),
     }
 }
 
@@ -195,6 +204,44 @@ fn closure_layout(captures: &[Ty]) -> (Vec<u64>, u64) {
     (offsets[2..].to_vec(), size)
 }
 
+/// Calls `tailcc` function `f`, which gives nothing.
+fn call_void(b: &mut FnBuilder, f: Value, args: Vec<Typed>) {
+    b.call(Call::tailcc(Type::Void, f, args));
+}
+
+/// Calls `llvm.trap`, which ends the block.
+fn trap(b: &mut FnBuilder) {
+    b.call(Call::c(Type::Void, Value::global("llvm.trap"), vec![]));
+    b.unreachable();
+}
+
+/// The `i64` offset of element `i`, an `i32` value, in an array of
+/// elements of `stride` bytes.
+fn elem_offset(b: &mut FnBuilder, i: impl Into<Value>, stride: u64) -> Value {
+    let w = b.cast(CastOp::ZExt, Type::I32, i, Type::I64);
+    let m = b.bin(BinOp::Mul, Type::I64, w, stride);
+    b.bin(BinOp::Add, Type::I64, m, 8)
+}
+
+/// A loop of `body` on each `i32` from 0 to `n`, an `i32` value, with the
+/// counter in a slot; after it, the builder is in the block after the loop.
+fn count_loop(b: &mut FnBuilder, n: &Value, body: impl FnOnce(&mut FnBuilder, &Value)) {
+    let i = b.alloca(Type::I32);
+    b.store(Type::I32, 0, &i);
+    let (head, next, done) = (b.new_block(), b.new_block(), b.new_block());
+    b.br(&head);
+    b.start(&head);
+    let k = b.load(Type::I32, &i);
+    let more = b.icmp(IntPred::Slt, Type::I32, &k, n);
+    b.cond_br(more, &next, &done);
+    b.start(&next);
+    body(b, &k);
+    let k1 = b.bin(BinOp::Add, Type::I32, &k, 1);
+    b.store(Type::I32, k1, &i);
+    b.br(&head);
+    b.start(&done);
+}
+
 /// The module as LLVM IR text, or what it has that isn't supported yet,
 /// with the default [`Options`]: nothing is freed.
 pub fn emit_module(m: &Module) -> Result<String, Error> {
@@ -202,10 +249,16 @@ pub fn emit_module(m: &Module) -> Result<String, Error> {
 }
 
 /// The module as LLVM IR text, or what it has that isn't supported yet.
-/// Each function `f` is `@fn<f>`, `tailcc`, and each `#[export(c, symbol
-/// = "s")]` gets a C-callable `@s` that calls it. Externs must be
-/// `#[link(c, symbol = "..")]`.
+/// See [`lower_module_with`].
 pub fn emit_module_with(m: &Module, options: &Options) -> Result<String, Error> {
+    lower_module_with(m, options).map(|m| m.to_string())
+}
+
+/// The module as LLVM IR, or what it has that isn't supported yet. Each
+/// function `f` is `@fn<f>`, `tailcc`, and each `#[export(c, symbol =
+/// "s")]` gets a C-callable `@s` that calls it. Externs must be
+/// `#[link(c, symbol = "..")]`.
+pub fn lower_module_with(m: &Module, options: &Options) -> Result<ir::Module, Error> {
     let err = |func: Option<FuncId>, message: String| Error { func, message };
     if !m.handlers.is_empty() {
         return Err(err(
@@ -213,18 +266,36 @@ pub fn emit_module_with(m: &Module, options: &Options) -> Result<String, Error> 
             "handlers aren't supported yet: lower effects first".into(),
         ));
     }
-    let mut out = String::new();
-    out.push_str("; Lowered from Conduit IR by conduit-llvm.\n");
-    out.push_str("declare void @llvm.trap() noreturn nounwind\n");
-    out.push_str("declare ptr @calloc(i64, i64)\n");
-    out.push_str("declare void @free(ptr)\n");
-    out.push_str("declare void @llvm.memmove.p0.p0.i64(ptr, ptr, i64, i1)\n");
-    for (t, s) in [("float", "f32"), ("double", "f64")] {
+    let mut out = ir::Module::default();
+    out.push(Item::Comment(
+        "Lowered from Conduit IR by conduit-llvm.".into(),
+    ));
+    out.push(Declare {
+        attrs: vec!["noreturn", "nounwind"],
+        ..Declare::new(Type::Void, "llvm.trap", vec![])
+    });
+    out.push(Declare::new(
+        Type::Ptr,
+        "calloc",
+        vec![Type::I64, Type::I64],
+    ));
+    out.push(Declare::new(Type::Void, "free", vec![Type::Ptr]));
+    out.push(Declare::new(
+        Type::Void,
+        "llvm.memmove.p0.p0.i64",
+        vec![Type::Ptr, Type::Ptr, Type::I64, Type::I1],
+    ));
+    for (t, s) in [(Type::Float, "f32"), (Type::Double, "f64")] {
         for op in ["fabs", "sqrt"] {
-            writeln!(out, "declare {t} @llvm.{op}.{s}({t})").unwrap();
+            out.push(Declare::new(
+                t.clone(),
+                format!("llvm.{op}.{s}"),
+                vec![t.clone()],
+            ));
         }
         for op in ["minimum", "maximum"] {
-            writeln!(out, "declare {t} @llvm.{op}.{s}({t}, {t})").unwrap();
+            let params = vec![t.clone(), t.clone()];
+            out.push(Declare::new(t.clone(), format!("llvm.{op}.{s}"), params));
         }
     }
     for (&id, ext) in &m.externs {
@@ -232,54 +303,50 @@ pub fn emit_module_with(m: &Module, options: &Options) -> Result<String, Error> 
             continue;
         };
         let e = |message| err(None, format!("extern {id}: {message}"));
-        let params: Vec<&str> = ext
-            .sig
-            .params
-            .iter()
+        let params = (ext.sig.params.iter())
             .map(ty)
             .collect::<Result<_, _>>()
             .map_err(e)?;
         let ret = ret_ty(&ext.sig.results).map_err(e)?;
-        writeln!(out, "declare {ret} @{symbol}({})", params.join(", ")).unwrap();
+        out.push(Declare::new(ret, symbol.clone(), params));
     }
-    let mut consts = String::new();
     let mut entries = BTreeSet::new();
     for (&c, decl) in &m.consts {
         if !matches!(decl.value, ConstValue::Lit(_)) {
-            let name = const_symbol(c);
-            const_global(m, &mut consts, &mut entries, &name, &decl.value, &decl.ty)
-                .map_err(|message| err(None, format!("constant {c}: {message}")))?;
+            const_global(
+                m,
+                &mut out,
+                &mut entries,
+                &const_name(c),
+                &decl.value,
+                &decl.ty,
+            )
+            .map_err(|message| err(None, format!("constant {c}: {message}")))?;
         }
     }
-    out.push_str(&consts);
     let mut kinds = BTreeSet::new();
     for (&id, f) in &m.funcs {
-        let mut l = Lower::new(m, id, f, options).map_err(|message| err(Some(id), message))?;
-        let text = l.func().map_err(|message| err(Some(id), message))?;
-        out.push_str(&text);
-        entries.extend(l.entries);
-        kinds.extend(l.kinds);
+        let lowered = Lower::new(m, id, f, options).and_then(Lower::func);
+        let (func, fn_entries, fn_kinds) = lowered.map_err(|message| err(Some(id), message))?;
+        out.push(func);
+        entries.extend(fn_entries);
+        kinds.extend(fn_kinds);
     }
     for &(f, n) in &entries {
-        out.push_str(&entry(m, f, n, options.counts).map_err(|message| err(Some(f), message))?);
+        out.push(entry(m, f, n, options.counts).map_err(|message| err(Some(f), message))?);
         if options.counts {
             let caps = &m.funcs[&f].sig().params[..n];
             let (offsets, _) = closure_layout(caps);
             kinds.extend(caps.iter().filter_map(Kind::of));
-            out.push_str(&counts::closure_free(&free_symbol(f, n), caps, &offsets));
+            out.push(counts::closure_free(free_name(f, n), caps, &offsets));
             let visit = if options.cycles {
-                out.push_str(&counts::closure_visit(&visit_symbol(f, n), caps, &offsets));
-                visit_symbol(f, n)
+                out.push(counts::closure_visit(visit_name(f, n), caps, &offsets));
+                Value::Global(visit_name(f, n))
             } else {
-                "null".into()
+                Value::Null
             };
-            writeln!(
-                out,
-                "{} = private unnamed_addr constant {{ ptr, ptr }} {{ ptr {}, ptr {visit} }}",
-                desc_symbol(f, n),
-                free_symbol(f, n)
-            )
-            .unwrap();
+            let free = Value::Global(free_name(f, n));
+            out.push(counts::descriptor(desc_name(f, n), free, visit));
         }
     }
     if options.counts {
@@ -287,9 +354,10 @@ pub fn emit_module_with(m: &Module, options: &Options) -> Result<String, Error> 
         if !entries.is_empty() {
             kinds.insert(Kind::Closure);
         }
-        out.push_str(&counts::runtime(options.cycles));
+        out.items.extend(counts::runtime(options.cycles));
         let drops = counts::drops(m, &kinds, options.cycles);
-        out.push_str(&drops.map_err(|message| err(None, message))?);
+        out.items
+            .extend(drops.map_err(|message| err(None, message))?);
     }
     for (&id, export) in &m.exports {
         let conduit_ir::Export::C { symbol } = export else {
@@ -298,21 +366,16 @@ pub fn emit_module_with(m: &Module, options: &Options) -> Result<String, Error> 
         let f = &m.funcs[&id];
         let e = |message| err(Some(id), message);
         let ret = ret_ty(&f.results).map_err(e)?;
-        let params: Vec<String> = (f.params.iter().enumerate())
-            .map(|(i, v)| ty(f.var_ty(*v)).map(|t| format!("{t} %p{i}")))
+        let params: Vec<(Type, String)> = (f.params.iter().enumerate())
+            .map(|(i, v)| ty(f.var_ty(*v)).map(|t| (t, format!("p{i}"))))
             .collect::<Result<_, _>>()
             .map_err(e)?;
-        let call = format!(
-            "call tailcc {ret} {}({})",
-            self::symbol(id),
-            params.join(", ")
-        );
-        writeln!(out, "\ndefine {ret} @{symbol}({}) {{", params.join(", ")).unwrap();
-        if ret == "void" {
-            writeln!(out, "  {call}\n  ret void\n}}").unwrap();
-        } else {
-            writeln!(out, "  %r = {call}\n  ret {ret} %r\n}}").unwrap();
-        }
+        let mut b = FnBuilder::new(CallConv::C, ret.clone(), symbol.clone(), params.clone());
+        let args = (0..params.len())
+            .map(|i| params[i].0.val(b.param(i)))
+            .collect();
+        b.return_call(Call::tailcc(ret, self::symbol(id), args));
+        out.push(b.finish());
     }
     Ok(out)
 }
@@ -323,7 +386,7 @@ pub fn emit_module_with(m: &Module, options: &Options) -> Result<String, Error> 
 /// entry function goes in `entries`.
 fn const_global(
     m: &Module,
-    out: &mut String,
+    out: &mut ir::Module,
     entries: &mut BTreeSet<(FuncId, usize)>,
     name: &str,
     value: &ConstValue,
@@ -331,7 +394,7 @@ fn const_global(
 ) -> Result<(), String> {
     // A closure's and an `any`'s pointers at 16 are never called, as
     // nothing frees an immortal object: they're null.
-    let (word, tys, values, after): (u64, Vec<Ty>, &[ConstValue], Vec<String>) = match (value, t) {
+    let (word, tys, values, after): (u64, Vec<Ty>, &[ConstValue], Vec<Typed>) = match (value, t) {
         (ConstValue::New(c, fields), _) => {
             (c.index as u64, ctor_fields(m, *c)?, fields, Vec::new())
         }
@@ -343,38 +406,38 @@ fn const_global(
         ),
         (ConstValue::Closure(f), _) => {
             entries.insert((*f, 0));
-            let entry = format!("ptr {}", entry_symbol(*f, 0));
-            (0, Vec::new(), &[], vec![entry, "ptr null".into()])
+            let entry = Type::Ptr.val(Value::Global(entry_name(*f, 0)));
+            (0, Vec::new(), &[], vec![entry, Type::Ptr.val(Value::Null)])
         }
         (ConstValue::Box(bt, inner), _) => (
             0,
             vec![bt.clone()],
             std::slice::from_ref(&**inner),
-            vec!["ptr null".into()],
+            vec![Type::Ptr.val(Value::Null)],
         ),
         _ => return Err(format!("a constant of type {t} isn't supported yet")),
     };
+    let padding = |n: u64| Typed(Type::Array(n, Box::new(Type::I8)), Value::Zero);
     let (offsets, total) = layout(&tys);
-    let mut parts = vec!["i32 -2147483648".to_string(), format!("i32 {word}")];
+    let mut parts = vec![Type::I32.val(i32::MIN), Type::I32.val(word)];
     let mut at: u64 = 8;
     for (k, ((v, ft), &o)) in values.iter().zip(&tys).zip(&offsets).enumerate() {
         if o > at {
-            parts.push(format!("[{} x i8] zeroinitializer", o - at));
+            parts.push(padding(o - at));
         }
-        let lt = ty(ft)?;
-        let text = match v {
-            ConstValue::Lit(l) => format!("{lt} {}", lit(l)),
+        let value = match v {
+            ConstValue::Lit(l) => lit(l),
             ConstValue::Const(c) => match &m.consts.get(c).ok_or("an unknown constant")?.value {
-                ConstValue::Lit(l) => format!("{lt} {}", lit(l)),
-                _ => format!("ptr {}", const_symbol(*c)),
+                ConstValue::Lit(l) => lit(l),
+                _ => Value::Global(const_name(*c)),
             },
             inner => {
                 let sub = format!("{name}_{k}");
                 const_global(m, out, entries, &sub, inner, ft)?;
-                format!("ptr {sub}")
+                Value::Global(sub)
             }
         };
-        parts.push(text);
+        parts.push(ty(ft)?.val(value));
         at = o + size(ft);
     }
     // After the fields, up to 16 for an `any`'s.
@@ -384,29 +447,14 @@ fn const_global(
         total.max(at.next_multiple_of(8))
     };
     if total > at {
-        parts.push(format!("[{} x i8] zeroinitializer", total - at));
+        parts.push(padding(total - at));
     }
     parts.extend(after);
-    let tys: Vec<&str> = parts
-        .iter()
-        .map(|p| p.rsplit_once(' ').map_or("", |(t, _)| t))
-        .collect();
-    // `[n x i8] zeroinitializer` splits at its last space too.
-    let tys: Vec<String> = parts
-        .iter()
-        .zip(tys)
-        .map(|(p, t)| match p.strip_suffix(" zeroinitializer") {
-            Some(arr) => arr.to_string(),
-            None => t.to_string(),
-        })
-        .collect();
-    writeln!(
-        out,
-        "{name} = private unnamed_addr constant <{{ {} }}> <{{ {} }}>, align 8",
-        tys.join(", "),
-        parts.join(", ")
-    )
-    .unwrap();
+    let tys = parts.iter().map(|p| p.0.clone()).collect();
+    out.push(Global {
+        align: Some(8),
+        ..Global::constant(name, Type::Packed(tys), Value::Packed(parts))
+    });
     Ok(())
 }
 
@@ -420,62 +468,60 @@ fn ctor_fields(m: &Module, c: CtorId) -> Result<Vec<Ty>, String> {
 
 /// The entry function of `f`'s closures with `n` captures: it reads them
 /// out of the closure and calls `f` with them, then the arguments.
-fn entry(m: &Module, f: FuncId, n: usize, count: bool) -> Result<String, String> {
+fn entry(m: &Module, f: FuncId, n: usize, count: bool) -> Result<ir::Function, String> {
     let func = &m.funcs[&f];
     let sig = func.sig();
     let ret = ret_ty(&sig.results)?;
     let (offsets, _) = closure_layout(&sig.params[..n]);
-    let mut s = String::new();
-    let rest: Vec<String> = (sig.params[n..].iter().enumerate())
-        .map(|(i, t)| ty(t).map(|t| format!("{t} %p{i}")))
-        .collect::<Result<_, _>>()?;
-    let mut params = vec!["ptr %c".to_string()];
-    params.extend(rest.iter().cloned());
-    writeln!(
-        s,
-        "\ndefine tailcc {ret} {}({}) {{",
-        entry_symbol(f, n),
-        params.join(", ")
-    )
-    .unwrap();
+    let mut params = vec![(Type::Ptr, "c".to_string())];
+    for (i, t) in sig.params[n..].iter().enumerate() {
+        params.push((ty(t)?, format!("p{i}")));
+    }
+    let mut b = FnBuilder::new(
+        CallConv::Tail,
+        ret.clone(),
+        entry_name(f, n),
+        params.clone(),
+    );
+    let c = b.param(0);
     let mut args = Vec::new();
-    for (j, (t, o)) in sig.params[..n].iter().zip(&offsets).enumerate() {
+    for (t, &o) in sig.params[..n].iter().zip(&offsets) {
         let lt = ty(t)?;
-        writeln!(s, "  %q{j} = getelementptr i8, ptr %c, i64 {o}").unwrap();
-        writeln!(s, "  %k{j} = load {lt}, ptr %q{j}").unwrap();
+        let k = b.load_at(lt.clone(), &c, o);
         // `apply` takes the closure, and the function owns its captures:
         // each gets a count, and the closure is dropped.
         if count && Kind::of(t).is_some() {
-            writeln!(s, "  call tailcc void @conduit_dup(ptr %k{j})").unwrap();
+            call_void(
+                &mut b,
+                Value::global("conduit_dup"),
+                vec![Type::Ptr.val(&k)],
+            );
         }
-        args.push(format!("{lt} %k{j}"));
+        args.push(lt.val(k));
     }
     if count {
-        writeln!(s, "  call tailcc void {}(ptr %c)", Kind::Closure.drop_fn()).unwrap();
+        call_void(&mut b, Kind::Closure.drop_fn(), vec![Type::Ptr.val(&c)]);
     }
-    args.extend(rest);
-    let call = format!("tail call tailcc {ret} {}({})", symbol(f), args.join(", "));
-    if ret == "void" {
-        writeln!(s, "  {call}\n  ret void\n}}").unwrap();
-    } else {
-        writeln!(s, "  %r = {call}\n  ret {ret} %r\n}}").unwrap();
+    for (i, (t, _)) in params.iter().enumerate().skip(1) {
+        args.push(t.val(b.param(i)));
     }
-    Ok(s)
+    b.return_call(Call::tailcc(ret, symbol(f), args).tail());
+    Ok(b.finish())
 }
+
+/// What lowering a function gives: the function, the closure entry
+/// functions it needs, and the kinds of what it drops.
+type Lowered = (ir::Function, BTreeSet<(FuncId, usize)>, BTreeSet<Kind>);
 
 /// The lowering of one function.
 struct Lower<'m> {
     m: &'m Module,
-    id: FuncId,
     f: &'m Func,
     defs: Vec<Option<&'m JoinDef>>,
-    ret: String,
-    out: String,
-    /// The next temporary and the next block.
-    temps: u32,
-    blocks: u32,
-    /// Slots beyond the variables', for loops that ops make.
-    slots: Vec<&'static str>,
+    ret: Type,
+    b: FnBuilder,
+    /// Each variable's slot.
+    vars: Vec<Value>,
     /// The closure entry functions the function needs.
     entries: BTreeSet<(FuncId, usize)>,
     /// Whether to count, and the kinds of what it drops.
@@ -486,16 +532,29 @@ struct Lower<'m> {
 
 impl<'m> Lower<'m> {
     fn new(m: &'m Module, id: FuncId, f: &'m Func, options: &Options) -> Result<Lower<'m>, String> {
+        let params = (f.params.iter())
+            .map(|v| Ok((ty(f.var_ty(*v))?, format!("a{}", v.0))))
+            .collect::<Result<_, String>>()?;
+        let ret = ret_ty(&f.results)?;
+        let mut b = FnBuilder::new(CallConv::Tail, ret.clone(), fn_name(id), params);
+        // A slot for each variable, and the parameters stored in theirs.
+        let vars: Vec<Value> = (f.vars.iter().enumerate())
+            .map(|(i, t)| {
+                let t = ty(t).map_err(|e| format!("%{i}: {e}"))?;
+                Ok(b.named_alloca(t, format!("v{i}")))
+            })
+            .collect::<Result<_, String>>()?;
+        for (i, v) in f.params.iter().enumerate() {
+            let p = b.param(i);
+            b.store(ty(f.var_ty(*v))?, p, &vars[v.0 as usize]);
+        }
         Ok(Lower {
             m,
-            id,
             f,
             defs: conduit_ir::tail::join_defs(&f.body, f.labels),
-            ret: ret_ty(&f.results)?,
-            out: String::new(),
-            temps: 0,
-            blocks: 0,
-            slots: Vec::new(),
+            ret,
+            b,
+            vars,
             entries: BTreeSet::new(),
             counts: options.counts,
             cycles: options.counts && options.cycles,
@@ -503,58 +562,9 @@ impl<'m> Lower<'m> {
         })
     }
 
-    fn func(&mut self) -> Result<String, String> {
-        let params: Vec<String> = (self.f.params.iter())
-            .map(|v| Ok(format!("{} %a{}", ty(self.f.var_ty(*v))?, v.0)))
-            .collect::<Result<_, String>>()?;
+    fn func(mut self) -> Result<Lowered, String> {
         self.block(&self.f.body)?;
-        let mut head = String::new();
-        writeln!(
-            head,
-            "\ndefine tailcc {} {}({}) {{\nentry:",
-            self.ret,
-            symbol(self.id),
-            params.join(", ")
-        )
-        .unwrap();
-        // A slot for each variable, and the parameters stored in theirs.
-        for (i, t) in self.f.vars.iter().enumerate() {
-            let t = ty(t).map_err(|e| format!("%{i}: {e}"))?;
-            writeln!(head, "  %v{i} = alloca {t}").unwrap();
-        }
-        for (i, t) in self.slots.iter().enumerate() {
-            writeln!(head, "  %s{i} = alloca {t}").unwrap();
-        }
-        for v in &self.f.params {
-            let t = ty(self.f.var_ty(*v))?;
-            writeln!(head, "  store {t} %a{0}, ptr %v{0}", v.0).unwrap();
-        }
-        Ok(format!("{head}{}}}\n", self.out))
-    }
-
-    fn line(&mut self, s: impl AsRef<str>) {
-        self.out.push_str("  ");
-        self.out.push_str(s.as_ref());
-        self.out.push('\n');
-    }
-
-    fn temp(&mut self) -> String {
-        self.temps += 1;
-        format!("%t{}", self.temps)
-    }
-
-    fn new_block(&mut self) -> String {
-        self.blocks += 1;
-        format!("b{}", self.blocks)
-    }
-
-    fn start(&mut self, name: &str) {
-        writeln!(self.out, "{name}:").unwrap();
-    }
-
-    fn slot(&mut self, t: &'static str) -> String {
-        self.slots.push(t);
-        format!("%s{}", self.slots.len() - 1)
+        Ok((self.b.finish(), self.entries, self.kinds))
     }
 
     fn atom_ty(&self, a: &Atom) -> Ty {
@@ -565,68 +575,45 @@ impl<'m> Lower<'m> {
     }
 
     /// An atom's value, loaded if it's a variable.
-    fn value(&mut self, a: &Atom) -> Result<String, String> {
+    fn value(&mut self, a: &Atom) -> Result<Value, String> {
         match a {
             Atom::Lit(l) => Ok(lit(l)),
             Atom::Var(v) => {
                 let t = ty(self.f.var_ty(*v))?;
-                let x = self.temp();
-                self.line(format!("{x} = load {t}, ptr %v{}", v.0));
-                Ok(x)
+                Ok(self.b.load(t, &self.vars[v.0 as usize]))
             }
         }
     }
 
-    fn store(&mut self, v: Var, value: &str) -> Result<(), String> {
+    fn store(&mut self, v: Var, value: impl Into<Value>) -> Result<(), String> {
         let t = ty(self.f.var_ty(v))?;
-        self.line(format!("store {t} {value}, ptr %v{}", v.0));
+        self.b.store(t, value, &self.vars[v.0 as usize]);
         Ok(())
     }
 
-    fn bind(&mut self, binds: &[Var], value: &str) -> Result<(), String> {
+    fn bind(&mut self, binds: &[Var], value: impl Into<Value>) -> Result<(), String> {
         match binds.first() {
             Some(&b) => self.store(b, value),
             None => Ok(()),
         }
     }
 
-    /// The address `off` bytes into object `p`; `off` is a constant or an
-    /// `i64` value.
-    fn at(&mut self, p: &str, off: &str) -> String {
-        let q = self.temp();
-        self.line(format!("{q} = getelementptr i8, ptr {p}, i64 {off}"));
-        q
-    }
-
-    fn load_at(&mut self, t: &str, p: &str, off: &str) -> String {
-        let q = self.at(p, off);
-        let x = self.temp();
-        self.line(format!("{x} = load {t}, ptr {q}"));
-        x
-    }
-
-    fn store_at(&mut self, t: &str, v: &str, p: &str, off: &str) {
-        let q = self.at(p, off);
-        self.line(format!("store {t} {v}, ptr {q}"));
-    }
-
     /// A new object of `size` bytes, an `i64` constant or value, with its
     /// count at 1 and `word` at 4. Trapping if there's no memory left.
-    fn alloc(&mut self, size: &str, word: &str) -> String {
-        let p = self.temp();
+    fn alloc(&mut self, size: impl Into<Value>, word: impl Into<Value>) -> Value {
         // Zeroed, so that an array's elements that aren't set are null.
-        self.line(format!("{p} = call ptr @calloc(i64 1, i64 {size})"));
+        let args = vec![Type::I64.val(1), Type::I64.val(size)];
+        let p = (self.b).call_value(Call::c(Type::Ptr, Value::global("calloc"), args));
         if self.counts {
-            let (n, n1) = (self.temp(), self.temp());
-            self.line(format!("{n} = load i64, ptr @conduit_live"));
-            self.line(format!("{n1} = add i64 {n}, 1"));
-            self.line(format!("store i64 {n1}, ptr @conduit_live"));
+            let live = Value::global("conduit_live");
+            let n = self.b.load(Type::I64, &live);
+            let n1 = self.b.bin(BinOp::Add, Type::I64, n, 1);
+            self.b.store(Type::I64, n1, &live);
         }
-        let null = self.temp();
-        self.line(format!("{null} = icmp eq ptr {p}, null"));
-        self.trap_if(&null);
-        self.line(format!("store i32 1, ptr {p}"));
-        self.store_at("i32", word, &p, "4");
+        let null = self.b.icmp(IntPred::Eq, Type::Ptr, &p, Value::Null);
+        self.trap_if(null);
+        self.b.store(Type::I32, 1, &p);
+        self.b.store_at(Type::I32, word, &p, 4);
         p
     }
 
@@ -644,7 +631,8 @@ impl<'m> Lower<'m> {
                         .is_some_and(|g| g.results == self.f.results)
                 {
                     let args = self.args(&l.args)?;
-                    return self.tail_call(&symbol(g), &args);
+                    self.tail_call(symbol(g), args);
+                    return Ok(());
                 }
                 if tail
                     && l.op == Op::Apply
@@ -652,7 +640,8 @@ impl<'m> Lower<'m> {
                     && sig.results == self.f.results
                 {
                     let (fp, args) = self.apply_args(&l.args)?;
-                    return self.tail_call(&fp, &args);
+                    self.tail_call(fp, args);
+                    return Ok(());
                 }
                 self.let_(&l.op, &l.args, &l.binds)?;
             }
@@ -661,64 +650,46 @@ impl<'m> Lower<'m> {
     }
 
     /// A call that returns what it gives, which `tailcc` makes a tail call.
-    fn tail_call(&mut self, callee: &str, args: &str) -> Result<(), String> {
-        let ret = self.ret.clone();
-        if ret == "void" {
-            self.line(format!("tail call tailcc void {callee}({args})"));
-            self.line("ret void");
-        } else {
-            let r = self.temp();
-            self.line(format!("{r} = tail call tailcc {ret} {callee}({args})"));
-            self.line(format!("ret {ret} {r}"));
-        }
-        Ok(())
+    fn tail_call(&mut self, callee: Value, args: Vec<Typed>) {
+        let call = Call::tailcc(self.ret.clone(), callee, args).tail();
+        self.b.return_call(call);
     }
 
-    fn args(&mut self, args: &[Atom]) -> Result<String, String> {
+    fn args(&mut self, args: &[Atom]) -> Result<Vec<Typed>, String> {
         let mut out = Vec::with_capacity(args.len());
         for a in args {
             let t = ty(&self.atom_ty(a))?;
             let v = self.value(a)?;
-            out.push(format!("{t} {v}"));
+            out.push(Typed(t, v));
         }
-        Ok(out.join(", "))
+        Ok(out)
     }
 
     /// The entry function to call for `apply(c, args..)`, and the
     /// arguments: the closure, then `args`.
-    fn apply_args(&mut self, args: &[Atom]) -> Result<(String, String), String> {
+    fn apply_args(&mut self, args: &[Atom]) -> Result<(Value, Vec<Typed>), String> {
         let c = self.value(&args[0])?;
-        let fp = self.load_at("ptr", &c, "8");
-        let rest = self.args(&args[1..])?;
-        let all = if rest.is_empty() {
-            format!("ptr {c}")
-        } else {
-            format!("ptr {c}, {rest}")
-        };
+        let fp = self.b.load_at(Type::Ptr, &c, 8);
+        let mut all = vec![Type::Ptr.val(c)];
+        all.extend(self.args(&args[1..])?);
         Ok((fp, all))
     }
 
-    /// The results of a call, of type `ret` from `results`, into `binds`.
-    fn bind_results(&mut self, call: String, results: &[Ty], binds: &[Var]) -> Result<(), String> {
-        match results {
-            [] => self.line(call),
-            [_] => {
-                let r = self.temp();
-                self.line(format!("{r} = {call}"));
-                self.bind(binds, &r)?;
+    /// Makes `call`, and puts its results into `binds`.
+    fn bind_results(&mut self, call: Call, binds: &[Var]) -> Result<(), String> {
+        let ret = call.ret.clone();
+        let Some(r) = self.b.call(call) else {
+            return Ok(());
+        };
+        if let Type::Struct(_) = ret {
+            for (i, &b) in binds.iter().enumerate() {
+                let x = self.b.extract_value(ret.clone(), &r, i as u32);
+                self.store(b, x)?;
             }
-            many => {
-                let r = self.temp();
-                self.line(format!("{r} = {call}"));
-                let agg = ret_ty(many)?;
-                for (i, &b) in binds.iter().enumerate() {
-                    let x = self.temp();
-                    self.line(format!("{x} = extractvalue {agg} {r}, {i}"));
-                    self.store(b, &x)?;
-                }
-            }
+            Ok(())
+        } else {
+            self.bind(binds, r)
         }
-        Ok(())
     }
 
     /// The type of the array `a`'s elements.
@@ -729,41 +700,27 @@ impl<'m> Lower<'m> {
         }
     }
 
-    /// The `i64` offset of element `i`, an `i32` value, in an array of
-    /// elements of `stride` bytes.
-    fn elem_offset(&mut self, i: &str, stride: u64) -> String {
-        let w = self.temp();
-        self.line(format!("{w} = zext i32 {i} to i64"));
-        let m = self.temp();
-        self.line(format!("{m} = mul i64 {w}, {stride}"));
-        let o = self.temp();
-        self.line(format!("{o} = add i64 {m}, 8"));
-        o
-    }
-
-    /// The array's length, after trapping if `i` isn't an index of it.
-    fn check_index(&mut self, a: &str, i: &str) {
-        let len = self.load_at("i32", a, "4");
-        let out = self.temp();
-        self.line(format!("{out} = icmp uge i32 {i}, {len}"));
-        self.trap_if(&out);
+    /// Traps if `i` isn't an index of array `a`.
+    fn check_index(&mut self, a: &Value, i: &Value) {
+        let len = self.b.load_at(Type::I32, a, 4);
+        let out = self.b.icmp(IntPred::Uge, Type::I32, i, len);
+        self.trap_if(out);
     }
 
     /// A new array of `n` elements, an `i32` value, trapping if `n` is
     /// negative.
-    fn new_array(&mut self, n: &str, stride: u64) -> String {
-        let neg = self.temp();
-        self.line(format!("{neg} = icmp slt i32 {n}, 0"));
-        self.trap_if(&neg);
-        let bytes = self.elem_offset(n, stride);
-        self.alloc(&bytes, n)
+    fn new_array(&mut self, n: &Value, stride: u64) -> Value {
+        let neg = self.b.icmp(IntPred::Slt, Type::I32, n, 0);
+        self.trap_if(neg);
+        let bytes = elem_offset(&mut self.b, n, stride);
+        self.alloc(bytes, n)
     }
 
     fn let_(&mut self, op: &Op, args: &[Atom], binds: &[Var]) -> Result<(), String> {
         match op {
             Op::Prim(p) => {
                 let r = self.prim(p, args)?;
-                self.bind(binds, &r)?;
+                self.bind(binds, r)?;
             }
             Op::Call(g, ..) => {
                 let callee = self
@@ -773,28 +730,27 @@ impl<'m> Lower<'m> {
                     .ok_or_else(|| format!("unknown function {g}"))?;
                 let ret = ret_ty(&callee.results)?;
                 let args = self.args(args)?;
-                let call = format!("call tailcc {ret} {}({args})", symbol(*g));
-                let results = callee.results.clone();
-                self.bind_results(call, &results, binds)?;
+                self.bind_results(Call::tailcc(ret, symbol(*g), args), binds)?;
             }
             Op::CallExtern(e) => self.call_extern(*e, args, binds)?,
             Op::Closure(f, ..) => {
                 let tys: Vec<Ty> = args.iter().map(|a| self.atom_ty(a)).collect();
                 let (offsets, total) = closure_layout(&tys);
                 self.entries.insert((*f, args.len()));
-                let p = self.alloc(&total.to_string(), "0");
-                self.store_at("ptr", &entry_symbol(*f, args.len()), &p, "8");
+                let p = self.alloc(total, 0);
+                let entry = Value::Global(entry_name(*f, args.len()));
+                self.b.store_at(Type::Ptr, entry, &p, 8);
                 let desc = if self.counts {
-                    desc_symbol(*f, args.len())
+                    Value::Global(desc_name(*f, args.len()))
                 } else {
-                    "null".into()
+                    Value::Null
                 };
-                self.store_at("ptr", &desc, &p, "16");
+                self.b.store_at(Type::Ptr, desc, &p, 16);
                 for ((a, t), o) in args.iter().zip(&tys).zip(offsets) {
                     let v = self.value(a)?;
-                    self.store_at(ty(t)?, &v, &p, &o.to_string());
+                    self.b.store_at(ty(t)?, v, &p, o);
                 }
-                self.bind(binds, &p)?;
+                self.bind(binds, p)?;
             }
             Op::Apply => {
                 let Ty::Fn(sig, _) = self.atom_ty(&args[0]) else {
@@ -802,8 +758,7 @@ impl<'m> Lower<'m> {
                 };
                 let ret = ret_ty(&sig.results)?;
                 let (fp, all) = self.apply_args(args)?;
-                let call = format!("call tailcc {ret} {fp}({all})");
-                self.bind_results(call, &sig.results, binds)?;
+                self.bind_results(Call::tailcc(ret, fp, all), binds)?;
             }
             Op::New(c) | Op::Reuse(c) => {
                 let fields = if matches!(op, Op::Reuse(_)) {
@@ -814,16 +769,16 @@ impl<'m> Lower<'m> {
                 let tys = ctor_fields(self.m, *c)?;
                 let (offsets, total) = layout(&tys);
                 let p = if matches!(op, Op::Reuse(_)) && self.counts {
-                    self.reuse(&args[0], &total.to_string(), &c.index.to_string())?
+                    self.reuse(&args[0], total, c.index)?
                 } else {
                     // Without counts, a reuse token holds no memory.
-                    self.alloc(&total.to_string(), &c.index.to_string())
+                    self.alloc(total, c.index)
                 };
                 for ((a, t), o) in fields.iter().zip(&tys).zip(offsets) {
                     let v = self.value(a)?;
-                    self.store_at(ty(t)?, &v, &p, &o.to_string());
+                    self.b.store_at(ty(t)?, v, &p, o);
                 }
-                self.bind(binds, &p)?;
+                self.bind(binds, p)?;
             }
             Op::Const(c) => {
                 let decl = self
@@ -833,33 +788,32 @@ impl<'m> Lower<'m> {
                     .ok_or_else(|| format!("unknown constant {c}"))?;
                 let v = match &decl.value {
                     ConstValue::Lit(l) => lit(l),
-                    _ => const_symbol(*c),
+                    _ => Value::Global(const_name(*c)),
                 };
-                self.bind(binds, &v)?;
+                self.bind(binds, v)?;
             }
             Op::Get(c, i) | Op::Set(c, i) => {
                 let tys = ctor_fields(self.m, *c)?;
                 let (offsets, _) = layout(&tys);
-                let (t, o) = (ty(&tys[*i as usize])?, offsets[*i as usize].to_string());
+                let (t, o) = (&tys[*i as usize], offsets[*i as usize]);
                 let p = self.value(&args[0])?;
                 if matches!(op, Op::Get(..)) {
-                    let x = self.load_at(t, &p, &o);
-                    self.bind(binds, &x)?;
+                    let x = self.b.load_at(ty(t)?, &p, o);
+                    self.bind(binds, x)?;
                 } else {
                     let v = self.value(&args[1])?;
-                    self.replace_at(&tys[*i as usize], &v, &p, &o)?;
+                    self.replace_at(t, v, &p, o)?;
                 }
             }
             Op::ArrayNew => {
                 let e = self.elem(self.f.var_ty(binds[0]))?;
-                let n = args.len().to_string();
-                let p = self.new_array(&n, size(&e));
+                let p = self.new_array(&Value::from(args.len()), size(&e));
                 for (k, a) in args.iter().enumerate() {
                     let v = self.value(a)?;
                     let o = 8 + k as u64 * size(&e);
-                    self.store_at(ty(&e)?, &v, &p, &o.to_string());
+                    self.b.store_at(ty(&e)?, v, &p, o);
                 }
-                self.bind(binds, &p)?;
+                self.bind(binds, p)?;
             }
             Op::ArrayFill | Op::ArrayAlloc => {
                 let e = self.elem(self.f.var_ty(binds[0]))?;
@@ -867,85 +821,87 @@ impl<'m> Lower<'m> {
                 let p = self.new_array(&n, size(&e));
                 if *op == Op::ArrayFill {
                     let v = self.value(&args[1])?;
-                    self.fill(&p, &n, &v, &e)?;
+                    let (t, stride) = (ty(&e)?, size(&e));
+                    count_loop(&mut self.b, &n, |b, k| {
+                        let o = elem_offset(b, k, stride);
+                        b.store_at(t, &v, &p, o);
+                    });
                     // It takes one reference, and the array holds `n`.
                     if self.counts && Kind::of(&e).is_some() {
                         self.add_count(&v, &n, &e);
                     }
                 }
-                self.bind(binds, &p)?;
+                self.bind(binds, p)?;
             }
             Op::ArrayGet | Op::ArraySet => {
                 let e = self.elem(&self.atom_ty(&args[0]))?;
                 let a = self.value(&args[0])?;
                 let i = self.value(&args[1])?;
                 self.check_index(&a, &i);
-                let o = self.elem_offset(&i, size(&e));
+                let o = elem_offset(&mut self.b, &i, size(&e));
                 if *op == Op::ArrayGet {
-                    let x = self.load_at(ty(&e)?, &a, &o);
-                    self.bind(binds, &x)?;
+                    let x = self.b.load_at(ty(&e)?, &a, o);
+                    self.bind(binds, x)?;
                 } else {
                     let v = self.value(&args[2])?;
-                    self.replace_at(&e, &v, &a, &o)?;
+                    self.replace_at(&e, v, &a, o)?;
                 }
             }
             Op::ArrayLen => {
                 let a = self.value(&args[0])?;
-                let n = self.load_at("i32", &a, "4");
-                self.bind(binds, &n)?;
+                let n = self.b.load_at(Type::I32, &a, 4);
+                self.bind(binds, n)?;
             }
             Op::ArrayCopy => self.array_copy(args)?,
             Op::ArrayClone => {
                 let e = self.elem(&self.atom_ty(&args[0]))?;
                 let a = self.value(&args[0])?;
-                let n = self.load_at("i32", &a, "4");
+                let n = self.b.load_at(Type::I32, &a, 4);
                 let p = self.new_array(&n, size(&e));
-                let bytes = self.elem_offset(&n, size(&e));
-                let elems = self.temp();
-                self.line(format!("{elems} = sub i64 {bytes}, 8"));
-                let (to, from) = (self.at(&p, "8"), self.at(&a, "8"));
-                self.line(format!(
-                    "call void @llvm.memmove.p0.p0.i64(ptr {to}, ptr {from}, i64 {elems}, i1 false)"
-                ));
+                let bytes = elem_offset(&mut self.b, &n, size(&e));
+                let elems = self.b.bin(BinOp::Sub, Type::I64, bytes, 8);
+                let (to, from) = (self.b.offset(&p, 8), self.b.offset(&a, 8));
+                self.memmove(to, from, elems);
                 // The clone shares the elements.
                 if self.counts && Kind::of(&e).is_some() {
-                    self.each(&p, "0", &n, "@conduit_dup");
+                    self.each(&p, &Value::Int(0), &n, Value::global("conduit_dup"));
                 }
-                self.bind(binds, &p)?;
+                self.bind(binds, p)?;
             }
             // The same array, now `imm`.
             Op::ArrayFreeze => {
                 let a = self.value(&args[0])?;
-                self.bind(binds, &a)?;
+                self.bind(binds, a)?;
             }
             Op::RefNew => {
                 let t = self.atom_ty(&args[0]);
-                let p = self.alloc("16", "0");
+                let p = self.alloc(16, 0);
                 let v = self.value(&args[0])?;
-                self.store_at(ty(&t)?, &v, &p, "8");
-                self.bind(binds, &p)?;
+                self.b.store_at(ty(&t)?, v, &p, 8);
+                self.bind(binds, p)?;
             }
             // An `any` holds the descriptor of the kind of what it holds,
             // its drop and visit functions, if it's counted.
             Op::Box(t) => {
-                let p = self.alloc("24", "0");
+                let p = self.alloc(24, 0);
                 let v = self.value(&args[0])?;
-                self.store_at(ty(t)?, &v, &p, "8");
+                self.b.store_at(ty(t)?, v, &p, 8);
                 let desc = match Kind::of(t) {
                     Some(k) if self.counts => {
-                        self.kinds.insert(k.clone());
-                        k.desc()
+                        let desc = k.desc();
+                        self.kinds.insert(k);
+                        desc
                     }
-                    _ => "null".into(),
+                    _ => Value::Null,
                 };
-                self.store_at("ptr", &desc, &p, "16");
-                self.bind(binds, &p)?;
+                self.b.store_at(Type::Ptr, desc, &p, 16);
+                self.bind(binds, p)?;
             }
             Op::RefGet | Op::Unbox(_) => {
                 let t = self.f.var_ty(binds[0]).clone();
                 let p = self.value(&args[0])?;
-                let x = self.load_at(ty(&t)?, &p, "8");
-                self.bind(binds, &x)?;
+                let x = self.b.load_at(ty(&t)?, &p, 8);
+                self.bind(binds, x)?;
             }
             Op::RefSet => {
                 let Ty::Ref(t) = self.atom_ty(&args[0]) else {
@@ -953,7 +909,7 @@ impl<'m> Lower<'m> {
                 };
                 let p = self.value(&args[0])?;
                 let v = self.value(&args[1])?;
-                self.replace_at(&t, &v, &p, "8")?;
+                self.replace_at(&t, v, &p, 8)?;
             }
             // Nothing to store: whatever the slot holds is what it gives,
             // as nothing may use it, counting included. But a reuse token
@@ -962,7 +918,7 @@ impl<'m> Lower<'m> {
                 if let Some(&b) = binds.first()
                     && matches!(self.f.var_ty(b), Ty::Reuse(_))
                 {
-                    self.store(b, "null")?;
+                    self.store(b, Value::Null)?;
                 }
             }
             // Without counts, nothing is freed: counting does nothing, no
@@ -970,8 +926,8 @@ impl<'m> Lower<'m> {
             // Gives up a reference without counting.
             Op::Forget => {}
             Op::Dup | Op::Drop | Op::Free | Op::DecRef if !self.counts => {}
-            Op::IsUnique if !self.counts => self.bind(binds, "0")?,
-            Op::DropReuse | Op::ReuseToken if !self.counts => self.bind(binds, "null")?,
+            Op::IsUnique if !self.counts => self.bind(binds, 0)?,
+            Op::DropReuse | Op::ReuseToken if !self.counts => self.bind(binds, Value::Null)?,
             Op::Dup | Op::Drop => {
                 let t = self.atom_ty(&args[0]);
                 let Some(k) = Kind::of(&t) else {
@@ -979,35 +935,37 @@ impl<'m> Lower<'m> {
                 };
                 let x = self.value(&args[0])?;
                 let f = if *op == Op::Dup {
-                    "@conduit_dup".to_string()
+                    Value::global("conduit_dup")
                 } else {
                     self.drop_of(&t, k)
                 };
-                self.line(format!("call tailcc void {f}(ptr {x})"));
+                call_void(&mut self.b, f, vec![Type::Ptr.val(x)]);
             }
             Op::IsUnique => {
                 let x = self.value(&args[0])?;
-                let r = self.temp();
-                self.line(format!("{r} = call tailcc i32 @conduit_is_unique(ptr {x})"));
-                self.bind(binds, &r)?;
+                let is = Value::global("conduit_is_unique");
+                let r = (self.b).call_value(Call::tailcc(Type::I32, is, vec![Type::Ptr.val(x)]));
+                self.bind(binds, r)?;
             }
             Op::Free => {
                 let x = self.value(&args[0])?;
-                self.line(format!("call tailcc void @conduit_free(ptr {x})"));
+                call_void(
+                    &mut self.b,
+                    Value::global("conduit_free"),
+                    vec![Type::Ptr.val(x)],
+                );
             }
             // What isn't `imm` may be left in a garbage cycle.
             Op::DecRef => {
                 let t = self.atom_ty(&args[0]);
-                let x = self.value(&args[0])?;
+                let x = Type::Ptr.val(self.value(&args[0])?);
                 match Kind::of(&t) {
                     Some(k) if self.cycles && !counts::is_imm(&t) => {
-                        let v = k.visit_fn();
+                        let args = vec![x, Type::Ptr.val(k.visit_fn())];
                         self.kinds.insert(k);
-                        self.line(format!(
-                            "call tailcc void @conduit_decref_buf(ptr {x}, ptr {v})"
-                        ));
+                        call_void(&mut self.b, Value::global("conduit_decref_buf"), args);
                     }
-                    _ => self.line(format!("call tailcc void @conduit_decref(ptr {x})")),
+                    _ => call_void(&mut self.b, Value::global("conduit_decref"), vec![x]),
                 }
             }
             // At 0, what it held is dropped and its memory is the token,
@@ -1019,40 +977,40 @@ impl<'m> Lower<'m> {
                     return Err("drop_reuse of something that isn't data".into());
                 };
                 let k = Kind::Data(d);
-                let last = self.temp();
                 let x = self.value(&args[0])?;
-                if self.cycles && !counts::is_imm(&t) {
-                    self.line(format!(
-                        "{last} = call tailcc i1 @conduit_last_buf(ptr {x}, ptr {})",
-                        k.visit_fn()
-                    ));
+                let call = if self.cycles && !counts::is_imm(&t) {
+                    let args = vec![Type::Ptr.val(&x), Type::Ptr.val(k.visit_fn())];
+                    Call::tailcc(Type::I1, Value::global("conduit_last_buf"), args)
                 } else {
-                    self.line(format!("{last} = call tailcc i1 @conduit_last(ptr {x})"));
-                }
+                    Call::tailcc(
+                        Type::I1,
+                        Value::global("conduit_last"),
+                        vec![Type::Ptr.val(&x)],
+                    )
+                };
+                let last = self.b.call_value(call);
                 self.kinds.insert(k);
-                let slot = self.slot("ptr");
-                self.line(format!("store ptr null, ptr {slot}"));
-                let (free, done) = (self.new_block(), self.new_block());
-                self.line(format!("br i1 {last}, label %{free}, label %{done}"));
-                self.start(&free);
-                let taken = self.temp();
-                self.line(format!("{taken} = call tailcc ptr @conduit_take(ptr {x})"));
-                self.line(format!("store ptr {taken}, ptr {slot}"));
-                self.line(format!(
-                    "call tailcc void @conduit_children.data{}(ptr {x})",
-                    d.0
-                ));
-                self.line(format!("br label %{done}"));
-                self.start(&done);
-                let token = self.temp();
-                self.line(format!("{token} = load ptr, ptr {slot}"));
-                self.bind(binds, &token)?;
+                let slot = self.b.alloca(Type::Ptr);
+                self.b.store(Type::Ptr, Value::Null, &slot);
+                let (free, done) = (self.b.new_block(), self.b.new_block());
+                self.b.cond_br(last, &free, &done);
+                self.b.start(&free);
+                let take = Value::global("conduit_take");
+                let taken =
+                    (self.b).call_value(Call::tailcc(Type::Ptr, take, vec![Type::Ptr.val(&x)]));
+                self.b.store(Type::Ptr, taken, &slot);
+                call_void(&mut self.b, counts::children_fn(d), vec![Type::Ptr.val(&x)]);
+                self.b.br(&done);
+                self.b.start(&done);
+                let token = self.b.load(Type::Ptr, &slot);
+                self.bind(binds, token)?;
             }
             Op::ReuseToken => {
                 let x = self.value(&args[0])?;
-                let token = self.temp();
-                self.line(format!("{token} = call tailcc ptr @conduit_take(ptr {x})"));
-                self.bind(binds, &token)?;
+                let take = Value::global("conduit_take");
+                let token =
+                    (self.b).call_value(Call::tailcc(Type::Ptr, take, vec![Type::Ptr.val(x)]));
+                self.bind(binds, token)?;
             }
             other => return Err(format!("{other:?} isn't supported yet")),
         }
@@ -1061,7 +1019,7 @@ impl<'m> Lower<'m> {
 
     /// The drop of a value of type `t`, of kind `k`: with cycles, one that
     /// never buffers it if it's `imm`.
-    fn drop_of(&mut self, t: &Ty, k: Kind) -> String {
+    fn drop_of(&mut self, t: &Ty, k: Kind) -> Value {
         let f = if self.cycles && counts::is_imm(t) {
             k.drop_imm_fn()
         } else {
@@ -1073,114 +1031,92 @@ impl<'m> Lower<'m> {
 
     /// Stores `v`, of type `t`, at `off` in `p`, and drops what it
     /// replaces, when counting.
-    fn replace_at(&mut self, t: &Ty, v: &str, p: &str, off: &str) -> Result<(), String> {
-        let lt = ty(t)?;
+    fn replace_at(
+        &mut self,
+        t: &Ty,
+        v: Value,
+        p: &Value,
+        off: impl Into<Value>,
+    ) -> Result<(), String> {
+        let (lt, off) = (ty(t)?, off.into());
         match Kind::of(t) {
             Some(k) if self.counts => {
-                let old = self.load_at(lt, p, off);
-                self.store_at(lt, v, p, off);
+                let old = self.b.load_at(lt.clone(), p, &off);
+                self.b.store_at(lt, v, p, off);
                 let drop = self.drop_of(t, k);
-                self.line(format!("call tailcc void {drop}(ptr {old})"));
+                call_void(&mut self.b, drop, vec![Type::Ptr.val(old)]);
             }
-            _ => self.store_at(lt, v, p, off),
+            _ => self.b.store_at(lt, v, p, off),
         }
         Ok(())
     }
 
     /// Gives `v` the `n - 1` more references an array of `n` copies of it
     /// holds, or drops it if `n` is 0.
-    fn add_count(&mut self, v: &str, n: &str, e: &Ty) {
+    fn add_count(&mut self, v: &Value, n: &Value, e: &Ty) {
         let k = Kind::of(e).expect("a counted element");
-        let none = self.temp();
-        self.line(format!("{none} = icmp eq i32 {n}, 0"));
-        let (zero, some, done) = (self.new_block(), self.new_block(), self.new_block());
-        self.line(format!("br i1 {none}, label %{zero}, label %{some}"));
-        self.start(&zero);
-        let drop = self.drop_of(e, k.clone());
-        self.line(format!("call tailcc void {drop}(ptr {v})"));
-        self.line(format!("br label %{done}"));
-        self.start(&some);
-        let more = self.temp();
-        self.line(format!("{more} = sub i32 {n}, 1"));
-        self.line(format!(
-            "call tailcc void @conduit_add(ptr {v}, i32 {more})"
-        ));
-        self.line(format!("br label %{done}"));
-        self.start(&done);
-        self.kinds.insert(k);
+        let none = self.b.icmp(IntPred::Eq, Type::I32, n, 0);
+        let (zero, some, done) = (self.b.new_block(), self.b.new_block(), self.b.new_block());
+        self.b.cond_br(none, &zero, &some);
+        self.b.start(&zero);
+        let drop = self.drop_of(e, k);
+        call_void(&mut self.b, drop, vec![Type::Ptr.val(v)]);
+        self.b.br(&done);
+        self.b.start(&some);
+        let more = self.b.bin(BinOp::Sub, Type::I32, n, 1);
+        let args = vec![Type::Ptr.val(v), Type::I32.val(more)];
+        call_void(&mut self.b, Value::global("conduit_add"), args);
+        self.b.br(&done);
+        self.b.start(&done);
     }
 
     /// Calls `f` on each of the `n` elements of array `a` from `start`, all
     /// `i32` values, which are objects.
-    fn each(&mut self, a: &str, start: &str, n: &str, f: &str) {
-        let i = self.slot("i32");
-        self.line(format!("store i32 0, ptr {i}"));
-        let (head, body, done) = (self.new_block(), self.new_block(), self.new_block());
-        self.line(format!("br label %{head}"));
-        self.start(&head);
-        let k = self.temp();
-        self.line(format!("{k} = load i32, ptr {i}"));
-        let more = self.temp();
-        self.line(format!("{more} = icmp slt i32 {k}, {n}"));
-        self.line(format!("br i1 {more}, label %{body}, label %{done}"));
-        self.start(&body);
-        let at = self.temp();
-        self.line(format!("{at} = add i32 {start}, {k}"));
-        let o = self.elem_offset(&at, 8);
-        let x = self.load_at("ptr", a, &o);
-        self.line(format!("call tailcc void {f}(ptr {x})"));
-        let k1 = self.temp();
-        self.line(format!("{k1} = add i32 {k}, 1"));
-        self.line(format!("store i32 {k1}, ptr {i}"));
-        self.line(format!("br label %{head}"));
-        self.start(&done);
+    fn each(&mut self, a: &Value, start: &Value, n: &Value, f: Value) {
+        count_loop(&mut self.b, n, |b, k| {
+            let at = b.bin(BinOp::Add, Type::I32, start, k);
+            let o = elem_offset(b, at, 8);
+            let x = b.load_at(Type::Ptr, a, o);
+            call_void(b, f, vec![Type::Ptr.val(x)]);
+        });
     }
 
     /// An object of `size` bytes in the memory of `token`, if it holds
     /// some, or a new one: either way with its count at 1 and `word` at 4.
-    fn reuse(&mut self, token: &Atom, size: &str, word: &str) -> Result<String, String> {
+    fn reuse(
+        &mut self,
+        token: &Atom,
+        size: impl Into<Value>,
+        word: impl Into<Value>,
+    ) -> Result<Value, String> {
+        let (size, word) = (size.into(), word.into());
         let t = self.value(token)?;
-        let out = self.slot("ptr");
-        let none = self.temp();
-        self.line(format!("{none} = icmp eq ptr {t}, null"));
-        let (fresh, reused, done) = (self.new_block(), self.new_block(), self.new_block());
-        self.line(format!("br i1 {none}, label %{fresh}, label %{reused}"));
-        self.start(&fresh);
-        let p = self.alloc(size, word);
-        self.line(format!("store ptr {p}, ptr {out}"));
-        self.line(format!("br label %{done}"));
-        self.start(&reused);
-        self.line(format!("store i32 1, ptr {t}"));
-        self.store_at("i32", word, &t, "4");
-        self.line(format!("store ptr {t}, ptr {out}"));
-        self.line(format!("br label %{done}"));
-        self.start(&done);
-        let r = self.temp();
-        self.line(format!("{r} = load ptr, ptr {out}"));
-        Ok(r)
+        let out = self.b.alloca(Type::Ptr);
+        let none = self.b.icmp(IntPred::Eq, Type::Ptr, &t, Value::Null);
+        let (fresh, reused, done) = (self.b.new_block(), self.b.new_block(), self.b.new_block());
+        self.b.cond_br(none, &fresh, &reused);
+        self.b.start(&fresh);
+        let p = self.alloc(size, &word);
+        self.b.store(Type::Ptr, p, &out);
+        self.b.br(&done);
+        self.b.start(&reused);
+        self.b.store(Type::I32, 1, &t);
+        self.b.store_at(Type::I32, word, &t, 4);
+        self.b.store(Type::Ptr, &t, &out);
+        self.b.br(&done);
+        self.b.start(&done);
+        Ok(self.b.load(Type::Ptr, &out))
     }
 
-    /// Sets each of the `n` elements of array `p` to `v`.
-    fn fill(&mut self, p: &str, n: &str, v: &str, e: &Ty) -> Result<(), String> {
-        let i = self.slot("i32");
-        self.line(format!("store i32 0, ptr {i}"));
-        let (head, body, done) = (self.new_block(), self.new_block(), self.new_block());
-        self.line(format!("br label %{head}"));
-        self.start(&head);
-        let k = self.temp();
-        self.line(format!("{k} = load i32, ptr {i}"));
-        let more = self.temp();
-        self.line(format!("{more} = icmp slt i32 {k}, {n}"));
-        self.line(format!("br i1 {more}, label %{body}, label %{done}"));
-        self.start(&body);
-        let o = self.elem_offset(&k, size(e));
-        self.store_at(ty(e)?, v, p, &o);
-        let k1 = self.temp();
-        self.line(format!("{k1} = add i32 {k}, 1"));
-        self.line(format!("store i32 {k1}, ptr {i}"));
-        self.line(format!("br label %{head}"));
-        self.start(&done);
-        Ok(())
+    fn memmove(&mut self, to: Value, from: Value, bytes: Value) {
+        let args = vec![
+            Type::Ptr.val(to),
+            Type::Ptr.val(from),
+            Type::I64.val(bytes),
+            Type::I1.val(0),
+        ];
+        let f = Value::global("llvm.memmove.p0.p0.i64");
+        self.b.call(Call::c(Type::Void, f, args));
     }
 
     /// `array_copy(dst, dst_start, src, src_start, count)`: as `memmove`,
@@ -1188,39 +1124,33 @@ impl<'m> Lower<'m> {
     fn array_copy(&mut self, args: &[Atom]) -> Result<(), String> {
         let e = self.elem(&self.atom_ty(&args[0]))?;
         let stride = size(&e);
-        let vals: Vec<String> = args
+        let vals: Vec<Value> = args
             .iter()
             .map(|a| self.value(a))
             .collect::<Result<_, _>>()?;
         let (dst, ds, src, ss, n) = (&vals[0], &vals[1], &vals[2], &vals[3], &vals[4]);
-        let n64 = self.temp();
-        self.line(format!("{n64} = zext i32 {n} to i64"));
+        let n64 = self.b.cast(CastOp::ZExt, Type::I32, n, Type::I64);
         for (a, start) in [(dst, ds), (src, ss)] {
-            let len = self.load_at("i32", a, "4");
-            let (s64, l64, end) = (self.temp(), self.temp(), self.temp());
-            self.line(format!("{s64} = zext i32 {start} to i64"));
-            self.line(format!("{l64} = zext i32 {len} to i64"));
-            self.line(format!("{end} = add i64 {s64}, {n64}"));
-            let out = self.temp();
-            self.line(format!("{out} = icmp ugt i64 {end}, {l64}"));
-            self.trap_if(&out);
+            let len = self.b.load_at(Type::I32, a, 4);
+            let s64 = self.b.cast(CastOp::ZExt, Type::I32, start, Type::I64);
+            let l64 = self.b.cast(CastOp::ZExt, Type::I32, len, Type::I64);
+            let end = self.b.bin(BinOp::Add, Type::I64, s64, &n64);
+            let out = self.b.icmp(IntPred::Ugt, Type::I64, end, l64);
+            self.trap_if(out);
         }
         // The copies are references more, and what they overwrite one less.
         if self.counts
             && let Some(k) = Kind::of(&e)
         {
-            self.each(src, ss, n, "@conduit_dup");
+            self.each(src, ss, n, Value::global("conduit_dup"));
             let drop = self.drop_of(&e, k);
-            self.each(dst, ds, n, &drop);
+            self.each(dst, ds, n, drop);
         }
-        let to = self.elem_offset(ds, stride);
-        let from = self.elem_offset(ss, stride);
-        let (to, from) = (self.at(dst, &to), self.at(src, &from));
-        let bytes = self.temp();
-        self.line(format!("{bytes} = mul i64 {n64}, {stride}"));
-        self.line(format!(
-            "call void @llvm.memmove.p0.p0.i64(ptr {to}, ptr {from}, i64 {bytes}, i1 false)"
-        ));
+        let to = elem_offset(&mut self.b, ds, stride);
+        let from = elem_offset(&mut self.b, ss, stride);
+        let (to, from) = (self.b.offset(dst, to), self.b.offset(src, from));
+        let bytes = self.b.bin(BinOp::Mul, Type::I64, n64, stride);
+        self.memmove(to, from, bytes);
         Ok(())
     }
 
@@ -1238,9 +1168,13 @@ impl<'m> Lower<'m> {
         };
         let ret = ret_ty(&ext.sig.results)?;
         let args = self.args(args)?;
-        let call = format!("call {ret} @{symbol}({args})");
-        let results = ext.sig.results.clone();
-        self.bind_results(call, &results, binds)
+        let call = Call::c(ret, Value::global(&**symbol), args);
+        self.bind_results(call, binds)
+    }
+
+    /// The block of join point `l`.
+    fn join_block(l: Label) -> ir::Label {
+        ir::Label(format!("j{}", l.0))
     }
 
     fn tail(&mut self, t: &Tail) -> Result<(), String> {
@@ -1248,7 +1182,7 @@ impl<'m> Lower<'m> {
             Tail::Join { defs, body, .. } => {
                 self.block(body)?;
                 for d in defs {
-                    self.start(&format!("j{}", d.label.0));
+                    self.b.start(&Self::join_block(d.label));
                     self.block(&d.body)?;
                 }
             }
@@ -1261,54 +1195,48 @@ impl<'m> Lower<'m> {
                 for a in args {
                     values.push(self.value(a)?);
                 }
-                for (p, v) in def.params.clone().iter().zip(values) {
-                    self.store(*p, &v)?;
+                for (p, v) in def.params.iter().zip(values) {
+                    self.store(*p, v)?;
                 }
-                self.line(format!("br label %j{}", target.0));
+                self.b.br(&Self::join_block(*target));
             }
             Tail::Case {
                 scrut,
                 arms,
                 default,
             } => {
-                let st = self.atom_ty(scrut);
+                let st = ty(&self.atom_ty(scrut))?;
                 let s = self.value(scrut)?;
                 // A case on data is on its constructor, at 4.
-                let (t, s) = if ty(&st)? == "ptr" {
-                    ("i32", self.load_at("i32", &s, "4"))
+                let (t, s) = if st == Type::Ptr {
+                    (Type::I32, self.b.load_at(Type::I32, &s, 4))
                 } else {
-                    (ty(&st)?, s)
+                    (st, s)
                 };
-                let names: Vec<String> = arms.iter().map(|_| self.new_block()).collect();
-                let other = self.new_block();
-                let cases: Vec<String> = (arms.iter().zip(&names))
-                    .map(|(arm, name)| {
+                let labels: Vec<ir::Label> = arms.iter().map(|_| self.b.new_block()).collect();
+                let other = self.b.new_block();
+                let cases = (arms.iter().zip(&labels))
+                    .map(|(arm, label)| {
                         let n = match arm.tag {
                             Tag::Int(n) => n,
                             Tag::Ctor(c) => c.index as i64,
                         };
-                        format!("{t} {n}, label %{name}")
+                        (n, label.clone())
                     })
                     .collect();
-                self.line(format!(
-                    "switch {t} {s}, label %{other} [ {} ]",
-                    cases.join(" ")
-                ));
-                for (arm, name) in arms.iter().zip(&names) {
-                    self.start(name);
+                self.b.switch(t.val(s), &other, cases);
+                for (arm, label) in arms.iter().zip(&labels) {
+                    self.b.start(label);
                     self.block(&arm.body)?;
                 }
-                self.start(&other);
+                self.b.start(&other);
                 match default {
                     Some(d) => self.block(d)?,
-                    None => self.line("unreachable"),
+                    None => self.b.unreachable(),
                 }
             }
-            Tail::Unreachable => self.line("unreachable"),
-            Tail::Trap => {
-                self.line("call void @llvm.trap()");
-                self.line("unreachable");
-            }
+            Tail::Unreachable => self.b.unreachable(),
+            Tail::Trap => trap(&mut self.b),
         }
         Ok(())
     }
@@ -1316,37 +1244,34 @@ impl<'m> Lower<'m> {
     fn ret(&mut self, args: &[Atom]) -> Result<(), String> {
         let ret = self.ret.clone();
         match args {
-            [] => self.line("ret void"),
+            [] => self.b.ret_void(),
             [a] => {
                 let v = self.value(a)?;
-                self.line(format!("ret {ret} {v}"));
+                self.b.ret(Some(ret.val(v)));
             }
             many => {
-                let mut agg = "undef".to_string();
+                let mut agg = Value::Undef;
                 for (i, a) in many.iter().enumerate() {
                     let t = ty(&self.atom_ty(a))?;
                     let v = self.value(a)?;
-                    let next = self.temp();
-                    self.line(format!("{next} = insertvalue {ret} {agg}, {t} {v}, {i}"));
-                    agg = next;
+                    agg = self.b.insert_value(ret.clone(), agg, t.val(v), i as u32);
                 }
-                self.line(format!("ret {ret} {agg}"));
+                self.b.ret(Some(ret.val(agg)));
             }
         }
         Ok(())
     }
 
     /// Branches to a trap if `cond` holds, and goes on in a new block.
-    fn trap_if(&mut self, cond: &str) {
-        let (trap, ok) = (self.new_block(), self.new_block());
-        self.line(format!("br i1 {cond}, label %{trap}, label %{ok}"));
-        self.start(&trap);
-        self.line("call void @llvm.trap()");
-        self.line("unreachable");
-        self.start(&ok);
+    fn trap_if(&mut self, cond: Value) {
+        let (trapped, ok) = (self.b.new_block(), self.b.new_block());
+        self.b.cond_br(cond, &trapped, &ok);
+        self.b.start(&trapped);
+        trap(&mut self.b);
+        self.b.start(&ok);
     }
 
-    fn prim(&mut self, p: &Prim, args: &[Atom]) -> Result<String, String> {
+    fn prim(&mut self, p: &Prim, args: &[Atom]) -> Result<Value, String> {
         let at = self.atom_ty(&args[0]);
         let t = ty(&at)?;
         let float = matches!(at, Ty::F32 | Ty::F64);
@@ -1354,236 +1279,174 @@ impl<'m> Lower<'m> {
         for a in args {
             vals.push(self.value(a)?);
         }
-        let bin = |me: &mut Self, op: &str| {
-            let r = me.temp();
-            me.line(format!("{r} = {op} {t} {}, {}", vals[0], vals[1]));
-            r
-        };
+        let bin = |me: &mut Self, op: BinOp| me.b.bin(op, t.clone(), &vals[0], &vals[1]);
         let suffix = if at == Ty::F32 { "f32" } else { "f64" };
+        let intrinsic = |name: &str| Value::Global(format!("llvm.{name}.{suffix}"));
         Ok(match p {
-            Prim::Add => bin(self, if float { "fadd" } else { "add" }),
-            Prim::Sub => bin(self, if float { "fsub" } else { "sub" }),
-            Prim::Mul => bin(self, if float { "fmul" } else { "mul" }),
-            Prim::Div(_) if float => bin(self, "fdiv"),
+            Prim::Add => bin(self, if float { BinOp::FAdd } else { BinOp::Add }),
+            Prim::Sub => bin(self, if float { BinOp::FSub } else { BinOp::Sub }),
+            Prim::Mul => bin(self, if float { BinOp::FMul } else { BinOp::Mul }),
+            Prim::Div(_) if float => bin(self, BinOp::FDiv),
             Prim::Div(sign) | Prim::Rem(sign) => {
                 let div = matches!(p, Prim::Div(_));
-                let (x, y) = (vals[0].clone(), vals[1].clone());
-                let z = self.temp();
-                self.line(format!("{z} = icmp eq {t} {y}, 0"));
+                let signed = *sign == Sign::Signed;
+                let (x, y) = (&vals[0], &vals[1]);
+                let z = self.b.icmp(IntPred::Eq, t.clone(), y, 0);
                 // A signed remainder by -1 is 0, which LLVM leaves undefined
                 // for the smallest value; a signed division by -1 of it traps.
-                let minus_one = self.temp();
-                self.line(format!("{minus_one} = icmp eq {t} {y}, -1"));
-                if div && *sign == Sign::Signed {
-                    let bits = int_bits(&at);
-                    let min = self.temp();
-                    self.line(format!(
-                        "{min} = icmp eq {t} {x}, {}",
-                        i64::MIN >> (64 - bits)
-                    ));
-                    let ov = self.temp();
-                    self.line(format!("{ov} = and i1 {min}, {minus_one}"));
-                    self.trap_if(&ov);
+                let minus_one = self.b.icmp(IntPred::Eq, t.clone(), y, -1);
+                if div && signed {
+                    let smallest = i64::MIN >> (64 - int_bits(&at));
+                    let min = self.b.icmp(IntPred::Eq, t.clone(), x, smallest);
+                    let ov = self.b.bin(BinOp::And, Type::I1, min, &minus_one);
+                    self.trap_if(ov);
                 }
-                let safe_cond = if !div && *sign == Sign::Signed {
-                    let c = self.temp();
-                    self.line(format!("{c} = or i1 {z}, {minus_one}"));
-                    c
+                let safe_cond = if !div && signed {
+                    self.b.bin(BinOp::Or, Type::I1, &z, &minus_one)
                 } else {
                     z.clone()
                 };
-                let d = self.temp();
-                self.line(format!("{d} = select i1 {safe_cond}, {t} 1, {t} {y}"));
-                let op = match (div, sign) {
-                    (true, Sign::Signed) => "sdiv",
-                    (true, Sign::Unsigned) => "udiv",
-                    (false, Sign::Signed) => "srem",
-                    (false, Sign::Unsigned) => "urem",
+                let d = self.b.select(safe_cond, t.clone(), 1, y);
+                let op = match (div, signed) {
+                    (true, true) => BinOp::SDiv,
+                    (true, false) => BinOp::UDiv,
+                    (false, true) => BinOp::SRem,
+                    (false, false) => BinOp::URem,
                 };
-                let q = self.temp();
-                self.line(format!("{q} = {op} {t} {x}, {d}"));
-                let r = self.temp();
+                let q = self.b.bin(op, t.clone(), x, d);
                 if div {
-                    self.line(format!("{r} = select i1 {z}, {t} 0, {t} {q}"));
+                    self.b.select(z, t, 0, q)
                 } else {
-                    let q2 = if *sign == Sign::Signed {
-                        let q2 = self.temp();
-                        self.line(format!("{q2} = select i1 {minus_one}, {t} 0, {t} {q}"));
-                        q2
+                    let q = if signed {
+                        self.b.select(minus_one, t.clone(), 0, q)
                     } else {
                         q
                     };
-                    self.line(format!("{r} = select i1 {z}, {t} {x}, {t} {q2}"));
+                    self.b.select(z, t, x, q)
                 }
-                r
             }
-            Prim::Neg if float => {
-                let r = self.temp();
-                self.line(format!("{r} = fneg {t} {}", vals[0]));
-                r
-            }
-            Prim::Neg => {
-                let r = self.temp();
-                self.line(format!("{r} = sub {t} 0, {}", vals[0]));
-                r
-            }
-            Prim::And => bin(self, "and"),
-            Prim::Or => bin(self, "or"),
-            Prim::Xor => bin(self, "xor"),
+            Prim::Neg if float => self.b.fneg(t, &vals[0]),
+            Prim::Neg => self.b.bin(BinOp::Sub, t, 0, &vals[0]),
+            Prim::And => bin(self, BinOp::And),
+            Prim::Or => bin(self, BinOp::Or),
+            Prim::Xor => bin(self, BinOp::Xor),
             Prim::Shl | Prim::Shr(_) => {
-                let n = self.temp();
-                self.line(format!("{n} = and {t} {}, {}", vals[1], int_bits(&at) - 1));
+                let mask = int_bits(&at) - 1;
+                let n = self.b.bin(BinOp::And, t.clone(), &vals[1], mask);
                 let op = match p {
-                    Prim::Shl => "shl",
-                    Prim::Shr(Sign::Signed) => "ashr",
-                    _ => "lshr",
+                    Prim::Shl => BinOp::Shl,
+                    Prim::Shr(Sign::Signed) => BinOp::AShr,
+                    _ => BinOp::LShr,
                 };
-                let r = self.temp();
-                self.line(format!("{r} = {op} {t} {}, {n}", vals[0]));
-                r
+                self.b.bin(op, t, &vals[0], n)
             }
             Prim::Eq | Prim::Ne | Prim::Lt(_) | Prim::Le(_) | Prim::Gt(_) | Prim::Ge(_) => {
-                let cmp = if float {
-                    let c = match p {
-                        Prim::Eq => "oeq",
-                        Prim::Ne => "une",
-                        Prim::Lt(_) => "olt",
-                        Prim::Le(_) => "ole",
-                        Prim::Gt(_) => "ogt",
-                        _ => "oge",
+                let (x, y) = (&vals[0], &vals[1]);
+                let b = if float {
+                    let pred = match p {
+                        Prim::Eq => FloatPred::Oeq,
+                        Prim::Ne => FloatPred::Une,
+                        Prim::Lt(_) => FloatPred::Olt,
+                        Prim::Le(_) => FloatPred::Ole,
+                        Prim::Gt(_) => FloatPred::Ogt,
+                        _ => FloatPred::Oge,
                     };
-                    format!("fcmp {c}")
+                    self.b.fcmp(pred, t, x, y)
                 } else {
-                    let s = |sign: &Sign| if *sign == Sign::Signed { 's' } else { 'u' };
-                    let c = match p {
-                        Prim::Eq => "eq".to_string(),
-                        Prim::Ne => "ne".to_string(),
-                        Prim::Lt(sg) => format!("{}lt", s(sg)),
-                        Prim::Le(sg) => format!("{}le", s(sg)),
-                        Prim::Gt(sg) => format!("{}gt", s(sg)),
-                        Prim::Ge(sg) => format!("{}ge", s(sg)),
-                        _ => unreachable!(),
+                    let s = |sign: &Sign| *sign == Sign::Signed;
+                    let pred = match p {
+                        Prim::Eq => IntPred::Eq,
+                        Prim::Ne => IntPred::Ne,
+                        Prim::Lt(sg) if s(sg) => IntPred::Slt,
+                        Prim::Lt(_) => IntPred::Ult,
+                        Prim::Le(sg) if s(sg) => IntPred::Sle,
+                        Prim::Le(_) => IntPred::Ule,
+                        Prim::Gt(sg) if s(sg) => IntPred::Sgt,
+                        Prim::Gt(_) => IntPred::Ugt,
+                        Prim::Ge(sg) if s(sg) => IntPred::Sge,
+                        _ => IntPred::Uge,
                     };
-                    format!("icmp {c}")
+                    self.b.icmp(pred, t, x, y)
                 };
-                let b = self.temp();
-                self.line(format!("{b} = {cmp} {t} {}, {}", vals[0], vals[1]));
-                let r = self.temp();
-                self.line(format!("{r} = zext i1 {b} to i32"));
-                r
+                self.b.cast(CastOp::ZExt, Type::I1, b, Type::I32)
             }
             Prim::Abs | Prim::Sqrt => {
-                let f = if *p == Prim::Abs { "fabs" } else { "sqrt" };
-                let r = self.temp();
-                self.line(format!(
-                    "{r} = call {t} @llvm.{f}.{suffix}({t} {})",
-                    vals[0]
-                ));
-                r
+                let f = intrinsic(if *p == Prim::Abs { "fabs" } else { "sqrt" });
+                let args = vec![t.val(&vals[0])];
+                self.b.call_value(Call::c(t, f, args))
             }
             Prim::Min | Prim::Max => {
-                let f = if *p == Prim::Min {
+                let f = intrinsic(if *p == Prim::Min {
                     "minimum"
                 } else {
                     "maximum"
-                };
-                let r = self.temp();
-                self.line(format!(
-                    "{r} = call {t} @llvm.{f}.{suffix}({t} {}, {t} {})",
-                    vals[0], vals[1]
-                ));
-                r
+                });
+                let args = vec![t.val(&vals[0]), t.val(&vals[1])];
+                self.b.call_value(Call::c(t, f, args))
             }
             Prim::Convert(to, sign) => self.convert(&at, to, *sign, &vals[0])?,
-            Prim::Reinterpret(to) => {
-                let r = self.temp();
-                self.line(format!("{r} = bitcast {t} {} to {}", vals[0], ty(to)?));
-                r
-            }
+            Prim::Reinterpret(to) => self.b.cast(CastOp::Bitcast, t, &vals[0], ty(to)?),
         })
     }
 
-    fn convert(&mut self, from: &Ty, to: &Ty, sign: Sign, x: &str) -> Result<String, String> {
+    fn convert(&mut self, from: &Ty, to: &Ty, sign: Sign, x: &Value) -> Result<Value, String> {
         let (f, t) = (ty(from)?, ty(to)?);
         let float = |t: &Ty| matches!(t, Ty::F32 | Ty::F64);
         let op = match (float(from), float(to)) {
             (false, false) => match int_bits(from).cmp(&int_bits(to)) {
-                std::cmp::Ordering::Equal => return Ok(x.to_string()),
-                std::cmp::Ordering::Greater => "trunc",
-                std::cmp::Ordering::Less if sign == Sign::Signed => "sext",
-                std::cmp::Ordering::Less => "zext",
+                std::cmp::Ordering::Equal => return Ok(x.clone()),
+                std::cmp::Ordering::Greater => CastOp::Trunc,
+                std::cmp::Ordering::Less if sign == Sign::Signed => CastOp::SExt,
+                std::cmp::Ordering::Less => CastOp::ZExt,
             },
-            (false, true) if sign == Sign::Signed => "sitofp",
-            (false, true) => "uitofp",
-            (true, true) if from == to => return Ok(x.to_string()),
-            (true, true) if *from == Ty::F32 => "fpext",
-            (true, true) => "fptrunc",
+            (false, true) if sign == Sign::Signed => CastOp::SIToFP,
+            (false, true) => CastOp::UIToFP,
+            (true, true) if from == to => return Ok(x.clone()),
+            (true, true) if *from == Ty::F32 => CastOp::FPExt,
+            (true, true) => CastOp::FPTrunc,
             (true, false) => return Ok(self.float_to_int(from, to, sign, x)),
         };
-        let r = self.temp();
-        self.line(format!("{r} = {op} {f} {x} to {t}"));
-        Ok(r)
+        Ok(self.b.cast(op, f, x, t))
     }
-}
 
-impl Lower<'_> {
     /// A float converted to an integer, rounding toward 0, which traps if
     /// it's NaN or out of the integer's range, as in Wasm. It converts when
     /// it's above the smallest integer minus one and below the largest plus
     /// one, or from the smallest itself, a power of 2, where the smallest
     /// minus one isn't a value of the float type. NaN fails every ordered
     /// comparison, so it traps too.
-    fn float_to_int(&mut self, from: &Ty, to: &Ty, sign: Sign, x: &str) -> String {
+    fn float_to_int(&mut self, from: &Ty, to: &Ty, sign: Sign, x: &Value) -> Value {
         let (f, t) = (ty(from).unwrap(), ty(to).unwrap());
         let bits = int_bits(to) as i32;
-        let as_from = |v: f64| -> (String, bool) {
-            let exact = if *from == Ty::F32 {
-                f64::from(v as f32) == v
+        let as_from = |v: f64| -> (Value, bool) {
+            if *from == Ty::F32 {
+                (lit(&Lit::f32(v as f32)), f64::from(v as f32) == v)
             } else {
-                true
-            };
-            (
-                lit(&if *from == Ty::F32 {
-                    Lit::f32(v as f32)
-                } else {
-                    Lit::f64(v)
-                }),
-                exact,
-            )
+                (lit(&Lit::f64(v)), true)
+            }
         };
-        let (lo_test, hi) = match sign {
+        let (lo_pred, lo, hi) = match sign {
             Sign::Signed => {
                 let min = -(2f64.powi(bits - 1));
-                let (lo, exact) = as_from(min - 1.0);
-                let lo_test = if exact && (min - 1.0) != min {
-                    format!("fcmp ogt {f} {x}, {lo}")
-                } else {
-                    format!("fcmp oge {f} {x}, {}", as_from(min).0)
-                };
-                (lo_test, as_from(2f64.powi(bits - 1)).0)
+                let hi = as_from(2f64.powi(bits - 1)).0;
+                match as_from(min - 1.0) {
+                    (lo, true) if (min - 1.0) != min => (FloatPred::Ogt, lo, hi),
+                    _ => (FloatPred::Oge, as_from(min).0, hi),
+                }
             }
-            Sign::Unsigned => (
-                format!("fcmp ogt {f} {x}, {}", as_from(-1.0).0),
-                as_from(2f64.powi(bits)).0,
-            ),
+            Sign::Unsigned => (FloatPred::Ogt, as_from(-1.0).0, as_from(2f64.powi(bits)).0),
         };
-        let above = self.temp();
-        self.line(format!("{above} = {lo_test}"));
-        let below = self.temp();
-        self.line(format!("{below} = fcmp olt {f} {x}, {hi}"));
-        let ok = self.temp();
-        self.line(format!("{ok} = and i1 {above}, {below}"));
-        let bad = self.temp();
-        self.line(format!("{bad} = xor i1 {ok}, true"));
-        self.trap_if(&bad);
+        let above = self.b.fcmp(lo_pred, f.clone(), x, lo);
+        let below = self.b.fcmp(FloatPred::Olt, f.clone(), x, hi);
+        let ok = self.b.bin(BinOp::And, Type::I1, above, below);
+        let bad = self.b.bin(BinOp::Xor, Type::I1, ok, 1);
+        self.trap_if(bad);
         let op = if sign == Sign::Signed {
-            "fptosi"
+            CastOp::FPToSI
         } else {
-            "fptoui"
+            CastOp::FPToUI
         };
-        let r = self.temp();
-        self.line(format!("{r} = {op} {f} {x} to {t}"));
-        r
+        self.b.cast(op, f, x, t)
     }
 }
 

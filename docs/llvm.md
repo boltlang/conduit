@@ -3,7 +3,8 @@
 `conduit-llvm` lowers a module to LLVM IR as text, which `clang` or `llc`
 compile, with no LLVM library to link: a first step towards a native
 backend, to find the shape of the lowering before moving to the LLVM API
-(inkwell, for LLVM 23). It handles everything but handlers, which lowering
+(inkwell, for LLVM 23). The lowering builds a small model of LLVM IR, in
+`conduit_llvm::ir`, which printing makes text. It handles everything but handlers, which lowering
 effects removes first, and host values, and says so for what it doesn't
 handle. With `Options::counts`, memory is freed by reference counting;
 cycles aren't collected yet.

@@ -32,11 +32,15 @@
 //!   tests to compare with the evaluator's.
 
 use std::collections::BTreeSet;
-use std::fmt::Write;
 
 use conduit_ir::{DataId, Module, Mutability, Ty};
 
-use crate::{ctor_fields, layout};
+use crate::ir::{BinOp, Call, CallConv, FnBuilder, Function, Global, IntPred, Item, Type, Value};
+use crate::{call_void, count_loop, ctor_fields, elem_offset, layout};
+
+/// The header's buffered bit, and its color bits, all set for purple.
+const BUFFERED: i32 = 0x4000_0000;
+const PURPLE: i32 = 0x3000_0000;
 
 /// A kind of object that's dropped the same way.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -72,28 +76,44 @@ impl Kind {
         }
     }
 
+    fn drop_name(&self) -> String {
+        format!("conduit_drop.{}", self.name())
+    }
+
+    fn drop_imm_name(&self) -> String {
+        format!("conduit_drop_imm.{}", self.name())
+    }
+
+    fn visit_name(&self) -> String {
+        format!("conduit_visit.{}", self.name())
+    }
+
+    fn desc_name(&self) -> String {
+        format!("conduit_kind.{}", self.name())
+    }
+
     /// The function that drops an object of this kind, which may buffer
     /// it as a possible root of a cycle.
-    pub fn drop_fn(&self) -> String {
-        format!("@conduit_drop.{}", self.name())
+    pub fn drop_fn(&self) -> Value {
+        Value::Global(self.drop_name())
     }
 
     /// The function that drops an object of this kind whose type is
     /// `imm`, which never buffers it. Only with cycles.
-    pub fn drop_imm_fn(&self) -> String {
-        format!("@conduit_drop_imm.{}", self.name())
+    pub fn drop_imm_fn(&self) -> Value {
+        Value::Global(self.drop_imm_name())
     }
 
     /// The function that does a step of the collector on each object an
     /// object of this kind holds. Only with cycles.
-    pub fn visit_fn(&self) -> String {
-        format!("@conduit_visit.{}", self.name())
+    pub fn visit_fn(&self) -> Value {
+        Value::Global(self.visit_name())
     }
 
     /// The descriptor an `any` holding this kind points to: its drop and
     /// visit functions.
-    pub fn desc(&self) -> String {
-        format!("@conduit_kind.{}", self.name())
+    pub fn desc(&self) -> Value {
+        Value::Global(self.desc_name())
     }
 
     /// The kinds of what an object of this kind holds, which a closure's
@@ -117,11 +137,21 @@ pub(crate) fn is_imm(t: &Ty) -> bool {
 }
 
 /// The runtime every counted module has: `dup`, `add`, `decref`, `release`,
-/// the counter of live objects, and with `cycles`, the collector.
-pub(crate) fn runtime(cycles: bool) -> String {
-    let mut s = String::from(COMMON);
-    s.push_str(if cycles { CYCLES } else { NO_CYCLES });
-    s
+/// the counter of live objects, and with `cycles`, the collector. It's
+/// LLVM IR written by hand.
+pub(crate) fn runtime(cycles: bool) -> [Item; 2] {
+    [
+        Item::Text(COMMON),
+        Item::Text(if cycles { CYCLES } else { NO_CYCLES }),
+    ]
+}
+
+fn global(name: &str) -> Value {
+    Value::global(name)
+}
+
+fn ptr(v: impl Into<Value>) -> crate::ir::Typed {
+    Type::Ptr.val(v)
 }
 
 /// Header bits, as `i32`s in the LLVM text below:
@@ -651,7 +681,7 @@ define void @conduit_collect() {
 /// descriptors, and each data type's "children only", which `drop_reuse`
 /// uses; with `cycles`, also the drops of `imm` objects and the visit
 /// functions.
-pub(crate) fn drops(m: &Module, kinds: &BTreeSet<Kind>, cycles: bool) -> Result<String, String> {
+pub(crate) fn drops(m: &Module, kinds: &BTreeSet<Kind>, cycles: bool) -> Result<Vec<Item>, String> {
     let mut all: BTreeSet<Kind> = BTreeSet::new();
     let mut todo: Vec<Kind> = kinds.iter().cloned().collect();
     while let Some(k) = todo.pop() {
@@ -659,26 +689,30 @@ pub(crate) fn drops(m: &Module, kinds: &BTreeSet<Kind>, cycles: bool) -> Result<
             todo.extend(k.held(m));
         }
     }
-    let mut out = String::new();
+    let mut out = Vec::new();
     for k in &all {
-        out.push_str(&drop_fn(m, k, cycles, false)?);
+        out.push(drop_fn(m, k, cycles, false)?.into());
         if cycles {
-            out.push_str(&drop_fn(m, k, cycles, true)?);
-            out.push_str(&visit_fn(m, k)?);
+            out.push(drop_fn(m, k, cycles, true)?.into());
+            out.push(visit_fn(m, k)?.into());
         }
-        let visit = if cycles { k.visit_fn() } else { "null".into() };
-        writeln!(
-            out,
-            "{} = private unnamed_addr constant {{ ptr, ptr }} {{ ptr {}, ptr {visit} }}",
-            k.desc(),
-            k.drop_fn()
-        )
-        .unwrap();
+        let visit = if cycles { k.visit_fn() } else { Value::Null };
+        out.push(descriptor(k.desc_name(), k.drop_fn(), visit).into());
         if let Kind::Data(d) = k {
-            out.push_str(&children_fn(m, *d)?);
+            out.push(children_def(m, *d)?.into());
         }
     }
     Ok(out)
+}
+
+/// A descriptor: a function that frees or drops an object, and its visit
+/// function, or null.
+pub(crate) fn descriptor(name: String, free: Value, visit: Value) -> Global {
+    Global::constant(
+        name,
+        Type::Struct(vec![Type::Ptr, Type::Ptr]),
+        Value::Struct(vec![ptr(free), ptr(visit)]),
+    )
 }
 
 /// What each constructor of `d` holds that's counted: its offset and kind.
@@ -702,76 +736,85 @@ fn data_fields(m: &Module, d: DataId) -> Result<Vec<Vec<(u64, Kind)>>, String> {
         .collect()
 }
 
-/// A switch on the constructor of `%p`, a block per constructor, each of
-/// which loads what it holds into `%f<ctor>_<n>`, then does `each`.
+/// A switch on the constructor of `p`, a block per constructor, each of
+/// which loads what it holds, does `each` with it, and returns.
 fn per_ctor(
     m: &Module,
     d: DataId,
-    out: &mut String,
-    each: impl Fn(&mut String, &[(String, Kind)]),
+    b: &mut FnBuilder,
+    p: &Value,
+    each: impl Fn(&mut FnBuilder, &[(Value, Kind)]),
 ) -> Result<(), String> {
     let ctors = data_fields(m, d)?;
-    writeln!(out, "  %c = getelementptr i8, ptr %p, i64 4").unwrap();
-    writeln!(out, "  %ctor = load i32, ptr %c").unwrap();
-    let cases: Vec<String> = (0..ctors.len())
-        .map(|i| format!("i32 {i}, label %k{i}"))
-        .collect();
-    writeln!(
-        out,
-        "  switch i32 %ctor, label %bad [ {} ]",
-        cases.join(" ")
-    )
-    .unwrap();
-    for (i, held) in ctors.iter().enumerate() {
-        writeln!(out, "k{i}:").unwrap();
+    let ctor = b.load_at(Type::I32, p, 4);
+    let labels: Vec<_> = ctors.iter().map(|_| b.new_block()).collect();
+    let bad = b.new_block();
+    let cases = labels.iter().cloned().enumerate();
+    b.switch(
+        Type::I32.val(ctor),
+        &bad,
+        cases.map(|(i, l)| (i as i64, l)).collect(),
+    );
+    for (held, label) in ctors.iter().zip(&labels) {
+        b.start(label);
         let mut loaded = Vec::new();
-        for (j, (o, k)) in held.iter().enumerate() {
-            writeln!(out, "  %q{i}_{j} = getelementptr i8, ptr %p, i64 {o}").unwrap();
-            writeln!(out, "  %f{i}_{j} = load ptr, ptr %q{i}_{j}").unwrap();
-            loaded.push((format!("%f{i}_{j}"), k.clone()));
+        for (o, k) in held {
+            loaded.push((b.load_at(Type::Ptr, p, *o), k.clone()));
         }
-        each(out, &loaded);
-        writeln!(out, "  ret void").unwrap();
+        each(b, &loaded);
+        b.ret_void();
     }
-    writeln!(out, "bad:\n  unreachable").unwrap();
+    b.start(&bad);
+    b.unreachable();
     Ok(())
 }
 
 /// Calls the drop of each of `held`, tail-calling the last.
-fn drop_all(out: &mut String, held: &[(String, Kind)], imm: bool) {
+fn drop_all(b: &mut FnBuilder, held: &[(Value, Kind)], imm: bool) {
     for (j, (x, k)) in held.iter().enumerate() {
-        let tail = if j + 1 == held.len() { "tail " } else { "" };
         let drop = if imm { k.drop_imm_fn() } else { k.drop_fn() };
-        writeln!(out, "  {tail}call tailcc void {drop}(ptr {x})").unwrap();
+        let call = Call::tailcc(Type::Void, drop, vec![ptr(x)]);
+        b.call(if j + 1 == held.len() {
+            call.tail()
+        } else {
+            call
+        });
     }
 }
 
 /// The drop of kind `k`, or with `imm`, its drop for `imm` objects, which
 /// never buffers, and drops what it holds the same way.
-fn drop_fn(m: &Module, k: &Kind, cycles: bool, imm: bool) -> Result<String, String> {
-    let mut s = String::new();
-    let name = if imm { k.drop_imm_fn() } else { k.drop_fn() };
-    writeln!(s, "\ndefine tailcc void {name}(ptr %p) {{\nentry:").unwrap();
-    if cycles && !imm {
-        writeln!(
-            s,
-            "  %last = call tailcc i1 @conduit_last_buf(ptr %p, ptr {})",
-            k.visit_fn()
-        )
-        .unwrap();
+fn drop_fn(m: &Module, k: &Kind, cycles: bool, imm: bool) -> Result<Function, String> {
+    let name = if imm {
+        k.drop_imm_name()
     } else {
-        writeln!(s, "  %last = call tailcc i1 @conduit_last(ptr %p)").unwrap();
-    }
-    writeln!(
-        s,
-        "  br i1 %last, label %free, label %done\ndone:\n  ret void\nfree:"
-    )
-    .unwrap();
+        k.drop_name()
+    };
+    let mut b = FnBuilder::new(
+        CallConv::Tail,
+        Type::Void,
+        name,
+        vec![(Type::Ptr, "p".into())],
+    );
+    let p = b.param(0);
+    let last = if cycles && !imm {
+        let args = vec![ptr(&p), ptr(k.visit_fn())];
+        Call::tailcc(Type::I1, global("conduit_last_buf"), args)
+    } else {
+        Call::tailcc(Type::I1, global("conduit_last"), vec![ptr(&p)])
+    };
+    let last = b.call_value(last);
+    let (free, done) = (b.new_block(), b.new_block());
+    b.cond_br(last, &free, &done);
+    b.start(&done);
+    b.ret_void();
+    b.start(&free);
     let drop_of = |e: &Kind| if imm { e.drop_imm_fn() } else { e.drop_fn() };
+    let conduit_free = || global("conduit_free");
     match k {
-        Kind::Data(d) => per_ctor(m, *d, &mut s, |out, held| {
-            writeln!(out, "  call tailcc void @conduit_free(ptr %p)").unwrap();
-            drop_all(out, held, imm);
+        Kind::Data(d) => per_ctor(m, *d, &mut b, &p, |b, held| {
+            call_void(b, conduit_free(), vec![ptr(&p)]);
+            drop_all(b, held, imm);
         })?,
         Kind::Array(e) => {
             if let Some(e) = e {
@@ -780,123 +823,134 @@ fn drop_fn(m: &Module, k: &Kind, cycles: bool, imm: bool) -> Result<String, Stri
                 // a count of 0 and purple, it lets go of it if it's
                 // buffered, for `conduit_free` to free.
                 if cycles {
-                    s.push_str(
-                        "  %h0 = load i32, ptr %p\n  %b0 = and i32 %h0, 1073741824\n  \
-                         %z0 = or i32 %b0, 805306368\n  store i32 %z0, ptr %p\n",
-                    );
+                    let h = b.load(Type::I32, &p);
+                    let buffered = b.bin(BinOp::And, Type::I32, h, BUFFERED);
+                    let purple = b.bin(BinOp::Or, Type::I32, buffered, PURPLE);
+                    b.store(Type::I32, purple, &p);
                 }
                 // Each element, then the memory.
-                s.push_str(&format!(
-                    "  %lq = getelementptr i8, ptr %p, i64 4\n  %n = load i32, ptr %lq\n  br label %head\n\
-                     head:\n  %i = phi i32 [ 0, %free ], [ %i1, %body ]\n  %more = icmp slt i32 %i, %n\n  \
-                     br i1 %more, label %body, label %end\n\
-                     body:\n  %w = zext i32 %i to i64\n  %o = mul i64 %w, 8\n  %o8 = add i64 %o, 8\n  \
-                     %q = getelementptr i8, ptr %p, i64 %o8\n  %x = load ptr, ptr %q\n  \
-                     call tailcc void {}(ptr %x)\n  %i1 = add i32 %i, 1\n  br label %head\nend:\n",
-                    drop_of(e)
-                ));
+                let n = b.load_at(Type::I32, &p, 4);
+                let drop = drop_of(e);
+                count_loop(&mut b, &n, |b, i| {
+                    let o = elem_offset(b, i, 8);
+                    let x = b.load_at(Type::Ptr, &p, o);
+                    call_void(b, drop, vec![ptr(x)]);
+                });
             }
-            s.push_str("  tail call tailcc void @conduit_free(ptr %p)\n  ret void\n");
+            b.return_call(Call::tailcc(Type::Void, conduit_free(), vec![ptr(&p)]).tail());
         }
         Kind::Ref(e) => match e {
-            Some(e) => s.push_str(&format!(
-                "  %q = getelementptr i8, ptr %p, i64 8\n  %x = load ptr, ptr %q\n  \
-                 call tailcc void @conduit_free(ptr %p)\n  tail call tailcc void {}(ptr %x)\n  ret void\n",
-                drop_of(e)
-            )),
-            None => s.push_str("  tail call tailcc void @conduit_free(ptr %p)\n  ret void\n"),
+            Some(e) => {
+                let x = b.load_at(Type::Ptr, &p, 8);
+                call_void(&mut b, conduit_free(), vec![ptr(&p)]);
+                b.return_call(Call::tailcc(Type::Void, drop_of(e), vec![ptr(x)]).tail());
+            }
+            None => b.return_call(Call::tailcc(Type::Void, conduit_free(), vec![ptr(&p)]).tail()),
         },
         // Its own function frees it and drops its captures.
-        Kind::Closure => s.push_str(
-            "  %q = getelementptr i8, ptr %p, i64 16\n  %d = load ptr, ptr %q\n  \
-             %f = load ptr, ptr %d\n  tail call tailcc void %f(ptr %p)\n  ret void\n",
-        ),
+        Kind::Closure => {
+            let desc = b.load_at(Type::Ptr, &p, 16);
+            let f = b.load(Type::Ptr, desc);
+            b.return_call(Call::tailcc(Type::Void, f, vec![ptr(&p)]).tail());
+        }
         // What it holds is dropped by its kind's drop, if it's counted.
-        Kind::Any => s.push_str(
-            "  %vq = getelementptr i8, ptr %p, i64 8\n  %v = load ptr, ptr %vq\n  \
-             %dq = getelementptr i8, ptr %p, i64 16\n  %d = load ptr, ptr %dq\n  \
-             call tailcc void @conduit_free(ptr %p)\n  %none = icmp eq ptr %d, null\n  \
-             br i1 %none, label %end, label %held\nheld:\n  %f = load ptr, ptr %d\n  \
-             tail call tailcc void %f(ptr %v)\n  ret void\nend:\n  ret void\n",
-        ),
+        Kind::Any => {
+            let v = b.load_at(Type::Ptr, &p, 8);
+            let desc = b.load_at(Type::Ptr, &p, 16);
+            call_void(&mut b, conduit_free(), vec![ptr(&p)]);
+            let none = b.icmp(IntPred::Eq, Type::Ptr, &desc, Value::Null);
+            let (held, end) = (b.new_block(), b.new_block());
+            b.cond_br(none, &end, &held);
+            b.start(&held);
+            let f = b.load(Type::Ptr, desc);
+            b.return_call(Call::tailcc(Type::Void, f, vec![ptr(v)]).tail());
+            b.start(&end);
+            b.ret_void();
+        }
     }
-    s.push_str("}\n");
-    Ok(s)
+    Ok(b.finish())
+}
+
+/// A visit function's builder: `(ptr %p, i32 %op)`.
+fn visitor(name: String) -> FnBuilder {
+    let params = vec![(Type::Ptr, "p".into()), (Type::I32, "op".into())];
+    FnBuilder::new(CallConv::Tail, Type::Void, name, params)
+}
+
+/// A step of the collector, `op`, on `x`, whose visit function is `visit`.
+fn step(x: impl Into<Value>, visit: Value, op: &Value) -> Call {
+    let args = vec![ptr(x), ptr(visit), Type::I32.val(op)];
+    Call::tailcc(Type::Void, global("conduit_step"), args)
 }
 
 /// The visit function of kind `k`: a step of the collector, `%op`, on
 /// each object an object of kind `k` holds.
-fn visit_fn(m: &Module, k: &Kind) -> Result<String, String> {
-    let mut s = String::new();
-    writeln!(
-        s,
-        "\ndefine tailcc void {}(ptr %p, i32 %op) {{\nentry:",
-        k.visit_fn()
-    )
-    .unwrap();
+fn visit_fn(m: &Module, k: &Kind) -> Result<Function, String> {
+    let mut b = visitor(k.visit_name());
+    let (p, op) = (b.param(0), b.param(1));
     match k {
-        Kind::Data(d) => per_ctor(m, *d, &mut s, step_all)?,
-        Kind::Array(Some(e)) => s.push_str(&format!(
-            "  %lq = getelementptr i8, ptr %p, i64 4\n  %n = load i32, ptr %lq\n  br label %head\n\
-             head:\n  %i = phi i32 [ 0, %entry ], [ %i1, %body ]\n  %more = icmp slt i32 %i, %n\n  \
-             br i1 %more, label %body, label %end\n\
-             body:\n  %w = zext i32 %i to i64\n  %o = mul i64 %w, 8\n  %o8 = add i64 %o, 8\n  \
-             %q = getelementptr i8, ptr %p, i64 %o8\n  %x = load ptr, ptr %q\n  \
-             call tailcc void @conduit_step(ptr %x, ptr {}, i32 %op)\n  %i1 = add i32 %i, 1\n  \
-             br label %head\nend:\n  ret void\n",
-            e.visit_fn()
-        )),
-        Kind::Ref(Some(e)) => s.push_str(&format!(
-            "  %q = getelementptr i8, ptr %p, i64 8\n  %x = load ptr, ptr %q\n  \
-             tail call tailcc void @conduit_step(ptr %x, ptr {}, i32 %op)\n  ret void\n",
-            e.visit_fn()
-        )),
-        Kind::Array(None) | Kind::Ref(None) => s.push_str("  ret void\n"),
-        // Its own visit function, in its descriptor, if it has one.
-        Kind::Closure => s.push_str(
-            "  %q = getelementptr i8, ptr %p, i64 16\n  %d = load ptr, ptr %q\n  \
-             %none = icmp eq ptr %d, null\n  br i1 %none, label %end, label %some\n\
-             some:\n  %vq = getelementptr i8, ptr %d, i64 8\n  %v = load ptr, ptr %vq\n  \
-             tail call tailcc void %v(ptr %p, i32 %op)\n  ret void\nend:\n  ret void\n",
-        ),
-        Kind::Any => s.push_str(
-            "  %dq = getelementptr i8, ptr %p, i64 16\n  %d = load ptr, ptr %dq\n  \
-             %none = icmp eq ptr %d, null\n  br i1 %none, label %end, label %some\n\
-             some:\n  %xq = getelementptr i8, ptr %p, i64 8\n  %x = load ptr, ptr %xq\n  \
-             %vq = getelementptr i8, ptr %d, i64 8\n  %v = load ptr, ptr %vq\n  \
-             tail call tailcc void @conduit_step(ptr %x, ptr %v, i32 %op)\n  ret void\n\
-             end:\n  ret void\n",
-        ),
+        Kind::Data(d) => per_ctor(m, *d, &mut b, &p, |b, held| step_all(b, held, &op))?,
+        Kind::Array(Some(e)) => {
+            let n = b.load_at(Type::I32, &p, 4);
+            count_loop(&mut b, &n, |b, i| {
+                let o = elem_offset(b, i, 8);
+                let x = b.load_at(Type::Ptr, &p, o);
+                b.call(step(x, e.visit_fn(), &op));
+            });
+            b.ret_void();
+        }
+        Kind::Ref(Some(e)) => {
+            let x = b.load_at(Type::Ptr, &p, 8);
+            b.return_call(step(x, e.visit_fn(), &op).tail());
+        }
+        Kind::Array(None) | Kind::Ref(None) => b.ret_void(),
+        // Its own visit function, in its descriptor, if it has one; an
+        // `any`'s is in the descriptor of what it holds.
+        Kind::Closure | Kind::Any => {
+            let desc = b.load_at(Type::Ptr, &p, 16);
+            let none = b.icmp(IntPred::Eq, Type::Ptr, &desc, Value::Null);
+            let (some, end) = (b.new_block(), b.new_block());
+            b.cond_br(none, &end, &some);
+            b.start(&some);
+            let v = b.load_at(Type::Ptr, desc, 8);
+            let call = if *k == Kind::Closure {
+                let args = vec![ptr(&p), Type::I32.val(&op)];
+                Call::tailcc(Type::Void, v, args)
+            } else {
+                let x = b.load_at(Type::Ptr, &p, 8);
+                step(x, v, &op)
+            };
+            b.return_call(call.tail());
+            b.start(&end);
+            b.ret_void();
+        }
     }
-    s.push_str("}\n");
-    Ok(s)
+    Ok(b.finish())
 }
 
-/// Calls `@conduit_step` on each of `held`, with `%op`.
-fn step_all(out: &mut String, held: &[(String, Kind)]) {
+/// Calls `@conduit_step` on each of `held`, with `op`.
+fn step_all(b: &mut FnBuilder, held: &[(Value, Kind)], op: &Value) {
     for (x, k) in held {
-        writeln!(
-            out,
-            "  call tailcc void @conduit_step(ptr {x}, ptr {}, i32 %op)",
-            k.visit_fn()
-        )
-        .unwrap();
+        b.call(step(x, k.visit_fn(), op));
     }
 }
 
 /// `@conduit_children.data<d>(p)`: drops what a data object holds, but
 /// keeps its memory, for `drop_reuse`.
-fn children_fn(m: &Module, d: DataId) -> Result<String, String> {
-    let mut s = String::new();
-    writeln!(
-        s,
-        "\ndefine tailcc void @conduit_children.data{}(ptr %p) {{\nentry:",
-        d.0
-    )
-    .unwrap();
-    per_ctor(m, d, &mut s, |out, held| drop_all(out, held, false))?;
-    s.push_str("}\n");
-    Ok(s)
+pub(crate) fn children_fn(d: DataId) -> Value {
+    Value::Global(children_name(d))
+}
+
+fn children_name(d: DataId) -> String {
+    format!("conduit_children.data{}", d.0)
+}
+
+fn children_def(m: &Module, d: DataId) -> Result<Function, String> {
+    let params = vec![(Type::Ptr, "p".into())];
+    let mut b = FnBuilder::new(CallConv::Tail, Type::Void, children_name(d), params);
+    let p = b.param(0);
+    per_ctor(m, d, &mut b, &p, |b, held| drop_all(b, held, false))?;
+    Ok(b.finish())
 }
 
 /// The counted captures of a closure, at these offsets, and their kinds.
@@ -908,35 +962,27 @@ fn captured(captures: &[Ty], offsets: &[u64]) -> Vec<(u64, Kind)> {
 
 /// The function that frees a closure with these captures, at these
 /// offsets, and drops them.
-pub(crate) fn closure_free(name: &str, captures: &[Ty], offsets: &[u64]) -> String {
-    let mut s = String::new();
-    writeln!(s, "\ndefine tailcc void {name}(ptr %c) {{").unwrap();
-    let held = captured(captures, offsets);
-    for (j, (o, _)) in held.iter().enumerate() {
-        writeln!(s, "  %q{j} = getelementptr i8, ptr %c, i64 {o}").unwrap();
-        writeln!(s, "  %x{j} = load ptr, ptr %q{j}").unwrap();
-    }
-    writeln!(s, "  call tailcc void @conduit_free(ptr %c)").unwrap();
-    for (j, (_, k)) in held.iter().enumerate() {
-        let tail = if j + 1 == held.len() { "tail " } else { "" };
-        writeln!(s, "  {tail}call tailcc void {}(ptr %x{j})", k.drop_fn()).unwrap();
-    }
-    s.push_str("  ret void\n}\n");
-    s
+pub(crate) fn closure_free(name: String, captures: &[Ty], offsets: &[u64]) -> Function {
+    let params = vec![(Type::Ptr, "c".into())];
+    let mut b = FnBuilder::new(CallConv::Tail, Type::Void, name, params);
+    let c = b.param(0);
+    let held: Vec<(Value, Kind)> = (captured(captures, offsets).into_iter())
+        .map(|(o, k)| (b.load_at(Type::Ptr, &c, o), k))
+        .collect();
+    call_void(&mut b, global("conduit_free"), vec![ptr(&c)]);
+    drop_all(&mut b, &held, false);
+    b.ret_void();
+    b.finish()
 }
 
 /// The visit function of a closure with these captures, at these offsets.
-pub(crate) fn closure_visit(name: &str, captures: &[Ty], offsets: &[u64]) -> String {
-    let mut s = String::new();
-    writeln!(s, "\ndefine tailcc void {name}(ptr %p, i32 %op) {{").unwrap();
-    let held = captured(captures, offsets);
-    let mut loaded = Vec::new();
-    for (j, (o, k)) in held.iter().enumerate() {
-        writeln!(s, "  %q{j} = getelementptr i8, ptr %p, i64 {o}").unwrap();
-        writeln!(s, "  %x{j} = load ptr, ptr %q{j}").unwrap();
-        loaded.push((format!("%x{j}"), k.clone()));
-    }
-    step_all(&mut s, &loaded);
-    s.push_str("  ret void\n}\n");
-    s
+pub(crate) fn closure_visit(name: String, captures: &[Ty], offsets: &[u64]) -> Function {
+    let mut b = visitor(name);
+    let (p, op) = (b.param(0), b.param(1));
+    let held: Vec<(Value, Kind)> = (captured(captures, offsets).into_iter())
+        .map(|(o, k)| (b.load_at(Type::Ptr, &p, o), k))
+        .collect();
+    step_all(&mut b, &held, &op);
+    b.ret_void();
+    b.finish()
 }
