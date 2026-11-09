@@ -944,7 +944,12 @@ let %3: imm fn(i32) -> (i32) does Effect20 = closure fn2()
 - **Exports** are the functions with an `#[export(..)]`, which a host
   calls (see the text format below). The Wasm backend exports those with
   an `#[export(wasm, ..)]`, under their names, and rejects any other kind,
-  which is for another target.
+  which is for another target. An export takes and gives host values as
+  the host's own references: in Wasm, a `host` parameter is a
+  `(ref extern)`, so the host can't give a `null` there, a `nullable host`
+  parameter an `externref`, and a host result of either kind an
+  `externref`. The evaluator's `Machine::call` takes and gives them as
+  `Value::Host(n)` and `Value::Null`.
 - **Exports start with no handlers.** The host calling an exported
   function grants it the effects without operations in its row. An
   operation it doesn't handle itself traps, even when the host calls it
@@ -1426,8 +1431,11 @@ exception handling, both part of Wasm 3.0.
   values alive at once. Without counts, nothing is freed, slots neither.
   A null `nullable host` is the address 0, which no box has, so it costs
   nothing, and `dup` and `drop` skip it: `host_null` is `i32.const 0`,
-  `host_is_null` is `i32.eqz`, and `host_unwrap` traps on 0. An exported
-  function can't take or give a host value yet.
+  `host_is_null` is `i32.eqz`, and `host_unwrap` traps on 0. An export
+  that takes or gives host values runs under a wrapper, as it does when
+  the module has handlers, which puts each `externref` it's given in a
+  box, and turns each box it gives back into its `externref` and drops
+  the box.
 - With `Options::cycles` too, cycles are collected by trial deletion.
   The header's count is then 28 bits, with the collector's color and a
   "buffered" bit above it, and the sign bit for immortal. A `drop` that

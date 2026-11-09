@@ -1600,3 +1600,68 @@ fn fn2() -> () {
         assert!(error.to_string().contains(message), "{error}");
     }
 }
+
+/// The host calls a function as it does at an extern: a host value goes in
+/// as `Value::Host(n)`, is an object while the function runs, and comes
+/// back out the same way, its object dropped, so counting leaves nothing.
+#[test]
+fn calls_take_and_give_host_values() {
+    struct Numbers;
+    impl Host for Numbers {
+        fn call(
+            &mut self,
+            name: &str,
+            _: &Extern,
+            args: &[Value],
+            _: &mut Arrays<'_, '_>,
+        ) -> Result<Vec<Value>, HostError> {
+            match (name, args) {
+                ("wrap", [Value::I32(n)]) => Ok(vec![Value::Host(*n as u64)]),
+                ("unwrap", [Value::Host(n)]) => Ok(vec![Value::I32(*n as i32)]),
+                _ => Err("bad call".into()),
+            }
+        }
+    }
+    let src = "#[link(emu)]
+extern wrap(i32) -> (host)
+#[link(emu)]
+extern unwrap(host) -> (i32)
+
+fn echo(%h: host) -> (host) {
+  jump ret(%h)
+}
+
+fn read(%h: host) -> (i32) {
+  let %r: i32 = call_extern unwrap(%h)
+  let = drop(%h)
+  jump ret(%r)
+}
+
+fn make(%n: i32) -> (host) {
+  let %h: host = call_extern wrap(%n)
+  jump ret(%h)
+}
+
+fn either(%a: nullable host) -> (nullable host) {
+  jump ret(%a)
+}";
+    // Its counts by hand: each function owns its parameters and gives its
+    // results away, so only `read` drops what it's given.
+    let m = conduit_ir::text::parse(src).unwrap();
+    verify_module(&m).unwrap();
+    let id = |name: &str| conduit_ir::text::find_func(&m, name).unwrap();
+    let mut machine = Machine::new(&m, Numbers);
+    machine.counting = true;
+    let calls = [
+        ("echo", vec![Value::Host(7)], vec![Value::Host(7)]),
+        ("read", vec![Value::Host(7)], vec![Value::I32(7)]),
+        ("make", vec![Value::I32(5)], vec![Value::Host(5)]),
+        ("either", vec![Value::Null], vec![Value::Null]),
+        ("either", vec![Value::Host(3)], vec![Value::Host(3)]),
+    ];
+    for (f, args, expected) in calls {
+        assert_eq!(machine.call(id(f), args).unwrap(), expected, "{f}");
+    }
+    let leaks = machine.leaks(&[]);
+    assert!(leaks.is_empty(), "{leaks}");
+}

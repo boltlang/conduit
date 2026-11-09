@@ -1,14 +1,38 @@
-// An exported function can't take or give a host value yet: the host
-// would call it with an `externref`, which needs a box at the export, as
-// an extern's result gets one.
+// Exported functions that take and give host values. In Wasm, each runs
+// under a wrapper that gives each host argument a box and each host result
+// back as its `externref`: a `host` parameter is a `(ref extern)`, so the
+// host can't give a `null` there, and a `nullable host` one an `externref`.
+// What the host gives them is checked in conduit-wasm's tests; here they're
+// called from inside the module too.
 
+#[link(emu)]
+extern wrap(i32) -> (host)
 #[link(emu)]
 extern unwrap(host) -> (i32)
 
-#[export(wasm, name = "read")]
-fn read(%h: host) -> (i32) {
-  let %r: i32 = call_extern unwrap(%h)
+#[export(wasm, name = "echo")]
+fn echo(%h: host) -> (host) {
+  jump ret(%h)
+}
+
+#[export(wasm, name = "either")]
+fn either(%a: nullable host, %b: host) -> (nullable host) {
+  let %null: i32 = host_is_null(%a)
+  case %null {
+    0 => jump ret(%a)
+    _ => jump ret(%b)
+  }
+}
+
+// `%n` through both, with a null first.
+fn through(%n: i32) -> (i32) {
+  let %h: host = call_extern wrap(%n)
+  let %e: host = call echo(%h)
+  let %none: nullable host = host_null()
+  let %picked: nullable host = call either(%none, %e)
+  let %u: host = host_unwrap(%picked)
+  let %r: i32 = call_extern unwrap(%u)
   jump ret(%r)
 }
 
-//# wasm-error: can't export `read`, which takes or gives a host value
+//# run through(8i32) == 8i32

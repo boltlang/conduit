@@ -234,6 +234,39 @@ pub(crate) struct Hosts {
     pub free: Option<u32>,
 }
 
+/// Whether function `f` takes or gives a host value.
+fn takes_or_gives_host(m: &Module, f: FuncId) -> bool {
+    m.funcs.get(&f).is_some_and(|func| {
+        (func.params.iter().map(|v| func.var_ty(*v)))
+            .chain(&func.results)
+            .any(Ty::is_host)
+    })
+}
+
+/// What a parameter of type `ty` is in an export's signature: a host value
+/// is the host's own reference, a `(ref extern)` for one that's never null,
+/// so that the host can't give a `null` there, and an `externref` for a
+/// nullable one.
+fn export_param(ty: &Ty) -> ValType {
+    match ty {
+        Ty::Host => ValType::Ref(RefType {
+            nullable: false,
+            heap_type: wasm_encoder::HeapType::EXTERN,
+        }),
+        Ty::NullableHost => ValType::EXTERNREF,
+        ty => val(ty),
+    }
+}
+
+/// What a result of type `ty` is in an export's signature: an `externref`
+/// for a host value of either kind.
+fn export_result(ty: &Ty) -> ValType {
+    match ty {
+        Ty::Host | Ty::NullableHost => ValType::EXTERNREF,
+        ty => val(ty),
+    }
+}
+
 /// What a parameter of type `ty` is in an import's signature: a host value
 /// is an `externref` there, and everywhere else the slot's box. One that's
 /// never null is an `externref` too, which the JS String Builtins want.
@@ -652,24 +685,6 @@ pub fn emit_module_with(m: &Module, options: &Options) -> Result<Vec<u8>, Error>
                 ),
             });
         };
-        let sig = m.funcs.get(&f).map(|f| (&f.params, &f.results));
-        let takes_host = sig.is_some_and(|(params, results)| {
-            let f = &m.funcs[&f];
-            params
-                .iter()
-                .map(|v| f.var_ty(*v))
-                .chain(results)
-                .any(Ty::is_host)
-        });
-        if takes_host {
-            return Err(Error {
-                item: Item::Func(f),
-                message: format!(
-                    "can't export `{name}`, which takes or gives a host value: only externs can, \
-                     for now"
-                ),
-            });
-        }
         exported.push((f, &**name));
     }
     let exports: &[(FuncId, &str)] = &exported;
@@ -835,7 +850,8 @@ pub fn emit_module_with(m: &Module, options: &Options) -> Result<Vec<u8>, Error>
         || cx
             .rt
             .as_ref()
-            .is_some_and(|rt| rt.keys.contains(&counts::DropKey::Host));
+            .is_some_and(|rt| rt.keys.contains(&counts::DropKey::Host))
+        || exports.iter().any(|&(f, _)| takes_or_gives_host(m, f));
     if uses_hosts {
         let conts: usize = cx.switches.values().map(|sw| sw.conts.len()).sum();
         let free = cx.rt.is_some().then(|| match (&cx.slot_lists, cx.stack) {
@@ -1090,81 +1106,136 @@ pub fn emit_module_with(m: &Module, options: &Options) -> Result<Vec<u8>, Error>
         runtime.extend(shadow::bodies(&mut cx, stack));
     }
 
-    let mut types = TypeSection::new();
-    for t in &cx.types {
-        match t {
-            TypeDef::Func(sig) => {
-                types
-                    .ty()
-                    .function(sig.params.iter().copied(), sig.results.iter().copied());
-            }
-            TypeDef::Cont(f) => {
-                types.ty().subtype(&wasm_encoder::SubType {
-                    is_final: true,
-                    supertype_idxs: Vec::new(),
-                    composite_type: wasm_encoder::CompositeType {
-                        inner: wasm_encoder::CompositeInnerType::Cont(wasm_encoder::ContType(*f)),
-                        shared: false,
-                        descriptor: None,
-                        describes: None,
-                    },
-                });
-            }
-        }
-    }
     let mut import_section = ImportSection::new();
     for &(module, name, sig) in &imports {
         import_section.import(module, name, EntityType::Function(sig));
     }
     // With handler frames in memory, each export runs under a wrapper
-    // that empties the handler stack and puts it back after.
+    // that empties the handler stack and puts it back after. An export
+    // that takes or gives host values runs under one too, which turns
+    // each `externref` it's given into a box, and each box it gives back
+    // into its `externref`, which it then drops.
     let mut export_wrappers = Vec::new();
     let mut export_index = BTreeMap::new();
-    if !m.handlers.is_empty() {
-        let mut next = first
-            + (funcs.len()
-                + 1
-                + runtime.len()
-                + clause_wrappers.len()
-                + switched.len()
-                + entries.len()
-                + closure_frees.len()) as u32;
-        for &(f, _) in exports {
-            if export_index.contains_key(&f) {
-                continue;
-            }
-            let Some(&(ty, n)) = func_types.get(&f) else {
-                continue;
-            };
-            let (handlers, site) = (n, n + 1);
-            let mut code = vec![
+    let mut next = first
+        + (funcs.len()
+            + 1
+            + runtime.len()
+            + clause_wrappers.len()
+            + switched.len()
+            + entries.len()
+            + closure_frees.len()) as u32;
+    for &(f, _) in exports {
+        if export_index.contains_key(&f) {
+            continue;
+        }
+        let Some(func) = m.funcs.get(&f) else {
+            continue;
+        };
+        if m.handlers.is_empty() && !takes_or_gives_host(m, f) {
+            continue;
+        }
+        let err = |message| Error {
+            item: Item::Func(f),
+            message,
+        };
+        let params: Vec<&Ty> = func.params.iter().map(|v| func.var_ty(*v)).collect();
+        let n = params.len() as u32;
+        let ty = cx.sig(FnSig {
+            params: params.iter().map(|t| export_param(t)).collect(),
+            results: func.results.iter().map(export_result).collect(),
+        });
+        let mut locals: Vec<ValType> = Vec::new();
+        let mut local = |t: ValType| {
+            locals.push(t);
+            n + locals.len() as u32 - 1
+        };
+        let saved = (!m.handlers.is_empty()).then(|| (local(ValType::I32), local(ValType::I32)));
+        let mut code = Vec::new();
+        if let Some((handlers, site)) = saved {
+            code.extend([
                 I::GlobalGet(HANDLERS),
                 I::LocalSet(handlers),
                 I::GlobalGet(SITE),
                 I::LocalSet(site),
                 I::I32Const(0),
                 I::GlobalSet(HANDLERS),
-            ];
-            code.extend((0..n).map(I::LocalGet));
+            ]);
+        }
+        // The arguments, host ones in boxes. A null is the address 0.
+        let mut args = Vec::with_capacity(params.len());
+        for (i, t) in params.iter().enumerate() {
+            let i = i as u32;
+            if !t.is_host() {
+                args.push(i);
+                continue;
+            }
+            let h = cx
+                .hosts
+                .ok_or_else(|| err("no table of host values".into()))?;
+            let p = local(ValType::I32);
+            let boxed = func::box_host(cx.alloc, h, i, p);
+            if **t == Ty::NullableHost {
+                code.extend([
+                    I::LocalGet(i),
+                    I::RefIsNull,
+                    I::If(wasm_encoder::BlockType::Empty),
+                    I::I32Const(0),
+                    I::LocalSet(p),
+                    I::Else,
+                ]);
+                code.extend(boxed);
+                code.push(I::End);
+            } else {
+                code.extend(boxed);
+            }
+            args.push(p);
+        }
+        code.extend(args.iter().map(|&a| I::LocalGet(a)));
+        code.push(I::Call(cx.func_index(f).map_err(err)?));
+        if let Some((handlers, site)) = saved {
             code.extend([
-                I::Call(cx.func_index(f).map_err(|message| Error {
-                    item: Item::Func(f),
-                    message,
-                })?),
                 I::LocalGet(handlers),
                 I::GlobalSet(HANDLERS),
                 I::LocalGet(site),
                 I::GlobalSet(SITE),
-                I::End,
             ]);
-            let body = func::Body {
-                locals: vec![ValType::I32, ValType::I32],
-                code,
-            };
-            export_wrappers.push((ty, body));
-            export_index.insert(f, next);
-            next += 1;
         }
+        // The results, host ones as their `externref`s, whose boxes are
+        // dropped.
+        if func.results.iter().any(Ty::is_host) {
+            let h = cx
+                .hosts
+                .ok_or_else(|| err("no table of host values".into()))?;
+            let held: Vec<u32> = func.results.iter().map(|t| local(val(t))).collect();
+            code.extend(held.iter().rev().map(|&l| I::LocalSet(l)));
+            let drop = cx
+                .rt
+                .as_ref()
+                .map(|rt| rt.drop(&counts::DropKey::Host, true));
+            for (t, &l) in func.results.iter().zip(&held) {
+                code.push(I::LocalGet(l));
+                if !t.is_host() {
+                    continue;
+                }
+                code.extend([
+                    I::If(wasm_encoder::BlockType::Result(ValType::EXTERNREF)),
+                    I::LocalGet(l),
+                    func::load(Storage::I32, 8),
+                    I::TableGet(h.table),
+                    I::Else,
+                    I::RefNull(wasm_encoder::HeapType::EXTERN),
+                    I::End,
+                ]);
+                if let Some(drop) = drop {
+                    code.extend([I::LocalGet(l), I::Call(drop)]);
+                }
+            }
+        }
+        code.push(I::End);
+        export_wrappers.push((ty, func::Body { locals, code }));
+        export_index.insert(f, next);
+        next += 1;
     }
 
     let mut functions = FunctionSection::new();
@@ -1189,6 +1260,29 @@ pub fn emit_module_with(m: &Module, options: &Options) -> Result<Vec<u8>, Error>
     }
 
     let mut module = wasm_encoder::Module::new();
+    // After everything that adds a type, export wrappers among them.
+    let mut types = TypeSection::new();
+    for t in &cx.types {
+        match t {
+            TypeDef::Func(sig) => {
+                types
+                    .ty()
+                    .function(sig.params.iter().copied(), sig.results.iter().copied());
+            }
+            TypeDef::Cont(f) => {
+                types.ty().subtype(&wasm_encoder::SubType {
+                    is_final: true,
+                    supertype_idxs: Vec::new(),
+                    composite_type: wasm_encoder::CompositeType {
+                        inner: wasm_encoder::CompositeInnerType::Cont(wasm_encoder::ContType(*f)),
+                        shared: false,
+                        descriptor: None,
+                        describes: None,
+                    },
+                });
+            }
+        }
+    }
     module.section(&types);
     module.section(&import_section);
     module.section(&functions);

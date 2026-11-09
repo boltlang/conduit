@@ -936,3 +936,113 @@ fn main(%n: i32) -> (i32) {
         import("find")
     );
 }
+
+const HOST_EXPORTS: &str = "#[link(wasm, module = \"test\", name = \"wrap\")]
+extern wrap(i32) -> (host)
+#[link(wasm, module = \"test\", name = \"unwrap\")]
+extern unwrap(host) -> (i32)
+
+#[export(wasm, name = \"echo\")]
+fn echo(%h: host) -> (host) {
+  jump ret(%h)
+}
+
+#[export(wasm, name = \"read\")]
+fn read(%h: host) -> (i32) {
+  let %r: i32 = call_extern unwrap(%h)
+  jump ret(%r)
+}
+
+#[export(wasm, name = \"make\")]
+fn make(%n: i32) -> (host) {
+  let %h: host = call_extern wrap(%n)
+  jump ret(%h)
+}
+
+// The first if it isn't null, and whether it was.
+#[export(wasm, name = \"either\")]
+fn either(%a: nullable host, %b: host) -> (nullable host, i32) {
+  let %null: i32 = host_is_null(%a)
+  case %null {
+    0 => jump ret(%a, 0i32)
+    _ => jump ret(%b, 1i32)
+  }
+}";
+
+/// Exports take and give host values as the host's own references: each
+/// `externref` gets a box, and each box given back is its `externref`,
+/// whose box is then dropped, so nothing's left live. A `host` parameter
+/// can't be null, and a `nullable host` one can.
+#[test]
+fn exports_take_and_give_host_values() {
+    use wasmtime::{ExternRef, Rooted, Val};
+    let mut m = text::parse(HOST_EXPORTS).unwrap();
+    conduit_opt::ownership::insert_counts(&mut m).unwrap();
+    let options = crate::Options {
+        counts: true,
+        ..Default::default()
+    };
+    let bytes = crate::emit_module_with(&m, &options).unwrap();
+    let engine = wasmtime::Engine::new(&conduit_test::wasm::config()).unwrap();
+    let module = wasmtime::Module::new(&engine, &bytes).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let linker = conduit_test::wasm::linker(&engine).unwrap();
+    let instance = linker.instantiate(&mut store, &module).unwrap();
+    let func =
+        |store: &mut wasmtime::Store<()>, name: &str| instance.get_func(&mut *store, name).unwrap();
+    let number = |store: &wasmtime::Store<()>, v: &Val| -> i32 {
+        let r = v.unwrap_externref().expect("not null");
+        *r.data(store)
+            .unwrap()
+            .unwrap()
+            .downcast_ref::<i32>()
+            .unwrap()
+    };
+    let host = |store: &mut wasmtime::Store<()>, n: i32| -> Rooted<ExternRef> {
+        ExternRef::new(store, n).unwrap()
+    };
+
+    let seven = host(&mut store, 7);
+    let mut out = [Val::I32(0)];
+    let echo = func(&mut store, "echo");
+    echo.call(&mut store, &[Val::ExternRef(Some(seven))], &mut out)
+        .unwrap();
+    assert_eq!(number(&store, &out[0]), 7);
+
+    let read = func(&mut store, "read");
+    read.call(&mut store, &[Val::ExternRef(Some(seven))], &mut out)
+        .unwrap();
+    assert_eq!(out[0].unwrap_i32(), 7);
+    // A `host` parameter is a `(ref extern)`, so a null doesn't get in.
+    assert!(
+        read.call(&mut store, &[Val::ExternRef(None)], &mut out)
+            .is_err()
+    );
+
+    let make = func(&mut store, "make");
+    make.call(&mut store, &[Val::I32(5)], &mut out).unwrap();
+    assert_eq!(number(&store, &out[0]), 5);
+
+    let either = func(&mut store, "either");
+    let mut two = [Val::I32(0), Val::I32(0)];
+    let nine = host(&mut store, 9);
+    either
+        .call(
+            &mut store,
+            &[Val::ExternRef(None), Val::ExternRef(Some(nine))],
+            &mut two,
+        )
+        .unwrap();
+    assert_eq!((number(&store, &two[0]), two[1].unwrap_i32()), (9, 1));
+    either
+        .call(
+            &mut store,
+            &[Val::ExternRef(Some(seven)), Val::ExternRef(Some(nine))],
+            &mut two,
+        )
+        .unwrap();
+    assert_eq!((number(&store, &two[0]), two[1].unwrap_i32()), (7, 0));
+
+    let live = instance.get_global(&mut store, "conduit_live").unwrap();
+    assert_eq!(live.get(&mut store).unwrap_i32(), 0);
+}

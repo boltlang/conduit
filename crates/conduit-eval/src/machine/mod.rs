@@ -232,7 +232,37 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                 "a mutability argument is imm or mut, not {m}"
             ))));
         }
-        let result = self.enter(func, args, margs).and_then(|()| self.run());
+        // The caller is the host, so host values cross as at an extern
+        // call: `Value::Host(n)` in, an object in the machine, and back out.
+        let (params, results): (Vec<Ty>, Vec<Ty>) = match self.p.func(func) {
+            Some(f) => (
+                f.params.iter().map(|v| f.var_ty(*v).clone()).collect(),
+                f.results.clone(),
+            ),
+            None => (Vec::new(), Vec::new()),
+        };
+        let mut args = args;
+        for (a, ty) in args.iter_mut().zip(&params) {
+            if let (true, Value::Host(n)) = (ty.is_host(), *a) {
+                *a = self.alloc(Object::Host(n));
+            }
+        }
+        let result = self
+            .enter(func, args, margs)
+            .and_then(|()| self.run())
+            .and_then(|mut values| {
+                for (v, ty) in values.iter_mut().zip(&results) {
+                    if ty.is_host()
+                        && let Value::Obj(id) = *v
+                        && let Some(Object::Host(n)) = self.heap.get(id.0 as usize)
+                    {
+                        let n = *n;
+                        self.drop_value(*v)?;
+                        *v = Value::Host(n);
+                    }
+                }
+                Ok(values)
+            });
         result.map_err(|kind| {
             let error = self.error(kind);
             self.stack.clear();

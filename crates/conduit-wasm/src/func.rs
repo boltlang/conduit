@@ -1849,41 +1849,9 @@ impl<'m> FuncCx<'_, 'm> {
     /// free list, which has a slot, or a new one, with a new slot.
     fn new_host(&mut self, hosts: crate::Hosts, x: u32) -> u32 {
         let p = self.new_local(ValType::I32);
-        let fresh = |me: &mut Self| {
-            me.emit(I::I32Const(16));
-            me.emit(I::Call(me.cx.alloc));
-            me.emit(I::LocalSet(p));
-            me.emit(I::LocalGet(p));
-            me.emit(I::LocalGet(x));
-            me.emit(I::I32Const(1));
-            me.emit(I::TableGrow(hosts.table));
-            me.emit(store(Storage::I32, 8));
-        };
-        let Some(free) = hosts.free else {
-            fresh(self);
-            return p;
-        };
-        self.emit(I::GlobalGet(free));
-        self.emit(I::LocalTee(p));
-        self.emit(I::If(BlockType::Empty));
-        // From the free list: counted once again, and live.
-        self.emit(I::LocalGet(p));
-        self.emit(load(Storage::I32, 4));
-        self.emit(I::GlobalSet(free));
-        self.emit(I::LocalGet(p));
-        self.emit(I::I32Const(1));
-        self.emit(store(Storage::I32, 0));
-        self.emit(I::GlobalGet(crate::counts::LIVE));
-        self.emit(I::I32Const(1));
-        self.emit(I::I32Add);
-        self.emit(I::GlobalSet(crate::counts::LIVE));
-        self.emit(I::LocalGet(p));
-        self.emit(load(Storage::I32, 8));
-        self.emit(I::LocalGet(x));
-        self.emit(I::TableSet(hosts.table));
-        self.emit(I::Else);
-        fresh(self);
-        self.emit(I::End);
+        for i in box_host(self.cx.alloc, hosts, x, p) {
+            self.emit(i);
+        }
         p
     }
 
@@ -2402,4 +2370,48 @@ fn zero(ty: ValType) -> I<'static> {
 enum Slot {
     At(u32),
     Local(u32),
+}
+
+/// Puts the `externref` in local `x` in a box, whose address goes in local
+/// `p`: one from the free list of boxes, which has a slot already, or a new
+/// one from `alloc`, with a slot that `table.grow` adds. The box's count is
+/// 1, and it's live.
+pub(crate) fn box_host(alloc: u32, hosts: crate::Hosts, x: u32, p: u32) -> Vec<I<'static>> {
+    let fresh = [
+        I::I32Const(16),
+        I::Call(alloc),
+        I::LocalSet(p),
+        I::LocalGet(p),
+        I::LocalGet(x),
+        I::I32Const(1),
+        I::TableGrow(hosts.table),
+        store(Storage::I32, 8),
+    ];
+    let Some(free) = hosts.free else {
+        return fresh.to_vec();
+    };
+    let mut code = vec![
+        I::GlobalGet(free),
+        I::LocalTee(p),
+        I::If(BlockType::Empty),
+        // From the free list: counted once again, and live.
+        I::LocalGet(p),
+        load(Storage::I32, 4),
+        I::GlobalSet(free),
+        I::LocalGet(p),
+        I::I32Const(1),
+        store(Storage::I32, 0),
+        I::GlobalGet(crate::counts::LIVE),
+        I::I32Const(1),
+        I::I32Add,
+        I::GlobalSet(crate::counts::LIVE),
+        I::LocalGet(p),
+        load(Storage::I32, 8),
+        I::LocalGet(x),
+        I::TableSet(hosts.table),
+        I::Else,
+    ];
+    code.extend(fresh);
+    code.push(I::End);
+    code
 }
