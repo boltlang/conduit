@@ -9,6 +9,7 @@
 | [optimisations.md](optimisations.md) | The optimizer's passes, one by one, and the few rewrites they're made of | pass authors |
 | [lowerings.md](lowerings.md) | Evidence passing, which removes effect handlers, and reference counting, which makes counts explicit | frontend and backend authors |
 | [wasm.md](wasm.md) | The Wasm backend: its options, how it lowers control flow and handlers, and how values live in linear memory | backend authors |
+| [llvm.md](llvm.md) | The experimental LLVM backend: what it lowers, how, and its tests | backend authors |
 | [host/js.md](host/js.md) | Running in browsers and Node.js: what the engine needs, host values, strings, callbacks, garbage collection | embedders and runtime authors |
 | [evaluator.md](evaluator.md) | `conduit-eval`, which runs IR directly, for tests | frontend and pass authors |
 

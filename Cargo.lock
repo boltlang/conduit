@@ -243,6 +243,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "conduit-llvm"
+version = "0.1.0"
+dependencies = [
+ "conduit-ir",
+ "conduit-opt",
+ "conduit-test",
+]
+
+[[package]]
 name = "conduit-opt"
 version = "0.1.0"
 dependencies = [
