@@ -227,6 +227,46 @@ not a string from a DOM node, so these two are all Conduit needs: what
 kind of value a host value is, the frontend's types and the host's own
 checks say.
 
+#### Host values and the host's garbage collector
+
+Two collectors decide when a host value goes: Conduit's counts, and the
+host's own garbage collector, like JavaScript's. Each sees only its own
+heap.
+
+- **Conduit keeps what it holds alive.** While anything in Conduit refers
+  to a host value, the host can't collect it, whatever else lets go of it:
+  in Wasm, the table of `externref`s is a root for the JavaScript
+  collector. Once Conduit's last reference is dropped, the slot is
+  cleared, and the host collects the value when nothing of its own refers
+  to it either. So a host value lives as long as the longer of the two
+  holds it, which is what a program expects.
+- **Without counts, nothing goes.** A module lowered without
+  `Options::counts` never drops, so every host value it got stays alive,
+  and the host's objects with it, as long as the instance does.
+- **A cycle through both heaps leaks.** Conduit's cycle collector follows
+  only Conduit objects, and the host's collector can't see into Conduit's
+  memory, so a cycle that goes through both is garbage neither of them
+  can find. That needs the host to hold a Conduit value, which only a
+  callback does: a closure that the host keeps as a function, which keeps
+  the closure alive in turn. The usual case is an event listener that
+  captures the element it's on: the element holds the listener, the
+  listener the closure, and the closure the element's host value. Both
+  stay until the program ends, even after the element leaves the page.
+  Rust's `wasm-bindgen` closures have the same limit.
+
+A frontend can avoid such cycles rather than collect them:
+
+- don't capture what holds the callback: a listener can get its element
+  from the event (`event.currentTarget`) instead;
+- let go explicitly: remove the listener (`removeEventListener`, or an
+  `AbortSignal` given to `addEventListener`), which drops the host's
+  reference to the closure, and so the closure's to the element;
+- hold the host value weakly, through a JavaScript `WeakRef` that the
+  closure captures in its place.
+
+Conduit can't call a closure from the host yet, so today no cycle goes
+through both heaps; this is what to keep in mind once it can.
+
 A tuple or struct is a `DataDecl` with one constructor. `Bool` and
 field-less enums are `I32`. Unit is zero values and `!` is zero results, so
 neither needs a type of its own: every binder list, parameter list and
