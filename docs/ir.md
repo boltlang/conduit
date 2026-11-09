@@ -206,76 +206,28 @@ a wider one extends as its sign says: `convert.u[i32](255i8)` is `255i32`,
 has tags from `-128` to `127`.
 
 `Host` is a value of the host, like a JavaScript object or string when
-the target is Wasm in a browser, a DOM node among them. Conduit can't
-look into one: it only holds it, in variables, fields, closures, refs and
-`any`s, and passes it to externs, which is where host values come from.
-It's an object, so it's counted, and once nothing refers to one the host
-can collect what it holds. It's `Imm`, since nothing Conduit does can
-change it, though the host's own code may, as an extern call may change
-anything. Each backend picks how it holds one: the Wasm backend as a slot
-in a table of `externref`s (see "Operations per target"), the evaluator as
-a number its host gives.
+the target is Wasm in a browser. Conduit can't look into one: it only
+holds it, in variables, fields, closures, refs and `any`s, and passes it
+to externs, which is where host values come from. It's an object, so it's
+counted, and once nothing refers to one the host can collect what it
+holds. It's `Imm`, since nothing Conduit does can change it, though the
+host's own code may, as an extern call may change anything.
 
-A `host` is never null. A `nullable host` is a host value or null, like
-what a JavaScript function that may give `null` gives, such as
-`getElementById`. A `host` fits where a `nullable host` is expected, and
-three ops go the other way: `host_null()` gives a null, `host_is_null(x)`
-is 1 for a null and 0 otherwise, and `host_unwrap(x)` gives the `host`,
-taking `x`'s reference, and traps on a null. A null isn't an object, so
-it isn't counted. Wasm's own types only tell a host value from a null,
-not a string from a DOM node, so these two are all Conduit needs: what
-kind of value a host value is, the frontend's types and the host's own
-checks say.
+A `host` is never null. A `nullable host` is a host value or null, and a
+`host` fits where one is expected. Three ops go the other way:
+`host_null()` gives a null, `host_is_null(x)` is 1 for a null and 0
+otherwise, and `host_unwrap(x)` gives the `host`, taking `x`'s reference,
+and traps on a null. A null isn't an object, so it isn't counted.
 
 `host_function(c)` gives the host a function that calls the closure `c`,
-as a `host`: in Wasm, a JavaScript function, which the host can call as
-any other, like an event listener or a `setTimeout` callback. It takes
-`c`'s reference, and the host holds the closure for as long as it holds
-the function. The closure's parameters and results must be ones the host
-can give and take, scalars and host values, and it runs with no handlers,
-as an export does. After lowering effects by evidence passing, the
-function's closure is of an adapter that makes fresh evidence and applies
-`c`, so the host only gives what `c` takes.
+as a `host`, like an event listener: it takes `c`'s reference, and the host
+holds the closure for as long as it holds the function. The closure's
+parameters and results must be scalars or host values, and it runs with
+no handlers, as an export does.
 
-#### Host values and the host's garbage collector
-
-Two collectors decide when a host value goes: Conduit's counts, and the
-host's own garbage collector, like JavaScript's. Each sees only its own
-heap.
-
-- **Conduit keeps what it holds alive.** While anything in Conduit refers
-  to a host value, the host can't collect it, whatever else lets go of it:
-  in Wasm, the table of `externref`s is a root for the JavaScript
-  collector. Once Conduit's last reference is dropped, the slot is
-  cleared, and the host collects the value when nothing of its own refers
-  to it either. So a host value lives as long as the longer of the two
-  holds it, which is what a program expects.
-- **Without counts, nothing goes.** A module lowered without
-  `Options::counts` never drops, so every host value it got stays alive,
-  and the host's objects with it, as long as the instance does.
-- **A cycle through both heaps leaks.** Conduit's cycle collector follows
-  only Conduit objects, and the host's collector can't see into Conduit's
-  memory, so a cycle that goes through both is garbage neither of them
-  can find. That needs the host to hold a Conduit value, which only a
-  callback does: a closure that the host keeps as a function, which keeps
-  the closure alive in turn. The usual case is an event listener that
-  captures the element it's on: the element holds the listener, the
-  listener the closure, and the closure the element's host value. Both
-  stay until the program ends, even after the element leaves the page.
-  Rust's `wasm-bindgen` closures have the same limit.
-
-A frontend can avoid such cycles rather than collect them:
-
-- don't capture what holds the callback: a listener can get its element
-  from the event (`event.currentTarget`) instead;
-- let go explicitly: remove the listener (`removeEventListener`, or an
-  `AbortSignal` given to `addEventListener`), which drops the host's
-  reference to the closure, and so the closure's to the element;
-- hold the host value weakly, through a JavaScript `WeakRef` that the
-  closure captures in its place.
-
-A host function holds its closure until the host lets go of it, so this
-is what to keep in mind with `host_function`.
+How a backend holds them, what crosses to JavaScript and back, and how
+Conduit's counts and the host's garbage collector share them, is in
+[`host/js.md`](host/js.md).
 
 A tuple or struct is a `DataDecl` with one constructor. `Bool` and
 field-less enums are `I32`. Unit is zero values and `!` is zero results, so
@@ -969,13 +921,9 @@ let %3: imm fn(i32) -> (i32) does Effect20 = closure fn2()
   row has no effect parameters, since externs aren't generic.
 - **An extern's ABI** says how a backend passes its arguments and
   results. By default it's how the backend represents values: an object
-  is its address, and a `host` value is the host's own reference. In
-  Wasm, a `host` or `nullable host` parameter is an `externref`, a `host`
-  result a `(ref extern)`, which can't be null, and a `nullable host`
-  result an `externref`. Those are the JS String Builtins' types, whose
-  functions take `externref`s and give strings as `(ref extern)`, and a
-  JavaScript function that gives `null` for a `host` result throws at the
-  call. With `#[abi(flat)]`, it's how C compilers for wasm32 pass
+  is its address, and a `host` value is the host's own reference (in
+  Wasm, see "Host values" in [`host/js.md`](host/js.md)). With
+  `#[abi(flat)]`, it's how C compilers for wasm32 pass
   them, for WASI and other C-like hosts. Only scalars, arrays of scalars
   and arrays of `[i8]` can be passed, and only scalars given back:
   - a scalar is itself, an `i8` or `i16` zero-extended;
@@ -995,11 +943,7 @@ let %3: imm fn(i32) -> (i32) does Effect20 = closure fn2()
   calls (see the text format below). The Wasm backend exports those with
   an `#[export(wasm, ..)]`, under their names, and rejects any other kind,
   which is for another target. An export takes and gives host values as
-  the host's own references: in Wasm, a `host` parameter is a
-  `(ref extern)`, so the host can't give a `null` there, a `nullable host`
-  parameter an `externref`, and a host result of either kind an
-  `externref`. The evaluator's `Machine::call` takes and gives them as
-  `Value::Host(n)` and `Value::Null`.
+  the host's own references, as an extern does.
 - **Exports start with no handlers.** The host calling an exported
   function grants it the effects without operations in its row. An
   operation it doesn't handle itself traps, even when the host calls it
@@ -1470,36 +1414,13 @@ exception handling, both part of Wasm 3.0.
   unused. The module exports `conduit_live`, the number of
   objects not yet freed.
 - **Host values** are boxes of 16 bytes, counted like other objects, that
-  hold the number of a slot in a table of `externref`s. So a `host` is an
-  `i32` like any other object, wherever it's held. An extern call gives
-  its host arguments as `table.get` of their slots, and puts each host
-  result in a box: one from a free list of boxes, which has a slot
-  already, or a new one, with a slot that `table.grow` adds. A box whose
-  count gets to 0 sets its slot to null, so the JS garbage collector can
-  collect what it held, and goes on the free list. The table never
-  shrinks, but its slots are reused, so it's as big as the most host
-  values alive at once. Without counts, nothing is freed, slots neither.
-  A null `nullable host` is the address 0, which no box has, so it costs
-  nothing, and `dup` and `drop` skip it: `host_null` is `i32.const 0`,
-  `host_is_null` is `i32.eqz`, and `host_unwrap` traps on 0. An export
-  that takes or gives host values runs under a wrapper, as it does when
-  the module has handlers, which puts each `externref` it's given in a
-  box, and turns each box it gives back into its `externref` and drops
-  the box.
-- **Host functions** need the runtime to make a JavaScript function, so
-  a module with `host_function` imports `conduit.function(funcref, i32)
-  -> (ref extern)`, after its externs. For each signature of closure it
-  has a trampoline, `(closure, params..) -> results`, which runs like an
-  export's wrapper, with host values converted, and applies the closure,
-  with a `dup` first, since the host keeps it. `host_function(c)` is
-  `conduit.function(ref.func trampoline, c)`, and the runtime gives back
-  a function that calls the trampoline with `c` first:
-  `(...args) => trampoline(c, ...args)`. The module exports
-  `conduit_release(closure)`, which drops the closure, and which the
-  runtime calls once the host lets go of the function, from a
-  `FinalizationRegistry`. The trampolines and `conduit_release` come after
-  the shadow stack's functions, and a declarative element segment names
-  the trampolines for `ref.func`.
+  hold the number of a slot in a table of `externref`s, and a null
+  `nullable host` is the address 0. Extern calls and exports that take or
+  give them convert at the boundary, and a box whose count gets to 0
+  clears its slot and goes on a free list. A module with `host_function`
+  imports `conduit.function` from the runtime, has a trampoline for each
+  signature of closure, and exports `conduit_release`. All of it is in
+  [`host/js.md`](host/js.md).
 - With `Options::cycles` too, cycles are collected by trial deletion.
   The header's count is then 28 bits, with the collector's color and a
   "buffered" bit above it, and the sign bit for immortal. A `drop` that
@@ -1771,18 +1692,11 @@ doesn't need a deep stack.
   continuation, and `resume` moves them back. `discontinue` moves them
   back too, and then performs in the frame that was waiting. A second use
   finds the frames gone, which is an error (rule 7).
-- **Host values** are objects too, which hold the number their host gave
-  them, so they're counted, and leaks of them are found, like other
-  objects'. A host function sees `Value::Host(n)` instead, both as an
-  argument and as what it gives, and a null as `Value::Null`, which isn't
-  an object. It must give what its extern says: as many results, and a
-  null only for a `nullable host`. A host function is `Value::Function(k)`
-  to a host, which it calls with `Machine::call_function(k, args)` and lets
-  go of with `Machine::release_function(k)`, once the call that gave it to
-  the host is done: the machine doesn't run while it calls the host, so
-  unlike in Wasm, a host can't call one before it returns, as
-  `Array.prototype.map` would. The closures the host holds are roots for
-  `Machine::leaks`.
+- **Host values** are objects too, counted and checked for leaks like
+  others. A host function sees one as `Value::Host(n)`, the number it gave,
+  a null as `Value::Null`, and a host function as `Value::Function(k)`,
+  which it calls later with `Machine::call_function` (see "The evaluator"
+  in [`host/js.md`](host/js.md)).
 - **Objects know their mutability.** Every object that can be `Imm` or
   `Mut` carries an "is mut" flag. A write to an `Imm` object is an error,
   which can only happen if an optimization broke the mutability rules.
