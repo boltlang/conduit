@@ -10,6 +10,7 @@ conduit-ir = { path = "../conduit-ir" }
 
 [dev-dependencies]
 conduit-effects = { path = "../conduit-effects" }
+conduit-eval = { path = "../conduit-eval" }
 conduit-opt = { path = "../conduit-opt" }
 conduit-test = { path = "../conduit-test" }
 

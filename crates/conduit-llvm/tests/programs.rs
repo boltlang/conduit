@@ -49,18 +49,32 @@ fn test(p: &Program) -> Result<(), String> {
     let mut optimized = m.clone();
     conduit_opt::optimize_module(&mut optimized);
     for (when, m) in [("as written", m), ("after optimizing", optimized)] {
-        check(p, &m, when).map_err(|e| format!("{when}: {e}"))?;
+        check(p, &m, when, false).map_err(|e| format!("{when}: {e}"))?;
+        // With counts too, which must free all the evaluator does.
+        let mut c = m.clone();
+        if !p.has(|k| matches!(k, CheckKind::Counted)) {
+            conduit_opt::ownership::insert_reuse(&mut c);
+            conduit_opt::ownership::insert_counts(&mut c)?;
+            conduit_opt::ownership::specialize_drops(&mut c);
+        }
+        let counted = format!("{when}, with counts");
+        check(p, &c, &counted, true).map_err(|e| format!("{counted}: {e}"))?;
     }
     Ok(())
 }
 
-fn check(p: &Program, m: &Module, when: &str) -> Result<(), String> {
+fn check(p: &Program, m: &Module, when: &str, counts: bool) -> Result<(), String> {
     let runs = p.runs(m)?;
-    let mut text = conduit_llvm::emit_module(m).map_err(|e| e.to_string())?;
-    text.push_str(&driver(m, &runs)?);
+    let options = conduit_llvm::Options { counts };
+    let mut text = conduit_llvm::emit_module_with(m, &options).map_err(|e| e.to_string())?;
+    text.push_str(&driver(m, &runs, counts)?);
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("llvm");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let stem = format!("{}_{}", p.name.replace('/', "_"), when.replace(' ', "_"));
+    let stem = format!(
+        "{}_{}",
+        p.name.replace('/', "_"),
+        when.replace([' ', ','], "_")
+    );
     let ll = dir.join(format!("{stem}.ll"));
     let exe = dir.join(stem);
     std::fs::write(&ll, &text).map_err(|e| e.to_string())?;
@@ -79,6 +93,7 @@ fn check(p: &Program, m: &Module, when: &str) -> Result<(), String> {
     }
     for (i, run) in runs.iter().enumerate() {
         let results = &m.funcs[&run.func].results;
+        let mut live = None;
         let got = Command::new(&exe)
             .arg(i.to_string())
             .output()
@@ -86,18 +101,52 @@ fn check(p: &Program, m: &Module, when: &str) -> Result<(), String> {
             .and_then(|o| match o.status.signal() {
                 Some(s) => Ok(Outcome::Trap(format!("signal {s}"))),
                 None if o.status.success() => {
-                    parse(&String::from_utf8_lossy(&o.stdout), results).map(Outcome::Values)
+                    let out = String::from_utf8_lossy(&o.stdout);
+                    let mut words: Vec<&str> = out.split_whitespace().collect();
+                    if counts {
+                        live = words.pop().and_then(|w| i64::from_str_radix(w, 16).ok());
+                    }
+                    parse(&words, results).map(Outcome::Values)
                 }
                 None => Err(format!("exited with {}", o.status)),
             });
+        let gave = matches!(got, Ok(Outcome::Values(_)));
         run.check(p, got)?;
+        if counts && gave {
+            let expected = evaluator_live(m, run)?;
+            if live != Some(expected) {
+                return Err(format!(
+                    "{}: {}: native code leaves {} objects live, but the evaluator {expected}",
+                    p.at(run.line),
+                    run.name,
+                    live.map_or("an unknown number of".into(), |n| n.to_string())
+                ));
+            }
+        }
     }
     Ok(())
 }
 
+/// How many objects the evaluator leaves live after `run`, counting, with
+/// no cycles collected, as the native code doesn't collect them either.
+fn evaluator_live(m: &Module, run: &Run<'_>) -> Result<i64, String> {
+    let mut machine = conduit_eval::Machine::new(m, conduit_test::eval::TestHost);
+    machine.counting = true;
+    let args = run
+        .args
+        .iter()
+        .map(|&l| conduit_eval::Value::from(l))
+        .collect();
+    machine.call(run.func, args).map_err(|e| e.to_string())?;
+    Ok(machine
+        .objects()
+        .filter(|(id, _)| matches!(machine.count(*id), Some(conduit_eval::Count::Live(_))))
+        .count() as i64)
+}
+
 /// A C `main` that calls the function of run check `argv[1]` and prints
 /// the bits of what it gives, in hex.
-fn driver(m: &Module, runs: &[Run<'_>]) -> Result<String, String> {
+fn driver(m: &Module, runs: &[Run<'_>], counts: bool) -> Result<String, String> {
     let mut s = String::from(
         "\n@.fmt = private unnamed_addr constant [6 x i8] c\"%llx \\00\"\n\
          declare i32 @printf(ptr, ...)\n\
@@ -166,6 +215,13 @@ fn driver(m: &Module, runs: &[Run<'_>]) -> Result<String, String> {
                 "  call i32 (ptr, ...) @printf(ptr @.fmt, i64 {bits})\n"
             ));
         }
+        // Then how many objects are left live.
+        if counts {
+            s.push_str(&format!("  %live{i} = load i64, ptr @conduit_live\n"));
+            s.push_str(&format!(
+                "  call i32 (ptr, ...) @printf(ptr @.fmt, i64 %live{i})\n"
+            ));
+        }
         s.push_str("  br label %done\n");
     }
     s.push_str("done:\n  ret i32 0\n}\n");
@@ -173,10 +229,9 @@ fn driver(m: &Module, runs: &[Run<'_>]) -> Result<String, String> {
 }
 
 /// The results the driver printed, as literals of their types.
-fn parse(out: &str, results: &[Ty]) -> Result<Vec<Lit>, String> {
-    let words: Vec<&str> = out.split_whitespace().collect();
+fn parse(words: &[&str], results: &[Ty]) -> Result<Vec<Lit>, String> {
     if words.len() != results.len() {
-        return Err(format!("printed {out:?} for {} results", results.len()));
+        return Err(format!("printed {words:?} for {} results", results.len()));
     }
     words
         .iter()

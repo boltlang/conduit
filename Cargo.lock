@@ -247,6 +247,7 @@ name = "conduit-llvm"
 version = "0.1.0"
 dependencies = [
  "conduit-effects",
+ "conduit-eval",
  "conduit-ir",
  "conduit-opt",
  "conduit-test",

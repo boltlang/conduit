@@ -18,16 +18,23 @@
 //!   Wasm backend: a header word for the count, then a word with the
 //!   constructor, the length or the kind, then the fields from offset 8,
 //!   each at a multiple of its size. A closure holds its entry function's
-//!   address at 8, then its captures. Nothing is freed yet, so the ops that
-//!   count do nothing, as in the Wasm backend without counts.
+//!   address at 8, the function that frees it at 16, then its captures; an
+//!   `any` holds its value at 8 and the drop of the value at 16. With
+//!   [`Options::counts`], objects are counted and freed (see `counts`);
+//!   without, nothing is freed, and the ops that count do nothing, as in
+//!   the Wasm backend.
 //! - **Ops** follow Conduit's semantics where LLVM's differ: integer
 //!   division by 0 gives 0 and the remainder the dividend, signed
 //!   division that overflows traps, shift amounts are taken modulo the
 //!   width, `min` and `max` give NaN if either operand is NaN, and array
 //!   accesses out of bounds trap.
 
+mod counts;
+
 use std::collections::BTreeSet;
 use std::fmt::Write;
+
+use counts::Kind;
 
 use conduit_ir::{
     Atom, Block, ConstId, ConstValue, CtorId, ExternId, Func, FuncId, JoinDef, Label, Link, Lit,
@@ -52,6 +59,17 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+/// How [`emit_module_with`] lowers a module.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Options {
+    /// Whether the module's counts are explicit, as
+    /// `conduit_opt::ownership::insert_counts` makes them, so that memory
+    /// is freed: `dup`, `drop` and the ops that count for themselves count.
+    /// The module then has `@conduit_live`, the number of objects allocated
+    /// and not freed. Otherwise those ops do nothing, and nothing is freed.
+    pub counts: bool,
+}
+
 /// The LLVM symbol of function `f`.
 pub fn symbol(f: FuncId) -> String {
     format!("@fn{}", f.0)
@@ -60,6 +78,11 @@ pub fn symbol(f: FuncId) -> String {
 /// The entry function of `f`'s closures with `n` captures.
 fn entry_symbol(f: FuncId, n: usize) -> String {
     format!("@fn{}_entry{n}", f.0)
+}
+
+/// The function that frees a closure of `f` with `n` captures.
+fn free_symbol(f: FuncId, n: usize) -> String {
+    format!("@fn{}_free{n}", f.0)
 }
 
 fn const_symbol(c: ConstId) -> String {
@@ -145,20 +168,28 @@ fn layout(tys: &[Ty]) -> (Vec<u64>, u64) {
     (offsets, at.next_multiple_of(8))
 }
 
-/// The layout of a closure of `f` with these captures: its entry
-/// function's address at 8, then the captures.
+/// The layout of a closure with these captures: its entry function's
+/// address at 8, the address of the function that frees it at 16, then
+/// the captures.
 fn closure_layout(captures: &[Ty]) -> (Vec<u64>, u64) {
-    let mut tys = vec![Ty::Any(conduit_ir::Mutability::Imm)];
+    let address = Ty::Any(conduit_ir::Mutability::Imm);
+    let mut tys = vec![address.clone(), address];
     tys.extend(captures.iter().cloned());
     let (offsets, size) = layout(&tys);
-    (offsets[1..].to_vec(), size)
+    (offsets[2..].to_vec(), size)
+}
+
+/// The module as LLVM IR text, or what it has that isn't supported yet,
+/// with the default [`Options`]: nothing is freed.
+pub fn emit_module(m: &Module) -> Result<String, Error> {
+    emit_module_with(m, &Options::default())
 }
 
 /// The module as LLVM IR text, or what it has that isn't supported yet.
 /// Each function `f` is `@fn<f>`, `tailcc`, and each `#[export(c, symbol
 /// = "s")]` gets a C-callable `@s` that calls it. Externs must be
 /// `#[link(c, symbol = "..")]`.
-pub fn emit_module(m: &Module) -> Result<String, Error> {
+pub fn emit_module_with(m: &Module, options: &Options) -> Result<String, Error> {
     let err = |func: Option<FuncId>, message: String| Error { func, message };
     if !m.handlers.is_empty() {
         return Err(err(
@@ -169,7 +200,8 @@ pub fn emit_module(m: &Module) -> Result<String, Error> {
     let mut out = String::new();
     out.push_str("; Lowered from Conduit IR by conduit-llvm.\n");
     out.push_str("declare void @llvm.trap() noreturn nounwind\n");
-    out.push_str("declare ptr @malloc(i64)\n");
+    out.push_str("declare ptr @calloc(i64, i64)\n");
+    out.push_str("declare void @free(ptr)\n");
     out.push_str("declare void @llvm.memmove.p0.p0.i64(ptr, ptr, i64, i1)\n");
     for (t, s) in [("float", "f32"), ("double", "f64")] {
         for op in ["fabs", "sqrt"] {
@@ -203,14 +235,33 @@ pub fn emit_module(m: &Module) -> Result<String, Error> {
     }
     out.push_str(&consts);
     let mut entries = BTreeSet::new();
+    let mut kinds = BTreeSet::new();
     for (&id, f) in &m.funcs {
-        let mut l = Lower::new(m, id, f).map_err(|message| err(Some(id), message))?;
+        let mut l =
+            Lower::new(m, id, f, options.counts).map_err(|message| err(Some(id), message))?;
         let text = l.func().map_err(|message| err(Some(id), message))?;
         out.push_str(&text);
         entries.extend(l.entries);
+        kinds.extend(l.kinds);
     }
-    for (f, n) in entries {
-        out.push_str(&entry(m, f, n).map_err(|message| err(Some(f), message))?);
+    for &(f, n) in &entries {
+        out.push_str(&entry(m, f, n, options.counts).map_err(|message| err(Some(f), message))?);
+        if options.counts {
+            let caps = &m.funcs[&f].sig().params[..n];
+            let (offsets, _) = closure_layout(caps);
+            kinds.extend(caps.iter().filter_map(Kind::of));
+            let text = counts::closure_free(&free_symbol(f, n), caps, &offsets)
+                .map_err(|message| err(Some(f), message))?;
+            out.push_str(&text);
+        }
+    }
+    if options.counts {
+        // Entry functions drop their closure.
+        if !entries.is_empty() {
+            kinds.insert(Kind::Closure);
+        }
+        out.push_str(counts::runtime());
+        out.push_str(&counts::drops(m, &kinds).map_err(|message| err(None, message))?);
     }
     for (&id, export) in &m.exports {
         let conduit_ir::Export::C { symbol } = export else {
@@ -314,7 +365,7 @@ fn ctor_fields(m: &Module, c: CtorId) -> Result<Vec<Ty>, String> {
 
 /// The entry function of `f`'s closures with `n` captures: it reads them
 /// out of the closure and calls `f` with them, then the arguments.
-fn entry(m: &Module, f: FuncId, n: usize) -> Result<String, String> {
+fn entry(m: &Module, f: FuncId, n: usize, count: bool) -> Result<String, String> {
     let func = &m.funcs[&f];
     let sig = func.sig();
     let ret = ret_ty(&sig.results)?;
@@ -337,7 +388,15 @@ fn entry(m: &Module, f: FuncId, n: usize) -> Result<String, String> {
         let lt = ty(t)?;
         writeln!(s, "  %q{j} = getelementptr i8, ptr %c, i64 {o}").unwrap();
         writeln!(s, "  %k{j} = load {lt}, ptr %q{j}").unwrap();
+        // `apply` takes the closure, and the function owns its captures:
+        // each gets a count, and the closure is dropped.
+        if count && Kind::of(t).is_some() {
+            writeln!(s, "  call tailcc void @conduit_dup(ptr %k{j})").unwrap();
+        }
         args.push(format!("{lt} %k{j}"));
+    }
+    if count {
+        writeln!(s, "  call tailcc void {}(ptr %c)", Kind::Closure.drop_fn()).unwrap();
     }
     args.extend(rest);
     let call = format!("tail call tailcc {ret} {}({})", symbol(f), args.join(", "));
@@ -364,10 +423,13 @@ struct Lower<'m> {
     slots: Vec<&'static str>,
     /// The closure entry functions the function needs.
     entries: BTreeSet<(FuncId, usize)>,
+    /// Whether to count, and the kinds of what it drops.
+    counts: bool,
+    kinds: BTreeSet<Kind>,
 }
 
 impl<'m> Lower<'m> {
-    fn new(m: &'m Module, id: FuncId, f: &'m Func) -> Result<Lower<'m>, String> {
+    fn new(m: &'m Module, id: FuncId, f: &'m Func, counts: bool) -> Result<Lower<'m>, String> {
         Ok(Lower {
             m,
             id,
@@ -379,6 +441,8 @@ impl<'m> Lower<'m> {
             blocks: 0,
             slots: Vec::new(),
             entries: BTreeSet::new(),
+            counts,
+            kinds: BTreeSet::new(),
         })
     }
 
@@ -493,7 +557,14 @@ impl<'m> Lower<'m> {
     /// count at 1 and `word` at 4. Trapping if there's no memory left.
     fn alloc(&mut self, size: &str, word: &str) -> String {
         let p = self.temp();
-        self.line(format!("{p} = call ptr @malloc(i64 {size})"));
+        // Zeroed, so that an array's elements that aren't set are null.
+        self.line(format!("{p} = call ptr @calloc(i64 1, i64 {size})"));
+        if self.counts {
+            let (n, n1) = (self.temp(), self.temp());
+            self.line(format!("{n} = load i64, ptr @conduit_live"));
+            self.line(format!("{n1} = add i64 {n}, 1"));
+            self.line(format!("store i64 {n1}, ptr @conduit_live"));
+        }
         let null = self.temp();
         self.line(format!("{null} = icmp eq ptr {p}, null"));
         self.trap_if(&null);
@@ -656,6 +727,12 @@ impl<'m> Lower<'m> {
                 self.entries.insert((*f, args.len()));
                 let p = self.alloc(&total.to_string(), "0");
                 self.store_at("ptr", &entry_symbol(*f, args.len()), &p, "8");
+                let free = if self.counts {
+                    free_symbol(*f, args.len())
+                } else {
+                    "null".into()
+                };
+                self.store_at("ptr", &free, &p, "16");
                 for ((a, t), o) in args.iter().zip(&tys).zip(offsets) {
                     let v = self.value(a)?;
                     self.store_at(ty(t)?, &v, &p, &o.to_string());
@@ -672,7 +749,6 @@ impl<'m> Lower<'m> {
                 self.bind_results(call, &sig.results, binds)?;
             }
             Op::New(c) | Op::Reuse(c) => {
-                // Without counts, a reuse token holds no memory: allocate.
                 let fields = if matches!(op, Op::Reuse(_)) {
                     &args[1..]
                 } else {
@@ -680,7 +756,12 @@ impl<'m> Lower<'m> {
                 };
                 let tys = ctor_fields(self.m, *c)?;
                 let (offsets, total) = layout(&tys);
-                let p = self.alloc(&total.to_string(), &c.index.to_string());
+                let p = if matches!(op, Op::Reuse(_)) && self.counts {
+                    self.reuse(&args[0], &total.to_string(), &c.index.to_string())?
+                } else {
+                    // Without counts, a reuse token holds no memory.
+                    self.alloc(&total.to_string(), &c.index.to_string())
+                };
                 for ((a, t), o) in fields.iter().zip(&tys).zip(offsets) {
                     let v = self.value(a)?;
                     self.store_at(ty(t)?, &v, &p, &o.to_string());
@@ -709,7 +790,7 @@ impl<'m> Lower<'m> {
                     self.bind(binds, &x)?;
                 } else {
                     let v = self.value(&args[1])?;
-                    self.store_at(t, &v, &p, &o);
+                    self.replace_at(&tys[*i as usize], &v, &p, &o)?;
                 }
             }
             Op::ArrayNew => {
@@ -730,6 +811,10 @@ impl<'m> Lower<'m> {
                 if *op == Op::ArrayFill {
                     let v = self.value(&args[1])?;
                     self.fill(&p, &n, &v, &e)?;
+                    // It takes one reference, and the array holds `n`.
+                    if self.counts && Kind::of(&e).is_some() {
+                        self.add_count(&v, &n, &e);
+                    }
                 }
                 self.bind(binds, &p)?;
             }
@@ -744,7 +829,7 @@ impl<'m> Lower<'m> {
                     self.bind(binds, &x)?;
                 } else {
                     let v = self.value(&args[2])?;
-                    self.store_at(ty(&e)?, &v, &a, &o);
+                    self.replace_at(&e, &v, &a, &o)?;
                 }
             }
             Op::ArrayLen => {
@@ -765,6 +850,10 @@ impl<'m> Lower<'m> {
                 self.line(format!(
                     "call void @llvm.memmove.p0.p0.i64(ptr {to}, ptr {from}, i64 {elems}, i1 false)"
                 ));
+                // The clone shares the elements.
+                if self.counts && Kind::of(&e).is_some() {
+                    self.each(&p, "0", &n, "@conduit_dup");
+                }
                 self.bind(binds, &p)?;
             }
             // The same array, now `imm`.
@@ -772,11 +861,26 @@ impl<'m> Lower<'m> {
                 let a = self.value(&args[0])?;
                 self.bind(binds, &a)?;
             }
-            Op::RefNew | Op::Box(_) => {
+            Op::RefNew => {
                 let t = self.atom_ty(&args[0]);
                 let p = self.alloc("16", "0");
                 let v = self.value(&args[0])?;
                 self.store_at(ty(&t)?, &v, &p, "8");
+                self.bind(binds, &p)?;
+            }
+            // An `any` holds the drop of what it holds, if it's counted.
+            Op::Box(t) => {
+                let p = self.alloc("24", "0");
+                let v = self.value(&args[0])?;
+                self.store_at(ty(t)?, &v, &p, "8");
+                let drop = match Kind::of(t) {
+                    Some(k) if self.counts => {
+                        self.kinds.insert(k.clone());
+                        k.drop_fn()
+                    }
+                    _ => "null".into(),
+                };
+                self.store_at("ptr", &drop, &p, "16");
                 self.bind(binds, &p)?;
             }
             Op::RefGet | Op::Unbox(_) => {
@@ -786,21 +890,175 @@ impl<'m> Lower<'m> {
                 self.bind(binds, &x)?;
             }
             Op::RefSet => {
-                let t = self.atom_ty(&args[1]);
+                let Ty::Ref(t) = self.atom_ty(&args[0]) else {
+                    return Err("ref_set of something that isn't a ref".into());
+                };
                 let p = self.value(&args[0])?;
                 let v = self.value(&args[1])?;
-                self.store_at(ty(&t)?, &v, &p, "8");
+                self.replace_at(&t, &v, &p, "8")?;
             }
-            // Nothing to store: the slot is never read before a store.
-            Op::Undefined => {}
-            // Nothing is freed yet, so counting does nothing, no object is
-            // unique, and a reuse token holds no memory.
-            Op::Dup | Op::Drop | Op::Free | Op::DecRef => {}
-            Op::IsUnique => self.bind(binds, "0")?,
-            Op::DropReuse | Op::ReuseToken => self.bind(binds, "null")?,
+            // 0, which is no object, as in the Wasm backend, so that what
+            // holds it can be dropped.
+            Op::Undefined => {
+                if let Some(&b) = binds.first() {
+                    let zero = match ty(self.f.var_ty(b))? {
+                        "ptr" => "null",
+                        "float" | "double" => "0.0",
+                        _ => "0",
+                    };
+                    self.store(b, zero)?;
+                }
+            }
+            // Without counts, nothing is freed: counting does nothing, no
+            // object is unique, and a reuse token holds no memory.
+            Op::Dup | Op::Drop | Op::Free | Op::DecRef if !self.counts => {}
+            Op::IsUnique if !self.counts => self.bind(binds, "0")?,
+            Op::DropReuse | Op::ReuseToken if !self.counts => self.bind(binds, "null")?,
+            Op::Dup | Op::Drop => {
+                let t = self.atom_ty(&args[0]);
+                let Some(k) = Kind::of(&t) else {
+                    return Ok(());
+                };
+                let x = self.value(&args[0])?;
+                let f = if *op == Op::Dup {
+                    "@conduit_dup".to_string()
+                } else {
+                    k.drop_fn()
+                };
+                self.kinds.insert(k);
+                self.line(format!("call tailcc void {f}(ptr {x})"));
+            }
+            Op::IsUnique => {
+                let x = self.value(&args[0])?;
+                let r = self.temp();
+                self.line(format!("{r} = call tailcc i32 @conduit_is_unique(ptr {x})"));
+                self.bind(binds, &r)?;
+            }
+            Op::Free => {
+                let x = self.value(&args[0])?;
+                self.line(format!("call tailcc void @conduit_release(ptr {x})"));
+            }
+            Op::DecRef => {
+                let x = self.value(&args[0])?;
+                self.line(format!("call tailcc void @conduit_decref(ptr {x})"));
+            }
+            // At 0, what it held is dropped and its memory is the token.
+            Op::DropReuse => {
+                let Ty::Data(d, ..) = self.atom_ty(&args[0]) else {
+                    return Err("drop_reuse of something that isn't data".into());
+                };
+                self.kinds.insert(Kind::Data(d));
+                let x = self.value(&args[0])?;
+                let last = self.temp();
+                self.line(format!("{last} = call tailcc i1 @conduit_last(ptr {x})"));
+                let (free, done) = (self.new_block(), self.new_block());
+                self.line(format!("br i1 {last}, label %{free}, label %{done}"));
+                self.start(&free);
+                self.line(format!(
+                    "call tailcc void @conduit_children.data{}(ptr {x})",
+                    d.0
+                ));
+                self.line(format!("br label %{done}"));
+                self.start(&done);
+                let token = self.temp();
+                self.line(format!("{token} = select i1 {last}, ptr {x}, ptr null"));
+                self.bind(binds, &token)?;
+            }
+            Op::ReuseToken => {
+                let x = self.value(&args[0])?;
+                self.bind(binds, &x)?;
+            }
             other => return Err(format!("{other:?} isn't supported yet")),
         }
         Ok(())
+    }
+
+    /// Stores `v`, of type `t`, at `off` in `p`, and drops what it
+    /// replaces, when counting.
+    fn replace_at(&mut self, t: &Ty, v: &str, p: &str, off: &str) -> Result<(), String> {
+        let lt = ty(t)?;
+        match Kind::of(t) {
+            Some(k) if self.counts => {
+                let old = self.load_at(lt, p, off);
+                self.store_at(lt, v, p, off);
+                self.line(format!("call tailcc void {}(ptr {old})", k.drop_fn()));
+                self.kinds.insert(k);
+            }
+            _ => self.store_at(lt, v, p, off),
+        }
+        Ok(())
+    }
+
+    /// Gives `v` the `n - 1` more references an array of `n` copies of it
+    /// holds, or drops it if `n` is 0.
+    fn add_count(&mut self, v: &str, n: &str, e: &Ty) {
+        let k = Kind::of(e).expect("a counted element");
+        let none = self.temp();
+        self.line(format!("{none} = icmp eq i32 {n}, 0"));
+        let (zero, some, done) = (self.new_block(), self.new_block(), self.new_block());
+        self.line(format!("br i1 {none}, label %{zero}, label %{some}"));
+        self.start(&zero);
+        self.line(format!("call tailcc void {}(ptr {v})", k.drop_fn()));
+        self.line(format!("br label %{done}"));
+        self.start(&some);
+        let more = self.temp();
+        self.line(format!("{more} = sub i32 {n}, 1"));
+        self.line(format!(
+            "call tailcc void @conduit_add(ptr {v}, i32 {more})"
+        ));
+        self.line(format!("br label %{done}"));
+        self.start(&done);
+        self.kinds.insert(k);
+    }
+
+    /// Calls `f` on each of the `n` elements of array `a` from `start`, all
+    /// `i32` values, which are objects.
+    fn each(&mut self, a: &str, start: &str, n: &str, f: &str) {
+        let i = self.slot("i32");
+        self.line(format!("store i32 0, ptr {i}"));
+        let (head, body, done) = (self.new_block(), self.new_block(), self.new_block());
+        self.line(format!("br label %{head}"));
+        self.start(&head);
+        let k = self.temp();
+        self.line(format!("{k} = load i32, ptr {i}"));
+        let more = self.temp();
+        self.line(format!("{more} = icmp slt i32 {k}, {n}"));
+        self.line(format!("br i1 {more}, label %{body}, label %{done}"));
+        self.start(&body);
+        let at = self.temp();
+        self.line(format!("{at} = add i32 {start}, {k}"));
+        let o = self.elem_offset(&at, 8);
+        let x = self.load_at("ptr", a, &o);
+        self.line(format!("call tailcc void {f}(ptr {x})"));
+        let k1 = self.temp();
+        self.line(format!("{k1} = add i32 {k}, 1"));
+        self.line(format!("store i32 {k1}, ptr {i}"));
+        self.line(format!("br label %{head}"));
+        self.start(&done);
+    }
+
+    /// An object of `size` bytes in the memory of `token`, if it holds
+    /// some, or a new one: either way with its count at 1 and `word` at 4.
+    fn reuse(&mut self, token: &Atom, size: &str, word: &str) -> Result<String, String> {
+        let t = self.value(token)?;
+        let out = self.slot("ptr");
+        let none = self.temp();
+        self.line(format!("{none} = icmp eq ptr {t}, null"));
+        let (fresh, reused, done) = (self.new_block(), self.new_block(), self.new_block());
+        self.line(format!("br i1 {none}, label %{fresh}, label %{reused}"));
+        self.start(&fresh);
+        let p = self.alloc(size, word);
+        self.line(format!("store ptr {p}, ptr {out}"));
+        self.line(format!("br label %{done}"));
+        self.start(&reused);
+        self.line(format!("store i32 1, ptr {t}"));
+        self.store_at("i32", word, &t, "4");
+        self.line(format!("store ptr {t}, ptr {out}"));
+        self.line(format!("br label %{done}"));
+        self.start(&done);
+        let r = self.temp();
+        self.line(format!("{r} = load ptr, ptr {out}"));
+        Ok(r)
     }
 
     /// Sets each of the `n` elements of array `p` to `v`.
@@ -847,6 +1105,14 @@ impl<'m> Lower<'m> {
             let out = self.temp();
             self.line(format!("{out} = icmp ugt i64 {end}, {l64}"));
             self.trap_if(&out);
+        }
+        // The copies are references more, and what they overwrite one less.
+        if self.counts
+            && let Some(k) = Kind::of(&e)
+        {
+            self.each(src, ss, n, "@conduit_dup");
+            self.each(dst, ds, n, &k.drop_fn());
+            self.kinds.insert(k);
         }
         let to = self.elem_offset(ds, stride);
         let from = self.elem_offset(ss, stride);
