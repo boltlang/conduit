@@ -32,7 +32,13 @@ cycles aren't collected yet.
   drop function of what it holds, or null. Array accesses and copies out of bounds,
   and negative lengths, trap.
 - Constants, as globals laid out the same way, with the immortal bit set
-  in their header.
+  in their header. A constant closure holds its function's entry for no
+  captures, and a constant closure's or box's pointer at 16 is null: no
+  immortal object is freed.
+- `undefined` is left uninitialized: LLVM's `undef`, which it may
+  optimize as it likes, since nothing may use it, counting included (see
+  "Reference counts" in [ir.md](ir.md)). An undefined reuse token is
+  null, a token that holds no memory. `forget` is nothing.
 - Externs with `#[link(c, symbol = "..")]`, called with the C calling
   convention, and exports with `#[export(c, symbol = "..")]`, which get a
   C-callable function.

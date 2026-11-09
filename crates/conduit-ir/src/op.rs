@@ -121,6 +121,13 @@ pub enum Op {
     /// dropping the fields. Args: the object. Undefined behavior if its
     /// count isn't 1. What specializing `DropReuse` makes.
     ReuseToken,
+    /// Takes a reference and does nothing with it: the object's count
+    /// doesn't change, and it isn't freed. For a value that's known not to
+    /// be an object any more, like the results of a call that evidence
+    /// passing knows yielded, which are `Undefined`, so that counting never
+    /// drops them; binds nothing. Args: the value. Undefined behavior if
+    /// it's a counted object whose reference anything still needs.
+    Forget,
     /// A null `NullableHost`. Args: none.
     HostNull,
     /// Whether a `NullableHost` is null, as an `i32`: 1 if it is, 0 if
@@ -248,6 +255,8 @@ impl Op {
             Op::Dup | Op::Drop | Op::Free | Op::DecRef | Op::DropReuse | Op::ReuseToken => {
                 (Writes, false)
             }
+            // Never removed: then counting would drop what it forgets.
+            Op::Forget => (Writes, false),
             // It may write into memory that's no object's any more, and it
             // must not be removed, since its token would be lost.
             Op::Reuse(_) => (Writes, false),

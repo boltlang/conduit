@@ -20,6 +20,21 @@ const const5: imm data0 = data0.1(1i32, const4)
 const const6: i32 = [1i32]
 const const7: imm data1 = data1.0([1i32])
 const const8: imm data0 = data1.0([1i32])
+const const9: imm fn(i32) -> (i64) = closure fn2
+const const10: imm fn(i32) -> (i32) = closure fn3
+const const11: imm data0 = closure fn2
+const const12: imm any = box[mut [i32]]([1i32])
+const const13: imm any = box[i32](1i64)
+const const14: i32 = box[i32](1i32)
+const const15: imm fn(i32) -> (i32) = closure fn99
+
+fn fn2(%0: i32) -> (i32) {
+  jump ret(%0)
+}
+
+fn fn3['m1](%0: i32) -> (i32) {
+  jump ret(%0)
+}
 
 fn fn1() -> () {
   let %0: imm [i64] = const const1()
@@ -35,5 +50,12 @@ fn fn1() -> () {
 //# verify-error: const6: an array isn't a i32
 //# verify-error: const7: a constant is imm all the way down, but imm data1 isn't
 //# verify-error: const8: data1.0 doesn't build a imm data0
+//# verify-error: const9: fn2 has type (i32) -> (i32), not fn(i32) -> (i64)
+//# verify-error: const10: fn3 has mutability or effect parameters, which a constant closure can't give
+//# verify-error: const11: a closure of fn2 isn't a imm data0
+//# verify-error: const12: a constant box holds what's imm all the way down, but mut [i32] isn't
+//# verify-error: const13: in box[i32]: 1i64 is a i64, not a i32
+//# verify-error: const14: a box isn't a i32
+//# verify-error: const15: unknown function fn99
 //# verify-error: fn1: the op gives a imm [i32], but %0 has type imm [i64]
 //# verify-error: fn1: unknown constant const99

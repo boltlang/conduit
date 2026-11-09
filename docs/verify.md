@@ -32,6 +32,9 @@ has already proven them, and breaking one is **undefined behavior**:
 - `array_get` of an element that `array_alloc` made and nothing has set.
 - Using what `undefined` gives: as the operand of an op that looks at it,
   or in a `case`. Passing it on, storing it or returning it is fine.
+  Counting it is using it: `dup`, `drop`, dropping what holds it, or a
+  `set` or `ref_set` that replaces it. What won't be used is `forget`ten
+  (see "Reference counts" in [ir.md](ir.md)).
 - Reaching `unreachable`. A program that means to stop there writes `trap`.
   The evaluator reports it as undefined behavior, and Wasm traps.
 
@@ -138,6 +141,7 @@ an array, and `ref_new`.
 | `new C` | a value per field of `C` | the data type it binds, of `C`'s type |
 | `const c` | nothing | `c`'s type |
 | `undefined` | nothing | the type it binds |
+| `forget` | an object | nothing |
 | `get C.i` | an object of `C`'s type | field `i` |
 | `set C.i` | a `mut` object of `C`'s type, then a value for field `i` | nothing |
 | `array_new` | elements | the array it binds |

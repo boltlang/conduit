@@ -1821,6 +1821,27 @@ fn lay_out_value(
         (ConstValue::Const(id), _) => {
             lay_out_const(cx, data, *id)?.ok_or_else(|| format!("{id} isn't an object"))
         }
+        // A closure with no captures: its entry's slot at 4.
+        (ConstValue::Closure(f), _) => {
+            let slot = cx.entry(*f, 0);
+            let mut bytes = immortal(cx).to_vec();
+            bytes.extend(slot.to_le_bytes());
+            Ok(place(data, bytes))
+        }
+        // As `box` makes them. Without counts, a reference is its own
+        // `any`; with them, the kind at 4 is 0, as an immortal box never
+        // drops what it holds.
+        (ConstValue::Box(t, inner), _) => {
+            if cx.rt.is_none() && !t.is_scalar() {
+                return lay_out_value(cx, data, inner, t);
+            }
+            let s = Storage::of(t);
+            let b = slot(cx, data, inner, t)?;
+            let mut bytes = vec![0u8; 16];
+            bytes[0..4].copy_from_slice(&immortal(cx));
+            bytes[8..8 + s.size() as usize].copy_from_slice(&b[..s.size() as usize]);
+            Ok(place(data, bytes))
+        }
         _ => Err(format!("a constant's value {value:?} isn't a {ty}")),
     }
 }

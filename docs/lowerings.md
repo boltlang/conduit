@@ -39,7 +39,19 @@ can run on it.
   of its function, and returns `undefined` results.
 - **Yielding.** After each call that may yield, the code checks the state
   and, if it's yielding, adds the rest of its function to the
-  continuation, as a new function, and returns. Join points in scope
+  continuation, as a new function, and returns. What the call gave is
+  then `undefined`, so it's `forget`ten, so that counting never drops it;
+  so are the results of what yielded in `drive` and the other runtime
+  functions. A rest whose last call may yield checks too, before it boxes
+  what that call gave: while yielding, it gives an undefined box instead.
+- **The yield state** holds the operation, its arguments and the
+  continuation built so far. Once a clause has taken them, it holds
+  placeholders, so that it doesn't keep the continuation alive: `no_args`,
+  a constant `box[i32](0i32)`, and `no_cont`, a constant closure of a
+  function that's never called. Constants, as nothing may count what
+  `undefined` gives. So the continuation's field, and every piece of a
+  continuation, has type `ro fn(..)`: a closure the code makes is `mut`,
+  and a constant is `imm`. Join points in scope
   there become functions first, since the rest jumps to them. An effect
   may yield if one of its handlers has a clause for it that isn't
   tail-resumptive, or can perform an effect that may: rows say which calls
@@ -73,7 +85,8 @@ except what's borrowed (below):
   dropped.
 - A join point owns what its body uses from outside, which each jump to
   it hands over with its arguments.
-- What `const` and `undefined` give is never counted.
+- What `const` and `undefined` give is never counted, and `forget` takes
+  a reference without a `drop`.
 
 **Borrowed parameters** (`ownership::borrows`, which `insert_counts`
 calls; a frontend can give its own with `insert_counts_with`). An object

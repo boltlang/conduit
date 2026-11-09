@@ -8,17 +8,17 @@
   (type (;6;) (func (param i32 i32 i32 i32 i32) (result i32)))
   (type (;7;) (func (param i32)))
   (type (;8;) (func (param i32 i32)))
-  (table (;0;) 9 9 funcref)
+  (table (;0;) 10 10 funcref)
   (memory (;0;) 2)
-  (global (;0;) (mut i32) i32.const 65568)
+  (global (;0;) (mut i32) i32.const 65592)
   (global (;1;) (mut i32) i32.const 0)
   (global (;2;) (mut i32) i32.const 0)
-  (global (;3;) (mut i32) i32.const 65568)
-  (global (;4;) (mut i32) i32.const 32)
+  (global (;3;) (mut i32) i32.const 65592)
+  (global (;4;) (mut i32) i32.const 56)
   (global (;5;) (mut i32) i32.const 0)
   (export "main" (func $main))
   (export "memory" (memory 0))
-  (elem (;0;) (table 0) (i32.const 0) func 20 21 22 23 24 25 26 27 28)
+  (elem (;0;) (table 0) (i32.const 0) func 21 22 23 24 25 26 27 28 29 30)
   (func $ask (;0;) (type 0) (param i32) (result i32)
     (local i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32)
     i32.const 16
@@ -29,7 +29,7 @@
     i32.store offset=8
     local.get 8
     local.set 1
-    i32.const 0
+    i32.const 32
     local.set 2
     i32.const 32
     call $alloc
@@ -110,7 +110,7 @@
     i32.store offset=8
     local.get 7
     local.set 0
-    i32.const 0
+    i32.const 32
     local.set 1
     i32.const 32
     call $alloc
@@ -186,7 +186,7 @@
     i32.store offset=8
     local.get 7
     local.set 0
-    i32.const 0
+    i32.const 32
     local.set 1
     i32.const 32
     call $alloc
@@ -363,7 +363,7 @@
     call $alloc
     local.set 13
     local.get 13
-    i32.const 0
+    i32.const 1
     i32.store offset=4
     local.get 13
     local.get 10
@@ -390,7 +390,10 @@
     i32.load offset=4
     return_call_indirect (type 4)
   )
-  (func $doubler_start (;7;) (type 5) (param i32 i32) (result i32)
+  (func $no_cont (;7;) (type 5) (param i32 i32) (result i32)
+    unreachable
+  )
+  (func $doubler_start (;8;) (type 5) (param i32 i32) (result i32)
     (local i32 i32 i32 i32 i32 i32 i32)
     local.get 0
     local.get 1
@@ -432,7 +435,7 @@
     local.get 7
     return
   )
-  (func $doubler_drive (;8;) (type 4) (param i32 i32 i32) (result i32)
+  (func $doubler_drive (;9;) (type 4) (param i32 i32 i32) (result i32)
     (local i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32)
     local.get 1
     local.get 0
@@ -510,7 +513,7 @@
       call $alloc
       local.set 25
       local.get 25
-      i32.const 1
+      i32.const 2
       i32.store offset=4
       local.get 25
       local.get 1
@@ -540,12 +543,12 @@
     local.get 3
     i32.const 0
     i32.store offset=8
-    i32.const 0
+    i32.const 16
     local.set 16
     local.get 3
     local.get 16
     i32.store offset=16
-    i32.const 0
+    i32.const 32
     local.set 17
     local.get 3
     local.get 17
@@ -562,7 +565,7 @@
     call $alloc
     local.set 27
     local.get 27
-    i32.const 2
+    i32.const 3
     i32.store offset=4
     local.get 27
     local.get 1
@@ -589,7 +592,7 @@
     end
     unreachable
   )
-  (func $doubler_reprompt (;9;) (type 3) (param i32 i32 i32 i32) (result i32)
+  (func $doubler_reprompt (;10;) (type 3) (param i32 i32 i32 i32) (result i32)
     (local i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32)
     global.get 3
     local.set 11
@@ -602,7 +605,7 @@
     i32.lt_u
     if ;; label = @1
       i32.const 16
-      call 18
+      call 19
     end
     global.get 3
     i32.const 16
@@ -610,7 +613,7 @@
     local.tee 13
     global.set 3
     local.get 13
-    i32.const 3
+    i32.const 4
     i32.store offset=4
     local.get 13
     local.get 1
@@ -658,7 +661,7 @@
       if ;; label = @2
         global.get 4
         local.get 12
-        call 19
+        call 20
         local.get 12
         global.set 4
       end
@@ -675,7 +678,7 @@
     if ;; label = @1
       global.get 4
       local.get 12
-      call 19
+      call 20
       local.get 12
       global.set 4
     end
@@ -683,7 +686,7 @@
     global.set 3
     return
   )
-  (func $doubler_k (;10;) (type 6) (param i32 i32 i32 i32 i32) (result i32)
+  (func $doubler_k (;11;) (type 6) (param i32 i32 i32 i32 i32) (result i32)
     (local i32 i32 i32 i32)
     local.get 2
     i32.load offset=8
@@ -703,7 +706,7 @@
       call $alloc
       local.set 8
       local.get 8
-      i32.const 3
+      i32.const 4
       i32.store offset=4
       local.get 8
       local.get 1
@@ -720,13 +723,13 @@
     end
     unreachable
   )
-  (func $ask_ev (;11;) (type 5) (param i32 i32) (result i32)
+  (func $ask_ev (;12;) (type 5) (param i32 i32) (result i32)
     (local i32 i32 i32 i32 i32)
     i32.const 16
     call $alloc
     local.set 6
     local.get 6
-    i32.const 4
+    i32.const 5
     i32.store offset=4
     local.get 6
     i32.const 1
@@ -749,7 +752,7 @@
     local.get 3
     return
   )
-  (func $ask_plus_10_ev (;12;) (type 0) (param i32) (result i32)
+  (func $ask_plus_10_ev (;13;) (type 0) (param i32) (result i32)
     (local i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32)
     local.get 0
     i32.const 1
@@ -813,7 +816,7 @@
         call $alloc
         local.set 28
         local.get 28
-        i32.const 5
+        i32.const 6
         i32.store offset=4
         local.get 28
         local.get 0
@@ -824,7 +827,7 @@
         call $alloc
         local.set 29
         local.get 29
-        i32.const 6
+        i32.const 7
         i32.store offset=4
         local.get 29
         local.get 24
@@ -903,7 +906,7 @@
     call $alloc
     local.set 30
     local.get 30
-    i32.const 5
+    i32.const 6
     i32.store offset=4
     local.get 30
     local.get 0
@@ -920,7 +923,7 @@
     call $alloc
     local.set 31
     local.get 31
-    i32.const 0
+    i32.const 1
     i32.store offset=4
     local.get 31
     local.get 13
@@ -938,13 +941,13 @@
     local.get 15
     return
   )
-  (func $main_ev (;13;) (type 0) (param i32) (result i32)
+  (func $main_ev (;14;) (type 0) (param i32) (result i32)
     (local i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32)
     i32.const 8
     call $alloc
     local.set 12
     local.get 12
-    i32.const 7
+    i32.const 8
     i32.store offset=4
     local.get 12
     local.set 1
@@ -991,7 +994,7 @@
     i32.store offset=8
     local.get 15
     local.set 8
-    i32.const 16
+    i32.const 40
     local.set 9
     i32.const 32
     call $alloc
@@ -1020,7 +1023,7 @@
     call $alloc
     local.set 17
     local.get 17
-    i32.const 8
+    i32.const 9
     i32.store offset=4
     local.get 17
     local.get 1
@@ -1032,11 +1035,11 @@
     local.get 11
     return_call $doubler_drive
   )
-  (func $resume_with (;14;) (type 5) (param i32 i32) (result i32)
+  (func $resume_with (;15;) (type 5) (param i32 i32) (result i32)
     local.get 0
     return
   )
-  (func $ask_plus_10_rest (;15;) (type 4) (param i32 i32 i32) (result i32)
+  (func $ask_plus_10_rest (;16;) (type 4) (param i32 i32 i32) (result i32)
     (local i32 i32 i32 i32)
     local.get 1
     i32.load offset=8
@@ -1056,7 +1059,7 @@
     local.get 5
     return
   )
-  (func $force (;16;) (type 3) (param i32 i32 i32 i32) (result i32)
+  (func $force (;17;) (type 3) (param i32 i32 i32 i32) (result i32)
     (local i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32)
     local.get 2
     local.set 4
@@ -1109,7 +1112,7 @@
     call $alloc
     local.set 16
     local.get 16
-    i32.const 0
+    i32.const 1
     i32.store offset=4
     local.get 16
     local.get 12
@@ -1127,7 +1130,7 @@
     local.get 14
     return
   )
-  (func $alloc (;17;) (type 0) (param i32) (result i32)
+  (func $alloc (;18;) (type 0) (param i32) (result i32)
     (local i32 i32)
     local.get 0
     i32.const 7
@@ -1171,7 +1174,7 @@
     global.set 0
     local.get 1
   )
-  (func (;18;) (type 7) (param i32)
+  (func (;19;) (type 7) (param i32)
     (local i32 i32)
     local.get 0
     i32.const 23
@@ -1225,7 +1228,7 @@
     i32.add
     global.set 3
   )
-  (func (;19;) (type 8) (param i32 i32)
+  (func (;20;) (type 8) (param i32 i32)
     (local i32)
     block ;; label = @1
       loop ;; label = @2
@@ -1248,7 +1251,12 @@
       end
     end
   )
-  (func (;20;) (type 4) (param i32 i32 i32) (result i32)
+  (func (;21;) (type 4) (param i32 i32 i32) (result i32)
+    local.get 1
+    local.get 2
+    return_call $no_cont
+  )
+  (func (;22;) (type 4) (param i32 i32 i32) (result i32)
     local.get 0
     i32.load offset=8
     local.get 0
@@ -1257,7 +1265,7 @@
     local.get 2
     return_call $compose
   )
-  (func (;21;) (type 4) (param i32 i32 i32) (result i32)
+  (func (;23;) (type 4) (param i32 i32 i32) (result i32)
     local.get 0
     i32.load offset=8
     local.get 0
@@ -1266,7 +1274,7 @@
     local.get 2
     return_call $doubler_reprompt
   )
-  (func (;22;) (type 4) (param i32 i32 i32) (result i32)
+  (func (;24;) (type 4) (param i32 i32 i32) (result i32)
     local.get 0
     i32.load offset=8
     local.get 0
@@ -1277,7 +1285,7 @@
     local.get 2
     return_call $doubler_k
   )
-  (func (;23;) (type 5) (param i32 i32) (result i32)
+  (func (;25;) (type 5) (param i32 i32) (result i32)
     local.get 0
     i32.load offset=8
     local.get 0
@@ -1285,20 +1293,20 @@
     local.get 1
     return_call $start_resume
   )
-  (func (;24;) (type 5) (param i32 i32) (result i32)
+  (func (;26;) (type 5) (param i32 i32) (result i32)
     local.get 0
     i32.load offset=8
     local.get 1
     return_call $resume_with
   )
-  (func (;25;) (type 4) (param i32 i32 i32) (result i32)
+  (func (;27;) (type 4) (param i32 i32 i32) (result i32)
     local.get 0
     i32.load offset=8
     local.get 1
     local.get 2
     return_call $ask_plus_10_rest
   )
-  (func (;26;) (type 4) (param i32 i32 i32) (result i32)
+  (func (;28;) (type 4) (param i32 i32 i32) (result i32)
     local.get 0
     i32.load offset=8
     local.get 0
@@ -1307,15 +1315,15 @@
     local.get 2
     return_call $force
   )
-  (func (;27;) (type 5) (param i32 i32) (result i32)
+  (func (;29;) (type 5) (param i32 i32) (result i32)
     local.get 1
     return_call $ask_plus_10_ev
   )
-  (func (;28;) (type 5) (param i32 i32) (result i32)
+  (func (;30;) (type 5) (param i32 i32) (result i32)
     local.get 0
     i32.load offset=8
     local.get 1
     return_call $doubler_start
   )
-  (data (;0;) (i32.const 16) "\00\00\00\00\02\00\00\00\ff\ff\ff\ff\00\00\00\00")
+  (data (;0;) (i32.const 16) "\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\02\00\00\00\ff\ff\ff\ff\00\00\00\00")
 )

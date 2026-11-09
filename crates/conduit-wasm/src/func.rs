@@ -982,6 +982,8 @@ impl<'m> FuncCx<'_, 'm> {
                 // Without counting, nothing is freed, and no object is unique,
                 // so code that specialized a `drop` takes the branch that only
                 // decrements.
+                // Gives up a reference without counting.
+                Op::Forget => {}
                 Op::Dup | Op::Drop | Op::Free | Op::DecRef => {
                     if let Some(k) = self.counted(&self.atom_ty(&args[0])) {
                         self.atom(&args[0]);

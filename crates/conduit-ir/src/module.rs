@@ -393,6 +393,14 @@ pub enum ConstValue {
     /// The same object as another constant. Constants can't refer to each
     /// other in a cycle.
     Const(ConstId),
+    /// A closure of this function, with no captures, of a type
+    /// `imm fn(..)` that is the function's signature: a function as a
+    /// value, which nothing allocates. The function has no mutability or
+    /// effect parameters.
+    Closure(FuncId),
+    /// An `imm any` holding this value, of this type, which is `Imm` all
+    /// the way down: what `box[ty](..)` gives, which nothing allocates.
+    Box(Ty, Box<ConstValue>),
 }
 
 /// What constant `id` is, past the constants that are only another name
@@ -416,8 +424,9 @@ pub fn const_refs(value: &ConstValue) -> Vec<ConstId> {
     let mut todo = vec![value];
     while let Some(v) = todo.pop() {
         match v {
-            ConstValue::Lit(_) => {}
+            ConstValue::Lit(_) | ConstValue::Closure(_) => {}
             ConstValue::Array(parts) | ConstValue::New(_, parts) => todo.extend(parts),
+            ConstValue::Box(_, inner) => todo.push(inner),
             ConstValue::Const(id) => refs.push(*id),
         }
     }

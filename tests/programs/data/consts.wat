@@ -4,15 +4,17 @@
   (type (;2;) (func (result f64)))
   (type (;3;) (func (result i64)))
   (type (;4;) (func (result f32)))
-  (type (;5;) (func (param i32)))
-  (type (;6;) (func (param i32 i32)))
-  (table (;0;) 0 0 funcref)
+  (type (;5;) (func (param i32 i32) (result i32)))
+  (type (;6;) (func (param i32 i32 i32) (result i32)))
+  (type (;7;) (func (param i32)))
+  (type (;8;) (func (param i32 i32)))
+  (table (;0;) 1 1 funcref)
   (memory (;0;) 2)
-  (global (;0;) (mut i32) i32.const 65760)
+  (global (;0;) (mut i32) i32.const 65824)
   (global (;1;) (mut i32) i32.const 0)
   (global (;2;) (mut i32) i32.const 0)
-  (global (;3;) (mut i32) i32.const 65760)
-  (global (;4;) (mut i32) i32.const 224)
+  (global (;3;) (mut i32) i32.const 65824)
+  (global (;4;) (mut i32) i32.const 288)
   (global (;5;) (mut i32) i32.const 0)
   (export "hello_len" (func $hello_len))
   (export "sum_list" (func $sum_list))
@@ -24,7 +26,11 @@
   (export "clone_and_write" (func $clone_and_write))
   (export "bytes_sum" (func $bytes_sum))
   (export "as_ro" (func $as_ro))
+  (export "apply_plus" (func $apply_plus))
+  (export "unboxed" (func $unboxed))
+  (export "op_parts" (func $op_parts))
   (export "memory" (memory 0))
+  (elem (;0;) (table 0) (i32.const 0) func 19)
   (func $hello_len (;0;) (type 0) (result i32)
     (local i32 i32 i32 i32 i32 i32)
     i32.const 16
@@ -266,7 +272,7 @@
     i32.lt_u
     if ;; label = @1
       local.get 9
-      call 12
+      call 17
     end
     global.get 3
     local.get 9
@@ -323,7 +329,7 @@
     if ;; label = @1
       global.get 4
       local.get 6
-      call 13
+      call 18
       local.get 6
       global.set 4
     end
@@ -455,7 +461,7 @@
     i32.lt_u
     if ;; label = @1
       local.get 8
-      call 12
+      call 17
     end
     global.get 3
     local.get 8
@@ -498,7 +504,7 @@
     if ;; label = @1
       global.get 4
       local.get 5
-      call 13
+      call 18
       local.get 5
       global.set 4
     end
@@ -506,7 +512,93 @@
     global.set 3
     return
   )
-  (func $alloc (;11;) (type 1) (param i32) (result i32)
+  (func $add (;11;) (type 5) (param i32 i32) (result i32)
+    (local i32)
+    local.get 0
+    local.get 1
+    i32.add
+    local.set 2
+    local.get 2
+    return
+  )
+  (func $apply_plus (;12;) (type 1) (param i32) (result i32)
+    (local i32 i32 i32 i32)
+    i32.const 224
+    local.set 1
+    local.get 1
+    local.get 0
+    i32.const 10
+    local.get 1
+    i32.load offset=4
+    call_indirect (type 6)
+    local.set 2
+    i32.const 224
+    local.set 3
+    local.get 3
+    local.get 2
+    return_call $twice
+  )
+  (func $twice (;13;) (type 5) (param i32 i32) (result i32)
+    (local i32)
+    local.get 0
+    local.get 1
+    local.get 1
+    local.get 0
+    i32.load offset=4
+    return_call_indirect (type 6)
+  )
+  (func $unboxed (;14;) (type 0) (result i32)
+    (local i32 i32 i32 i32 i32 i32)
+    i32.const 232
+    local.set 0
+    local.get 0
+    i32.load offset=8
+    local.set 1
+    i32.const 88
+    local.set 2
+    local.get 2
+    local.set 3
+    local.get 3
+    call $sum
+    local.set 4
+    local.get 1
+    local.get 4
+    i32.mul
+    local.set 5
+    local.get 5
+    return
+  )
+  (func $op_parts (;15;) (type 2) (result f64)
+    (local i32 i32 i32 i32 f64 f64 f64)
+    i32.const 272
+    local.set 0
+    local.get 0
+    i32.load offset=8
+    local.set 1
+    local.get 1
+    i32.const 2
+    i32.const 3
+    local.get 1
+    i32.load offset=4
+    call_indirect (type 6)
+    local.set 2
+    local.get 0
+    i32.load offset=12
+    local.set 3
+    local.get 3
+    f64.load offset=8
+    local.set 4
+    local.get 2
+    f64.convert_i32_s
+    local.set 5
+    local.get 5
+    local.get 4
+    f64.add
+    local.set 6
+    local.get 6
+    return
+  )
+  (func $alloc (;16;) (type 1) (param i32) (result i32)
     (local i32 i32)
     local.get 0
     i32.const 7
@@ -550,7 +642,7 @@
     global.set 0
     local.get 1
   )
-  (func (;12;) (type 5) (param i32)
+  (func (;17;) (type 7) (param i32)
     (local i32 i32)
     local.get 0
     i32.const 23
@@ -604,7 +696,7 @@
     i32.add
     global.set 3
   )
-  (func (;13;) (type 6) (param i32 i32)
+  (func (;18;) (type 8) (param i32 i32)
     (local i32)
     block ;; label = @1
       loop ;; label = @2
@@ -627,5 +719,10 @@
       end
     end
   )
-  (data (;0;) (i32.const 16) "\00\00\00\00\05\00\00\00hello\00\00\00\00\00\00\00\05\00\00\00\22\ff\00\c3\a9\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\01\00\00\00\03\00\00\000\00\00\00\00\00\00\00\01\00\00\00\02\00\00\008\00\00\00\00\00\00\00\01\00\00\00\01\00\00\00H\00\00\00\00\00\00\00\00\00\00\00\10\00\00\00\00\00\00\00\00\00\00\00\00\00\04@\00\00\00\00\02\00\00\00\07\00\00\00\08\00\00\00\00\00\00\00\00\00\00\00\80\00\00\00\00\00\00\00\00\00\00\00\02\00\00\00\01\00\00\00\02\00\00\00\00\00\00\00\01\00\00\00\03\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\03\00\00\00\a0\00\00\00\b0\00\00\00\c0\00\00\00")
+  (func (;19;) (type 6) (param i32 i32 i32) (result i32)
+    local.get 1
+    local.get 2
+    return_call $add
+  )
+  (data (;0;) (i32.const 16) "\00\00\00\00\05\00\00\00hello\00\00\00\00\00\00\00\05\00\00\00\22\ff\00\c3\a9\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\01\00\00\00\03\00\00\000\00\00\00\00\00\00\00\01\00\00\00\02\00\00\008\00\00\00\00\00\00\00\01\00\00\00\01\00\00\00H\00\00\00\00\00\00\00\00\00\00\00\10\00\00\00\00\00\00\00\00\00\00\00\00\00\04@\00\00\00\00\02\00\00\00\07\00\00\00\08\00\00\00\00\00\00\00\00\00\00\00\80\00\00\00\00\00\00\00\00\00\00\00\02\00\00\00\01\00\00\00\02\00\00\00\00\00\00\00\01\00\00\00\03\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\03\00\00\00\a0\00\00\00\b0\00\00\00\c0\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\05\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\e0?\00\00\00\00\00\00\00\00\f8\00\00\00\00\01\00\00")
 )

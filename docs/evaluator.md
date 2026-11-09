@@ -48,7 +48,9 @@
   object has a count, which `Dup`, `Drop` and the ops that count for
   themselves change (see "Reference counts" in [ir.md](ir.md)), and an object is freed at
   0. A use of a freed object, or a `Drop` of one, is undefined behavior,
-  which stops the machine. After a run, `Machine::leaks` takes the values
+  which stops the machine, and so is counting what `undefined` gave:
+  its `Dup` or `Drop`, freeing an object that holds it, or a `Set` or
+  `RefSet` over it. `Forget` changes no count. After a run, `Machine::leaks` takes the values
   that still own objects, like the results, and reports objects with more
   counts than references (a missing `Drop`), with fewer (a `Drop` too
   many), references to freed objects, and garbage that only cycles keep

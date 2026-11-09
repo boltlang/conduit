@@ -136,7 +136,8 @@ fn fn1(%0: i32) -> (i32) {
 - **Ops** are a name, what the op takes in its name, and the arguments:
   `add`, `div.s`, `lt.u`, `convert.s[i64]`, `reinterpret[f32]`,
   `call fn2(..)`, `call_extern extern1(..)`, `closure fn2(..)`, `apply(..)`,
-  `new data10.0(..)`, `const const40()`, `undefined()`, `get data10.0.1(..)`,
+  `new data10.0(..)`, `const const40()`, `undefined()`, `forget(..)`,
+  `get data10.0.1(..)`,
   `set data10.0.1(..)`,
   `array_new`, `array_fill`, `array_alloc`, `array_get`, `array_set`,
   `array_len`, `array_copy`,
@@ -153,7 +154,8 @@ fn fn1(%0: i32) -> (i32) {
   NaNs and infinities are written by their bits: `f32_bits(2143289344)`.
 - **Constants** give their type, then their value: a literal, an array
   `[1i32, 2i32]`, a constructor with its fields `data11.1(1i32, data11.0())`,
-  or another constant by its ID or name. A byte string `b"hi\n"` is an
+  a closure with no captures `closure fn2`, a box `box[i32](0i32)`, or
+  another constant by its ID or name. A byte string `b"hi\n"` is an
   array of `i8` literals, and `print` writes every non-empty one that way.
   Its escapes are `\"`, `\\`, `\n`, `\t`, `\r`, `\0` and `\xff`, and other
   characters are their UTF-8 bytes. `print` writes valid UTF-8 as its

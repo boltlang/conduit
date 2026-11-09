@@ -1,48 +1,48 @@
 generator()
                      steps   allocs    frees   peak  count ops  reused  fresh cycles
-  optimized            305       54        0     54          0       0      0      0
-  counts               458       54       54     19        153       0      0      0
-  +borrows             458       54       54     19        153       0      0      0
-  +reuse               458       54       54     19        153       0      0      0
-  +specialized         458       54       54     19        153       0      0      0
-  +cycles              458       54       54     19        153       0      0      1
+  optimized            309       54        0     54          0       0      0      0
+  counts               458       54       54     19        149       0      0      0
+  +borrows             458       54       54     19        149       0      0      0
+  +reuse               458       54       54     19        149       0      0      0
+  +specialized         458       54       54     19        149       0      0      0
+  +cycles              458       54       54     19        149       0      0      1
 resumed_elsewhere(4i32)
                      steps   allocs    frees   peak  count ops  reused  fresh cycles
-  optimized            194       49        0     49          0       0      0      0
-  counts               308       49       26     34        114       0      0      0
-  +borrows             308       49       26     34        114       0      0      0
-  +reuse               308       49       26     34        114       0      0      0
-  +specialized         308       49       26     34        114       0      0      0
-  +cycles              308       49       49     34        114       0      0      1
+  optimized            195       49        0     49          0       0      0      0
+  counts               308       49       26     34        113       0      0      0
+  +borrows             308       49       26     34        113       0      0      0
+  +reuse               308       49       26     34        113       0      0      0
+  +specialized         308       49       26     34        113       0      0      0
+  +cycles              308       49       49     34        113       0      0      1
 cancel_inside(0i32)
                      steps   allocs    frees   peak  count ops  reused  fresh cycles
-  optimized            182       40        0     40          0       0      0      0
-  counts               275       40       40     25         93       0      0      0
-  +borrows             275       40       40     25         93       0      0      0
-  +reuse               275       40       40     25         93       0      0      0
-  +specialized         275       40       40     25         93       0      0      0
-  +cycles              275       40       40     25         93       0      0      1
+  optimized            184       40        0     40          0       0      0      0
+  counts               275       40       40     25         91       0      0      0
+  +borrows             275       40       40     25         91       0      0      0
+  +reuse               275       40       40     25         91       0      0      0
+  +specialized         275       40       40     25         91       0      0      0
+  +cycles              275       40       40     25         91       0      0      1
 cancel_inside(1i32)
                      steps   allocs    frees   peak  count ops  reused  fresh cycles
-  optimized            210       42        0     42          0       0      0      0
-  counts               312       42       42     25        102       0      0      0
-  +borrows             312       42       42     25        102       0      0      0
-  +reuse               312       42       42     25        102       0      0      0
-  +specialized         312       42       42     25        102       0      0      0
-  +cycles              312       42       42     25        102       0      0      1
+  optimized            213       42        0     42          0       0      0      0
+  counts               312       42       42     25         99       0      0      0
+  +borrows             312       42       42     25         99       0      0      0
+  +reuse               312       42       42     25         99       0      0      0
+  +specialized         312       42       42     25         99       0      0      0
+  +cycles              312       42       42     25         99       0      0      1
 cancel_outside(0i32)
                      steps   allocs    frees   peak  count ops  reused  fresh cycles
-  optimized            129       33        0     33          0       0      0      0
-  counts               192       33       33     22         63       0      0      0
-  +borrows             192       33       33     22         63       0      0      0
-  +reuse               192       33       33     22         63       0      0      0
-  +specialized         192       33       33     22         63       0      0      0
-  +cycles              192       33       33     22         63       0      0      1
+  optimized            130       33        0     33          0       0      0      0
+  counts               192       33       33     22         62       0      0      0
+  +borrows             192       33       33     22         62       0      0      0
+  +reuse               192       33       33     22         62       0      0      0
+  +specialized         192       33       33     22         62       0      0      0
+  +cycles              192       33       33     22         62       0      0      1
 cancel_outside(1i32)
                      steps   allocs    frees   peak  count ops  reused  fresh cycles
-  optimized            176       37        0     37          0       0      0      0
-  counts               256       37       37     23         80       0      0      0
-  +borrows             256       37       37     23         80       0      0      0
-  +reuse               256       37       37     23         80       0      0      0
-  +specialized         256       37       37     23         80       0      0      0
-  +cycles              256       37       37     23         80       0      0      1
+  optimized            179       37        0     37          0       0      0      0
+  counts               256       37       37     23         77       0      0      0
+  +borrows             256       37       37     23         77       0      0      0
+  +reuse               256       37       37     23         77       0      0      0
+  +specialized         256       37       37     23         77       0      0      0
+  +cycles              256       37       37     23         77       0      0      1

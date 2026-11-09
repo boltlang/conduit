@@ -1249,9 +1249,27 @@ impl Parser {
     }
 
     /// A constant's value: a literal, an array `[v, ..]` or `b"hi"`, an
-    /// object `List.1(v, ..)`, or another constant.
+    /// object `List.1(v, ..)`, a closure `closure fn3`, a box
+    /// `box[i32](0i32)`, or another constant.
     fn const_value(&mut self) -> Res<ConstValue> {
         match self.peek() {
+            Tok::Ident(s) if s == "closure" => {
+                self.next();
+                Ok(ConstValue::Closure(FuncId(self.item("fn")?)))
+            }
+            Tok::Ident(s)
+                if s == "box"
+                    && matches!(self.toks.get(self.i + 1), Some((Tok::Punct("["), _))) =>
+            {
+                self.next();
+                self.punct("[")?;
+                let ty = self.ty()?;
+                self.punct("]")?;
+                self.punct("(")?;
+                let inner = self.const_value()?;
+                self.punct(")")?;
+                Ok(ConstValue::Box(ty, Box::new(inner)))
+            }
             Tok::Num(_) => self.lit().map(ConstValue::Lit),
             Tok::Bytes(bytes) => {
                 let elems = bytes
@@ -1313,6 +1331,7 @@ impl Parser {
             "new" => Op::New(self.ctor()?),
             "const" => Op::Const(ConstId(self.item("const")?)),
             "undefined" => Op::Undefined,
+            "forget" => Op::Forget,
             "host_null" => Op::HostNull,
             "host_is_null" => Op::HostIsNull,
             "host_unwrap" => Op::HostUnwrap,

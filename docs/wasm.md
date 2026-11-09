@@ -245,6 +245,7 @@ Status:
 | `Unbox` to a reference | nothing | ✅ |
 | `Const` | the address of its object in a data segment, or its literal | ✅ |
 | `Undefined` | 0 | ✅ |
+| `Forget` | nothing | ✅ |
 | `Dup`, `DecRef` | a call that changes the header, unless the object is 0 or immortal | ✅ with `Options::counts`, else nothing |
 | `Drop` | a call of the drop function of the object's kind | ✅ with `Options::counts`, else nothing |
 | `IsUnique` | whether the header is 1 | ✅ with `Options::counts`, else 0 |
@@ -266,7 +267,10 @@ Notes:
 - `case` on an ADT loads the constructor's index, at offset 4.
 - A constant is laid out when the module is built, in a data segment
   from address 16, and the heap starts after the constants. 0 is never an
-  object, so `undefined` is 0.
+  object, so `undefined` is 0, which is also a reuse token that holds no
+  memory. A constant closure is its entry's slot in the table at 4; a
+  constant box is laid out as `box` makes one, its kind 0, as an immortal
+  box never drops what it holds.
 - Integer division and remainder trap on zero in Wasm, so `div` and `rem`
   check the divisor first and give 0 or the dividend, unless it's a
   literal.

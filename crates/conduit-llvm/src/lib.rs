@@ -227,14 +227,15 @@ pub fn emit_module_with(m: &Module, options: &Options) -> Result<String, Error> 
         writeln!(out, "declare {ret} @{symbol}({})", params.join(", ")).unwrap();
     }
     let mut consts = String::new();
+    let mut entries = BTreeSet::new();
     for (&c, decl) in &m.consts {
         if !matches!(decl.value, ConstValue::Lit(_)) {
-            const_global(m, &mut consts, &const_symbol(c), &decl.value, &decl.ty)
+            let name = const_symbol(c);
+            const_global(m, &mut consts, &mut entries, &name, &decl.value, &decl.ty)
                 .map_err(|message| err(None, format!("constant {c}: {message}")))?;
         }
     }
     out.push_str(&consts);
-    let mut entries = BTreeSet::new();
     let mut kinds = BTreeSet::new();
     for (&id, f) in &m.funcs {
         let mut l =
@@ -291,19 +292,39 @@ pub fn emit_module_with(m: &Module, options: &Options) -> Result<String, Error> 
 
 /// A global for constant `value` of type `t`, as an object laid out as
 /// at run time, immortal: its header has the sign bit set, which counting
-/// will skip. An object inside it is a global of its own.
+/// will skip. An object inside it is a global of its own. A closure's
+/// entry function goes in `entries`.
 fn const_global(
     m: &Module,
     out: &mut String,
+    entries: &mut BTreeSet<(FuncId, usize)>,
     name: &str,
     value: &ConstValue,
     t: &Ty,
 ) -> Result<(), String> {
-    let (word, tys, values): (u64, Vec<Ty>, &[ConstValue]) = match (value, t) {
-        (ConstValue::New(c, fields), _) => (c.index as u64, ctor_fields(m, *c)?, fields),
-        (ConstValue::Array(elems), Ty::Array(e, _)) => {
-            (elems.len() as u64, vec![(**e).clone(); elems.len()], elems)
+    // A closure's and an `any`'s pointers at 16 are never called, as
+    // nothing frees an immortal object: they're null.
+    let (word, tys, values, after): (u64, Vec<Ty>, &[ConstValue], Vec<String>) = match (value, t) {
+        (ConstValue::New(c, fields), _) => {
+            (c.index as u64, ctor_fields(m, *c)?, fields, Vec::new())
         }
+        (ConstValue::Array(elems), Ty::Array(e, _)) => (
+            elems.len() as u64,
+            vec![(**e).clone(); elems.len()],
+            elems,
+            Vec::new(),
+        ),
+        (ConstValue::Closure(f), _) => {
+            entries.insert((*f, 0));
+            let entry = format!("ptr {}", entry_symbol(*f, 0));
+            (0, Vec::new(), &[], vec![entry, "ptr null".into()])
+        }
+        (ConstValue::Box(bt, inner), _) => (
+            0,
+            vec![bt.clone()],
+            std::slice::from_ref(&**inner),
+            vec!["ptr null".into()],
+        ),
         _ => return Err(format!("a constant of type {t} isn't supported yet")),
     };
     let (offsets, total) = layout(&tys);
@@ -322,16 +343,23 @@ fn const_global(
             },
             inner => {
                 let sub = format!("{name}_{k}");
-                const_global(m, out, &sub, inner, ft)?;
+                const_global(m, out, entries, &sub, inner, ft)?;
                 format!("ptr {sub}")
             }
         };
         parts.push(text);
         at = o + size(ft);
     }
+    // After the fields, up to 16 for an `any`'s.
+    let total = if after.is_empty() {
+        total
+    } else {
+        total.max(at.next_multiple_of(8))
+    };
     if total > at {
         parts.push(format!("[{} x i8] zeroinitializer", total - at));
     }
+    parts.extend(after);
     let tys: Vec<&str> = parts
         .iter()
         .map(|p| p.rsplit_once(' ').map_or("", |(t, _)| t))
@@ -897,20 +925,20 @@ impl<'m> Lower<'m> {
                 let v = self.value(&args[1])?;
                 self.replace_at(&t, &v, &p, "8")?;
             }
-            // 0, which is no object, as in the Wasm backend, so that what
-            // holds it can be dropped.
+            // Nothing to store: whatever the slot holds is what it gives,
+            // as nothing may use it, counting included. But a reuse token
+            // that's undefined holds no memory, which `reuse` checks for.
             Op::Undefined => {
-                if let Some(&b) = binds.first() {
-                    let zero = match ty(self.f.var_ty(b))? {
-                        "ptr" => "null",
-                        "float" | "double" => "0.0",
-                        _ => "0",
-                    };
-                    self.store(b, zero)?;
+                if let Some(&b) = binds.first()
+                    && matches!(self.f.var_ty(b), Ty::Reuse(_))
+                {
+                    self.store(b, "null")?;
                 }
             }
             // Without counts, nothing is freed: counting does nothing, no
             // object is unique, and a reuse token holds no memory.
+            // Gives up a reference without counting.
+            Op::Forget => {}
             Op::Dup | Op::Drop | Op::Free | Op::DecRef if !self.counts => {}
             Op::IsUnique if !self.counts => self.bind(binds, "0")?,
             Op::DropReuse | Op::ReuseToken if !self.counts => self.bind(binds, "null")?,

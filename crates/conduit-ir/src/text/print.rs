@@ -94,6 +94,10 @@ impl Items {
             },
             ConstValue::New(c, fields) => format!("{}({})", self.ctor(*c), all(fields)),
             ConstValue::Const(id) => self.constant(*id),
+            ConstValue::Closure(f) => format!("closure {}", self.func(*f)),
+            ConstValue::Box(ty, inner) => {
+                format!("box[{}]({})", self.ty(ty), self.const_value(inner))
+            }
         }
     }
 
@@ -794,6 +798,7 @@ pub(crate) fn op_name(op: &Op) -> String {
         Op::DropReuse => "drop_reuse".into(),
         Op::ReuseToken => "reuse_token".into(),
         Op::Reuse(c) => format!("reuse {c}"),
+        Op::Forget => "forget".into(),
         Op::HostNull => "host_null".into(),
         Op::HostIsNull => "host_is_null".into(),
         Op::HostUnwrap => "host_unwrap".into(),

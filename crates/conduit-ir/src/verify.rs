@@ -366,6 +366,34 @@ fn const_value_ok<P: Program + ?Sized>(p: &P, value: &ConstValue, ty: &Ty) -> Re
                 Err(format!("{id} is a {}, not a {ty}", decl.ty))
             }
         }
+        (ConstValue::Closure(f), Ty::Fn(sig, _)) => {
+            let fsig = p
+                .func_sig(*f)
+                .ok_or_else(|| format!("unknown function {f}"))?;
+            if p.func_mut_params(*f).is_some_and(|mp| mp.count > 0)
+                || p.func_effect_params(*f).is_some_and(|n| n > 0)
+            {
+                return Err(format!(
+                    "{f} has mutability or effect parameters, which a constant closure can't give"
+                ));
+            }
+            if fsig.params != sig.params || fsig.results != sig.results || !fsig.row.is_in(&sig.row)
+            {
+                return Err(format!("{f} has type {fsig}, not fn{sig}"));
+            }
+            Ok(())
+        }
+        (ConstValue::Closure(f), _) => Err(format!("a closure of {f} isn't a {ty}")),
+        (ConstValue::Box(inner_ty, inner), Ty::Any(_)) => {
+            ty_ok(p, inner_ty, Allowed::PLAIN)?;
+            if !deep_imm(p, inner_ty) {
+                return Err(format!(
+                    "a constant box holds what's imm all the way down, but {inner_ty} isn't"
+                ));
+            }
+            const_value_ok(p, inner, inner_ty).map_err(|m| format!("in box[{inner_ty}]: {m}"))
+        }
+        (ConstValue::Box(..), _) => Err(format!("a box isn't a {ty}")),
     }
 }
 

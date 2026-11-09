@@ -294,6 +294,11 @@ pub(crate) fn op_results<P: Program + ?Sized>(
             [ty] => Err(format!("{} of a {ty}, which isn't an object", op_word(op))),
             _ => Err(format!("{} needs one object", op_word(op))),
         },
+        Op::Forget => match tys {
+            [ty] if ty.is_object() => Ok(vec![]),
+            [ty] => Err(format!("forget of a {ty}, which isn't an object")),
+            _ => Err("forget needs one object".into()),
+        },
         Op::HostNull => match tys {
             [] => Ok(vec![Ty::NullableHost]),
             _ => Err("host_null takes nothing".into()),

@@ -1,5 +1,7 @@
 // `undefined` gives a value that must not be used, for code that has to
-// give a value it knows won't be looked at. Passing it on is fine.
+// give a value it knows won't be looked at. Passing it on is fine, but
+// counting it isn't: what gets one it won't use `forget`s it, so that
+// counting doesn't drop it.
 
 data List {
   ()
@@ -22,7 +24,9 @@ fn maybe_list(%n: i32) -> (i32, imm List) {
 fn head_or(%n: i32, %default: i32) -> (i32) {
   let %ok: i32, %l: imm List = call maybe_list(%n)
   case %ok {
-    0 => jump ret(%default)
+    0 =>
+      let = forget(%l)
+      jump ret(%default)
     _ =>
       case %l {
         List.0 => jump ret(%default)

@@ -94,6 +94,14 @@ struct Runtime {
     compose: FuncId,
     /// `start_resume(cont, x, ev)`: applies a continuation, as a body.
     start_resume: FuncId,
+    /// `no_cont`, never called: what a `Yield` holds when it holds no
+    /// continuation, as a constant closure of it.
+    never: FuncId,
+    /// `box[i32](0i32)` and a closure of `never`: what a `Yield` holds
+    /// for its arguments and continuation when it holds none. Constants,
+    /// so that nothing counts or frees them.
+    no_args: ConstId,
+    no_cont: ConstId,
 }
 
 impl Runtime {
@@ -119,10 +127,21 @@ impl Runtime {
 
     /// A piece of a continuation: `fn(x, ev) -> any`, where `x` holds what
     /// the code it continues gave, and it gives what its function gives.
+    /// `ro`, so that it can be `no_cont`, which is `imm`, as well as a
+    /// closure the code makes, which is `mut`.
     fn piece_ty(&self) -> Ty {
+        self.piece_ty_of(Mutability::ReadOnly)
+    }
+
+    /// The type of a piece the code makes.
+    fn made_piece_ty(&self) -> Ty {
+        self.piece_ty_of(Mutability::Mut)
+    }
+
+    fn piece_ty_of(&self, m: Mutability) -> Ty {
         Ty::Fn(
             Box::new(Sig::new(vec![any(), self.ev_ty()], vec![any()])),
-            Mutability::Mut,
+            m,
         )
     }
 
@@ -212,6 +231,16 @@ struct Lower {
 
 // ---------------------------------------------------------------------
 // Building IR.
+
+/// Forgets those of `vars` that are objects: what something that yielded
+/// gave, which is undefined, so that nothing drops it.
+fn forget(f: &Func, lets: &mut Vec<Let>, vars: &[Var]) {
+    for &x in vars {
+        if f.var_ty(x).is_object() {
+            let0(lets, Op::Forget, vec![v(x)]);
+        }
+    }
+}
 
 fn new_func(params: Vec<Ty>, results: Vec<Ty>) -> Func {
     Func::new(params, results)
@@ -379,6 +408,7 @@ impl Lower {
     fn new(m: &Module) -> Result<Lower, String> {
         let next_func = m.funcs.keys().map(|f| f.0 + 1).max().unwrap_or(0);
         let next_data = m.data.keys().map(|d| d.0 + 1).max().unwrap_or(0);
+        let next_const = m.consts.keys().map(|c| c.0 + 1).max().unwrap_or(0);
         let mut cx = Lower {
             src: m.clone(),
             out: Module::default(),
@@ -390,8 +420,11 @@ impl Lower {
                 lookup: FuncId(next_func),
                 compose: FuncId(next_func + 1),
                 start_resume: FuncId(next_func + 2),
+                never: FuncId(next_func + 3),
+                no_args: ConstId(next_const),
+                no_cont: ConstId(next_const + 1),
             },
-            next_func: next_func + 3,
+            next_func: next_func + 4,
             next_data: next_data + 4,
             yields: BTreeSet::new(),
             takes_ev: BTreeSet::new(),
@@ -450,6 +483,26 @@ impl Lower {
         self.out.data.insert(rt.ev_d, ev_decl);
         self.out.data.insert(rt.hs_d, hs_decl);
         self.out.data.insert(rt.node_d, node_decl);
+        let mut never = new_func(vec![any(), rt.ev_ty()], vec![any()]);
+        never.debug.name = Some("no_cont".into());
+        never.body = Tail::Unreachable.into();
+        self.out.funcs.insert(rt.never, never);
+        self.out.consts.insert(
+            rt.no_args,
+            ConstDecl {
+                ty: Ty::Any(Mutability::Imm),
+                value: ConstValue::Box(Ty::I32, Box::new(ConstValue::Lit(Lit::I32(0)))),
+                debug_name: Some("no_args".into()),
+            },
+        );
+        self.out.consts.insert(
+            rt.no_cont,
+            ConstDecl {
+                ty: rt.piece_ty_of(Mutability::Imm),
+                value: ConstValue::Closure(rt.never),
+                debug_name: Some("no_cont".into()),
+            },
+        );
     }
 
     /// The number of an effect, which handler nodes hold.
@@ -1100,11 +1153,23 @@ impl Lower {
         let c = let1(
             f,
             lets,
-            self.rt.piece_ty(),
+            self.rt.made_piece_ty(),
             Op::Closure(self.rt.compose, Vec::new(), Vec::new()),
             vec![v(cur), piece],
         );
         let0(lets, Op::Set(yc, 3), vec![v(st), v(c)]);
+    }
+
+    /// What a `Yield` holds for its arguments when it holds none.
+    fn no_args(&self, f: &mut Func, lets: &mut Vec<Let>) -> Var {
+        let ty = Ty::Any(Mutability::Imm);
+        let1(f, lets, ty, Op::Const(self.rt.no_args), Vec::new())
+    }
+
+    /// What a `Yield` holds for its continuation when it holds none.
+    fn no_cont(&self, f: &mut Func, lets: &mut Vec<Let>) -> Var {
+        let ty = self.rt.piece_ty_of(Mutability::Imm);
+        let1(f, lets, ty, Op::Const(self.rt.no_cont), Vec::new())
     }
 
     /// `undefined` values of types `tys`.
@@ -1269,6 +1334,7 @@ impl Lower {
             vec![v(next), v(y), v(ev)],
         );
         let mut stop = Vec::new();
+        forget(&f, &mut stop, &[y]);
         self.extend(&mut f, &mut stop, v(ev), v(next));
         let t = self.ret_undefined_any(&mut f, &mut stop);
         f.body = block(
@@ -1351,6 +1417,7 @@ impl Lower {
             vec![v(next), b, v(site_ev)],
         );
         let mut stop = Vec::new();
+        forget(&f, &mut stop, &xs);
         self.extend(&mut f, &mut stop, v(site_ev), v(next));
         let tail = self.ret_undefined_any(&mut f, &mut stop);
         f.body = block(
@@ -1462,6 +1529,7 @@ impl Lower {
         let mut go = Vec::new();
         let bx = self.box_vals(&mut f, &mut go, vs(&rs), &body_results);
         let mut stop = Vec::new();
+        forget(&f, &mut stop, &rs);
         let t = self.ret_undefined_any(&mut f, &mut stop);
         f.body = block(lets, case_zero(y, block(go, ret(vec![bx])), block(stop, t)));
         self.out.funcs.insert(start_body, f);
@@ -1533,7 +1601,7 @@ impl Lower {
         let w = let1(
             &mut f,
             &mut other,
-            self.rt.piece_ty(),
+            self.rt.made_piece_ty(),
             Op::Closure(reprompt, Vec::new(), Vec::new()),
             caps,
         );
@@ -1556,15 +1624,9 @@ impl Lower {
         // keeps the continuation, whose closures hold evidence that points
         // back at the state: a cycle, which reference counting can't free,
         // and which keeps everything the continuation holds alive.
-        let no_args = let1(&mut f, &mut mine, any(), Op::Undefined, Vec::new());
+        let no_args = self.no_args(&mut f, &mut mine);
         let0(&mut mine, Op::Set(yc, 2), vec![v(st), v(no_args)]);
-        let no_cont = let1(
-            &mut f,
-            &mut mine,
-            self.rt.piece_ty(),
-            Op::Undefined,
-            Vec::new(),
-        );
+        let no_cont = self.no_cont(&mut f, &mut mine);
         let0(&mut mine, Op::Set(yc, 3), vec![v(st), v(no_cont)]);
         let used = let1(
             &mut f,
@@ -1612,6 +1674,7 @@ impl Lower {
             },
         );
         let mut yielding = Vec::new();
+        forget(&f, &mut yielding, &[r]);
         let my_mk = let1(
             &mut f,
             &mut yielding,
@@ -1664,6 +1727,7 @@ impl Lower {
         let mut go = Vec::new();
         let bx = self.box_vals(&mut f, &mut go, vs(&rs), &results);
         let mut stop = Vec::new();
+        forget(&f, &mut stop, &rs);
         let t = self.ret_undefined_any(&mut f, &mut stop);
         f.body = block(lets, case_zero(y, block(go, ret(vec![bx])), block(stop, t)));
         self.out.funcs.insert(reprompt, f);
@@ -1858,7 +1922,7 @@ impl Lower {
             Op::Box(Ty::I32),
             vec![int(0)],
         );
-        let no_cont = let1(f, lets, self.rt.piece_ty(), Op::Undefined, Vec::new());
+        let no_cont = self.no_cont(f, lets);
         let st = let1(
             f,
             lets,
@@ -1939,6 +2003,21 @@ impl Lower {
                     let stop = self.yield_block(o, &site);
                     return block(lets, case_zero(y, go, stop));
                 }
+            }
+            // A rest boxes what a tail call gives. If the call yielded,
+            // that's undefined, and so the rest gives an undefined box
+            // too, as everything that yields does.
+            if let (true, Some(ev), Some(l)) = (o.boxed, o.ev, b.lets.last())
+                && is_tail(b, b.lets.len() - 1)
+                && self.may_yield(l, &o.src.vars)
+            {
+                let y = self.yielding(&mut o.f, &mut lets, v(ev));
+                let mut go = Vec::new();
+                let tail = self.lower_tail(o, &b.tail, &mut go);
+                let mut stop = Vec::new();
+                forget(&o.f, &mut stop, &l.binds);
+                let undefined = self.ret_undefined_any(&mut o.f, &mut stop);
+                return block(lets, case_zero(y, block(go, tail), block(stop, undefined)));
             }
             let tail = self.lower_tail(o, &b.tail, &mut lets);
             block(lets, tail)
@@ -2024,6 +2103,9 @@ impl Lower {
         conduit_ir::deep(|| {
             let ev = o.ev.expect("a site has evidence");
             let mut lets = Vec::new();
+            // What the site got is undefined, as what yielded gave it:
+            // nothing may drop it.
+            forget(&o.f, &mut lets, &site.binds);
             let piece = self.rest_closure(o, &mut lets, site);
             self.extend(&mut o.f, &mut lets, v(ev), v(piece));
             let tail = self.undefined_ret(o, &mut lets);
@@ -2053,7 +2135,7 @@ impl Lower {
         let1(
             &mut o.f,
             lets,
-            self.rt.piece_ty(),
+            self.rt.made_piece_ty(),
             Op::Closure(site.rest, margs, Vec::new()),
             caps,
         )
@@ -2190,7 +2272,7 @@ impl Lower {
             let fz = let1(
                 &mut o.f,
                 &mut slow,
-                self.rt.piece_ty(),
+                self.rt.made_piece_ty(),
                 Op::Closure(force, Vec::new(), Vec::new()),
                 vec![v(piece), v(ev)],
             );

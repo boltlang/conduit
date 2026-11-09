@@ -449,6 +449,19 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                 })
             }
             ConstValue::Const(id) => self.constant(*id)?,
+            ConstValue::Closure(f) => self.alloc_immortal(Object::Closure {
+                func: *f,
+                margs: Vec::new(),
+                captures: Vec::new(),
+                is_mut: false,
+            }),
+            ConstValue::Box(ty, inner) => {
+                let value = self.const_value(inner)?;
+                self.alloc_immortal(Object::Any {
+                    ty: ty.clone(),
+                    value,
+                })
+            }
         })
     }
 
@@ -875,7 +888,7 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                             .get_mut(*i as usize)
                             .ok_or_else(|| unverified(format!("{c} has no field {i}")))?;
                         let old = std::mem::replace(field, value);
-                        self.drop_value(old)?;
+                        self.drop_value(defined(old, "set over")?)?;
                     }
                     _ => {
                         return Err(unverified(format!(
@@ -1034,7 +1047,7 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                 match self.object_mut(obj(arg(&args, 0)?)?)? {
                     Object::Ref(slot) => {
                         let old = std::mem::replace(slot, value);
-                        self.drop_value(old)?;
+                        self.drop_value(defined(old, "ref_set over")?)?;
                     }
                     _ => return Err(unverified("ref set on something that isn't a ref")),
                 }
@@ -1063,13 +1076,15 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
             Op::Resume => return self.resume(args, binds, next),
             Op::Discontinue(e, i) => return self.discontinue(*e, *i, args, binds, next),
             Op::Dup => {
-                self.dup(arg(&args, 0)?)?;
+                self.dup(defined(arg(&args, 0)?, "dup of")?)?;
                 vec![]
             }
             Op::Drop => {
-                self.drop_value(arg(&args, 0)?)?;
+                self.drop_value(defined(arg(&args, 0)?, "drop of")?)?;
                 vec![]
             }
+            // The reference is given up without changing any count.
+            Op::Forget => vec![],
             Op::IsUnique => vec![Value::I32(self.is_unique(arg(&args, 0)?)? as i32)],
             Op::Free => {
                 self.free(arg(&args, 0)?)?;
@@ -1286,6 +1301,14 @@ fn arg(args: &[Value], i: usize) -> Step<Value> {
     args.get(i)
         .copied()
         .ok_or_else(|| unverified(format!("missing argument {i}")))
+}
+
+/// `value`, unless it's undefined, which what `what` says can't use.
+fn defined(value: Value, what: &str) -> Step<Value> {
+    match value {
+        Value::Unset => Err(ErrorKind::Undefined(format!("{what} an undefined value"))),
+        v => Ok(v),
+    }
 }
 
 fn obj(value: Value) -> Step<ObjId> {

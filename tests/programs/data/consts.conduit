@@ -1,5 +1,6 @@
 // Constants: `imm` values made once, before the program runs, which
-// `const` gives. Every use gets the same object.
+// `const` gives. Every use gets the same object. A closure with no
+// captures and a box are constants too, which nothing allocates.
 
 data List {
   ()
@@ -14,6 +15,10 @@ data Cell['m1] {
   ('m1 [i32])
 }
 
+data Op {
+  (imm fn(i32, i32) -> (i32), imm any)
+}
+
 const hello: imm [i8] = b"hello"
 const bytes: imm [i8] = b"\"\xff\0é"
 const nil: imm List = List.0()
@@ -23,6 +28,10 @@ const cell: imm Cell[imm] = Cell.0([7i32, 8i32])
 const answer: i64 = 42i64
 const grid: imm [imm [i32]] = [[1i32, 2i32], [3i32], []]
 const nan: f32 = f32_bits(2143289344)
+const plus: imm fn(i32, i32) -> (i32) = closure add
+const boxed_five: imm any = box[i32](5i32)
+const boxed_list: imm any = box[imm List](list)
+const op: imm Op = Op.0(closure add, box[f64](0.5f64))
 
 // A byte string: its length, and its last byte read unsigned.
 fn hello_len() -> (i32) {
@@ -139,7 +148,52 @@ fn as_ro() -> (i32) {
   jump ret(%r)
 }
 
+fn add(%a: i32, %b: i32) -> (i32) {
+  let %r: i32 = add(%a, %b)
+  jump ret(%r)
+}
+
+// A function as a value, applied, and passed on; as `ro` too.
+fn apply_plus(%x: i32) -> (i32) {
+  let %f: imm fn(i32, i32) -> (i32) = const plus()
+  let %y: i32 = apply(%f, %x, 10i32)
+  let %g: ro fn(i32, i32) -> (i32) = const plus()
+  let %r: i32 = call twice(%g, %y)
+  jump ret(%r)
+}
+
+fn twice(%f: ro fn(i32, i32) -> (i32), %x: i32) -> (i32) {
+  let %r: i32 = apply(%f, %x, %x)
+  jump ret(%r)
+}
+
+// Boxes of a scalar and of an object.
+fn unboxed() -> (i32) {
+  let %a: imm any = const boxed_five()
+  let %five: i32 = unbox[i32](%a)
+  let %b: imm any = const boxed_list()
+  let %l: imm List = unbox[imm List](%b)
+  let %six: i32 = call sum(%l)
+  let %r: i32 = mul(%five, %six)
+  jump ret(%r)
+}
+
+// Both, as fields of another constant.
+fn op_parts() -> (f64) {
+  let %o: imm Op = const op()
+  let %f: imm fn(i32, i32) -> (i32) = get Op.0.0(%o)
+  let %x: i32 = apply(%f, 2i32, 3i32)
+  let %b: imm any = get Op.0.1(%o)
+  let %h: f64 = unbox[f64](%b)
+  let %y: f64 = convert.s[f64](%x)
+  let %r: f64 = add(%y, %h)
+  jump ret(%r)
+}
+
 //# run hello_len() == 5111i32
+//# run apply_plus(1i32) == 22i32
+//# run unboxed() == 30i32
+//# run op_parts() == 5.5f64
 //# run sum_list() == 6i32
 //# run named_parts() == 106.5f64
 //# run cell_second() == 8i32

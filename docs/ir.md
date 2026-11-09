@@ -97,6 +97,7 @@ pub enum Op {
     New(CtorId),           // allocate an ADT value; args = its fields
     Const(ConstId),        // a constant's object, the same every time; no args
     Undefined,             // a value of the type it binds that must not be used; no args
+    Forget,                // args = an object; gives up its reference uncounted: see "Reference counts"
     Get(CtorId, u32),      // read field i
     Set(CtorId, u32),      // write field i of a Mut object; binds nothing
     ArrayNew,              // args = the elements
@@ -181,6 +182,7 @@ in [verify.md](verify.md).
 | `apply(%c, ..)` | anything | yes | all |
 | `new data10.0(..)` | none | no | the fields |
 | `const const40()`, `undefined()` | none | no | — |
+| `forget(%x)` | writes | no | `%x` |
 | `get data10.0.1(%x)` | reads | no | — |
 | `set data10.0.1(%x, %v)` | writes | no | `%v` |
 | `array_new(..)` | none | no | the elements |
@@ -319,6 +321,8 @@ pub enum ConstValue {
     Array(Vec<ConstValue>),          // an imm array
     New(CtorId, Vec<ConstValue>),    // an imm object
     Const(ConstId),                  // the same object as another constant
+    Closure(FuncId),                 // an imm closure with no captures
+    Box(Ty, Box<ConstValue>),        // an imm any holding a value of that type
 }
 ```
 
@@ -333,6 +337,20 @@ The value is a tree of literals, arrays and constructors, whose types
 come from the constant's type, as an array's elements come from its
 element type. `Const` lets constants share parts, and cut a value too deep
 to be one tree into several. They can't refer to each other in a cycle.
+
+Two more kinds of value are objects that would otherwise be allocated:
+
+- **`Closure(f)`** is a closure of `f` with no captures, of a type
+  `imm fn(..)` with `f`'s signature: a function as a value, as Bolt's
+  top-level functions are, which nothing allocates or counts. `f` has no
+  mutability or effect parameters, which a constant can't give. Its type's
+  parameters and results can be anything: only the closure itself has to
+  be `imm`.
+- **`Box(ty, v)`** is the `imm any` that `box[ty](v)` would give, where
+  `ty` is `Imm` all the way down and `v` is of type `ty`.
+
+Evidence passing uses both, for the placeholders that a yield's state
+holds when it holds nothing (see [lowerings.md](lowerings.md)).
 
 A frontend needing a `Mut` value with the same contents builds one from a
 constant, as C copies a string literal into an array: `ArrayClone` for an
@@ -638,9 +656,24 @@ and an op either **takes** an argument's reference, moving it, or
   the clause, while the handler keeps its own, which its return clause
   takes.
 
-Constants are never counted, and neither is `Undefined`: a `Dup` or `Drop`
-of either does nothing. Using an object after it's freed, or dropping one
-whose count is already 0, is undefined behavior. A continuation that's
+Constants are never counted: a `Dup` or `Drop` of one does nothing.
+Using an object after it's freed, or dropping one whose count is already
+0, is undefined behavior.
+
+What `Undefined` gives can't be counted at all, since a backend may leave
+it uninitialized: its `Dup` or `Drop`, a `Drop` that frees an object
+holding one, and a `Set` or `RefSet` that replaces one, which drops it,
+are undefined behavior. The elements that `ArrayAlloc` leaves unset are
+the exception: backends zero them, and dropping the array skips them.
+`insert_counts` doesn't count what `Undefined` binds; code that gets an
+undefined value from elsewhere, like the results of a call it knows
+didn't give real ones, and won't use it, gives it to **`Forget`**. It
+takes the reference and does nothing with it, so that `insert_counts`
+doesn't drop the value instead. `Forget` of a counted object leaks it.
+It isn't one of the counting ops: a frontend or pass may write it before
+counts are explicit, and passes keep it. An `Undefined` of type
+`Reuse(C)` is a token that holds no memory, as specializing a
+`DropReuse` makes when the object is shared. A continuation that's
 dropped without being resumed or discontinued loses what its frames hold.
 Cycles are never freed by counting alone.
 

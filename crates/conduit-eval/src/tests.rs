@@ -1130,7 +1130,8 @@ fn fn0() -> (imm Pair, imm List) {{
 #[test]
 fn cycles_are_reported_apart() {
     let src = "fn fn0() -> () {
-  let %u: mut any = undefined()
+  let %z: ref i32 = ref_new(0i32)
+  let %u: mut any = box[ref i32](%z)
   let %r: ref mut any = ref_new(%u)
   let = dup(%r)
   let %a: mut any = box[ref mut any](%r)
@@ -1140,30 +1141,97 @@ fn cycles_are_reported_apart() {
 }";
     let (_, leaks) = counted(src, vec![]).unwrap();
     assert!(leaks.counts_ok(), "{leaks}");
-    assert_eq!(leaks.cycles, vec![ObjId(0), ObjId(1)]);
-    assert_eq!(leaks.to_string(), "kept alive by cycles: #0, #1");
+    assert_eq!(leaks.cycles, vec![ObjId(2), ObjId(3)]);
+    assert_eq!(leaks.to_string(), "kept alive by cycles: #2, #3");
 }
 
-/// Constants are never counted, and `dup` and `drop` of an undefined value
-/// do nothing.
+/// Constants are never counted: constant objects, closures and boxes.
 #[test]
-fn constants_and_undefined_arent_counted() {
+fn constants_arent_counted() {
     let src = format!(
         "{LIST_TEXT}
 const nil: imm List = List.0()
+const f: imm fn() -> (i32) = closure fn1
+const b: imm any = box[imm List](nil)
 
-fn fn0() -> () {{
+fn fn0() -> (i32) {{
   let %c: imm List = const nil()
   let = drop(%c)
   let = drop(%c)
+  let %f: imm fn() -> (i32) = const f()
+  let = drop(%f)
+  let %g: imm fn() -> (i32) = const f()
+  let %x: i32 = apply(%g)
+  let %b: imm any = const b()
+  let = drop(%b)
+  let %d: imm any = const b()
+  let %l: imm List = unbox[imm List](%d)
+  case %l {{
+    List.0 => jump ret(%x)
+    List.1 => jump ret(0i32)
+  }}
+}}
+
+fn fn1() -> (i32) {{
+  jump ret(7i32)
+}}"
+    );
+    let (results, leaks) = counted(&src, vec![]).unwrap();
+    assert_eq!(results, vec![Value::I32(7)]);
+    assert!(leaks.is_empty(), "{leaks}");
+}
+
+/// Counting an undefined value is undefined behavior: native code would
+/// follow whatever its bits are. So is dropping an object that holds one,
+/// or replacing one in an object.
+#[test]
+fn counting_undefined_is_undefined() {
+    let run = |body: &str| {
+        let src = format!(
+            "{LIST_TEXT}
+fn fn0() -> () {{
   let %u: imm List = undefined()
-  let = dup(%u)
-  let = drop(%u)
+  {body}
+  jump ret()
+}}"
+        );
+        counted(&src, vec![]).map(|_| ()).map_err(|e| e.kind)
+    };
+    let undefined = |what: &str| Err(ErrorKind::Undefined(what.into()));
+    assert_eq!(run("let = dup(%u)"), undefined("dup of an undefined value"));
+    assert_eq!(
+        run("let = drop(%u)"),
+        undefined("drop of an undefined value")
+    );
+    assert_eq!(
+        run("let %l: imm List = new List.1(1i32, %u)\n  let = drop(%l)"),
+        undefined("drop of an object that holds an undefined value")
+    );
+    assert_eq!(
+        run(
+            "let %r: ref imm List = ref_new(%u)\n  let %n: imm List = new List.0()\n  \
+             let = ref_set(%r, %n)\n  let = drop(%r)"
+        ),
+        undefined("ref_set over an undefined value")
+    );
+    // Forgetting it is fine.
+    assert_eq!(run("let = forget(%u)"), Ok(()));
+}
+
+/// `forget` gives up a reference without counting: what it forgets is
+/// left with the count it had.
+#[test]
+fn forget_keeps_the_count() {
+    let src = format!(
+        "{LIST_TEXT}
+fn fn0() -> () {{
+  let %n: imm List = new List.0()
+  let = forget(%n)
   jump ret()
 }}"
     );
     let (_, leaks) = counted(&src, vec![]).unwrap();
-    assert!(leaks.is_empty(), "{leaks}");
+    assert_eq!(leaks.undropped, vec![(ObjId(0), 1)]);
 }
 
 /// Without counting, `drop` does nothing, so dropping twice is fine.
@@ -1323,7 +1391,8 @@ data Pair {{
 }}
 
 fn fn0() -> (imm List) {{
-  let %u: mut any = undefined()
+  let %z: ref i32 = ref_new(0i32)
+  let %u: mut any = box[ref i32](%z)
   let %r: ref mut any = ref_new(%u)
   let %nil: imm List = new List.0()
   let %kept: imm List = new List.1(1i32, %nil)

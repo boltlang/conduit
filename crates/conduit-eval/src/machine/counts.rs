@@ -172,6 +172,7 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                 Some(Count::Live(1)) => {
                     self.counts[i] = Count::Freed;
                     self.freed();
+                    self.no_undefined(i)?;
                     todo.extend_from_slice(self.heap[i].values());
                 }
                 Some(Count::Live(c)) => {
@@ -182,6 +183,19 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                 Some(Count::Freed | Count::Reserved) => return Err(freed("drop")),
                 None => return Err(unverified("dangling object")),
             }
+        }
+        Ok(())
+    }
+
+    /// Fails if object `i`, which is being freed, holds an undefined value,
+    /// which dropping what it holds would use. An array's elements that
+    /// nothing set are fine: backends zero them.
+    fn no_undefined(&self, i: usize) -> Step<()> {
+        let object = &self.heap[i];
+        if !matches!(object, Object::Array { .. }) && object.values().contains(&Value::Unset) {
+            return Err(ErrorKind::Undefined(
+                "drop of an object that holds an undefined value".into(),
+            ));
         }
         Ok(())
     }
@@ -198,6 +212,7 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
         match self.counts.get(i) {
             Some(Count::Live(1)) => {
                 self.counts[i] = Count::Reserved;
+                self.no_undefined(i)?;
                 let held = self.heap[i].values().to_vec();
                 for v in held {
                     self.drop_value(v)?;
