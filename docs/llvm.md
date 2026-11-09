@@ -25,11 +25,13 @@ cycles aren't collected yet.
   out as in the Wasm backend: a header word for the count, then the
   constructor, length or kind at 4, then the fields from 8, each at a
   multiple of its size. A closure holds its entry function's address at 8,
-  the address of the function that frees it at 16, then its captures; each
+  with counts, the address of its descriptor at 16 (the functions that
+  free it and visit what it holds), then its captures; each
   function and number of captures has an entry function,
   `@fn<f>_entry<n>(closure, params..)`, which reads the captures and
   tail-calls the function. An `any` holds its value at 8 and, at 16, the
-  drop function of what it holds, or null. Array accesses and copies out of bounds,
+  descriptor of the kind of what it holds (its drop and visit functions),
+  or null. Array accesses and copies out of bounds,
   and negative lengths, trap.
 - Constants, as globals laid out the same way, with the immortal bit set
   in their header. A constant closure holds its function's entry for no
@@ -48,9 +50,11 @@ cycles aren't collected yet.
 With `Options::counts`, for a module whose counts `insert_counts` made
 explicit, objects are counted and freed (`src/counts.rs`):
 
-- The header word is the count. A negative one is immortal, as a
-  constant's is, and a count that would pass `0x0fff_ffff` saturates, as
-  in the Wasm backend and the evaluator.
+- The header word is laid out as in the Wasm backend: the count in bits
+  0 to 27, the collector's color in bits 28 and 29, whether the object is
+  buffered in bit 30, and in bit 31 whether it's immortal, as a constant
+  is. A count that would pass `0x0fff_ffff` saturates, as in the Wasm
+  backend and the evaluator.
 - `drop` goes through a function for each kind of object, which, at 0,
   frees it and drops what it held, tail-calling the drop of its last field,
   so that dropping a list is a loop. A closure's and an `any`'s drop go
@@ -60,14 +64,24 @@ explicit, objects are counted and freed (`src/counts.rs`):
   and `ref_set` drop what they replace, and `array_fill`, `array_copy` and
   `array_clone` count what they share.
 - `@conduit_live` counts the objects allocated and not freed.
+- With `Options::cycles` too, cycles are collected by trial deletion
+  (Bacon and Rajan, synchronous), as in the Wasm backend. A `drop` or
+  `decref` that leaves an object above 0 buffers it, unless its type is
+  `imm`: each kind has a second drop for those, which never buffers. The
+  buffer holds 256 objects, and is collected when it's full, and when the
+  C function `conduit_collect` is called. A buffered object's memory only
+  goes back through the collector, so the buffer never points at freed
+  memory. Each kind has a visit function, which does a step of the
+  collector on what an object holds and pushes it on a stack on the heap,
+  so the collector doesn't recurse. The garbage it finds is freed at the
+  end, since `free` gives memory back for good: unlike Wasm's free lists,
+  a freed header can't be read again.
 
 Without counts, nothing is freed: `dup` and `drop` do nothing, no object
 is unique, and a reuse token holds no memory.
 
 Not yet:
 
-- **Cycles:** what's left in a cycle of `mut` objects leaks; the Wasm
-  backend's trial deletion is what to port.
 - **Handlers:** lower effects first. Evidence passing gives ordinary
   data, closures and `any`s, which this backend handles, so the rest of
   the pipeline is the same as for Wasm without stack switching.
@@ -89,13 +103,15 @@ Not yet:
 
 `crates/conduit-llvm/tests/programs.rs` compiles every test program it can
 lower with `clang -O2`, as written and after the optimizer, after lowering
-its effects when it has any, each without counts and with them, and runs
+its effects when it has any, each without counts, with them, and with
+cycles collected too, and runs
 its
 `run` checks: a `main` of its own takes the check's number, calls the
 function, and prints the bits of each result. A trap is a signal. Without
 `clang`, it says so and passes.
 
 With counts, each run must also leave as many objects live as the
-evaluator does, counting without collecting cycles. 114 of the 145 test
+evaluator does, counting the same way: with cycles collected at the end,
+when they are. 114 of the 145 test
 programs run this way. The rest have no `run` checks,
 or call the test hosts' `emu` functions or use host values.

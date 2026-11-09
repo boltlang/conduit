@@ -4,12 +4,17 @@
 //! its effects, and then after the optimizer. A `main` of the test's own
 //! picks the check by its number, calls the function, and prints the bits
 //! of each result. A trap is a signal. Skipped, with a note, when `clang` isn't installed.
+//!
+//! Each is also run with counts, and then with cycles collected too: each
+//! run must then leave as many objects live as the evaluator's run does,
+//! counting the same way, with cycles collected at the end when they are.
 
 use std::os::unix::process::ExitStatusExt;
 use std::path::PathBuf;
 use std::process::Command;
 
 use conduit_ir::{Lit, Module, Ty};
+use conduit_llvm::Options;
 use conduit_test::{CheckKind, Outcome, Program, Run};
 
 fn main() {
@@ -49,7 +54,7 @@ fn test(p: &Program) -> Result<(), String> {
     let mut optimized = m.clone();
     conduit_opt::optimize_module(&mut optimized);
     for (when, m) in [("as written", m), ("after optimizing", optimized)] {
-        check(p, &m, when, false).map_err(|e| format!("{when}: {e}"))?;
+        check(p, &m, when, Options::default()).map_err(|e| format!("{when}: {e}"))?;
         // With counts too, which must free all the evaluator does.
         let mut c = m.clone();
         if !p.has(|k| matches!(k, CheckKind::Counted)) {
@@ -57,15 +62,24 @@ fn test(p: &Program) -> Result<(), String> {
             conduit_opt::ownership::insert_counts(&mut c)?;
             conduit_opt::ownership::specialize_drops(&mut c);
         }
-        let counted = format!("{when}, with counts");
-        check(p, &c, &counted, true).map_err(|e| format!("{counted}: {e}"))?;
+        for cycles in [false, true] {
+            let counted = format!(
+                "{when}, with counts{}",
+                if cycles { " and cycles" } else { "" }
+            );
+            let options = Options {
+                counts: true,
+                cycles,
+            };
+            check(p, &c, &counted, options).map_err(|e| format!("{counted}: {e}"))?;
+        }
     }
     Ok(())
 }
 
-fn check(p: &Program, m: &Module, when: &str, counts: bool) -> Result<(), String> {
+fn check(p: &Program, m: &Module, when: &str, options: Options) -> Result<(), String> {
     let runs = p.runs(m)?;
-    let options = conduit_llvm::Options { counts };
+    let counts = options.counts;
     let mut text = conduit_llvm::emit_module_with(m, &options).map_err(|e| e.to_string())?;
     text.push_str(&driver(m, &runs, counts)?);
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("llvm");
@@ -113,7 +127,7 @@ fn check(p: &Program, m: &Module, when: &str, counts: bool) -> Result<(), String
         let gave = matches!(got, Ok(Outcome::Values(_)));
         run.check(p, got)?;
         if counts && gave {
-            let expected = evaluator_live(m, run)?;
+            let expected = evaluator_live(m, run, options.cycles)?;
             if live != Some(expected) {
                 return Err(format!(
                     "{}: {}: native code leaves {} objects live, but the evaluator {expected}",
@@ -128,16 +142,20 @@ fn check(p: &Program, m: &Module, when: &str, counts: bool) -> Result<(), String
 }
 
 /// How many objects the evaluator leaves live after `run`, counting, with
-/// no cycles collected, as the native code doesn't collect them either.
-fn evaluator_live(m: &Module, run: &Run<'_>) -> Result<i64, String> {
+/// cycles collected at the end if `cycles`, as the native code does.
+fn evaluator_live(m: &Module, run: &Run<'_>, cycles: bool) -> Result<i64, String> {
     let mut machine = conduit_eval::Machine::new(m, conduit_test::eval::TestHost);
     machine.counting = true;
+    machine.cycles = cycles;
     let args = run
         .args
         .iter()
         .map(|&l| conduit_eval::Value::from(l))
         .collect();
     machine.call(run.func, args).map_err(|e| e.to_string())?;
+    if cycles {
+        machine.collect_cycles();
+    }
     Ok(machine
         .objects()
         .filter(|(id, _)| matches!(machine.count(*id), Some(conduit_eval::Count::Live(_))))
@@ -215,8 +233,10 @@ fn driver(m: &Module, runs: &[Run<'_>], counts: bool) -> Result<String, String> 
                 "  call i32 (ptr, ...) @printf(ptr @.fmt, i64 {bits})\n"
             ));
         }
-        // Then how many objects are left live.
+        // Then how many objects are left live, once cycles are collected,
+        // if they are.
         if counts {
+            s.push_str("  call void @conduit_collect()\n");
             s.push_str(&format!("  %live{i} = load i64, ptr @conduit_live\n"));
             s.push_str(&format!(
                 "  call i32 (ptr, ...) @printf(ptr @.fmt, i64 %live{i})\n"

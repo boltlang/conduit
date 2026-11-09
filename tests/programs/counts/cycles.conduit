@@ -1,0 +1,71 @@
+// Cycles, which counting alone never frees, and the cycle collectors do:
+// each run must leave nothing behind once cycles are collected. Each
+// ref first holds a box of a ref of its own, which the cycle replaces.
+
+// A ref that holds a box of itself, made over and over: more possible
+// roots than the buffers hold, so they're collected on the way.
+fn self_cycles(%n: i32) -> (i32) {
+  join rec go(%i: i32) =
+    case %i {
+      0 => jump ret(%n)
+      _ =>
+        let %z: ref i32 = ref_new(0i32)
+        let %u: mut any = box[ref i32](%z)
+        let %r: ref mut any = ref_new(%u)
+        let %a: mut any = box[ref mut any](%r)
+        let = ref_set(%r, %a)
+        let %i1: i32 = sub(%i, 1i32)
+        jump go(%i1)
+    }
+  in jump go(%n)
+}
+
+// Two refs that hold boxes of each other, both possible roots: marking
+// gray from the first takes the second's count to 0, which mustn't free
+// it before it's scanned.
+fn pair_cycles(%n: i32) -> (i32) {
+  join rec go(%i: i32) =
+    case %i {
+      0 => jump ret(%n)
+      _ =>
+        let %z: ref i32 = ref_new(0i32)
+        let %u: mut any = box[ref i32](%z)
+        let %r: ref mut any = ref_new(%u)
+        let %y: ref i32 = ref_new(0i32)
+        let %v: mut any = box[ref i32](%y)
+        let %s: ref mut any = ref_new(%v)
+        let %a: mut any = box[ref mut any](%s)
+        let %b: mut any = box[ref mut any](%r)
+        let = ref_set(%r, %a)
+        let = ref_set(%s, %b)
+        let %i1: i32 = sub(%i, 1i32)
+        jump go(%i1)
+    }
+  in jump go(%n)
+}
+
+// A ring of `%n` refs, each holding a box of the one before, and the
+// first a box of the last: one possible root, from which the collector
+// follows the whole ring without recursing.
+fn ring(%n: i32) -> (i32) {
+  let %z: ref i32 = ref_new(0i32)
+  let %u: mut any = box[ref i32](%z)
+  let %first: ref mut any = ref_new(%u)
+  join rec go(%i: i32, %prev: ref mut any) =
+    case %i {
+      0 =>
+        let %b: mut any = box[ref mut any](%prev)
+        let = ref_set(%first, %b)
+        jump ret(%n)
+      _ =>
+        let %a: mut any = box[ref mut any](%prev)
+        let %r: ref mut any = ref_new(%a)
+        let %i1: i32 = sub(%i, 1i32)
+        jump go(%i1, %r)
+    }
+  in jump go(%n, %first)
+}
+
+//# run self_cycles(1000i32) == 1000i32
+//# run pair_cycles(1000i32) == 1000i32
+//# run ring(100000i32) == 100000i32

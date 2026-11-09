@@ -68,6 +68,11 @@ pub struct Options {
     /// The module then has `@conduit_live`, the number of objects allocated
     /// and not freed. Otherwise those ops do nothing, and nothing is freed.
     pub counts: bool,
+    /// With `counts`, whether cycles are collected too, by trial deletion,
+    /// as in the Wasm backend: when 256 possible roots are buffered, and
+    /// when the C function `conduit_collect` is called. Without it, what's
+    /// left in a cycle leaks.
+    pub cycles: bool,
 }
 
 /// The LLVM symbol of function `f`.
@@ -83,6 +88,17 @@ fn entry_symbol(f: FuncId, n: usize) -> String {
 /// The function that frees a closure of `f` with `n` captures.
 fn free_symbol(f: FuncId, n: usize) -> String {
     format!("@fn{}_free{n}", f.0)
+}
+
+/// The collector's visit function of a closure of `f` with `n` captures.
+fn visit_symbol(f: FuncId, n: usize) -> String {
+    format!("@fn{}_visit{n}", f.0)
+}
+
+/// What a closure of `f` with `n` captures holds at 16, with counts: its
+/// free and visit functions.
+fn desc_symbol(f: FuncId, n: usize) -> String {
+    format!("@fn{}_desc{n}", f.0)
 }
 
 fn const_symbol(c: ConstId) -> String {
@@ -238,8 +254,7 @@ pub fn emit_module_with(m: &Module, options: &Options) -> Result<String, Error> 
     out.push_str(&consts);
     let mut kinds = BTreeSet::new();
     for (&id, f) in &m.funcs {
-        let mut l =
-            Lower::new(m, id, f, options.counts).map_err(|message| err(Some(id), message))?;
+        let mut l = Lower::new(m, id, f, options).map_err(|message| err(Some(id), message))?;
         let text = l.func().map_err(|message| err(Some(id), message))?;
         out.push_str(&text);
         entries.extend(l.entries);
@@ -251,9 +266,20 @@ pub fn emit_module_with(m: &Module, options: &Options) -> Result<String, Error> 
             let caps = &m.funcs[&f].sig().params[..n];
             let (offsets, _) = closure_layout(caps);
             kinds.extend(caps.iter().filter_map(Kind::of));
-            let text = counts::closure_free(&free_symbol(f, n), caps, &offsets)
-                .map_err(|message| err(Some(f), message))?;
-            out.push_str(&text);
+            out.push_str(&counts::closure_free(&free_symbol(f, n), caps, &offsets));
+            let visit = if options.cycles {
+                out.push_str(&counts::closure_visit(&visit_symbol(f, n), caps, &offsets));
+                visit_symbol(f, n)
+            } else {
+                "null".into()
+            };
+            writeln!(
+                out,
+                "{} = private unnamed_addr constant {{ ptr, ptr }} {{ ptr {}, ptr {visit} }}",
+                desc_symbol(f, n),
+                free_symbol(f, n)
+            )
+            .unwrap();
         }
     }
     if options.counts {
@@ -261,8 +287,9 @@ pub fn emit_module_with(m: &Module, options: &Options) -> Result<String, Error> 
         if !entries.is_empty() {
             kinds.insert(Kind::Closure);
         }
-        out.push_str(counts::runtime());
-        out.push_str(&counts::drops(m, &kinds).map_err(|message| err(None, message))?);
+        out.push_str(&counts::runtime(options.cycles));
+        let drops = counts::drops(m, &kinds, options.cycles);
+        out.push_str(&drops.map_err(|message| err(None, message))?);
     }
     for (&id, export) in &m.exports {
         let conduit_ir::Export::C { symbol } = export else {
@@ -453,11 +480,12 @@ struct Lower<'m> {
     entries: BTreeSet<(FuncId, usize)>,
     /// Whether to count, and the kinds of what it drops.
     counts: bool,
+    cycles: bool,
     kinds: BTreeSet<Kind>,
 }
 
 impl<'m> Lower<'m> {
-    fn new(m: &'m Module, id: FuncId, f: &'m Func, counts: bool) -> Result<Lower<'m>, String> {
+    fn new(m: &'m Module, id: FuncId, f: &'m Func, options: &Options) -> Result<Lower<'m>, String> {
         Ok(Lower {
             m,
             id,
@@ -469,7 +497,8 @@ impl<'m> Lower<'m> {
             blocks: 0,
             slots: Vec::new(),
             entries: BTreeSet::new(),
-            counts,
+            counts: options.counts,
+            cycles: options.counts && options.cycles,
             kinds: BTreeSet::new(),
         })
     }
@@ -755,12 +784,12 @@ impl<'m> Lower<'m> {
                 self.entries.insert((*f, args.len()));
                 let p = self.alloc(&total.to_string(), "0");
                 self.store_at("ptr", &entry_symbol(*f, args.len()), &p, "8");
-                let free = if self.counts {
-                    free_symbol(*f, args.len())
+                let desc = if self.counts {
+                    desc_symbol(*f, args.len())
                 } else {
                     "null".into()
                 };
-                self.store_at("ptr", &free, &p, "16");
+                self.store_at("ptr", &desc, &p, "16");
                 for ((a, t), o) in args.iter().zip(&tys).zip(offsets) {
                     let v = self.value(a)?;
                     self.store_at(ty(t)?, &v, &p, &o.to_string());
@@ -896,19 +925,20 @@ impl<'m> Lower<'m> {
                 self.store_at(ty(&t)?, &v, &p, "8");
                 self.bind(binds, &p)?;
             }
-            // An `any` holds the drop of what it holds, if it's counted.
+            // An `any` holds the descriptor of the kind of what it holds,
+            // its drop and visit functions, if it's counted.
             Op::Box(t) => {
                 let p = self.alloc("24", "0");
                 let v = self.value(&args[0])?;
                 self.store_at(ty(t)?, &v, &p, "8");
-                let drop = match Kind::of(t) {
+                let desc = match Kind::of(t) {
                     Some(k) if self.counts => {
                         self.kinds.insert(k.clone());
-                        k.drop_fn()
+                        k.desc()
                     }
                     _ => "null".into(),
                 };
-                self.store_at("ptr", &drop, &p, "16");
+                self.store_at("ptr", &desc, &p, "16");
                 self.bind(binds, &p)?;
             }
             Op::RefGet | Op::Unbox(_) => {
@@ -951,9 +981,8 @@ impl<'m> Lower<'m> {
                 let f = if *op == Op::Dup {
                     "@conduit_dup".to_string()
                 } else {
-                    k.drop_fn()
+                    self.drop_of(&t, k)
                 };
-                self.kinds.insert(k);
                 self.line(format!("call tailcc void {f}(ptr {x})"));
             }
             Op::IsUnique => {
@@ -964,24 +993,51 @@ impl<'m> Lower<'m> {
             }
             Op::Free => {
                 let x = self.value(&args[0])?;
-                self.line(format!("call tailcc void @conduit_release(ptr {x})"));
+                self.line(format!("call tailcc void @conduit_free(ptr {x})"));
             }
+            // What isn't `imm` may be left in a garbage cycle.
             Op::DecRef => {
+                let t = self.atom_ty(&args[0]);
                 let x = self.value(&args[0])?;
-                self.line(format!("call tailcc void @conduit_decref(ptr {x})"));
+                match Kind::of(&t) {
+                    Some(k) if self.cycles && !counts::is_imm(&t) => {
+                        let v = k.visit_fn();
+                        self.kinds.insert(k);
+                        self.line(format!(
+                            "call tailcc void @conduit_decref_buf(ptr {x}, ptr {v})"
+                        ));
+                    }
+                    _ => self.line(format!("call tailcc void @conduit_decref(ptr {x})")),
+                }
             }
-            // At 0, what it held is dropped and its memory is the token.
+            // At 0, what it held is dropped and its memory is the token,
+            // unless the collector has it: then the token holds none. It's
+            // taken first, since dropping what it held may collect.
             Op::DropReuse => {
-                let Ty::Data(d, ..) = self.atom_ty(&args[0]) else {
+                let t = self.atom_ty(&args[0]);
+                let Ty::Data(d, ..) = t else {
                     return Err("drop_reuse of something that isn't data".into());
                 };
-                self.kinds.insert(Kind::Data(d));
-                let x = self.value(&args[0])?;
+                let k = Kind::Data(d);
                 let last = self.temp();
-                self.line(format!("{last} = call tailcc i1 @conduit_last(ptr {x})"));
+                let x = self.value(&args[0])?;
+                if self.cycles && !counts::is_imm(&t) {
+                    self.line(format!(
+                        "{last} = call tailcc i1 @conduit_last_buf(ptr {x}, ptr {})",
+                        k.visit_fn()
+                    ));
+                } else {
+                    self.line(format!("{last} = call tailcc i1 @conduit_last(ptr {x})"));
+                }
+                self.kinds.insert(k);
+                let slot = self.slot("ptr");
+                self.line(format!("store ptr null, ptr {slot}"));
                 let (free, done) = (self.new_block(), self.new_block());
                 self.line(format!("br i1 {last}, label %{free}, label %{done}"));
                 self.start(&free);
+                let taken = self.temp();
+                self.line(format!("{taken} = call tailcc ptr @conduit_take(ptr {x})"));
+                self.line(format!("store ptr {taken}, ptr {slot}"));
                 self.line(format!(
                     "call tailcc void @conduit_children.data{}(ptr {x})",
                     d.0
@@ -989,16 +1045,30 @@ impl<'m> Lower<'m> {
                 self.line(format!("br label %{done}"));
                 self.start(&done);
                 let token = self.temp();
-                self.line(format!("{token} = select i1 {last}, ptr {x}, ptr null"));
+                self.line(format!("{token} = load ptr, ptr {slot}"));
                 self.bind(binds, &token)?;
             }
             Op::ReuseToken => {
                 let x = self.value(&args[0])?;
-                self.bind(binds, &x)?;
+                let token = self.temp();
+                self.line(format!("{token} = call tailcc ptr @conduit_take(ptr {x})"));
+                self.bind(binds, &token)?;
             }
             other => return Err(format!("{other:?} isn't supported yet")),
         }
         Ok(())
+    }
+
+    /// The drop of a value of type `t`, of kind `k`: with cycles, one that
+    /// never buffers it if it's `imm`.
+    fn drop_of(&mut self, t: &Ty, k: Kind) -> String {
+        let f = if self.cycles && counts::is_imm(t) {
+            k.drop_imm_fn()
+        } else {
+            k.drop_fn()
+        };
+        self.kinds.insert(k);
+        f
     }
 
     /// Stores `v`, of type `t`, at `off` in `p`, and drops what it
@@ -1009,8 +1079,8 @@ impl<'m> Lower<'m> {
             Some(k) if self.counts => {
                 let old = self.load_at(lt, p, off);
                 self.store_at(lt, v, p, off);
-                self.line(format!("call tailcc void {}(ptr {old})", k.drop_fn()));
-                self.kinds.insert(k);
+                let drop = self.drop_of(t, k);
+                self.line(format!("call tailcc void {drop}(ptr {old})"));
             }
             _ => self.store_at(lt, v, p, off),
         }
@@ -1026,7 +1096,8 @@ impl<'m> Lower<'m> {
         let (zero, some, done) = (self.new_block(), self.new_block(), self.new_block());
         self.line(format!("br i1 {none}, label %{zero}, label %{some}"));
         self.start(&zero);
-        self.line(format!("call tailcc void {}(ptr {v})", k.drop_fn()));
+        let drop = self.drop_of(e, k.clone());
+        self.line(format!("call tailcc void {drop}(ptr {v})"));
         self.line(format!("br label %{done}"));
         self.start(&some);
         let more = self.temp();
@@ -1139,8 +1210,8 @@ impl<'m> Lower<'m> {
             && let Some(k) = Kind::of(&e)
         {
             self.each(src, ss, n, "@conduit_dup");
-            self.each(dst, ds, n, &k.drop_fn());
-            self.kinds.insert(k);
+            let drop = self.drop_of(&e, k);
+            self.each(dst, ds, n, &drop);
         }
         let to = self.elem_offset(ds, stride);
         let from = self.elem_offset(ss, stride);
