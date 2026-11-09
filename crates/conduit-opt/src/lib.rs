@@ -1,6 +1,5 @@
-//! Optimization passes on Conduit IR. `docs/optimisations.md` lists them
-//! one by one, and "Optimizations come down to a few rewrites" in
-//! `docs/ir.md` gives the design.
+//! Optimization passes on Conduit IR. `docs/optimisations.md` gives the
+//! design, "A few rewrites", and lists them one by one.
 //!
 //! A [`Pass`] rewrites one function at a time and reaches other items only
 //! through a [`Program`], so a frontend can optimize each function

@@ -1,4 +1,4 @@
-//! How a function body becomes Wasm code. See "Lowering" in `docs/ir.md`
+//! How a function body becomes Wasm code. See "Control flow" in `docs/wasm.md`
 //! and the crate's documentation for the layouts of objects.
 //!
 //! Every variable is a local, and every block ends in a `return`, `br`,

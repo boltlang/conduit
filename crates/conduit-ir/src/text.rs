@@ -2,7 +2,7 @@
 //!
 //! Printing then parsing gives back the same module, and parsing then
 //! printing gives back the same text if it was printed by [`print`]. The
-//! format is described in `docs/ir.md`, under "Text format". A small
+//! format is described in `docs/text.md`. A small
 //! example:
 //!
 //! ```text

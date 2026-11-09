@@ -1,4 +1,4 @@
-# Conduit IR (draft)
+# Conduit IR
 
 Conduit's IR is a typed, monomorphic, A-normal-form tree with join points,
 with a boxed `Any` type for code that can't be monomorphized.
@@ -6,6 +6,9 @@ It is meant to be small: a pass handles **5 kinds of thing**, a `let` and
 the 4 kinds of tail that end a block. Everything that isn't control flow is a
 single `let` holding an operation, so a pass that doesn't care about a
 particular operation never has to match on it.
+
+This is the IR itself. How to build it, optimize it, lower it and run it is
+in the other documents, which [README.md](README.md) lists.
 
 ## Goals
 
@@ -19,8 +22,9 @@ particular operation never has to match on it.
   `block`/`loop`/`br` nesting, so no relooper is needed. Lowering to a flat
   CFG with block parameters (Cranelift, LLVM) is mechanical.
 - **Room for real languages.** ADTs, closures, mutable fields, arrays,
-  GC'd values and effect handlers. See "What frontends need" for what a
-  frontend's own mid-level IR usually carries that Conduit must carry too.
+  reference-counted values and effect handlers. See
+  [frontends.md](frontends.md) for what a frontend's own mid-level IR
+  usually carries that Conduit carries too.
 - **Handlers add no control flow.** Effect handlers are three more `Op`s and one
   more type. Passes that ignore them keep working unchanged.
 
@@ -161,13 +165,57 @@ language traps or raises an error there checks the divisor itself. An op
 that can't trap can be removed or moved, and a check the frontend wrote
 is visible to the optimizer, which a hidden trap isn't.
 
+**Every op at a glance.** What each op does to memory and whether it may
+trap, from `Op::effects`, and, for reference counting, which arguments it
+**takes**, moving their reference, rather than borrows. What `get`,
+`array_get`, `ref_get` and `unbox` give is borrowed from the object it's
+read out of; what the others give is owned. The types each op checks are
+in [verify.md](verify.md).
+
+| Op, as text | Memory | Traps | Takes |
+|---|---|---|---|
+| `add(%x, %y)` and the other prims | none | `div.s`, `convert` | — |
+| `call fn1(..)` | anything | yes | the arguments the callee doesn't borrow |
+| `call_extern extern1(..)` | anything | yes | — (it borrows) |
+| `closure fn1(..)` | none | no | the captures |
+| `apply(%c, ..)` | anything | yes | all |
+| `new data10.0(..)` | none | no | the fields |
+| `const const40()`, `undefined()` | none | no | — |
+| `get data10.0.1(%x)` | reads | no | — |
+| `set data10.0.1(%x, %v)` | writes | no | `%v` |
+| `array_new(..)` | none | no | the elements |
+| `array_fill(%n, %v)` | none | yes | `%v` |
+| `array_alloc(%n)` | none | yes | — |
+| `array_get(%a, %i)` | reads | yes | — |
+| `array_set(%a, %i, %v)` | writes | yes | `%v` |
+| `array_len(%a)` | reads | no | — |
+| `array_copy(%d, %ds, %s, %ss, %n)` | writes | yes | — |
+| `array_clone(%a)` | reads | no | — |
+| `array_freeze(%a)` | reads | no | `%a` |
+| `ref_new(%v)` | none | no | `%v` |
+| `ref_get(%r)` | reads | no | — |
+| `ref_set(%r, %v)` | writes | no | `%v` |
+| `box[ty](%v)` | none | no | `%v` |
+| `unbox[ty](%a)` | reads | yes | — |
+| `host_null()`, `host_is_null(%h)` | none | no | — |
+| `host_unwrap(%h)` | none | yes | `%h` |
+| `host_function(%c)` | none | no | `%c` |
+| `handle handler30(..)`, `perform effect20.0(..)`, `resume(%k, ..)`, `discontinue effect20.0(%k, ..)` | anything | yes | all |
+| `dup(%x)`, `drop(%x)`, `free(%x)`, `decref(%x)` | writes | no | — |
+| `is_unique(%x)` | reads | no | — |
+| `drop_reuse(%x)`, `reuse_token(%x)` | writes | no | `%x` |
+| `reuse data10.0(%t, ..)` | writes | no | all |
+
+"Anything" means it runs code, which may also perform effects and not come
+back. The counting ops only appear once counts are explicit.
+
 ### Types
 
 ```rust
 pub enum Ty {
     I8, I16, I32, I64, F32, F64,
-    Data(DataId, Mutability, Vec<Mutability>),  // GC'd ADT value, with its arguments
-    Array(Box<Ty>, Mutability),   // GC'd array
+    Data(DataId, Mutability, Vec<Mutability>),  // ADT value, with its arguments
+    Array(Box<Ty>, Mutability),   // array
     Fn(Box<Sig>, Mutability),     // closure
     Cont(Box<Sig>),               // one-shot continuation captured by a handler
     Ref(Box<Ty>),                 // mutable cell holding one value: always Mut
@@ -326,7 +374,7 @@ inside an `Op`, so ops would stop being opaque, passes would have to handle a
 scope inside a scope, and rule 2 (labels never cross a function boundary)
 would need checking instead of holding by construction. Conduit doesn't
 lose optimizations by this, since `Closure(f)` names the function: see
-"Known closures" under "Optimizations".
+"Known closures" in [optimisations.md](optimisations.md).
 
 ### Polymorphism
 
@@ -535,7 +583,8 @@ unique. Its effect is `Reads`, like `ArrayClone`'s: it changes an array
 that nothing else can see.
 
 `ArrayClone` is an op rather than a loop the frontend writes because
-removing copies is the main optimization (see "Optimizations"), and an
+removing copies is the main optimization (see "Copies" in
+[optimisations.md](optimisations.md)), and an
 analysis can only remove what it can recognize. Its effect is `Reads`: it
 allocates, but it writes nothing that existed before.
 
@@ -668,7 +717,8 @@ The verifier checks these rules, and the types of every op: see
    where it's declared, `RefGet` where it's read and `RefSet` where it's
    assigned. A closure that uses the local captures the ref like any other
    value. The frontend doesn't need to convert to SSA, analyze captures or
-   declare cell types: the "promote refs" pass (see "Optimizations") turns
+   declare cell types: the "promote refs" pass (see "Ref promotion" in
+   [optimisations.md](optimisations.md)) turns
    every ref that doesn't escape into join point parameters.
 
    For example, `var i = 0; while i < n { i = i + 1 }; return i` can be
@@ -1041,7 +1091,8 @@ What effect types give Conduit:
   `perform` without a handler, so the run-time error is left only for
   `Any` and for entry points that have effects.
 - **Better analysis.** An `apply` of an `Fn(_, Imm)` with no effects writes
-  nothing that existed before (see "`Imm` closures don't write").
+  nothing that existed before (see "`Imm` closures don't write" in
+  [optimisations.md](optimisations.md)).
 
 The verifier only checks rows. It never infers them, since the frontend's
 type checker already has. Rows don't exist at run time: backends and the
@@ -1110,633 +1161,19 @@ What would take more:
 
 ### Lowering
 
-The Wasm backend lowers handlers whose clauses are all tail-resumptive or
-aborting without capturing a continuation:
+A backend either lowers handlers itself or runs evidence passing first,
+which turns them into ordinary Conduit IR that any backend runs. How the
+Wasm backend does it is in [wasm.md](wasm.md), and evidence passing in
+[lowerings.md](lowerings.md).
 
-- A global holds a stack of handler frames. A frame holds its handler's
-  number, the next frame, a reference to each clause, those of each
-  effect it handles in turn, and the handler's environment.
-- `handle` pushes a frame, applies the body, pops the frame, and calls the
-  return clause with the body's results.
-- `perform` walks the stack to the nearest frame of a handler of its
-  effect, trapping if there's none: it knows which handlers those are,
-  and where each keeps the clause. It then calls that frame's clause directly, with the
-  stack set to the frames below while the clause runs, so that a
-  `perform` in the clause goes to an outer handler, as it would with a
-  captured continuation.
-- An aborting clause's wrapper stores what the clause gives in the frame
-  and throws a Wasm exception holding the frame. A handler with such a
-  clause runs its body in a `try_table`, which catches the exception,
-  rethrows it if the frame isn't its own, and otherwise gives the frame's
-  results.
-- A tail-resumptive clause that discontinues sets the stack to that of
-  the `perform` it handles, which a second global holds while the clause
-  runs, and performs. A `perform` sets that global and puts it back after,
-  and a `handle` that catches an abort puts it back too, since the
-  `perform`s the exception left couldn't.
-- Each export runs under a wrapper that empties both globals and puts
-  them back after, so that an export the host calls from inside an
-  extern starts with no handlers.
+## Lowering to a flat CFG
 
-A handler with any other clause needs its continuations captured. There
-are two ways to do that, both possible because handlers are confined to
-three ops.
-
-- **Wasm stack switching** (the typed-continuations proposal), which the
-  Wasm backend does when `Options::stack_switching` asks for it. Each
-  operation of an effect such a handler handles has a control tag. A
-  handler that shares a clause with such a handler switches stacks too,
-  since a clause is lowered one way.
-  `handle` makes a frame with -1 in its clause slots and calls a function
-  that links it onto the handler stack and runs the body as a Wasm
-  continuation, with a `resume` that has a label per clause. `perform`
-  finds the nearest frame of a handler of its effect as for any handler, and if its
-  slot is -1, `suspend`s with the operation's tag, putting its handler
-  stack back once it's resumed. The `resume` then calls the clause,
-  under the handlers outside, with a Conduit continuation: a closure that
-  resumes the Wasm continuation under the handler again, which makes the
-  handler deep. Memory can't hold a Wasm continuation, which is a
-  reference, so it goes in a table of its type, and the Conduit
-  continuation holds its slot. The frame's link to the handlers outside is set each time,
-  so a continuation resumed somewhere else sees the handlers there. A
-  Wasm continuation can only be resumed once, so a second `resume` traps,
-  as rule 7 says. `discontinue F.op(k, args)` throws a closure that
-  performs `F.op(args)` into `k` with `resume_throw`, and the `perform`
-  that `k` was captured at catches it and calls it. Handlers whose clauses
-  are all tail-resumptive or aborting keep the lowering above, and only a
-  module with a handler of this kind needs the proposal, which isn't
-  standard yet: Wasmtime has it on Linux and macOS on x86-64.
-- **Evidence passing** (Xie & Leijen, "Generalized evidence passing for
-  effect handlers"), which `conduit_effects::lower_effects` does: a
-  Conduit-to-Conduit pass over the whole module that removes the four
-  ops, rows and continuation types. Functions that may perform, or that
-  apply closures, handle or call such functions, take evidence: the
-  active handlers and a shared yield state. Tail-resumptive clauses are
-  called directly; any other clause is yielded to, and the code after each
-  call that may yield, which rows tell, becomes a function that the
-  continuation calls (Koka's "yield bubbling"). Each continuation carries
-  a "used" flag, so a second resume traps, as with stack switching. The
-  handler that's yielded to takes the continuation and the arguments out
-  of the yield state, which then holds nothing for that yield, so the
-  runtime's own objects never form a cycle; a test checks this on the
-  evaluator's heap after every run. The output is ordinary Conduit IR, so every backend runs it, including Wasm
-  without stack switching and native ones. See "Evidence passing" in
-  [Optimizations](optimisations.md).
-
-## Optimizations come down to a few rewrites
-
-[Optimizations](optimisations.md) lists the passes one by one. Because the
-IR is so small, the classic simplifications are local rewrites:
-
-- **Case of known constructor or literal.** If `case x` has a scrutinee
-  bound by `New(C)` or a literal, replace the case with the matching arm.
-  A constructor never changes, so this holds for `Mut` objects too.
-  `Get(C, i)` of a known `New` of an `Imm` object becomes its argument.
-- **Constant folding.** A `Prim` op on literals is its result, as the
-  evaluator computes it, unless it traps or a float in it is NaN, whose
-  bits Wasm doesn't fix. Integer ops like `add(x, 0)` and `mul(x, 1)` are
-  `x`, and `mul(x, 0)` is `0`. Floats get no such rules: `x + 0.0` isn't
-  `x` when `x` is `-0.0`.
-
-  The `simplify` pass does these two in one forward walk, since each gives
-  the other more to do. It runs after `promote`, which turns what refs
-  held into values it can see.
-- **Case-of-case.** In A-normal form with join points, this becomes "a jump
-  to a known join point with a known argument". Inline (copy) the join
-  body at that jump, substituting the arguments, and the case inside it
-  becomes a case of a known value. Case-of-case falls out of inlining join
-  points plus the previous rule.
-
-  The `joins` pass does this, right before `simplify`. A join definition
-  that only one jump goes to is moved there. A small one (at most 20
-  `let`s and tails) is copied into a jump that gives a literal, or an
-  object made by `new` or `const`, for a parameter it `case`s on. This is
-  what inlining a function that returns a `new` object needs: the rest of
-  the caller is the join point the result is jumped to. A copy gets fresh
-  variables and labels for what it binds. Recursive definitions stay,
-  since a copy would unroll the loop, and so do definitions that mention a
-  continuation, whose uses the verifier counts along each path.
-- **Inlining functions.** Substitute the body and rename `ret` to a fresh
-  join point that holds the rest of the caller. This is the same shape as
-  any other join point.
-
-  The `inline` pass does this, right after known closures. After a tail call,
-  or any call whose results only go on to a jump, the callee's `ret` is
-  that jump's target, so no join point is made and the callee's tail calls
-  stay tail calls. It inlines callees of at most 20 `let`s and tails, and
-  stops once the caller has 1000. It never inlines a function into itself,
-  nor one that calls itself directly or through one other function, which
-  would unroll it a level each run. Nor a callee with mutability
-  parameters that boxes: `box` at a type with a parameter gives `mut any`,
-  and at `imm` gives `imm any`, which doesn't fit the variable it binds.
-  Inlined code keeps its sources, or gets the call's. The callee is reached
-  through `Program::func`, so a Salsa frontend records the dependency.
-- **Known closures.** When `apply(c, args..)` has a `c` bound by
-  `closure f(captures..)`, replace it with `call f(captures.., args..)`.
-  Because of the parameter order (captures first), this is just putting two
-  argument lists together. The result is a plain `Call`, so inlining
-  applies to it, and if `c` has no uses left, dead-code elimination removes
-  the allocation. The `closures` pass does this, first among the passes,
-  so that inlining sees the calls it makes in the same round. Not for a
-  closure that captures a continuation: the verifier leaves its uses
-  through the closure to run time, and two calls passing it would be two
-  uses it can see.
-- **Common subexpressions.** A `Let` with the same op and arguments as
-  one on every path before it gives the same result, if the op only
-  computes, reads what can't change (an `Imm` object or array, an array's
-  length, a box), or reads what can change with nothing in between that
-  may write. An op that may trap can be shared too, since the second
-  can't trap if the first didn't. An op that makes an object is shared
-  only if nothing can tell the two apart: an `Imm` object or array, a
-  closure, a box. A join point can be jumped to after anything, so reads
-  of what can change aren't carried into one. The `cse` pass does this,
-  after `simplify`, since folding makes more ops look alike.
-- **Dead code.** Drop a `Let` whose results are unused and whose
-  `op.effects()` doesn't write or trap, and drop a `Join` whose labels are
-  unused.
-- **Promote refs** (like LLVM's `mem2reg`). A ref that doesn't escape is
-  one whose only uses are as the first argument of `RefGet` and `RefSet`
-  in the function that creates it. It isn't captured by `Closure`, passed
-  to a call or a jump, stored with `New`/`Set`/`ArraySet`/`RefSet`, or
-  returned. Promote it like this: every join point it's live into gets an
-  extra parameter for its current value, every `Jump` passes the current
-  value, `RefGet` becomes that value, and `RefSet` makes a new value
-  current. A ref that does escape stays a heap cell.
-
-  The `promote` pass does this. A join point gets a parameter only for the
-  refs it needs: those that some path from its start reads before writing,
-  found by a backward liveness analysis repeated over the join points until
-  it stops changing, so loops and join points that jump to each other work.
-  Promoting one ref can let another be promoted on the next round, like a
-  ref that was only stored in a promoted one. A ref of a continuation
-  stays, since the verifier counts a continuation's uses along paths and
-  reads out of a ref on different paths would look like several uses. It
-  runs before `dce` and `copies`: a ref holding an array ties the array to
-  the ref's region, so promoting it lets `copies` freeze the array.
-- **Remove copies.** The `copies` pass does three things:
-  - An `ArrayClone` of an `Imm` array to `Imm` is the array itself, since
-    nothing can tell the two apart.
-  - A `New` of an `Imm` object rebuilt from the fields of another `Imm`
-    object `x` of the same type, `new C(get C.0(x), .., get C.n(x))`, is
-    `x`. Nothing compares objects by identity, so an `Imm` object can't be
-    told apart from another with the same fields. This is what a
-    frontend's copy to `Imm` comes down to on a value that's `Imm`
-    already, once it's inlined.
-  - **Freeze in place.** If nothing else can reach the original array and
-    it isn't used afterwards, an `ArrayClone` to `Imm` becomes an `ArrayFreeze`.
-    The pass shows this with a region analysis: variables that may reach
-    the same `Mut` object are in the same region, because an op stores one
-    in the other, reads one out of the other, captures or boxes it, or
-    passes it to a join point. Values whose type is `Imm` all the way down
-    are left out, since what they reach never changes. A region escapes if
-    a parameter, a call's argument or result, or a returned value is in
-    it. A clone is frozen if its argument's region doesn't escape and none
-    of its variables is live after the clone, with liveness following
-    jumps, so a loop that uses the original on its next round keeps the
-    clone. The analysis follows what each closure captures through
-    `Closure`'s arguments, not through the closure's type.
-- **`Imm` closures don't write.** An `Apply` on an `Fn(_, Imm)` whose
-  arguments are all `Imm` all the way down can only reach `Imm` objects
-  and the ones it makes, so it writes nothing that existed before, unless
-  it performs: a clause can write whatever its handler's environment
-  holds. With effect types, an empty row on the closure says it can't, and
-  then its memory effect is `Reads`. It may still trap or not come back,
-  so it can't be removed, but a read before it can be reused after it,
-  which `cse` does.
-
-Several of these replace a tail with a block, like a `case` with its arm or
-a jump with the join point's body: the block's `let`s then go after the
-enclosing block's, and its tail becomes the new tail.
-
-A pass is usually a loop over a block's `let`s and a match with 4 arms on
-its tail, recursing only into nested blocks. Most passes only do real work
-in one or two places.
-
-## Lowering
-
-**To Wasm.** Pass arguments in Wasm locals so blocks don't need typed
-stack values.
-
-| Conduit | Wasm |
-|---|---|
-| `join j(..) = D in B` | `block $j  B  end` then `D` |
-| `join rec j(..) = D in B` | `block $enter B end` then `loop $j D end` |
-| `join rec j1 .., jn` (n > 1) | `loop` plus a `br_table` on a "which label" local |
-| `jump j(args)` | set the parameter locals, then `br $j` |
-| `jump ret(args)` | `return` (or `return_call` for a tail call) |
-| `case` | `br_table` over nested blocks, or an `if` chain |
-
-A label is only in scope inside the `block`/`loop` that implements it, so
-every `br` targets an enclosing label, as Wasm requires.
-
-Wasm has no `i8` or `i16` values, so, as in LLVM's Wasm backend, each is
-an `i32` whose low 8 or 16 bits are the value, and whose high bits can be
-anything. Ops whose low bits only depend on their operands' low bits
-(`add`, `sub`, `mul`, `and`, `or`, `xor`, `shl`, `neg`) are the `i32` op.
-The others extend their operands first, with `i32.extend8_s`/`extend16_s`
-or an `i32.and` with a mask: `div`, `rem`, `shr`, comparisons, `convert`
-to a wider type, and `case`. A signed `div` traps when the result doesn't
-fit, as `i32.div_s` does, and so does `convert` from a float out of range.
-Arrays of them are packed, one or two bytes per element, and so are
-fields of data types, which store only the low bits. A host sees an `i8` or `i16` as an `i32`,
-and should only read its low bits.
-
-**To a flat CFG (Cranelift, LLVM).** Each join definition becomes a block
+For a backend like Cranelift or LLVM: Each join definition becomes a block
 whose parameters are the join's parameters, `jump` becomes a jump with
 block arguments, and `case` becomes `br_table` or `brif`. Function
 bodies become the entry block.
-
-### Closures
-
-The code calling an unknown closure only has the closure and the
-arguments: it doesn't know what was captured. So for each `Func` used in
-a `Closure`, the backend generates a wrapper `f_entry(env, args..)`. It
-reads the captures out of the closure object `env` and calls
-`f(captures.., args..)`. A closure object holds its wrapper's slot in
-the function table, followed by the captured values ("flat"
-closures). `apply(c, args..)`
-loads the wrapper from `c` and calls it with `c` and `args`. Calls
-rewritten by "Known closures" skip the wrapper.
-
-## Operations per target
-
-Only Wasm is a target for now. `conduit-wasm` lowers to Wasm with values
-in linear memory, from a Conduit allocator, so the output needs no GC
-from the engine: Wasm 2.0, with tail calls and, for aborting handlers,
-exception handling, both part of Wasm 3.0.
-
-- **The shadow stack** is memory that grows down, in segments: the main
-  stack starts on a region of `Options::shadow_stack` bytes, 64 KiB by
-  default, and with stack switching each continuation on a segment of
-  `Options::continuation_stack` bytes, 4 KiB by default. A push that
-  doesn't fit chains another segment, from a free list or the heap, or a
-  bigger one for what doesn't fit in one, and popping gives the segments
-  chained since back to the free list. A continuation keeps its pointer
-  and limit in its first segment while it's suspended, and gives its
-  segments back when its body returns or throws, or when it's freed
-  unused. It holds what an `#[abi(flat)]` extern call passes through
-  memory, and objects that don't escape.
-- **Objects that don't escape** go on the shadow stack instead of the
-  heap, with `Options::stack_objects`, on by default: those a function
-  makes with `new`, `array_new`, `array_fill`, `array_alloc`,
-  `array_clone`, `ref_new` or `closure` that nothing can still refer to
-  once it returns (see `crates/conduit-wasm/src/escape.rs`). An object
-  escapes if it's returned, stored in an object, captured, boxed,
-  performed or handled, given to an `apply`, to a call in tail position,
-  or to a call whose parameter escapes, which a fixpoint over the module
-  finds. One made inside a recursive join point stays on the heap, since
-  a loop would push one each time around. A function with stack objects
-  pops them when it returns and before each tail call, and an aborting
-  `handle` pops back to where it started when it catches its abort,
-  since the frames the abort unwinds don't. When counting, a stack
-  object is counted as any other, but marked buffered, so that its count
-  reaching 0 drops what it holds without giving its memory to the heap,
-  and `drop_reuse` doesn't reuse it.
-- Every object starts with a header word, and every allocation goes
-  through one `alloc` function, but a stack object's. By default, `alloc` bumps a pointer and
-  memory is never freed. With `Options::counts`, for a module whose counts
-  `conduit_opt::ownership::insert_counts` made explicit, the header is the
-  count, constants' with the sign bit set so they're never counted, and
-  freed objects go on free lists, one per multiple of 8 bytes up to 256
-  and one for bigger blocks, which `alloc` takes from before it bumps.
-  Each kind of object (a data type, arrays and refs of what they hold,
-  closures, `any`) has a drop function, which frees it at 0 and drops what
-  it held, tail-calling the drop of its last field so that dropping a
-  list is a loop. A closure's wrapper has a function next to it in the
-  table that frees it and drops its captures, and every `any` is then a
-  box that holds the kind of what it holds. Handler frames are freed when
-  their `handle` is done, also when an abort unwinds through it. A module
-  whose handlers need evidence passing must have it done before its
-  counts are inserted. With stack switching, they needn't be: a captured
-  continuation is counted, holds a reference to the handler's
-  environment, and gives back its table slot when it's used, or its slot,
-  the handler's frame and its shadow stack segment when it's freed
-  unused. The module exports `conduit_live`, the number of
-  objects not yet freed.
-- **Host values** are boxes of 16 bytes, counted like other objects, that
-  hold the number of a slot in a table of `externref`s, and a null
-  `nullable host` is the address 0. Extern calls and exports that take or
-  give them convert at the boundary, and a box whose count gets to 0
-  clears its slot and goes on a free list. A module with `host_function`
-  imports `conduit.function` from the runtime, has a trampoline for each
-  signature of closure, and exports `conduit_release`. All of it is in
-  [`host/js.md`](host/js.md).
-- With `Options::cycles` too, cycles are collected by trial deletion.
-  The header's count is then 28 bits, with the collector's color and a
-  "buffered" bit above it, and the sign bit for immortal. A `drop` that
-  leaves an object above 0 buffers it if its kind can be in a cycle,
-  which the kinds' graph decides, leaving out fields typed `imm`. Each
-  kind has a second drop for objects typed `imm`, which never buffers.
-  A full buffer of 256 is collected, and so is what the export
-  `conduit_collect` asks for. A buffered object's memory only ever goes
-  back through the collector, so the buffer never points at another
-  object. The collector follows what objects hold with a stack in
-  memory, which grows as needed, so it doesn't recurse.
-- Handlers whose clauses are all tail-resumptive or aborting are lowered
-  directly. For a module with any other clause, the consumer chooses with
-  `Options::stack_switching`: stack switching, which isn't standard yet,
-  or evidence passing first, which runs on any engine.
-
-Status:
-
-- ✅ supported directly
-- 🔧 supported through a Conduit pass
-- ⚠️ needs a Wasm proposal that isn't standard yet
-
-| Operation | Wasm | Status |
-|---|---|---|
-| `Prim`: integer arithmetic, bitwise ops | `i32.add`, `i64.and`, ... | ✅ |
-| `Prim`: float arithmetic | `f64.add`, `f32.sqrt`, ... | ✅ |
-| `Prim`: comparisons | `i32.lt_s`, `f64.eq`, ... | ✅ |
-| `Prim`: conversions | `i64.extend_i32_s`, `f64.convert_i32_s`, ... | ✅ |
-| `Call` | `call` | ✅ |
-| `Call` in tail position | `return_call` | ✅ (tail calls, Wasm 3.0) |
-| `CallExtern` | `call` of an import | ✅ |
-| `CallExtern` with `host` values | `call`, with `table.get` of each host argument's slot and a box for each host result | ✅ |
-| `CallExtern` of an `#[abi(flat)]` extern | `call`, with addresses and lengths for arrays, an iovec list and out-parameters on the shadow stack | ✅ |
-| `Closure` | allocate, store the wrapper's table slot and the captures | ✅ |
-| `Apply` | `call_indirect` | ✅ |
-| `New` | allocate, store the constructor's index and the fields | ✅ |
-| `Get` | `*.load`, or `load8_s`/`load16_s` for `i8` and `i16` | ✅ |
-| `Set` | `*.store` | ✅ |
-| `ArrayNew` | allocate, store the length and the elements | ✅ |
-| `ArrayGet` | bounds check, then `*.load` | ✅ |
-| `ArraySet` | bounds check, then `*.store` | ✅ |
-| `ArrayLen` | `i32.load` of the length | ✅ |
-| `ArrayAlloc` | allocate, which is zeroed | ✅ |
-| `ArrayCopy` | bounds checks, then `memory.copy` | ✅ |
-| `ArrayClone` | allocate, then `memory.copy` | ✅ |
-| `ArrayFreeze` | nothing | ✅ |
-| `RefNew` | allocate one slot and store, or a local if promoted | ✅ |
-| `RefGet`, `RefSet` | `*.load`, `*.store` | ✅ |
-| `Box` of a scalar | allocate and store | ✅ |
-| `Box` of a reference | nothing: it's already an address; a box, as for a scalar, with `Options::counts` | ✅ |
-| `Unbox` to a scalar | `*.load` | ✅ |
-| `Unbox` to a reference | nothing | ✅ |
-| `Const` | the address of its object in a data segment, or its literal | ✅ |
-| `Undefined` | 0 | ✅ |
-| `Dup`, `DecRef` | a call that changes the header, unless the object is 0 or immortal | ✅ with `Options::counts`, else nothing |
-| `Drop` | a call of the drop function of the object's kind | ✅ with `Options::counts`, else nothing |
-| `IsUnique` | whether the header is 1 | ✅ with `Options::counts`, else 0 |
-| `Free` | a call that puts a data object or array on its free list | ✅ with `Options::counts`, else nothing |
-| `DropReuse` | a call that drops what the object holds and gives its address if it was unique, else 0 | ✅ with `Options::counts`, else 0 |
-| `ReuseToken` | the object's address, or 0 if it's buffered, which it then frees for the collector | ✅ with `Options::counts`, else 0 |
-| `Reuse` | `New` in the token's memory, or allocated if it's 0 | ✅ |
-| `Handle`, `Perform` with tail-resumptive clauses | a handler stack in a global, and a `call_indirect` of the clause | ✅ |
-| `Handle`, `Perform` with aborting clauses | the same, then `throw`, caught by `try_table` | ✅ (exception handling, Wasm 3.0) |
-| `Discontinue` in a tail-resumptive clause | a `perform` under the handler stack of the `perform` the clause handles, kept in a second global | ✅ |
-| `Handle` with other clauses | `cont.new` + `resume` with `(on $op ..)` | ⚠️ stack switching, with `Options::stack_switching` |
-| `Perform` to such a handler | `suspend` | ⚠️ stack switching |
-| `Resume` | a `call_indirect` of the continuation, which `resume`s | ⚠️ stack switching |
-| `Discontinue` | `resume_throw` of a closure that performs the operation, which the `suspend` catches and calls | ⚠️ stack switching |
-| `Handle`, `Perform`, `Resume`, `Discontinue` | evidence passing, then the rows above | 🔧 without `Options::stack_switching` |
-
-Notes:
-
-- `case` on an ADT loads the constructor's index, at offset 4.
-- A constant is laid out when the module is built, in a data segment
-  from address 16, and the heap starts after the constants. 0 is never an
-  object, so `undefined` is 0.
-- Integer division and remainder trap on zero in Wasm, so `div` and `rem`
-  check the divisor first and give 0 or the dividend, unless it's a
-  literal.
-- Mutability doesn't exist at run time: `Imm` and `Mut` objects and
-  closures have the same layout.
-
-## Text format
-
-`conduit_ir::text` reads (`parse`) and writes (`print`) a text form of a
-module. Printing then parsing gives back the same module, and text that
-`print` wrote parses and prints back unchanged. Without names, things are
-written by number, as the verifier's messages write them: `fn1`, `data10`,
-`data10.1` (constructor 1), `extern1`, `effect20`, `handler30`, `const40`,
-`%3`, `j1` and `ret`.
-
-**Names.** A function, data type, extern, effect, handler or constant can
-have a name instead (`debug.name` of a `Func`, `debug_name` of the
-others), and so can a function's variables and labels (`debug.vars`, `debug.labels`):
-`fn sum`, `imm List`, `List.1`, `perform Yield.0`, `%acc`, `jump loop`.
-They're for showing code. Passes don't look at them, but keep them, and
-what a pass makes has none.
-
-- A name without a number gets the smallest number of its kind that
-  nothing else is written with: in the order they're defined for items,
-  from 0, and in the order they first appear in their function for
-  variables (from 0) and labels (from 1).
-- `name#3` gives both, for a name that would get another number, or that
-  more than one thing has, as an inlined function's variables or the
-  instances of one generic function do. `print` writes the name alone
-  wherever it reads back to the same number, and `name#3` everywhere else.
-- Only identifiers can be names, and not the words the format uses where a
-  name can be, like `ret`, `rec` or `Any`. `print` writes a thing whose
-  name can't be one by its number.
-
-**Exports.** `#[export(..)]` before a function, at most one, says how
-it's called from outside the module (`exports` of `Module`), for the one
-target the module is for, like an extern's `#[link(..)]`:
-`#[export(wasm, name = "..")]` as a Wasm export, `#[export(emu, name =
-"..")]` by the evaluator's host, or `#[export(c, symbol = "..")]` as a C
-function, which nothing lowers yet. The name or symbol is the function's
-own by default, and `print` leaves it out when it is. Two exports of one
-kind can't share a name. An exported function owns its parameters (see
-"Reference counts").
-
-```
-#[export(wasm, name = "_start")]
-fn start() -> () {
-  jump ret()
-}
-```
-
-**Externs.** An extern is `extern`, its name, its parameters, `->`, its
-results and its row. Attributes in `#[..]` come before it and before its
-parameters:
-
-- `#[link(..)]`, which every extern has exactly one of, is where the
-  host provides it (`link` of `Extern`), for the one target the module
-  is for: choosing the kind for each target is the frontend's job.
-  - `#[link(wasm, module = "..", name = "..")]` is a Wasm import, which
-    only the Wasm backend lowers.
-  - `#[link(emu, name = "..")]` is a function of the evaluator's host,
-    which only the evaluator calls, with IR values, whatever the ABI.
-  - `#[link(c, symbol = "..", lib = "..")]` is a C function, from library
-    `lib` if there is one, which nothing lowers yet.
-
-  The name or symbol is the extern's own by default, and `print` leaves
-  it out when it is. Each consumer rejects the other kinds: the Wasm
-  backend when it lowers the module, and the evaluator when the extern
-  is called.
-- `#[abi(flat)]` is its ABI (`abi` of `Extern`), when it isn't the
-  default, `#[abi(conduit)]`.
-- `#[nolen]` before a parameter of an `#[abi(flat)]` extern passes the
-  array's address alone.
-- A parameter can have a name, `%fd: i32`, which only shows what it is
-  (`param_names` of `Extern`).
-
-```
-data data11 {
-  ()
-  (i32, inherit data11)
-}
-
-#[link(wasm, module = "env", name = "print")]
-extern extern1(i32) -> ()
-
-#[link(wasm, module = "wasi_snapshot_preview1")]
-#[abi(flat)]
-extern fd_write(%fd: i32, %iovs: imm [imm [i8]]) -> (i32, i32)
-
-#[link(wasm, module = "wasi_snapshot_preview1")]
-#[abi(flat)]
-extern args_get(#[nolen] %argv: mut [i32], #[nolen] %buf: mut [i8]) -> (i32)
-
-effect effect20 {
-  (i32) -> ()
-}
-
-handler handler30 for effect20 env(ref i32) ops(fn4) ret fn5
-
-const const40: imm [i8] = b"hi\n"
-const const41: imm data11 = data11.1(1i32, data11.0())
-
-fn fn1(%0: i32) -> (i32) {
-  join rec j1(%1: i32, %2: i32) =
-    let %3: i32 = ge.s(%1, %0)
-    case %3 {
-      1 => jump ret(%2)
-      _ =>
-        let %4: i32 = add(%1, 1i32)
-        let %5: i32 = add(%2, %1) @src7
-        jump j1(%4, %5)
-    }
-  in jump j1(0i32, 0i32)
-}
-```
-
-- **Types** are written as the verifier prints them: `i32`, `mut data10`,
-  `imm [i32]`, `ro fn(i32) -> ()`, `cont() -> ()`, `ref i32`, `imm any`,
-  `host`, `nullable host`.
-  A closure or continuation type with effects has them after its
-  results, `imm fn() -> (i32) does effect20 + effect21`, and so does a
-  function, `fn fn1() -> (i32) does effect20 {`, and a handler,
-  `handler handler30 for effect20 does effect21 env(..) ..`. A handler of
-  several effects lists them, and its clauses for each, apart by `;`:
-  `handler handler31 for effect20, effect21 env() ops(fn4, fn5; fn6) ret fn7`. Without
-  `does` there are none, and `does Any` is anything.
-  Mutabilities are `imm`, `mut`, `ro` and `inherit`. A data type gives its
-  mutability arguments in brackets, `mut data10[imm, mut]`, and a
-  declaration names its parameters the same way:
-  `data data10['m1, 'm2] { ('m1 [i32]) }`. A function declares them the
-  same way, with its assumptions after its results:
-  `fn fn1['m1, 'm2](%0: 'm2 [i32]) -> ('m1 data10['m2]) where 'm2: 'm1 {`.
-  Calls and closures give their arguments the same way:
-  `call fn1[mut, imm](%0)`, `closure fn2['m1](..)`. Any `'name` parses, and
-  parameters print as `'m1`, `'m2`, .. by position. Brackets after a data
-  ID never clash with an array type, whose `[` always follows a
-  mutability.
-- **Binders carry types:** function and join parameters, and the variables
-  a `let` binds (`let %3: i32 = ..`; `let = ..` binds nothing). The header
-  of a function can add `vars(%5: i32)` for variables nothing binds, and
-  `labels N` when the function has more labels than its body defines.
-- **Ops** are a name, what the op takes in its name, and the arguments:
-  `add`, `div.s`, `lt.u`, `convert.s[i64]`, `reinterpret[f32]`,
-  `call fn2(..)`, `call_extern extern1(..)`, `closure fn2(..)`, `apply(..)`,
-  `new data10.0(..)`, `const const40()`, `undefined()`, `get data10.0.1(..)`,
-  `set data10.0.1(..)`,
-  `array_new`, `array_fill`, `array_alloc`, `array_get`, `array_set`,
-  `array_len`, `array_copy`,
-  `array_clone`, `array_freeze`,
-  `ref_new`, `ref_get`, `ref_set`, `box[i32](..)`, `unbox[i32](..)`,
-  `handle handler30(..)`, `perform effect20.0(..)`, `resume(..)`,
-  `discontinue effect20.0(..)`, `dup(..)`, `drop(..)`, `is_unique(..)`,
-  `free(..)`, `decref(..)`, `drop_reuse(..)`, `reuse_token(..)`,
-  `reuse data10.1(..)`, `host_null()`, `host_is_null(..)`,
-  `host_unwrap(..)` and `host_function(..)`.
-  A reuse token's type is `reuse data10.1`.
-- **Literals** carry their type: `5i32`, `-1i64`, `1.5f32`, `1e300f64`.
-  Finite floats are printed in the shortest form that reads back exactly.
-  NaNs and infinities are written by their bits: `f32_bits(2143289344)`.
-- **Constants** give their type, then their value: a literal, an array
-  `[1i32, 2i32]`, a constructor with its fields `data11.1(1i32, data11.0())`,
-  or another constant by its ID or name. A byte string `b"hi\n"` is an
-  array of `i8` literals, and `print` writes every non-empty one that way.
-  Its escapes are `\"`, `\\`, `\n`, `\t`, `\r`, `\0` and `\xff`, and other
-  characters are their UTF-8 bytes. `print` writes valid UTF-8 as its
-  characters, except control characters, and every other byte as `\xff`.
-  It's only a way of writing: a constant holds a byte string as an array
-  of literals, so passes see one form.
-- **Sources** follow a `let` or a `jump`: `@src7`.
-- `case` arms are `1 =>`, `data10.1 =>` or `_ =>` for the default.
-  `join` definitions are separated by `and`, and the body follows `in`.
-  A block can end in `unreachable` or `trap`.
-- Line comments start with `//`.
-
-A long function is a long list of `let`s, so parsing and printing it
-doesn't need a deep stack.
-
-## Evaluator
-
-`conduit-eval` runs Conduit IR directly, for testing frontends and passes.
-
-- **It only accepts verified IR.** It doesn't check types while running.
-  IR the verifier would reject gives an "invalid IR" error or a wrong
-  result, but never a crash.
-- **Control flow doesn't use Rust's stack.** The evaluator runs a loop over
-  an explicit stack of frames. A frame holds a place in a block: `let`s
-  move it forward, and jumps, loops and `case` move it to another block.
-  Calls push a frame, and tail calls and tail resumes reuse the
-  caller's frame. A deeply recursive program hits a frame limit, which is
-  an error.
-- **Handlers move frames.** `handle` pushes a handler frame. `perform`
-  moves the frames from the nearest handler of its effect up into the
-  continuation, and `resume` moves them back. `discontinue` moves them
-  back too, and then performs in the frame that was waiting. A second use
-  finds the frames gone, which is an error (rule 7).
-- **Host values** are objects too, counted and checked for leaks like
-  others. A host function sees one as `Value::Host(n)`, the number it gave,
-  a null as `Value::Null`, and a host function as `Value::Function(k)`,
-  which it calls later with `Machine::call_function` (see "The evaluator"
-  in [`host/js.md`](host/js.md)).
-- **Objects know their mutability.** Every object that can be `Imm` or
-  `Mut` carries an "is mut" flag. A write to an `Imm` object is an error,
-  which can only happen if an optimization broke the mutability rules.
-  `ArrayFreeze` clears it, so a write through an alias that a wrong `ArrayFreeze`
-  left behind is an error too. An element `ArrayAlloc` made is unset
-  until something sets it, and reading it is an error too. A frame and a closure carry their
-  function's mutability arguments, so that an object made at a parameter's
-  mutability gets the caller's, and `Box` and `Unbox` compare types with
-  the arguments in place. `Machine::call_at` calls a function with
-  mutability parameters.
-- **Numbers follow Wasm.** Integers wrap, shift amounts are taken modulo
-  the width, and `min` and `max` give NaN if either operand is NaN and
-  treat `-0.0` as less than `0.0`. Division by zero gives 0 and its
-  remainder the dividend. Division of the smallest integer by -1, and
-  converting a float that is NaN or out of range to an integer, are
-  errors, where Wasm traps. The test
-  programs in `tests/programs/prims` check that the two agree.
-- **Undefined behavior is an error,** like `Unbox` at the wrong type.
-- **Constants are made when first used,** and kept, so every use gets the
-  same object.
-- **Hosts take and give values,** whatever the extern's ABI. A `Host`
-  gets an `Arrays` view of the heap, which reads any array it's given and
-  writes the `mut` ones, as a flat-ABI host does through memory.
-- **Reference counts are checked** with `Machine::counting` on. Every
-  object has a count, which `Dup`, `Drop` and the ops that count for
-  themselves change (see "Reference counts"), and an object is freed at
-  0. A use of a freed object, or a `Drop` of one, is undefined behavior,
-  which stops the machine. After a run, `Machine::leaks` takes the values
-  that still own objects, like the results, and reports objects with more
-  counts than references (a missing `Drop`), with fewer (a `Drop` too
-  many), references to freed objects, and garbage that only cycles keep
-  alive. With `Machine::cycles` on too, it collects cycles by trial
-  deletion (Bacon and Rajan, synchronous): an object that may be in a
-  cycle, which only a `Mut` object, a ref or an `any` can, is buffered when
-  a `drop` leaves it above 0, and the buffer is collected once it's full
-  or by `Machine::collect_cycles`. Tests run counted programs that way,
-  with a small buffer, so that collections happen in the middle of runs.
-  A test program with `//# counted` runs that way and must leave
-  nothing. Without counting, `Dup` and `Drop` do nothing, and objects are
-  never freed.
+How the Wasm backend nests join points into `block`s and `loop`s is in
+[wasm.md](wasm.md).
 
 ## Left out on purpose
 
@@ -1751,20 +1188,23 @@ doesn't need a deep stack.
 
 ## Open questions
 
-1. How to free memory in the linear memory backend: reference counting
-   with reuse, like Koka's Perceus, or a tracing collector, and what to do
-   about cycles of `Mut` objects. Linear memory was chosen over Wasm GC for
-   host and WASI access, engines without GC, and one runtime with the
-   native backend to come.
-2. Should `Case` allow several tags per arm (or-patterns like `0 | 1`)? It's cheap
+1. Should `Case` allow several tags per arm (or-patterns like `0 | 1`)? It's cheap
    when an arm binds nothing, but join points already cover it.
-3. Multi-shot continuations (backtracking, nondeterminism): allow them
+2. Multi-shot continuations (backtracking, nondeterminism): allow them
    per effect, with a flag on `EffectDecl`? This is only possible with
    the evidence-passing lowering, not with Wasm stack switching.
-4. Shallow handlers: needed for anything frontends want to express, or can
+3. Shallow handlers: needed for anything frontends want to express, or can
    deep handlers plus state cover it?
 
 Decided:
+
+- **Memory is counted,** in the style of Koka's Perceus: explicit `dup`
+  and `drop`, borrowed parameters, reuse of what's freed, and drops
+  specialized, with cycles of `Mut` objects, refs and `any`s collected by
+  trial deletion (see "Reference counts" above and
+  [lowerings.md](lowerings.md)). Values are in linear memory rather than
+  Wasm GC, for host and WASI access, engines without GC, and one runtime
+  with the native backend to come.
 
 - **No deep copy.** Conduit used to have a `Copy` op that converted a whole
   value to another mutability, keeping sharing and cycles. Compiling that
@@ -1776,65 +1216,3 @@ Decided:
   after "Modules". If several frontends end up writing the same free-variable
   helper, Conduit can ship it as a library function without changing the
   IR.
-
-## What frontends need
-
-Conduit is meant to replace a frontend's own mid-level IR, so it has to
-carry what such an IR usually carries. The design above doesn't cover these
-yet:
-
-- **Generic code.** Conduit is monomorphic, so a frontend with generics or
-  type classes monomorphizes and resolves method calls while lowering to
-  Conduit, erasing to `Any` and passing dictionaries for polymorphic
-  recursion (see "Polymorphism"). Any interpreter that runs on Conduit then
-  runs that code too.
-- **Mutability.** A language with `imm` and `mut` views of the same data
-  maps them to the mutability in Conduit's types, and builds its copies
-  between them with `New` and `ArrayClone`. Code that's generic over
-  mutability keeps its parameters, as functions with mutability
-  parameters. See "Mutability".
-- **Sources.** Frontends need to map code back to source, for errors and
-  for limits on how long an interpreter runs. `Let` and `Jump` carry a
-  `source`, which is opaque to Conduit and carried through inlining.
-- **Strings and chars.** A string literal is a constant of type
-  `imm [i8]` (see "Constants"), written `b"hi"` in the text, which a `Mut` string copies with
-  `ArrayClone`. Chars are `i32`.
-- **Incremental compilation.** A query-based frontend (Salsa, for example)
-  caches Conduit IR and wants unchanged functions not to be recompiled.
-  Conduit doesn't depend on any such framework. Instead:
-  - Passes are pure functions that work on one function at a time
-    (`optimize`, `emit_wasm`), and only `link` sees the whole program.
-  - A pass reaches other functions and data types through a trait the
-    frontend implements:
-
-    ```rust
-    pub trait Program {
-        fn func(&self, id: FuncId) -> Option<&Func>;
-        fn func_sig(&self, id: FuncId) -> Option<Sig>;   // has a default
-        fn func_mut_params(&self, id: FuncId) -> Option<MutParams>;  // has a default
-        fn func_effect_params(&self, id: FuncId) -> Option<u32>;     // has a default
-        fn data(&self, id: DataId) -> Option<&DataDecl>;
-        fn extern_fn(&self, id: ExternId) -> Option<&Extern>;
-        fn effect(&self, id: EffectId) -> Option<&EffectDecl>;
-        fn handler(&self, id: HandlerId) -> Option<&HandlerDecl>;
-        fn constant(&self, id: ConstId) -> Option<&ConstDecl>;
-    }
-    ```
-
-    A Salsa frontend implements it with tracked queries. When inlining
-    asks for a callee, Salsa records the dependency, so a change to the
-    callee recompiles the caller. A pass that only needs a callee's type,
-    like the verifier, asks for `func_sig`, so that it doesn't depend on
-    the callee's body.
-  - IDs are opaque `u64`s the frontend chooses, and stay the same for the
-    same item. A Salsa frontend can use the bits of an interned ID
-    (`salsa::Id::as_bits`). Positions only exist after `link`.
-  - Passes are deterministic: the same input gives exactly the same
-    output, so a frontend's equality check can tell that nothing changed.
-    Iteration order never depends on a `HashMap`.
-  - A pass asks for what it actually uses, such as the callees inlining
-    considers, so a function doesn't depend on the whole program.
-
-  If several Salsa frontends need the same glue, it can live in a separate
-  crate (for example `conduit-salsa`), so Conduit's core stays
-  framework-free.

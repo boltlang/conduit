@@ -1,7 +1,7 @@
 //! Lowers Conduit IR to WebAssembly, with objects in linear memory, so
 //! the output needs no GC: only tail calls and bulk memory, and exception
-//! handling for aborting handlers, all part of Wasm 3.0. See "Lowering"
-//! and "Operations per target" in `docs/ir.md`. Every object comes from
+//! handling for aborting handlers, all part of Wasm 3.0. See
+//! `docs/wasm.md`. Every object comes from
 //! `alloc`. By default that's a bump allocator and memory is never freed;
 //! with [`Options::counts`], for a module whose reference counts are
 //! explicit, objects are freed onto free lists that `alloc` takes from

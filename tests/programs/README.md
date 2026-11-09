@@ -1,7 +1,7 @@
 # Test programs
 
-Each `.conduit` file here is a module in the text format (see "Text
-format" in `docs/ir.md`), with checks in comments that start with `//#`.
+Each `.conduit` file here is a module in the text format (see
+`docs/text.md`), with checks in comments that start with `//#`.
 Programs name their functions, types, effects, handlers, variables and
 labels, except those in `invalid`, whose checks match the verifier's
 messages, which use numbers.

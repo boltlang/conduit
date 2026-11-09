@@ -10,9 +10,139 @@ round changes nothing (at most 16 rounds). Each pass leaves work for the
 others, which the next round picks up. At the end, variables and labels
 are renumbered so that no gaps are left.
 
-The design behind them is in "Optimizations come down to a few rewrites"
-in [the IR](ir.md). The test programs in `tests/programs/<pass>` show
-each one, with the code before and after.
+The test programs in `tests/programs/<pass>` show each one, with the code
+before and after. Lowering effects and inserting counts aren't
+optimizations, though they run after them: they're in
+[lowerings.md](lowerings.md).
+
+## A few rewrites
+
+Because the IR is so small, the classic simplifications are local
+rewrites, which the passes below are made of:
+
+- **Case of known constructor or literal.** If `case x` has a scrutinee
+  bound by `New(C)` or a literal, replace the case with the matching arm.
+  A constructor never changes, so this holds for `Mut` objects too.
+  `Get(C, i)` of a known `New` of an `Imm` object becomes its argument.
+- **Constant folding.** A `Prim` op on literals is its result, as the
+  evaluator computes it, unless it traps or a float in it is NaN, whose
+  bits Wasm doesn't fix. Integer ops like `add(x, 0)` and `mul(x, 1)` are
+  `x`, and `mul(x, 0)` is `0`. Floats get no such rules: `x + 0.0` isn't
+  `x` when `x` is `-0.0`.
+
+  The `simplify` pass does these two in one forward walk, since each gives
+  the other more to do. It runs after `promote`, which turns what refs
+  held into values it can see.
+- **Case-of-case.** In A-normal form with join points, this becomes "a jump
+  to a known join point with a known argument". Inline (copy) the join
+  body at that jump, substituting the arguments, and the case inside it
+  becomes a case of a known value. Case-of-case falls out of inlining join
+  points plus the previous rule.
+
+  The `joins` pass does this, right before `simplify`. A join definition
+  that only one jump goes to is moved there. A small one (at most 20
+  `let`s and tails) is copied into a jump that gives a literal, or an
+  object made by `new` or `const`, for a parameter it `case`s on. This is
+  what inlining a function that returns a `new` object needs: the rest of
+  the caller is the join point the result is jumped to. A copy gets fresh
+  variables and labels for what it binds. Recursive definitions stay,
+  since a copy would unroll the loop, and so do definitions that mention a
+  continuation, whose uses the verifier counts along each path.
+- **Inlining functions.** Substitute the body and rename `ret` to a fresh
+  join point that holds the rest of the caller. This is the same shape as
+  any other join point.
+
+  The `inline` pass does this, right after known closures. After a tail call,
+  or any call whose results only go on to a jump, the callee's `ret` is
+  that jump's target, so no join point is made and the callee's tail calls
+  stay tail calls. It inlines callees of at most 20 `let`s and tails, and
+  stops once the caller has 1000. It never inlines a function into itself,
+  nor one that calls itself directly or through one other function, which
+  would unroll it a level each run. Nor a callee with mutability
+  parameters that boxes: `box` at a type with a parameter gives `mut any`,
+  and at `imm` gives `imm any`, which doesn't fit the variable it binds.
+  Inlined code keeps its sources, or gets the call's. The callee is reached
+  through `Program::func`, so a Salsa frontend records the dependency.
+- **Known closures.** When `apply(c, args..)` has a `c` bound by
+  `closure f(captures..)`, replace it with `call f(captures.., args..)`.
+  Because of the parameter order (captures first), this is just putting two
+  argument lists together. The result is a plain `Call`, so inlining
+  applies to it, and if `c` has no uses left, dead-code elimination removes
+  the allocation. The `closures` pass does this, first among the passes,
+  so that inlining sees the calls it makes in the same round. Not for a
+  closure that captures a continuation: the verifier leaves its uses
+  through the closure to run time, and two calls passing it would be two
+  uses it can see.
+- **Common subexpressions.** A `Let` with the same op and arguments as
+  one on every path before it gives the same result, if the op only
+  computes, reads what can't change (an `Imm` object or array, an array's
+  length, a box), or reads what can change with nothing in between that
+  may write. An op that may trap can be shared too, since the second
+  can't trap if the first didn't. An op that makes an object is shared
+  only if nothing can tell the two apart: an `Imm` object or array, a
+  closure, a box. A join point can be jumped to after anything, so reads
+  of what can change aren't carried into one. The `cse` pass does this,
+  after `simplify`, since folding makes more ops look alike.
+- **Dead code.** Drop a `Let` whose results are unused and whose
+  `op.effects()` doesn't write or trap, and drop a `Join` whose labels are
+  unused.
+- **Promote refs** (like LLVM's `mem2reg`). A ref that doesn't escape is
+  one whose only uses are as the first argument of `RefGet` and `RefSet`
+  in the function that creates it. It isn't captured by `Closure`, passed
+  to a call or a jump, stored with `New`/`Set`/`ArraySet`/`RefSet`, or
+  returned. Promote it like this: every join point it's live into gets an
+  extra parameter for its current value, every `Jump` passes the current
+  value, `RefGet` becomes that value, and `RefSet` makes a new value
+  current. A ref that does escape stays a heap cell.
+
+  The `promote` pass does this. A join point gets a parameter only for the
+  refs it needs: those that some path from its start reads before writing,
+  found by a backward liveness analysis repeated over the join points until
+  it stops changing, so loops and join points that jump to each other work.
+  Promoting one ref can let another be promoted on the next round, like a
+  ref that was only stored in a promoted one. A ref of a continuation
+  stays, since the verifier counts a continuation's uses along paths and
+  reads out of a ref on different paths would look like several uses. It
+  runs before `dce` and `copies`: a ref holding an array ties the array to
+  the ref's region, so promoting it lets `copies` freeze the array.
+- **Remove copies.** The `copies` pass does three things:
+  - An `ArrayClone` of an `Imm` array to `Imm` is the array itself, since
+    nothing can tell the two apart.
+  - A `New` of an `Imm` object rebuilt from the fields of another `Imm`
+    object `x` of the same type, `new C(get C.0(x), .., get C.n(x))`, is
+    `x`. Nothing compares objects by identity, so an `Imm` object can't be
+    told apart from another with the same fields. This is what a
+    frontend's copy to `Imm` comes down to on a value that's `Imm`
+    already, once it's inlined.
+  - **Freeze in place.** If nothing else can reach the original array and
+    it isn't used afterwards, an `ArrayClone` to `Imm` becomes an `ArrayFreeze`.
+    The pass shows this with a region analysis: variables that may reach
+    the same `Mut` object are in the same region, because an op stores one
+    in the other, reads one out of the other, captures or boxes it, or
+    passes it to a join point. Values whose type is `Imm` all the way down
+    are left out, since what they reach never changes. A region escapes if
+    a parameter, a call's argument or result, or a returned value is in
+    it. A clone is frozen if its argument's region doesn't escape and none
+    of its variables is live after the clone, with liveness following
+    jumps, so a loop that uses the original on its next round keeps the
+    clone. The analysis follows what each closure captures through
+    `Closure`'s arguments, not through the closure's type.
+- **`Imm` closures don't write.** An `Apply` on an `Fn(_, Imm)` whose
+  arguments are all `Imm` all the way down can only reach `Imm` objects
+  and the ones it makes, so it writes nothing that existed before, unless
+  it performs: a clause can write whatever its handler's environment
+  holds. With effect types, an empty row on the closure says it can't, and
+  then its memory effect is `Reads`. It may still trap or not come back,
+  so it can't be removed, but a read before it can be reused after it,
+  which `cse` does.
+
+Several of these replace a tail with a block, like a `case` with its arm or
+a jump with the join point's body: the block's `let`s then go after the
+enclosing block's, and its tail becomes the new tail.
+
+A pass is usually a loop over a block's `let`s and a match with 4 arms on
+its tail, recursing only into nested blocks. Most passes only do real work
+in one or two places.
 
 ## Handlers their body can't use (`handlers`)
 
@@ -165,141 +295,6 @@ so code only dead code uses goes too.
   shows this: the original's region doesn't escape the function, and none
   of its variables is live after the clone.
 
-## Evidence passing (`conduit_effects::lower_effects`)
-
-Not one of the passes above, and not run by `optimize_func`: a lowering
-of the whole module, in its own crate, `conduit-effects`, which frontends
-and backends run when they want effect handlers removed, so that a
-backend without them can run the program. It follows
-Koka (Xie and Leijen, "Generalized evidence passing for effect
-handlers"). Afterwards the module has no `handle`, `perform`, `resume` or
-`discontinue`, no continuation types and no rows, and the passes above
-can run on it.
-
-- **Evidence.** A function that may perform, or that applies a closure,
-  handles, resumes, or calls such a function, takes an evidence value as
-  its last parameter: the active handlers, innermost first, and a shared
-  state saying whether code is yielding, and to which handler. Every
-  closure takes it too, so that a pure closure can go where an effectful
-  one is expected. Each such function keeps its ID as a wrapper with its
-  old signature, which makes the evidence and calls the new version.
-- **`handle`** makes a node for its handler: a constant table, for each
-  effect, of where its clauses start among the handler's, or -1 for one
-  it doesn't handle; a fresh marker, whether each clause is tail-resumptive, a closure for each that is, and
-  the evidence outside. It then calls the handler's `drive` function,
-  which runs the body and then calls the return clause, or the clause the
-  body yielded to, with a continuation, or wraps the continuation of a
-  yield to a handler further out so that resuming it re-enters this one.
-- **`perform`** finds the nearest node whose table has its effect, and
-  the clause there. A tail-resumptive
-  clause is called directly, under the handlers outside it. Any other is
-  yielded to: `perform` records the operation, its arguments and the rest
-  of its function, and returns `undefined` results.
-- **Yielding.** After each call that may yield, the code checks the state
-  and, if it's yielding, adds the rest of its function to the
-  continuation, as a new function, and returns. Join points in scope
-  there become functions first, since the rest jumps to them. An effect
-  may yield if one of its handlers has a clause for it that isn't
-  tail-resumptive, or can perform an effect that may: rows say which calls
-  can, so code that only performs effects that don't yield pays nothing
-  for it.
-- **Continuations** are closures given a closure that gives what the
-  `perform` gives: `resume` gives one returning the values, and
-  `discontinue` one that performs its operation at the `perform`, under
-  the handlers there. A flag makes a second use trap. A node's link to the
-  evidence outside is set each time it runs, so a continuation resumed
-  somewhere else runs under the handlers there.
-
-The test programs run after it in the evaluator, after the optimizer, and
-in Wasm without stack switching.
-
-## Reference counts (`ownership::insert_counts`)
-
-Not one of the passes above either: a module-level pass, run once after
-optimization, that adds the `dup`s and `drop`s that free memory (see
-"Reference counts" in `ir.md`). Every variable that holds an object owns
-a reference to it, parameters of functions and join points included,
-except what's borrowed (below):
-
-- A use that takes the reference, while the variable is still needed
-  after it or is taken twice by the same op, gets a `dup` first.
-- The last use that only borrows it gets a `drop` after, and so does a
-  variable whose value is never used. A branch drops what's owned when it
-  starts but it doesn't use.
-- What `get`, `array_get`, `ref_get` and `unbox` read out of an object is
-  `dup`ped right away, so that it's owned, before the object may be
-  dropped.
-- A join point owns what its body uses from outside, which each jump to
-  it hands over with its arguments.
-- What `const` and `undefined` give is never counted.
-
-**Borrowed parameters** (`ownership::borrows`, which `insert_counts`
-calls; a frontend can give its own with `insert_counts_with`). An object
-parameter is borrowed unless the function gives its reference away: to a
-use that takes it, like a field, a jump, a return or an owned parameter
-of a call. Then the caller keeps the reference, the function never drops
-it, and it `dup`s it for each use that takes one. What's read out of a
-borrowed `imm` object is borrowed too, since the object keeps it alive and
-unchanged for the whole call: a function that walks a list it borrows
-counts nothing. It's a fixpoint over the module, as Lean's is, with two
-rules that keep parameters owned:
-
-- A function made into a closure, or a handler's clause, owns all its
-  parameters, since `apply` and `perform` always give theirs away.
-- A tail call between functions that can call each other makes the
-  callee's parameter owned if the caller owns what it passes, so that the
-  caller needn't drop it after the call, which would grow the stack of a
-  loop written as tail calls. Other tail calls just lose being tail calls.
-
-`crates/conduit-opt/tests/counts.rs` runs
-every test program after it, as written, after optimizing, and after
-evidence passing, with the evaluator counting, and again after
-specializing drops: every count must be right.
-
-**Reuse** (`ownership::insert_reuse`, before `insert_counts`). In an arm
-`C =>` of a `case` on `x`, where the arm's own block has `x`'s last use,
-a `drop_reuse(x)` goes right after it, and the first `new C'` after that,
-of a constructor of the same shape, becomes `reuse C'` of its token. If
-the block has no such `new`, or uses `x` in its tail, each branch after it
-that doesn't use `x` gets the same treatment from its start, so inserting
-into a tree, which rebuilds a node in one of the arms of a comparison,
-still reuses it. When
-`x` turns out to be unique, the new object is built in its memory instead
-of freeing one and allocating the other: `map` over a list it owns makes
-no new cells. The `drop_reuse` goes right after the last use, not at the
-`new`, so that `x` doesn't keep its fields alive meanwhile, and a
-recursive call on a field still finds it unique. Only within the arm's
-block, so the token is always used, and not where the last use gives `x`
-away. It makes `x` owned, since `drop_reuse` takes it.
-
-**Specialized drops** (`ownership::specialize_drops`, after
-`insert_counts`). A `drop(x)` of an `imm` data object, in a block where
-fields read from `x` were `dup`ped before it, becomes a branch on
-`is_unique(x)`. If `x` is unique, its references to those fields become
-the variables', so the `dup`s go, the other object fields are dropped,
-and `x` is freed with `free`. If not, the `dup`s stay and `decref(x)`
-takes 1 from its count. The rest of the block becomes a join point that
-both branches jump to. Only `imm` objects, whose fields can't have
-changed since they were read, and only where a `dup` can go: a `drop`
-with nothing to cancel is already as fast as its expansion. A
-`drop_reuse(x)` is specialized the same way, with the rest of the block
-taking the token: `reuse_token(x)` when `x` is unique, so that `map`
-rebuilds a unique cell with no counts at all, and `undefined`, which is no
-memory, after the `decref` when it's shared.
-
-The `dup`s at the end of a block, of fields read from an object that a
-branch of the block's `case` drops, move into the start of every branch
-first, when nothing after them counts or gives away the field or the
-object, so that the `drop` in a branch can cancel them, as in a search
-tree's insert. A `dup(y)` that a `drop(y)` then follows with no use of `y`
-between goes, with the `drop`.
-
-It also **freezes in place**: an `array_clone` to `imm` that is its
-array's last use, followed by the array's `drop`, becomes a branch on
-`is_unique`: the array itself, by `array_freeze`, when it's unique, and a
-clone and a `decref` otherwise. The `copies` pass can only prove that
-statically; this catches the rest at run time.
-
 ## Not done yet
 
 - Handlers whose clauses are called directly when the `perform` isn't in
@@ -310,3 +305,10 @@ statically; this catches the rest at run time.
   body's function, and of what it calls, specialized to the handler. The
   passes rewrite one function at a time and can't add functions, so this
   needs a pass over the whole module.
+- Freezing data objects in place, as `copies` does for arrays (#9).
+- Narrowing variables' types after inlining, so that `copies` and the
+  rebuild rule see `imm` where a callee's parameter was `ro` (#22).
+- Lowering a handler directly while it shares a clause with one that
+  switches stacks (#29).
+- Keeping host values that are never stored in Wasm locals, without a slot
+  in the table (#35).

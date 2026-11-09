@@ -51,7 +51,10 @@ Others are checked at run time:
 - **Data types:** every field type is well formed (see "Types"), and can
   use `inherit` and the declaration's mutability parameters.
 - **Externs and effects:** every type in their signatures is well formed,
-  with no `inherit` and no parameters.
+  with no `inherit` and no parameters. An extern with `#[abi(flat)]` only
+  takes scalars, arrays of scalars and arrays of `[i8]`, and `#[nolen]`
+  only on an array of scalars, and gives only scalars: no data, closures
+  or host values. `#[nolen]` needs the flat ABI.
 - **Handlers:**
   - The effect and the return clause exist.
   - The environment's types are well formed.
@@ -159,6 +162,10 @@ an array, and `ref_new`.
 | `is_unique` | an object | `i32` |
 | `drop_reuse`, `reuse_token` | a data object known to be built by `C` (as for `get C.i`) | the `reuse C` it binds |
 | `reuse C'` | a `reuse C`, where `C` has the same shape as `C'`, then what `new C'` takes | what `new C'` gives |
+| `host_null` | nothing | `nullable host` |
+| `host_is_null` | a `host` or `nullable host` | `i32` |
+| `host_unwrap` | a `host` or `nullable host` | `host` |
+| `host_function` | a closure whose parameters and results are all scalars, `host` or `nullable host` | `host` |
 
 Field accesses also follow rule 5: `get C.i` and `set C.i` on `x` need `x`
 to be known to be built by `C`: because `C`'s type has only one
@@ -170,8 +177,9 @@ for `mut` objects too.
 ## Subtyping
 
 A value fits where a type is expected when its type is a subtype of it.
-That's only about an object's own mutability: `imm` and `mut` both fit
-`ro`, and nothing else differs. A data type's arguments must be equal, as
+That's about an object's own mutability, `imm` and `mut` both fit `ro`,
+about rows (see "Effect types"), and about host values: a `host` fits
+where a `nullable host` is expected. Nothing else differs. A data type's arguments must be equal, as
 must an array's element type and a closure's signature. A `mut` object's
 fields can be written, so a covariant argument would let code store a `mut`
 value where another alias expects `imm`.

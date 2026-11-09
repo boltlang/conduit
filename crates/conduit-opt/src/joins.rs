@@ -1,5 +1,5 @@
 //! Inlines join points, which is how case-of-case comes about in this IR.
-//! See "Case-of-case" in `docs/ir.md`.
+//! See "Case-of-case" in `docs/optimisations.md`.
 //!
 //! - **Used once.** A join definition that only one `jump` goes to is
 //!   moved there, with its parameters replaced by the jump's arguments. It
