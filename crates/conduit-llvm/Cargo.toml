@@ -9,6 +9,7 @@ publish.workspace = true
 conduit-ir = { path = "../conduit-ir" }
 
 [dev-dependencies]
+conduit-effects = { path = "../conduit-effects" }
 conduit-opt = { path = "../conduit-opt" }
 conduit-test = { path = "../conduit-test" }
 

@@ -1,8 +1,9 @@
 //! Compiles each test program that only uses what conduit-llvm handles,
 //! with `clang`, and runs its `run` checks as a native program: as written
-//! and after the optimizer. A `main` of the test's own picks the check by
-//! its number, calls the function, and prints the bits of each result. A
-//! trap is a signal. Skipped, with a note, when `clang` isn't installed.
+//! and after the optimizer, or, for a program with handlers, after lowering
+//! its effects, and then after the optimizer. A `main` of the test's own
+//! picks the check by its number, calls the function, and prints the bits
+//! of each result. A trap is a signal. Skipped, with a note, when `clang` isn't installed.
 
 use std::os::unix::process::ExitStatusExt;
 use std::path::PathBuf;
@@ -19,7 +20,17 @@ fn applies(p: &Program) -> bool {
     !p.has(|k| matches!(k, CheckKind::VerifyError(_)))
         && p.has_runs()
         && p.module()
-            .is_ok_and(|m| conduit_llvm::emit_module(&m).is_ok())
+            .is_ok_and(|m| conduit_llvm::emit_module(&without_handlers(m)).is_ok())
+}
+
+/// The module, with its effects lowered if it has handlers, which this
+/// backend leaves to evidence passing.
+fn without_handlers(mut m: Module) -> Module {
+    if !m.handlers.is_empty() || !m.effects.is_empty() {
+        // A module it can't lower is reported by the effects' own tests.
+        let _ = conduit_effects::lower_effects(&mut m);
+    }
+    m
 }
 
 fn clang() -> bool {
@@ -34,7 +45,7 @@ fn test(p: &Program) -> Result<(), String> {
         eprintln!("{}: skipped, since clang isn't installed", p.name);
         return Ok(());
     }
-    let m = p.module()?;
+    let m = without_handlers(p.module()?);
     let mut optimized = m.clone();
     conduit_opt::optimize_module(&mut optimized);
     for (when, m) in [("as written", m), ("after optimizing", optimized)] {

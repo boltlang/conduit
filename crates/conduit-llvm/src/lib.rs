@@ -1,9 +1,10 @@
 //! Lowers Conduit IR to LLVM IR, as text that `clang` or `llc` compile.
 //!
 //! An experiment, and a first step towards a native backend: it handles
-//! the scalar part of the IR, functions, calls, join points, `case` and
-//! the integer and float ops, and says what it doesn't handle yet, which
-//! is objects, closures, handlers and constants. See `docs/llvm.md`.
+//! functions, calls, join points, `case`, the integer and float ops,
+//! objects (data, arrays, refs, `any`, closures) and constants, and says
+//! what it doesn't handle yet: handlers, which lowering effects removes
+//! first, host values, and freeing memory. See `docs/llvm.md`.
 //!
 //! - **Functions** are `tailcc`, LLVM's calling convention that guarantees
 //!   a call marked `tail` right before a `ret` is a tail call, as Conduit
@@ -13,16 +14,24 @@
 //!   need no phi nodes: LLVM's `mem2reg` makes SSA of them again.
 //! - **Join points** are basic blocks, and a jump stores its arguments in
 //!   the parameters' slots and branches. A `case` is a `switch`.
+//! - **Objects** are `ptr`s to memory from `malloc`, laid out as in the
+//!   Wasm backend: a header word for the count, then a word with the
+//!   constructor, the length or the kind, then the fields from offset 8,
+//!   each at a multiple of its size. A closure holds its entry function's
+//!   address at 8, then its captures. Nothing is freed yet, so the ops that
+//!   count do nothing, as in the Wasm backend without counts.
 //! - **Ops** follow Conduit's semantics where LLVM's differ: integer
 //!   division by 0 gives 0 and the remainder the dividend, signed
 //!   division that overflows traps, shift amounts are taken modulo the
-//!   width, and `min` and `max` give NaN if either operand is NaN.
+//!   width, `min` and `max` give NaN if either operand is NaN, and array
+//!   accesses out of bounds trap.
 
+use std::collections::BTreeSet;
 use std::fmt::Write;
 
 use conduit_ir::{
-    Atom, Block, ExternId, Func, FuncId, JoinDef, Label, Link, Lit, Module, Op, Prim, Sign, Tag,
-    Tail, Ty, Var,
+    Atom, Block, ConstId, ConstValue, CtorId, ExternId, Func, FuncId, JoinDef, Label, Link, Lit,
+    Module, Op, Prim, Sign, Tag, Tail, Ty, Var,
 };
 
 /// Why a module can't be lowered: an item, and what's wrong.
@@ -48,8 +57,17 @@ pub fn symbol(f: FuncId) -> String {
     format!("@fn{}", f.0)
 }
 
+/// The entry function of `f`'s closures with `n` captures.
+fn entry_symbol(f: FuncId, n: usize) -> String {
+    format!("@fn{}_entry{n}", f.0)
+}
+
+fn const_symbol(c: ConstId) -> String {
+    format!("@const{}", c.0)
+}
+
 /// The LLVM type of a value of type `ty`, if it's one this backend
-/// handles yet.
+/// handles yet: an object is a `ptr`.
 pub fn ty(ty: &Ty) -> Result<&'static str, String> {
     Ok(match ty {
         Ty::I8 => "i8",
@@ -58,6 +76,7 @@ pub fn ty(ty: &Ty) -> Result<&'static str, String> {
         Ty::I64 => "i64",
         Ty::F32 => "float",
         Ty::F64 => "double",
+        Ty::Data(..) | Ty::Array(..) | Ty::Fn(..) | Ty::Ref(_) | Ty::Any(_) | Ty::Reuse(_) => "ptr",
         other => return Err(format!("values of type {other} aren't supported yet")),
     })
 }
@@ -99,6 +118,42 @@ fn lit_ty(l: &Lit) -> Ty {
     }
 }
 
+/// How many bytes a value of type `t` takes in an object: a scalar's size,
+/// or 8 for an object's address.
+fn size(t: &Ty) -> u64 {
+    match t {
+        Ty::I8 => 1,
+        Ty::I16 => 2,
+        Ty::I32 | Ty::F32 => 4,
+        _ => 8,
+    }
+}
+
+/// The offsets of values of these types, laid out from 8 each at a
+/// multiple of its size, and the size of the whole object.
+fn layout(tys: &[Ty]) -> (Vec<u64>, u64) {
+    let mut at: u64 = 8;
+    let offsets = tys
+        .iter()
+        .map(|t| {
+            at = at.next_multiple_of(size(t));
+            let o = at;
+            at += size(t);
+            o
+        })
+        .collect();
+    (offsets, at.next_multiple_of(8))
+}
+
+/// The layout of a closure of `f` with these captures: its entry
+/// function's address at 8, then the captures.
+fn closure_layout(captures: &[Ty]) -> (Vec<u64>, u64) {
+    let mut tys = vec![Ty::Any(conduit_ir::Mutability::Imm)];
+    tys.extend(captures.iter().cloned());
+    let (offsets, size) = layout(&tys);
+    (offsets[1..].to_vec(), size)
+}
+
 /// The module as LLVM IR text, or what it has that isn't supported yet.
 /// Each function `f` is `@fn<f>`, `tailcc`, and each `#[export(c, symbol
 /// = "s")]` gets a C-callable `@s` that calls it. Externs must be
@@ -112,10 +167,11 @@ pub fn emit_module(m: &Module) -> Result<String, Error> {
         ));
     }
     let mut out = String::new();
-    writeln!(out, "; Lowered from Conduit IR by conduit-llvm.").unwrap();
-    writeln!(out, "declare void @llvm.trap() noreturn nounwind").unwrap();
-    for t in ["float", "double"] {
-        let s = if t == "float" { "f32" } else { "f64" };
+    out.push_str("; Lowered from Conduit IR by conduit-llvm.\n");
+    out.push_str("declare void @llvm.trap() noreturn nounwind\n");
+    out.push_str("declare ptr @malloc(i64)\n");
+    out.push_str("declare void @llvm.memmove.p0.p0.i64(ptr, ptr, i64, i1)\n");
+    for (t, s) in [("float", "f32"), ("double", "f64")] {
         for op in ["fabs", "sqrt"] {
             writeln!(out, "declare {t} @llvm.{op}.{s}({t})").unwrap();
         }
@@ -138,11 +194,23 @@ pub fn emit_module(m: &Module) -> Result<String, Error> {
         let ret = ret_ty(&ext.sig.results).map_err(e)?;
         writeln!(out, "declare {ret} @{symbol}({})", params.join(", ")).unwrap();
     }
+    let mut consts = String::new();
+    for (&c, decl) in &m.consts {
+        if !matches!(decl.value, ConstValue::Lit(_)) {
+            const_global(m, &mut consts, &const_symbol(c), &decl.value, &decl.ty)
+                .map_err(|message| err(None, format!("constant {c}: {message}")))?;
+        }
+    }
+    out.push_str(&consts);
+    let mut entries = BTreeSet::new();
     for (&id, f) in &m.funcs {
-        let text = Lower::new(m, id, f)
-            .and_then(|mut l| l.func())
-            .map_err(|message| err(Some(id), message))?;
+        let mut l = Lower::new(m, id, f).map_err(|message| err(Some(id), message))?;
+        let text = l.func().map_err(|message| err(Some(id), message))?;
         out.push_str(&text);
+        entries.extend(l.entries);
+    }
+    for (f, n) in entries {
+        out.push_str(&entry(m, f, n).map_err(|message| err(Some(f), message))?);
     }
     for (&id, export) in &m.exports {
         let conduit_ir::Export::C { symbol } = export else {
@@ -155,31 +223,130 @@ pub fn emit_module(m: &Module) -> Result<String, Error> {
             .map(|(i, v)| ty(f.var_ty(*v)).map(|t| format!("{t} %p{i}")))
             .collect::<Result<_, _>>()
             .map_err(e)?;
-        let args: Vec<String> = (f.params.iter().enumerate())
-            .map(|(i, v)| format!("{} %p{i}", ty(f.var_ty(*v)).unwrap()))
-            .collect();
+        let call = format!(
+            "call tailcc {ret} {}({})",
+            self::symbol(id),
+            params.join(", ")
+        );
         writeln!(out, "\ndefine {ret} @{symbol}({}) {{", params.join(", ")).unwrap();
         if ret == "void" {
-            writeln!(
-                out,
-                "  call tailcc void {}({})",
-                self::symbol(id),
-                args.join(", ")
-            )
-            .unwrap();
-            writeln!(out, "  ret void\n}}").unwrap();
+            writeln!(out, "  {call}\n  ret void\n}}").unwrap();
         } else {
-            writeln!(
-                out,
-                "  %r = call tailcc {ret} {}({})",
-                self::symbol(id),
-                args.join(", ")
-            )
-            .unwrap();
-            writeln!(out, "  ret {ret} %r\n}}").unwrap();
+            writeln!(out, "  %r = {call}\n  ret {ret} %r\n}}").unwrap();
         }
     }
     Ok(out)
+}
+
+/// A global for constant `value` of type `t`, as an object laid out as
+/// at run time, immortal: its header has the sign bit set, which counting
+/// will skip. An object inside it is a global of its own.
+fn const_global(
+    m: &Module,
+    out: &mut String,
+    name: &str,
+    value: &ConstValue,
+    t: &Ty,
+) -> Result<(), String> {
+    let (word, tys, values): (u64, Vec<Ty>, &[ConstValue]) = match (value, t) {
+        (ConstValue::New(c, fields), _) => (c.index as u64, ctor_fields(m, *c)?, fields),
+        (ConstValue::Array(elems), Ty::Array(e, _)) => {
+            (elems.len() as u64, vec![(**e).clone(); elems.len()], elems)
+        }
+        _ => return Err(format!("a constant of type {t} isn't supported yet")),
+    };
+    let (offsets, total) = layout(&tys);
+    let mut parts = vec!["i32 -2147483648".to_string(), format!("i32 {word}")];
+    let mut at: u64 = 8;
+    for (k, ((v, ft), &o)) in values.iter().zip(&tys).zip(&offsets).enumerate() {
+        if o > at {
+            parts.push(format!("[{} x i8] zeroinitializer", o - at));
+        }
+        let lt = ty(ft)?;
+        let text = match v {
+            ConstValue::Lit(l) => format!("{lt} {}", lit(l)),
+            ConstValue::Const(c) => match &m.consts.get(c).ok_or("an unknown constant")?.value {
+                ConstValue::Lit(l) => format!("{lt} {}", lit(l)),
+                _ => format!("ptr {}", const_symbol(*c)),
+            },
+            inner => {
+                let sub = format!("{name}_{k}");
+                const_global(m, out, &sub, inner, ft)?;
+                format!("ptr {sub}")
+            }
+        };
+        parts.push(text);
+        at = o + size(ft);
+    }
+    if total > at {
+        parts.push(format!("[{} x i8] zeroinitializer", total - at));
+    }
+    let tys: Vec<&str> = parts
+        .iter()
+        .map(|p| p.rsplit_once(' ').map_or("", |(t, _)| t))
+        .collect();
+    // `[n x i8] zeroinitializer` splits at its last space too.
+    let tys: Vec<String> = parts
+        .iter()
+        .zip(tys)
+        .map(|(p, t)| match p.strip_suffix(" zeroinitializer") {
+            Some(arr) => arr.to_string(),
+            None => t.to_string(),
+        })
+        .collect();
+    writeln!(
+        out,
+        "{name} = private unnamed_addr constant <{{ {} }}> <{{ {} }}>, align 8",
+        tys.join(", "),
+        parts.join(", ")
+    )
+    .unwrap();
+    Ok(())
+}
+
+fn ctor_fields(m: &Module, c: CtorId) -> Result<Vec<Ty>, String> {
+    m.data
+        .get(&c.data)
+        .and_then(|d| d.ctors.get(c.index as usize))
+        .map(|c| c.fields.clone())
+        .ok_or_else(|| format!("unknown constructor {c}"))
+}
+
+/// The entry function of `f`'s closures with `n` captures: it reads them
+/// out of the closure and calls `f` with them, then the arguments.
+fn entry(m: &Module, f: FuncId, n: usize) -> Result<String, String> {
+    let func = &m.funcs[&f];
+    let sig = func.sig();
+    let ret = ret_ty(&sig.results)?;
+    let (offsets, _) = closure_layout(&sig.params[..n]);
+    let mut s = String::new();
+    let rest: Vec<String> = (sig.params[n..].iter().enumerate())
+        .map(|(i, t)| ty(t).map(|t| format!("{t} %p{i}")))
+        .collect::<Result<_, _>>()?;
+    let mut params = vec!["ptr %c".to_string()];
+    params.extend(rest.iter().cloned());
+    writeln!(
+        s,
+        "\ndefine tailcc {ret} {}({}) {{",
+        entry_symbol(f, n),
+        params.join(", ")
+    )
+    .unwrap();
+    let mut args = Vec::new();
+    for (j, (t, o)) in sig.params[..n].iter().zip(&offsets).enumerate() {
+        let lt = ty(t)?;
+        writeln!(s, "  %q{j} = getelementptr i8, ptr %c, i64 {o}").unwrap();
+        writeln!(s, "  %k{j} = load {lt}, ptr %q{j}").unwrap();
+        args.push(format!("{lt} %k{j}"));
+    }
+    args.extend(rest);
+    let call = format!("tail call tailcc {ret} {}({})", symbol(f), args.join(", "));
+    if ret == "void" {
+        writeln!(s, "  {call}\n  ret void\n}}").unwrap();
+    } else {
+        writeln!(s, "  %r = {call}\n  ret {ret} %r\n}}").unwrap();
+    }
+    Ok(s)
 }
 
 /// The lowering of one function.
@@ -193,6 +360,10 @@ struct Lower<'m> {
     /// The next temporary and the next block.
     temps: u32,
     blocks: u32,
+    /// Slots beyond the variables', for loops that ops make.
+    slots: Vec<&'static str>,
+    /// The closure entry functions the function needs.
+    entries: BTreeSet<(FuncId, usize)>,
 }
 
 impl<'m> Lower<'m> {
@@ -206,6 +377,8 @@ impl<'m> Lower<'m> {
             out: String::new(),
             temps: 0,
             blocks: 0,
+            slots: Vec::new(),
+            entries: BTreeSet::new(),
         })
     }
 
@@ -213,6 +386,7 @@ impl<'m> Lower<'m> {
         let params: Vec<String> = (self.f.params.iter())
             .map(|v| Ok(format!("{} %a{}", ty(self.f.var_ty(*v))?, v.0)))
             .collect::<Result<_, String>>()?;
+        self.block(&self.f.body)?;
         let mut head = String::new();
         writeln!(
             head,
@@ -227,11 +401,13 @@ impl<'m> Lower<'m> {
             let t = ty(t).map_err(|e| format!("%{i}: {e}"))?;
             writeln!(head, "  %v{i} = alloca {t}").unwrap();
         }
+        for (i, t) in self.slots.iter().enumerate() {
+            writeln!(head, "  %s{i} = alloca {t}").unwrap();
+        }
         for v in &self.f.params {
             let t = ty(self.f.var_ty(*v))?;
             writeln!(head, "  store {t} %a{0}, ptr %v{0}", v.0).unwrap();
         }
-        self.block(&self.f.body)?;
         Ok(format!("{head}{}}}\n", self.out))
     }
 
@@ -253,6 +429,11 @@ impl<'m> Lower<'m> {
 
     fn start(&mut self, name: &str) {
         writeln!(self.out, "{name}:").unwrap();
+    }
+
+    fn slot(&mut self, t: &'static str) -> String {
+        self.slots.push(t);
+        format!("%s{}", self.slots.len() - 1)
     }
 
     fn atom_ty(&self, a: &Atom) -> Ty {
@@ -281,20 +462,69 @@ impl<'m> Lower<'m> {
         Ok(())
     }
 
+    fn bind(&mut self, binds: &[Var], value: &str) -> Result<(), String> {
+        match binds.first() {
+            Some(&b) => self.store(b, value),
+            None => Ok(()),
+        }
+    }
+
+    /// The address `off` bytes into object `p`; `off` is a constant or an
+    /// `i64` value.
+    fn at(&mut self, p: &str, off: &str) -> String {
+        let q = self.temp();
+        self.line(format!("{q} = getelementptr i8, ptr {p}, i64 {off}"));
+        q
+    }
+
+    fn load_at(&mut self, t: &str, p: &str, off: &str) -> String {
+        let q = self.at(p, off);
+        let x = self.temp();
+        self.line(format!("{x} = load {t}, ptr {q}"));
+        x
+    }
+
+    fn store_at(&mut self, t: &str, v: &str, p: &str, off: &str) {
+        let q = self.at(p, off);
+        self.line(format!("store {t} {v}, ptr {q}"));
+    }
+
+    /// A new object of `size` bytes, an `i64` constant or value, with its
+    /// count at 1 and `word` at 4. Trapping if there's no memory left.
+    fn alloc(&mut self, size: &str, word: &str) -> String {
+        let p = self.temp();
+        self.line(format!("{p} = call ptr @malloc(i64 {size})"));
+        let null = self.temp();
+        self.line(format!("{null} = icmp eq ptr {p}, null"));
+        self.trap_if(&null);
+        self.line(format!("store i32 1, ptr {p}"));
+        self.store_at("i32", word, &p, "4");
+        p
+    }
+
     fn block(&mut self, b: &Block) -> Result<(), String> {
         conduit_ir::deep(|| {
             for (i, l) in b.lets.iter().enumerate() {
                 let last = i + 1 == b.lets.len();
-                if last
+                let tail = last && conduit_ir::tail::returns(&l.binds, &b.tail, &self.defs);
+                if tail
                     && let Op::Call(g, ..) = l.op
-                    && conduit_ir::tail::returns(&l.binds, &b.tail, &self.defs)
                     && self
                         .m
                         .funcs
                         .get(&g)
                         .is_some_and(|g| g.results == self.f.results)
                 {
-                    return self.tail_call(g, &l.args);
+                    let args = self.args(&l.args)?;
+                    return self.tail_call(&symbol(g), &args);
+                }
+                if tail
+                    && l.op == Op::Apply
+                    && let Ty::Fn(sig, _) = self.atom_ty(&l.args[0])
+                    && sig.results == self.f.results
+                {
+                    let (fp, args) = self.apply_args(&l.args)?;
+                    return self.tail_call(&fp, &args);
                 }
                 self.let_(&l.op, &l.args, &l.binds)?;
             }
@@ -303,18 +533,14 @@ impl<'m> Lower<'m> {
     }
 
     /// A call that returns what it gives, which `tailcc` makes a tail call.
-    fn tail_call(&mut self, g: FuncId, args: &[Atom]) -> Result<(), String> {
-        let args = self.args(args)?;
+    fn tail_call(&mut self, callee: &str, args: &str) -> Result<(), String> {
         let ret = self.ret.clone();
         if ret == "void" {
-            self.line(format!("tail call tailcc void {}({args})", symbol(g)));
+            self.line(format!("tail call tailcc void {callee}({args})"));
             self.line("ret void");
         } else {
             let r = self.temp();
-            self.line(format!(
-                "{r} = tail call tailcc {ret} {}({args})",
-                symbol(g)
-            ));
+            self.line(format!("{r} = tail call tailcc {ret} {callee}({args})"));
             self.line(format!("ret {ret} {r}"));
         }
         Ok(())
@@ -330,6 +556,20 @@ impl<'m> Lower<'m> {
         Ok(out.join(", "))
     }
 
+    /// The entry function to call for `apply(c, args..)`, and the
+    /// arguments: the closure, then `args`.
+    fn apply_args(&mut self, args: &[Atom]) -> Result<(String, String), String> {
+        let c = self.value(&args[0])?;
+        let fp = self.load_at("ptr", &c, "8");
+        let rest = self.args(&args[1..])?;
+        let all = if rest.is_empty() {
+            format!("ptr {c}")
+        } else {
+            format!("ptr {c}, {rest}")
+        };
+        Ok((fp, all))
+    }
+
     /// The results of a call, of type `ret` from `results`, into `binds`.
     fn bind_results(&mut self, call: String, results: &[Ty], binds: &[Var]) -> Result<(), String> {
         match results {
@@ -337,9 +577,7 @@ impl<'m> Lower<'m> {
             [_] => {
                 let r = self.temp();
                 self.line(format!("{r} = {call}"));
-                if let Some(&b) = binds.first() {
-                    self.store(b, &r)?;
-                }
+                self.bind(binds, &r)?;
             }
             many => {
                 let r = self.temp();
@@ -355,13 +593,49 @@ impl<'m> Lower<'m> {
         Ok(())
     }
 
+    /// The type of the array `a`'s elements.
+    fn elem(&self, a: &Ty) -> Result<Ty, String> {
+        match a {
+            Ty::Array(e, _) => Ok((**e).clone()),
+            other => Err(format!("an array op on a {other}")),
+        }
+    }
+
+    /// The `i64` offset of element `i`, an `i32` value, in an array of
+    /// elements of `stride` bytes.
+    fn elem_offset(&mut self, i: &str, stride: u64) -> String {
+        let w = self.temp();
+        self.line(format!("{w} = zext i32 {i} to i64"));
+        let m = self.temp();
+        self.line(format!("{m} = mul i64 {w}, {stride}"));
+        let o = self.temp();
+        self.line(format!("{o} = add i64 {m}, 8"));
+        o
+    }
+
+    /// The array's length, after trapping if `i` isn't an index of it.
+    fn check_index(&mut self, a: &str, i: &str) {
+        let len = self.load_at("i32", a, "4");
+        let out = self.temp();
+        self.line(format!("{out} = icmp uge i32 {i}, {len}"));
+        self.trap_if(&out);
+    }
+
+    /// A new array of `n` elements, an `i32` value, trapping if `n` is
+    /// negative.
+    fn new_array(&mut self, n: &str, stride: u64) -> String {
+        let neg = self.temp();
+        self.line(format!("{neg} = icmp slt i32 {n}, 0"));
+        self.trap_if(&neg);
+        let bytes = self.elem_offset(n, stride);
+        self.alloc(&bytes, n)
+    }
+
     fn let_(&mut self, op: &Op, args: &[Atom], binds: &[Var]) -> Result<(), String> {
         match op {
             Op::Prim(p) => {
                 let r = self.prim(p, args)?;
-                if let Some(&b) = binds.first() {
-                    self.store(b, &r)?;
-                }
+                self.bind(binds, &r)?;
             }
             Op::Call(g, ..) => {
                 let callee = self
@@ -376,10 +650,212 @@ impl<'m> Lower<'m> {
                 self.bind_results(call, &results, binds)?;
             }
             Op::CallExtern(e) => self.call_extern(*e, args, binds)?,
+            Op::Closure(f, ..) => {
+                let tys: Vec<Ty> = args.iter().map(|a| self.atom_ty(a)).collect();
+                let (offsets, total) = closure_layout(&tys);
+                self.entries.insert((*f, args.len()));
+                let p = self.alloc(&total.to_string(), "0");
+                self.store_at("ptr", &entry_symbol(*f, args.len()), &p, "8");
+                for ((a, t), o) in args.iter().zip(&tys).zip(offsets) {
+                    let v = self.value(a)?;
+                    self.store_at(ty(t)?, &v, &p, &o.to_string());
+                }
+                self.bind(binds, &p)?;
+            }
+            Op::Apply => {
+                let Ty::Fn(sig, _) = self.atom_ty(&args[0]) else {
+                    return Err("apply of something that isn't a closure".into());
+                };
+                let ret = ret_ty(&sig.results)?;
+                let (fp, all) = self.apply_args(args)?;
+                let call = format!("call tailcc {ret} {fp}({all})");
+                self.bind_results(call, &sig.results, binds)?;
+            }
+            Op::New(c) | Op::Reuse(c) => {
+                // Without counts, a reuse token holds no memory: allocate.
+                let fields = if matches!(op, Op::Reuse(_)) {
+                    &args[1..]
+                } else {
+                    args
+                };
+                let tys = ctor_fields(self.m, *c)?;
+                let (offsets, total) = layout(&tys);
+                let p = self.alloc(&total.to_string(), &c.index.to_string());
+                for ((a, t), o) in fields.iter().zip(&tys).zip(offsets) {
+                    let v = self.value(a)?;
+                    self.store_at(ty(t)?, &v, &p, &o.to_string());
+                }
+                self.bind(binds, &p)?;
+            }
+            Op::Const(c) => {
+                let decl = self
+                    .m
+                    .consts
+                    .get(c)
+                    .ok_or_else(|| format!("unknown constant {c}"))?;
+                let v = match &decl.value {
+                    ConstValue::Lit(l) => lit(l),
+                    _ => const_symbol(*c),
+                };
+                self.bind(binds, &v)?;
+            }
+            Op::Get(c, i) | Op::Set(c, i) => {
+                let tys = ctor_fields(self.m, *c)?;
+                let (offsets, _) = layout(&tys);
+                let (t, o) = (ty(&tys[*i as usize])?, offsets[*i as usize].to_string());
+                let p = self.value(&args[0])?;
+                if matches!(op, Op::Get(..)) {
+                    let x = self.load_at(t, &p, &o);
+                    self.bind(binds, &x)?;
+                } else {
+                    let v = self.value(&args[1])?;
+                    self.store_at(t, &v, &p, &o);
+                }
+            }
+            Op::ArrayNew => {
+                let e = self.elem(self.f.var_ty(binds[0]))?;
+                let n = args.len().to_string();
+                let p = self.new_array(&n, size(&e));
+                for (k, a) in args.iter().enumerate() {
+                    let v = self.value(a)?;
+                    let o = 8 + k as u64 * size(&e);
+                    self.store_at(ty(&e)?, &v, &p, &o.to_string());
+                }
+                self.bind(binds, &p)?;
+            }
+            Op::ArrayFill | Op::ArrayAlloc => {
+                let e = self.elem(self.f.var_ty(binds[0]))?;
+                let n = self.value(&args[0])?;
+                let p = self.new_array(&n, size(&e));
+                if *op == Op::ArrayFill {
+                    let v = self.value(&args[1])?;
+                    self.fill(&p, &n, &v, &e)?;
+                }
+                self.bind(binds, &p)?;
+            }
+            Op::ArrayGet | Op::ArraySet => {
+                let e = self.elem(&self.atom_ty(&args[0]))?;
+                let a = self.value(&args[0])?;
+                let i = self.value(&args[1])?;
+                self.check_index(&a, &i);
+                let o = self.elem_offset(&i, size(&e));
+                if *op == Op::ArrayGet {
+                    let x = self.load_at(ty(&e)?, &a, &o);
+                    self.bind(binds, &x)?;
+                } else {
+                    let v = self.value(&args[2])?;
+                    self.store_at(ty(&e)?, &v, &a, &o);
+                }
+            }
+            Op::ArrayLen => {
+                let a = self.value(&args[0])?;
+                let n = self.load_at("i32", &a, "4");
+                self.bind(binds, &n)?;
+            }
+            Op::ArrayCopy => self.array_copy(args)?,
+            Op::ArrayClone => {
+                let e = self.elem(&self.atom_ty(&args[0]))?;
+                let a = self.value(&args[0])?;
+                let n = self.load_at("i32", &a, "4");
+                let p = self.new_array(&n, size(&e));
+                let bytes = self.elem_offset(&n, size(&e));
+                let elems = self.temp();
+                self.line(format!("{elems} = sub i64 {bytes}, 8"));
+                let (to, from) = (self.at(&p, "8"), self.at(&a, "8"));
+                self.line(format!(
+                    "call void @llvm.memmove.p0.p0.i64(ptr {to}, ptr {from}, i64 {elems}, i1 false)"
+                ));
+                self.bind(binds, &p)?;
+            }
+            // The same array, now `imm`.
+            Op::ArrayFreeze => {
+                let a = self.value(&args[0])?;
+                self.bind(binds, &a)?;
+            }
+            Op::RefNew | Op::Box(_) => {
+                let t = self.atom_ty(&args[0]);
+                let p = self.alloc("16", "0");
+                let v = self.value(&args[0])?;
+                self.store_at(ty(&t)?, &v, &p, "8");
+                self.bind(binds, &p)?;
+            }
+            Op::RefGet | Op::Unbox(_) => {
+                let t = self.f.var_ty(binds[0]).clone();
+                let p = self.value(&args[0])?;
+                let x = self.load_at(ty(&t)?, &p, "8");
+                self.bind(binds, &x)?;
+            }
+            Op::RefSet => {
+                let t = self.atom_ty(&args[1]);
+                let p = self.value(&args[0])?;
+                let v = self.value(&args[1])?;
+                self.store_at(ty(&t)?, &v, &p, "8");
+            }
             // Nothing to store: the slot is never read before a store.
             Op::Undefined => {}
+            // Nothing is freed yet, so counting does nothing, no object is
+            // unique, and a reuse token holds no memory.
+            Op::Dup | Op::Drop | Op::Free | Op::DecRef => {}
+            Op::IsUnique => self.bind(binds, "0")?,
+            Op::DropReuse | Op::ReuseToken => self.bind(binds, "null")?,
             other => return Err(format!("{other:?} isn't supported yet")),
         }
+        Ok(())
+    }
+
+    /// Sets each of the `n` elements of array `p` to `v`.
+    fn fill(&mut self, p: &str, n: &str, v: &str, e: &Ty) -> Result<(), String> {
+        let i = self.slot("i32");
+        self.line(format!("store i32 0, ptr {i}"));
+        let (head, body, done) = (self.new_block(), self.new_block(), self.new_block());
+        self.line(format!("br label %{head}"));
+        self.start(&head);
+        let k = self.temp();
+        self.line(format!("{k} = load i32, ptr {i}"));
+        let more = self.temp();
+        self.line(format!("{more} = icmp slt i32 {k}, {n}"));
+        self.line(format!("br i1 {more}, label %{body}, label %{done}"));
+        self.start(&body);
+        let o = self.elem_offset(&k, size(e));
+        self.store_at(ty(e)?, v, p, &o);
+        let k1 = self.temp();
+        self.line(format!("{k1} = add i32 {k}, 1"));
+        self.line(format!("store i32 {k1}, ptr {i}"));
+        self.line(format!("br label %{head}"));
+        self.start(&done);
+        Ok(())
+    }
+
+    /// `array_copy(dst, dst_start, src, src_start, count)`: as `memmove`,
+    /// trapping unless both ranges fit, read as unsigned.
+    fn array_copy(&mut self, args: &[Atom]) -> Result<(), String> {
+        let e = self.elem(&self.atom_ty(&args[0]))?;
+        let stride = size(&e);
+        let vals: Vec<String> = args
+            .iter()
+            .map(|a| self.value(a))
+            .collect::<Result<_, _>>()?;
+        let (dst, ds, src, ss, n) = (&vals[0], &vals[1], &vals[2], &vals[3], &vals[4]);
+        let n64 = self.temp();
+        self.line(format!("{n64} = zext i32 {n} to i64"));
+        for (a, start) in [(dst, ds), (src, ss)] {
+            let len = self.load_at("i32", a, "4");
+            let (s64, l64, end) = (self.temp(), self.temp(), self.temp());
+            self.line(format!("{s64} = zext i32 {start} to i64"));
+            self.line(format!("{l64} = zext i32 {len} to i64"));
+            self.line(format!("{end} = add i64 {s64}, {n64}"));
+            let out = self.temp();
+            self.line(format!("{out} = icmp ugt i64 {end}, {l64}"));
+            self.trap_if(&out);
+        }
+        let to = self.elem_offset(ds, stride);
+        let from = self.elem_offset(ss, stride);
+        let (to, from) = (self.at(dst, &to), self.at(src, &from));
+        let bytes = self.temp();
+        self.line(format!("{bytes} = mul i64 {n64}, {stride}"));
+        self.line(format!(
+            "call void @llvm.memmove.p0.p0.i64(ptr {to}, ptr {from}, i64 {bytes}, i1 false)"
+        ));
         Ok(())
     }
 
@@ -430,17 +906,25 @@ impl<'m> Lower<'m> {
                 arms,
                 default,
             } => {
-                let t = ty(&self.atom_ty(scrut))?;
+                let st = self.atom_ty(scrut);
                 let s = self.value(scrut)?;
+                // A case on data is on its constructor, at 4.
+                let (t, s) = if ty(&st)? == "ptr" {
+                    ("i32", self.load_at("i32", &s, "4"))
+                } else {
+                    (ty(&st)?, s)
+                };
                 let names: Vec<String> = arms.iter().map(|_| self.new_block()).collect();
                 let other = self.new_block();
-                let mut cases = Vec::with_capacity(arms.len());
-                for (arm, name) in arms.iter().zip(&names) {
-                    let Tag::Int(n) = arm.tag else {
-                        return Err("a case on data isn't supported yet".into());
-                    };
-                    cases.push(format!("{t} {n}, label %{name}"));
-                }
+                let cases: Vec<String> = (arms.iter().zip(&names))
+                    .map(|(arm, name)| {
+                        let n = match arm.tag {
+                            Tag::Int(n) => n,
+                            Tag::Ctor(c) => c.index as i64,
+                        };
+                        format!("{t} {n}, label %{name}")
+                    })
+                    .collect();
                 self.line(format!(
                     "switch {t} {s}, label %{other} [ {} ]",
                     cases.join(" ")
@@ -669,13 +1153,72 @@ impl<'m> Lower<'m> {
             (true, true) if from == to => return Ok(x.to_string()),
             (true, true) if *from == Ty::F32 => "fpext",
             (true, true) => "fptrunc",
-            (true, false) => {
-                return Err("converting a float to an integer isn't supported yet".into());
-            }
+            (true, false) => return Ok(self.float_to_int(from, to, sign, x)),
         };
         let r = self.temp();
         self.line(format!("{r} = {op} {f} {x} to {t}"));
         Ok(r)
+    }
+}
+
+impl Lower<'_> {
+    /// A float converted to an integer, rounding toward 0, which traps if
+    /// it's NaN or out of the integer's range, as in Wasm. It converts when
+    /// it's above the smallest integer minus one and below the largest plus
+    /// one, or from the smallest itself, a power of 2, where the smallest
+    /// minus one isn't a value of the float type. NaN fails every ordered
+    /// comparison, so it traps too.
+    fn float_to_int(&mut self, from: &Ty, to: &Ty, sign: Sign, x: &str) -> String {
+        let (f, t) = (ty(from).unwrap(), ty(to).unwrap());
+        let bits = int_bits(to) as i32;
+        let as_from = |v: f64| -> (String, bool) {
+            let exact = if *from == Ty::F32 {
+                f64::from(v as f32) == v
+            } else {
+                true
+            };
+            (
+                lit(&if *from == Ty::F32 {
+                    Lit::f32(v as f32)
+                } else {
+                    Lit::f64(v)
+                }),
+                exact,
+            )
+        };
+        let (lo_test, hi) = match sign {
+            Sign::Signed => {
+                let min = -(2f64.powi(bits - 1));
+                let (lo, exact) = as_from(min - 1.0);
+                let lo_test = if exact && (min - 1.0) != min {
+                    format!("fcmp ogt {f} {x}, {lo}")
+                } else {
+                    format!("fcmp oge {f} {x}, {}", as_from(min).0)
+                };
+                (lo_test, as_from(2f64.powi(bits - 1)).0)
+            }
+            Sign::Unsigned => (
+                format!("fcmp ogt {f} {x}, {}", as_from(-1.0).0),
+                as_from(2f64.powi(bits)).0,
+            ),
+        };
+        let above = self.temp();
+        self.line(format!("{above} = {lo_test}"));
+        let below = self.temp();
+        self.line(format!("{below} = fcmp olt {f} {x}, {hi}"));
+        let ok = self.temp();
+        self.line(format!("{ok} = and i1 {above}, {below}"));
+        let bad = self.temp();
+        self.line(format!("{bad} = xor i1 {ok}, true"));
+        self.trap_if(&bad);
+        let op = if sign == Sign::Signed {
+            "fptosi"
+        } else {
+            "fptoui"
+        };
+        let r = self.temp();
+        self.line(format!("{r} = {op} {f} {x} to {t}"));
+        r
     }
 }
 
