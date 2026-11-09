@@ -811,6 +811,27 @@ impl<'m> FuncCx<'_, 'm> {
                     let ty = val(self.var_ty(binds[0]));
                     self.emit(zero(ty));
                 }
+                // The runtime makes a JavaScript function of the
+                // trampoline for the closure's signature and the closure,
+                // whose reference it takes.
+                Op::HostFunction => {
+                    let Ty::Fn(sig, _) = self.atom_ty(&args[0]) else {
+                        return Err("host_function of something that isn't a closure".into());
+                    };
+                    let cb = self.cx.callbacks.as_ref().ok_or("no callbacks")?;
+                    let tramp = cb
+                        .trampoline(&sig.params, &sig.results)
+                        .ok_or("no trampoline for a host function")?;
+                    let import = cb.import;
+                    let hosts = self.cx.hosts.ok_or("no table of host values")?;
+                    self.emit(I::RefFunc(tramp));
+                    self.atom(&args[0]);
+                    self.emit(I::Call(import));
+                    let x = self.new_local(ValType::EXTERNREF);
+                    self.emit(I::LocalSet(x));
+                    let b = self.new_host(hosts, x);
+                    self.emit(I::LocalGet(b));
+                }
                 // A null host value is the address 0, which no box has.
                 Op::HostNull => self.emit(I::I32Const(0)),
                 Op::HostIsNull => {

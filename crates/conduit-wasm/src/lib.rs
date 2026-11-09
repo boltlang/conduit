@@ -218,6 +218,67 @@ pub(crate) struct Cx<'m> {
     pub slot_lists: Option<SlotLists>,
     /// The table of host values, if the module has any.
     pub hosts: Option<Hosts>,
+    /// What `host_function` needs, if the module has any.
+    pub callbacks: Option<Callbacks>,
+}
+
+/// Closures the host calls, made by `host_function`: in Wasm, a JavaScript
+/// function that the runtime makes from a trampoline and the closure's
+/// address, with the import `conduit.function(funcref, i32) -> (ref
+/// extern)`. Each signature of closure has a trampoline, `(closure,
+/// params..) -> results`, which runs the closure as an export runs its
+/// function, and the module exports `conduit_release(closure)`, which the
+/// runtime calls once the host lets go of the function, to drop the
+/// closure.
+#[derive(Debug, Clone)]
+pub(crate) struct Callbacks {
+    /// The function index of the import.
+    pub import: u32,
+    /// The parameters and results of each signature, in the order of their
+    /// trampolines.
+    pub sigs: Vec<(Vec<Ty>, Vec<Ty>)>,
+    /// The index of the first trampoline; `conduit_release` comes after the
+    /// last.
+    pub first: u32,
+}
+
+impl Callbacks {
+    /// The trampoline for closures that take `params` and give `results`.
+    pub fn trampoline(&self, params: &[Ty], results: &[Ty]) -> Option<u32> {
+        (self.sigs.iter())
+            .position(|(p, r)| p == params && r == results)
+            .map(|k| self.first + k as u32)
+    }
+
+    pub fn release(&self) -> u32 {
+        self.first + self.sigs.len() as u32
+    }
+
+    /// How many functions they take.
+    pub fn len(&self) -> u32 {
+        self.sigs.len() as u32 + 1
+    }
+}
+
+/// The signatures of the closures that `host_function`s in `m` take.
+fn callback_sigs(m: &Module) -> Vec<(Vec<Ty>, Vec<Ty>)> {
+    let mut sigs = Vec::new();
+    for f in m.funcs.values() {
+        for b in f.body.blocks() {
+            for l in &b.lets {
+                if l.op == conduit_ir::Op::HostFunction
+                    && let Some(conduit_ir::Atom::Var(c)) = l.args.first()
+                    && let Ty::Fn(sig, _) = f.var_ty(*c)
+                {
+                    let key = (sig.params.clone(), sig.results.clone());
+                    if !sigs.contains(&key) {
+                        sigs.push(key);
+                    }
+                }
+            }
+        }
+    }
+    sigs
 }
 
 /// Host values, `Ty::Host`: each is a box, an object of 16 bytes holding
@@ -232,6 +293,114 @@ pub(crate) struct Hosts {
     pub table: u32,
     /// The global holding the free list, when counting.
     pub free: Option<u32>,
+}
+
+/// A function the host calls, an export's wrapper or a trampoline: its
+/// type and body. It takes `lead` `i32`s as they are, like a trampoline's
+/// closure, then `params`, as the host gives them, and gives `results` as
+/// the host takes them (see `export_param` and `export_result`). It
+/// empties the handler stack, if the module has handlers, and puts it back
+/// after. Each host value it's given goes in a box, and each box it gives
+/// back becomes its `externref`, and the box is dropped. `call` makes the
+/// call, from the locals that hold the arguments, as Conduit has them.
+fn host_entry(
+    cx: &mut Cx<'_>,
+    lead: u32,
+    params: &[Ty],
+    results: &[Ty],
+    call: impl FnOnce(&[u32]) -> Vec<I<'static>>,
+) -> Result<(u32, func::Body), String> {
+    let n = lead + params.len() as u32;
+    let mut sig_params = vec![ValType::I32; lead as usize];
+    sig_params.extend(params.iter().map(export_param));
+    let ty = cx.sig(FnSig {
+        params: sig_params,
+        results: results.iter().map(export_result).collect(),
+    });
+    let mut locals: Vec<ValType> = Vec::new();
+    let mut local = |t: ValType| {
+        locals.push(t);
+        n + locals.len() as u32 - 1
+    };
+    let saved = (!cx.m.handlers.is_empty()).then(|| (local(ValType::I32), local(ValType::I32)));
+    let mut code = Vec::new();
+    if let Some((handlers, site)) = saved {
+        code.extend([
+            I::GlobalGet(HANDLERS),
+            I::LocalSet(handlers),
+            I::GlobalGet(SITE),
+            I::LocalSet(site),
+            I::I32Const(0),
+            I::GlobalSet(HANDLERS),
+        ]);
+    }
+    // The arguments, host ones in boxes. A null is the address 0.
+    let mut args = Vec::with_capacity(params.len());
+    for (i, t) in params.iter().enumerate() {
+        let i = lead + i as u32;
+        if !t.is_host() {
+            args.push(i);
+            continue;
+        }
+        let h = cx.hosts.ok_or("no table of host values")?;
+        let p = local(ValType::I32);
+        let boxed = func::box_host(cx.alloc, h, i, p);
+        if *t == Ty::NullableHost {
+            code.extend([
+                I::LocalGet(i),
+                I::RefIsNull,
+                I::If(wasm_encoder::BlockType::Empty),
+                I::I32Const(0),
+                I::LocalSet(p),
+                I::Else,
+            ]);
+            code.extend(boxed);
+            code.push(I::End);
+        } else {
+            code.extend(boxed);
+        }
+        args.push(p);
+    }
+    code.extend(call(&args));
+    if let Some((handlers, site)) = saved {
+        code.extend([
+            I::LocalGet(handlers),
+            I::GlobalSet(HANDLERS),
+            I::LocalGet(site),
+            I::GlobalSet(SITE),
+        ]);
+    }
+    // The results, host ones as their `externref`s, whose boxes are
+    // dropped.
+    if results.iter().any(Ty::is_host) {
+        let h = cx.hosts.ok_or("no table of host values")?;
+        let held: Vec<u32> = results.iter().map(|t| local(val(t))).collect();
+        code.extend(held.iter().rev().map(|&l| I::LocalSet(l)));
+        let drop = cx
+            .rt
+            .as_ref()
+            .map(|rt| rt.drop(&counts::DropKey::Host, true));
+        for (t, &l) in results.iter().zip(&held) {
+            code.push(I::LocalGet(l));
+            if !t.is_host() {
+                continue;
+            }
+            code.extend([
+                I::If(wasm_encoder::BlockType::Result(ValType::EXTERNREF)),
+                I::LocalGet(l),
+                func::load(Storage::I32, 8),
+                I::TableGet(h.table),
+                I::Else,
+                I::RefNull(wasm_encoder::HeapType::EXTERN),
+                I::End,
+            ]);
+            if let Some(drop) = drop {
+                code.extend([I::LocalGet(l), I::Call(drop)]);
+            }
+        }
+    }
+    code.push(I::End);
+    Ok((ty, func::Body { locals, code }))
 }
 
 /// Whether function `f` takes or gives a host value.
@@ -416,7 +585,9 @@ impl Cx<'_> {
     /// The index of the first function after `alloc` and reference
     /// counting's.
     pub fn after_alloc(&self) -> u32 {
-        self.shadow_funcs() + u32::from(self.stack.is_some()) * 2
+        self.shadow_funcs()
+            + u32::from(self.stack.is_some()) * 2
+            + self.callbacks.as_ref().map_or(0, Callbacks::len)
     }
 
     /// The index of the shadow stack's functions, if there is one: after
@@ -746,7 +917,9 @@ pub fn emit_module_with(m: &Module, options: &Options) -> Result<Vec<u8>, Error>
     }
     let clause_slots = wrapper_slots;
 
-    let first = m.externs.len() as u32;
+    // The import `host_function` needs comes after the externs.
+    let callback_sigs = callback_sigs(m);
+    let first = m.externs.len() as u32 + u32::from(!callback_sigs.is_empty());
     let mut cx = Cx {
         m,
         externs: m.externs.keys().zip(0..).map(|(&e, i)| (e, i)).collect(),
@@ -771,6 +944,7 @@ pub fn emit_module_with(m: &Module, options: &Options) -> Result<Vec<u8>, Error>
         stack_objects: Default::default(),
         slot_lists: None,
         hosts: None,
+        callbacks: None,
     };
     if options.counts {
         cx.rt = Some(counts::Runtime::new(m, cx.alloc + 1, options.cycles));
@@ -796,6 +970,15 @@ pub fn emit_module_with(m: &Module, options: &Options) -> Result<Vec<u8>, Error>
             continuations: !switching.is_empty(),
             grow,
             release: grow + 1,
+        });
+    }
+    // The trampolines and `conduit_release`, after the shadow stack's
+    // functions.
+    if !callback_sigs.is_empty() {
+        cx.callbacks = Some(Callbacks {
+            import: m.externs.len() as u32,
+            sigs: callback_sigs,
+            first: cx.shadow_funcs() + u32::from(cx.stack.is_some()) * 2,
         });
     }
     let mut switch_funcs = 0;
@@ -851,7 +1034,8 @@ pub fn emit_module_with(m: &Module, options: &Options) -> Result<Vec<u8>, Error>
             .rt
             .as_ref()
             .is_some_and(|rt| rt.keys.contains(&counts::DropKey::Host))
-        || exports.iter().any(|&(f, _)| takes_or_gives_host(m, f));
+        || exports.iter().any(|&(f, _)| takes_or_gives_host(m, f))
+        || cx.callbacks.is_some();
     if uses_hosts {
         let conts: usize = cx.switches.values().map(|sw| sw.conts.len()).sum();
         let free = cx.rt.is_some().then(|| match (&cx.slot_lists, cx.stack) {
@@ -887,6 +1071,13 @@ pub fn emit_module_with(m: &Module, options: &Options) -> Result<Vec<u8>, Error>
             Abi::Flat => flat_sig(ext),
         };
         imports.push((&**module, &**name, cx.sig(sig)));
+    }
+    if cx.callbacks.is_some() {
+        let sig = cx.sig(FnSig {
+            params: vec![ValType::FUNCREF, ValType::I32],
+            results: vec![import_result(&Ty::Host)],
+        });
+        imports.push(("conduit", "function", sig));
     }
 
     let mut funcs = Vec::new();
@@ -1105,6 +1296,57 @@ pub fn emit_module_with(m: &Module, options: &Options) -> Result<Vec<u8>, Error>
     if let Some(stack) = cx.stack {
         runtime.extend(shadow::bodies(&mut cx, stack));
     }
+    // The trampolines and `conduit_release`, after them.
+    if let Some(cb) = cx.callbacks.clone() {
+        for (params, results) in &cb.sigs {
+            let sig = conduit_ir::Sig::new(params.clone(), results.clone());
+            let entry = cx.entry_sig(&sig);
+            let dup = cx.rt.as_ref().map(|rt| rt.dup());
+            let body = host_entry(&mut cx, 1, params, results, |args| {
+                // The host keeps the closure, and `apply` takes one.
+                let mut code = Vec::new();
+                if let Some(dup) = dup {
+                    code.extend([I::LocalGet(0), I::Call(dup)]);
+                }
+                code.push(I::LocalGet(0));
+                code.extend(args.iter().map(|&a| I::LocalGet(a)));
+                code.extend([
+                    I::LocalGet(0),
+                    func::load(Storage::I32, 4),
+                    I::CallIndirect {
+                        type_index: entry,
+                        table_index: 0,
+                    },
+                ]);
+                code
+            })
+            .map_err(|message| Error {
+                item: Item::Func(FuncId(0)),
+                message,
+            })?;
+            runtime.push(body);
+        }
+        let one = cx.sig(FnSig {
+            params: vec![ValType::I32],
+            results: Vec::new(),
+        });
+        let drop = cx
+            .rt
+            .as_ref()
+            .map(|rt| rt.drop(&counts::DropKey::Closure, false));
+        let mut code = Vec::new();
+        if let Some(drop) = drop {
+            code.extend([I::LocalGet(0), I::Call(drop)]);
+        }
+        code.push(I::End);
+        runtime.push((
+            one,
+            func::Body {
+                locals: Vec::new(),
+                code,
+            },
+        ));
+    }
 
     let mut import_section = ImportSection::new();
     for &(module, name, sig) in &imports {
@@ -1112,9 +1354,8 @@ pub fn emit_module_with(m: &Module, options: &Options) -> Result<Vec<u8>, Error>
     }
     // With handler frames in memory, each export runs under a wrapper
     // that empties the handler stack and puts it back after. An export
-    // that takes or gives host values runs under one too, which turns
-    // each `externref` it's given into a box, and each box it gives back
-    // into its `externref`, which it then drops.
+    // that takes or gives host values runs under one too, which converts
+    // them (see `host_entry`).
     let mut export_wrappers = Vec::new();
     let mut export_index = BTreeMap::new();
     let mut next = first
@@ -1139,101 +1380,19 @@ pub fn emit_module_with(m: &Module, options: &Options) -> Result<Vec<u8>, Error>
             item: Item::Func(f),
             message,
         };
-        let params: Vec<&Ty> = func.params.iter().map(|v| func.var_ty(*v)).collect();
-        let n = params.len() as u32;
-        let ty = cx.sig(FnSig {
-            params: params.iter().map(|t| export_param(t)).collect(),
-            results: func.results.iter().map(export_result).collect(),
-        });
-        let mut locals: Vec<ValType> = Vec::new();
-        let mut local = |t: ValType| {
-            locals.push(t);
-            n + locals.len() as u32 - 1
-        };
-        let saved = (!m.handlers.is_empty()).then(|| (local(ValType::I32), local(ValType::I32)));
-        let mut code = Vec::new();
-        if let Some((handlers, site)) = saved {
-            code.extend([
-                I::GlobalGet(HANDLERS),
-                I::LocalSet(handlers),
-                I::GlobalGet(SITE),
-                I::LocalSet(site),
-                I::I32Const(0),
-                I::GlobalSet(HANDLERS),
-            ]);
-        }
-        // The arguments, host ones in boxes. A null is the address 0.
-        let mut args = Vec::with_capacity(params.len());
-        for (i, t) in params.iter().enumerate() {
-            let i = i as u32;
-            if !t.is_host() {
-                args.push(i);
-                continue;
-            }
-            let h = cx
-                .hosts
-                .ok_or_else(|| err("no table of host values".into()))?;
-            let p = local(ValType::I32);
-            let boxed = func::box_host(cx.alloc, h, i, p);
-            if **t == Ty::NullableHost {
-                code.extend([
-                    I::LocalGet(i),
-                    I::RefIsNull,
-                    I::If(wasm_encoder::BlockType::Empty),
-                    I::I32Const(0),
-                    I::LocalSet(p),
-                    I::Else,
-                ]);
-                code.extend(boxed);
-                code.push(I::End);
-            } else {
-                code.extend(boxed);
-            }
-            args.push(p);
-        }
-        code.extend(args.iter().map(|&a| I::LocalGet(a)));
-        code.push(I::Call(cx.func_index(f).map_err(err)?));
-        if let Some((handlers, site)) = saved {
-            code.extend([
-                I::LocalGet(handlers),
-                I::GlobalSet(HANDLERS),
-                I::LocalGet(site),
-                I::GlobalSet(SITE),
-            ]);
-        }
-        // The results, host ones as their `externref`s, whose boxes are
-        // dropped.
-        if func.results.iter().any(Ty::is_host) {
-            let h = cx
-                .hosts
-                .ok_or_else(|| err("no table of host values".into()))?;
-            let held: Vec<u32> = func.results.iter().map(|t| local(val(t))).collect();
-            code.extend(held.iter().rev().map(|&l| I::LocalSet(l)));
-            let drop = cx
-                .rt
-                .as_ref()
-                .map(|rt| rt.drop(&counts::DropKey::Host, true));
-            for (t, &l) in func.results.iter().zip(&held) {
-                code.push(I::LocalGet(l));
-                if !t.is_host() {
-                    continue;
-                }
-                code.extend([
-                    I::If(wasm_encoder::BlockType::Result(ValType::EXTERNREF)),
-                    I::LocalGet(l),
-                    func::load(Storage::I32, 8),
-                    I::TableGet(h.table),
-                    I::Else,
-                    I::RefNull(wasm_encoder::HeapType::EXTERN),
-                    I::End,
-                ]);
-                if let Some(drop) = drop {
-                    code.extend([I::LocalGet(l), I::Call(drop)]);
-                }
-            }
-        }
-        code.push(I::End);
-        export_wrappers.push((ty, func::Body { locals, code }));
+        let params: Vec<Ty> = func
+            .params
+            .iter()
+            .map(|v| func.var_ty(*v).clone())
+            .collect();
+        let idx = cx.func_index(f).map_err(err)?;
+        let wrapper = host_entry(&mut cx, 0, &params, &func.results, |args| {
+            let mut code: Vec<I<'static>> = args.iter().map(|&a| I::LocalGet(a)).collect();
+            code.push(I::Call(idx));
+            code
+        })
+        .map_err(err)?;
+        export_wrappers.push(wrapper);
         export_index.insert(f, next);
         next += 1;
     }
@@ -1399,6 +1558,9 @@ pub fn emit_module_with(m: &Module, options: &Options) -> Result<Vec<u8>, Error>
         export_section.export(name, ExportKind::Func, idx);
     }
     export_section.export("memory", ExportKind::Memory, 0);
+    if let Some(cb) = &cx.callbacks {
+        export_section.export("conduit_release", ExportKind::Func, cb.release());
+    }
     if let Some(rt) = &cx.rt {
         export_section.export("conduit_live", ExportKind::Global, counts::LIVE);
         if rt.cycles {
@@ -1445,7 +1607,10 @@ pub fn emit_module_with(m: &Module, options: &Options) -> Result<Vec<u8>, Error>
         );
     }
     // The trampolines, which `ref.func` names.
-    let tramps: Vec<u32> = cx.switches.values().map(|sw| sw.tramp).collect();
+    let mut tramps: Vec<u32> = cx.switches.values().map(|sw| sw.tramp).collect();
+    if let Some(cb) = &cx.callbacks {
+        tramps.extend(cb.first..cb.release());
+    }
     if !tramps.is_empty() {
         elements.declared(Elements::Functions(tramps.into()));
     }
@@ -1699,7 +1864,7 @@ fn name_section(
             functions.append(i as u32, name);
         }
     }
-    let first = m.externs.len() as u32;
+    let first = m.externs.len() as u32 + u32::from(cx.callbacks.is_some());
     for (i, f) in m.funcs.values().enumerate() {
         if let Some(name) = &f.debug.name {
             functions.append(first + i as u32, name);

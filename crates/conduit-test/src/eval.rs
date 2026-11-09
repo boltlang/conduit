@@ -111,7 +111,7 @@ fn lit(v: Value) -> Result<Lit, String> {
         Value::I64(n) => Lit::I64(n),
         Value::F32(x) => Lit::f32(x),
         Value::F64(x) => Lit::f64(x),
-        Value::Obj(_) | Value::Host(_) | Value::Null => {
+        Value::Obj(_) | Value::Host(_) | Value::Function(_) | Value::Null => {
             return Err("gave an object, but a test can only check scalars".into());
         }
         Value::Unset => return Err("gave an unset array element".into()),

@@ -1046,3 +1046,152 @@ fn exports_take_and_give_host_values() {
     let live = instance.get_global(&mut store, "conduit_live").unwrap();
     assert_eq!(live.get(&mut store).unwrap_i32(), 0);
 }
+
+const CALLBACKS: &str = "#[link(wasm, module = \"test\", name = \"keep\")]
+extern keep(host) -> ()
+#[link(wasm, module = \"test\", name = \"unwrap\")]
+extern unwrap(host) -> (i32)
+
+#[export(wasm, name = \"main\")]
+fn main(%k: i32) -> () {
+  let %c: imm fn(i32) -> (i32) = closure plus(%k)
+  let %f: host = host_function(%c)
+  let = call_extern keep(%f)
+  let %r: imm fn(host) -> (i32) = closure read()
+  let %g: host = host_function(%r)
+  let = call_extern keep(%g)
+  jump ret()
+}
+
+fn plus(%k: i32, %x: i32) -> (i32) {
+  let %y: i32 = add(%k, %x)
+  jump ret(%y)
+}
+
+fn read(%h: host) -> (i32) {
+  let %n: i32 = call_extern unwrap(%h)
+  jump ret(%n)
+}
+";
+
+/// A handler whose clause isn't tail-resumptive, so a module with it
+/// lowers its effects by evidence passing, which every closure then takes.
+const GENERAL_HANDLER: &str = "
+effect Tick {
+  () -> ()
+}
+
+handler twice for Tick env() ops(tick) ret ticked
+
+fn tick(%k: cont() -> (i32)) -> (i32) {
+  let %r: i32 = resume(%k)
+  let %r2: i32 = add(%r, 1i32)
+  jump ret(%r2)
+}
+
+fn ticked() -> (i32) {
+  jump ret(0i32)
+}
+";
+
+/// `host_function` gives the host a JavaScript function, which here the
+/// test's own `conduit.function` makes, as Bolt's runtime would: it keeps
+/// the trampoline and the closure, and calling the function calls the
+/// trampoline with the closure first. Once the host lets go,
+/// `conduit_release` drops the closure, so nothing is left live. With a
+/// handler that needs evidence passing too, the closures the host gets take
+/// no evidence.
+#[test]
+fn host_functions_call_closures() {
+    use std::sync::{Arc, Mutex};
+    use wasmtime::{ExternRef, Func, Rooted, Val};
+    for with_handler in [false, true] {
+        let src = if with_handler {
+            format!("{CALLBACKS}{GENERAL_HANDLER}")
+        } else {
+            CALLBACKS.to_string()
+        };
+        let mut m = text::parse(&src).unwrap();
+        if with_handler {
+            conduit_effects::lower_effects(&mut m).unwrap();
+            let adapters = m
+                .funcs
+                .values()
+                .filter(|f| f.debug.name.as_deref() == Some("host_adapter"));
+            assert_eq!(adapters.count(), 2, "one adapter per signature");
+        }
+        conduit_opt::ownership::insert_counts(&mut m).unwrap();
+        let options = crate::Options {
+            counts: true,
+            ..Default::default()
+        };
+        let bytes = crate::emit_module_with(&m, &options).unwrap();
+        let engine = wasmtime::Engine::new(&conduit_test::wasm::config()).unwrap();
+        let module = wasmtime::Module::new(&engine, &bytes).unwrap();
+        let mut store = wasmtime::Store::new(&engine, ());
+        let mut linker = conduit_test::wasm::linker(&engine).unwrap();
+        let kept: Arc<Mutex<Vec<(Func, i32)>>> = Arc::default();
+        linker
+            .func_wrap(
+                "conduit",
+                "function",
+                |mut c: wasmtime::Caller<'_, ()>,
+                 f: Option<Func>,
+                 closure: i32|
+                 -> wasmtime::Result<Rooted<ExternRef>> {
+                    ExternRef::new(&mut c, (f.expect("a trampoline"), closure))
+                },
+            )
+            .unwrap();
+        let keeps = kept.clone();
+        linker
+            .func_wrap(
+                "test",
+                "keep",
+                move |c: wasmtime::Caller<'_, ()>,
+                      r: Option<Rooted<ExternRef>>|
+                      -> wasmtime::Result<()> {
+                    let data = r.expect("a function").data(&c)?.expect("data");
+                    let &(f, closure) = data.downcast_ref::<(Func, i32)>().expect("a function");
+                    keeps.lock().unwrap().push((f, closure));
+                    Ok(())
+                },
+            )
+            .unwrap();
+        let instance = linker.instantiate(&mut store, &module).unwrap();
+        let main = instance.get_func(&mut store, "main").unwrap();
+        main.call(&mut store, &[Val::I32(10)], &mut []).unwrap();
+        let functions = kept.lock().unwrap().clone();
+        let [(plus, c1), (read, c2)] = functions[..] else {
+            panic!("{} functions", functions.len())
+        };
+        let mut out = [Val::I32(0)];
+        for x in [5, 7] {
+            plus.call(&mut store, &[Val::I32(c1), Val::I32(x)], &mut out)
+                .unwrap();
+            assert_eq!(
+                out[0].unwrap_i32(),
+                10 + x,
+                "with a handler: {with_handler}"
+            );
+        }
+        let h = ExternRef::new(&mut store, 42i32).unwrap();
+        read.call(
+            &mut store,
+            &[Val::I32(c2), Val::ExternRef(Some(h))],
+            &mut out,
+        )
+        .unwrap();
+        assert_eq!(out[0].unwrap_i32(), 42);
+        let release = instance.get_func(&mut store, "conduit_release").unwrap();
+        for c in [c1, c2] {
+            release.call(&mut store, &[Val::I32(c)], &mut []).unwrap();
+        }
+        let live = instance.get_global(&mut store, "conduit_live").unwrap();
+        assert_eq!(
+            live.get(&mut store).unwrap_i32(),
+            0,
+            "with a handler: {with_handler}"
+        );
+    }
+}

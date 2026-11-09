@@ -16,6 +16,12 @@ pub enum Value {
     /// host chose when it gave the value. In the machine, a value of type
     /// `host` is an [`Object::Host`] instead, counted like other objects.
     Host(u64),
+    /// A host function made by `host_function`, as a host function sees
+    /// one: its number among the closures the host holds, which
+    /// [`Machine::call_function`](crate::Machine::call_function) calls and
+    /// [`Machine::release_function`](crate::Machine::release_function)
+    /// lets go of.
+    Function(u32),
     /// A null `nullable host`, which isn't an object, so it isn't counted.
     /// A host function sees it, and gives it, as itself.
     Null,
@@ -72,6 +78,9 @@ pub enum Object<'p> {
     Cont(Continuation<'p>),
     /// A host value, by the number its host gave it.
     Host(u64),
+    /// A host value that's a host function made by `host_function`, by
+    /// its number among the closures the host holds.
+    HostFunction(u32),
 }
 
 impl Object<'_> {
@@ -82,7 +91,7 @@ impl Object<'_> {
             Object::Array { elems, .. } => elems,
             Object::Ref(v) | Object::Any { value: v, .. } => std::slice::from_ref(v),
             Object::Closure { captures, .. } => captures,
-            Object::Cont(_) | Object::Host(_) => &[],
+            Object::Cont(_) | Object::Host(_) | Object::HostFunction(_) => &[],
         }
     }
 }

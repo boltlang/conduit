@@ -1,0 +1,25 @@
+// `host_function` takes a closure whose parameters and results the host
+// can give and take: scalars and host values, not Conduit's objects.
+
+data data0 {
+  (i32)
+}
+
+fn fn1(%0: imm data0) -> (i32) {
+  let %1: i32 = get data0.0.0(%0)
+  jump ret(%1)
+}
+
+fn fn2() -> () {
+  let %0: imm fn(imm data0) -> (i32) = closure fn1()
+  let %1: host = host_function(%0)
+  jump ret()
+}
+
+fn fn3() -> () {
+  let %0: host = host_function(1i32)
+  jump ret()
+}
+
+//# verify-error: fn2: host_function of a fn(imm data0) -> (i32), which has a imm data0: the host can only give and take scalars and host values
+//# verify-error: fn3: host_function of a i32, which isn't a closure

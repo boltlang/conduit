@@ -129,6 +129,14 @@ pub enum Op {
     /// A `NullableHost` that isn't null as a `Host`, the same value; it
     /// traps if it's null. Args: the value, whose reference it takes.
     HostUnwrap,
+    /// A host function that applies a closure: in Wasm, a JavaScript
+    /// function, which the host can call as any other, like an event
+    /// listener. The host holds the closure for as long as it holds the
+    /// function. The closure's parameters and results must be ones the
+    /// host can give and take: scalars, `Host` and `NullableHost`. It runs
+    /// with no handlers, as an export does. Args: the closure, whose
+    /// reference it takes.
+    HostFunction,
     /// `New`, in the memory of a reuse token if it has some. Args: the
     /// token, of a constructor of the same shape (see
     /// [`same_shape`](crate::types::same_shape)), then the fields.
@@ -227,6 +235,7 @@ impl Op {
             Op::Const(_) | Op::Undefined => (None, false),
             Op::HostNull | Op::HostIsNull => (None, false),
             Op::HostUnwrap => (None, true),
+            Op::HostFunction => (None, false),
             // Its length may be negative or too big.
             Op::ArrayFill | Op::ArrayAlloc => (None, true),
             Op::Get(..) | Op::ArrayLen | Op::ArrayClone | Op::RefGet => (Reads, false),

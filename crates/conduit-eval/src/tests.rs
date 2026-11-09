@@ -1665,3 +1665,83 @@ fn either(%a: nullable host) -> (nullable host) {
     let leaks = machine.leaks(&[]);
     assert!(leaks.is_empty(), "{leaks}");
 }
+
+/// `host_function` gives the host a function of a closure, which the host
+/// calls later, as from an event loop, and lets go of when it's done: the
+/// host holds the closure until then, so counting leaves nothing after.
+#[test]
+fn host_functions_call_closures() {
+    #[derive(Default)]
+    struct Keeps(Vec<u32>);
+    impl Host for Keeps {
+        fn call(
+            &mut self,
+            name: &str,
+            _: &Extern,
+            args: &[Value],
+            _: &mut Arrays<'_, '_>,
+        ) -> Result<Vec<Value>, HostError> {
+            match (name, args) {
+                ("keep", [Value::Function(k)]) => {
+                    self.0.push(*k);
+                    Ok(vec![])
+                }
+                ("unwrap", [Value::Host(n)]) => Ok(vec![Value::I32(*n as i32)]),
+                _ => Err("bad call".into()),
+            }
+        }
+    }
+    // Counts by hand: `host_function` takes its closure, and `keep`
+    // borrows the function.
+    let src = "#[link(emu)]
+extern keep(host) -> ()
+#[link(emu)]
+extern unwrap(host) -> (i32)
+
+fn main(%k: i32) -> () {
+  let %c: imm fn(i32) -> (i32) = closure plus(%k)
+  let %f: host = host_function(%c)
+  let = call_extern keep(%f)
+  let = drop(%f)
+  let %r: imm fn(host) -> (i32) = closure read()
+  let %g: host = host_function(%r)
+  let = call_extern keep(%g)
+  let = drop(%g)
+  jump ret()
+}
+
+fn plus(%k: i32, %x: i32) -> (i32) {
+  let %y: i32 = add(%k, %x)
+  jump ret(%y)
+}
+
+fn read(%h: host) -> (i32) {
+  let %n: i32 = call_extern unwrap(%h)
+  let = drop(%h)
+  jump ret(%n)
+}";
+    let m = conduit_ir::text::parse(src).unwrap();
+    verify_module(&m).unwrap();
+    let id = |name: &str| conduit_ir::text::find_func(&m, name).unwrap();
+    let mut machine = Machine::new(&m, Keeps::default());
+    machine.counting = true;
+    machine.call(id("main"), vec![Value::I32(10)]).unwrap();
+    let [plus, read] = machine.host.0[..] else {
+        panic!("{:?}", machine.host.0)
+    };
+    for x in [5, 7] {
+        let got = machine.call_function(plus, vec![Value::I32(x)]).unwrap();
+        assert_eq!(got, vec![Value::I32(10 + x)]);
+    }
+    let got = machine.call_function(read, vec![Value::Host(42)]).unwrap();
+    assert_eq!(got, vec![Value::I32(42)]);
+    // Held, the closures are roots; let go of, they're freed.
+    assert!(machine.leaks(&[]).is_empty(), "{}", machine.leaks(&[]));
+    machine.release_function(plus).unwrap();
+    machine.release_function(read).unwrap();
+    assert!(machine.leaks(&[]).is_empty(), "{}", machine.leaks(&[]));
+    let error = machine
+        .call_function(plus, vec![Value::I32(1)])
+        .unwrap_err();
+    assert!(error.to_string().contains("no host function"), "{error}");
+}

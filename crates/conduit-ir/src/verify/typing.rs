@@ -311,6 +311,20 @@ pub(crate) fn op_results<P: Program + ?Sized>(
                 _ => Err(format!("{name} needs one host value")),
             }
         }
+        Op::HostFunction => match tys {
+            [Ty::Fn(sig, _)] => {
+                let crosses = |t: &Ty| t.is_scalar() || t.is_host();
+                match sig.params.iter().chain(&sig.results).find(|t| !crosses(t)) {
+                    Some(t) => Err(format!(
+                        "host_function of a fn{sig}, which has a {t}: the host can only give \
+                         and take scalars and host values"
+                    )),
+                    None => Ok(vec![Ty::Host]),
+                }
+            }
+            [ty] => Err(format!("host_function of a {ty}, which isn't a closure")),
+            _ => Err("host_function needs one closure".into()),
+        },
         Op::ArrayClone => array_clone(p, mp, tys, out, false),
         Op::ArrayFreeze => array_clone(p, mp, tys, out, true),
         Op::Handle(h, rows) => {

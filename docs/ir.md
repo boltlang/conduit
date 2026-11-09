@@ -227,6 +227,16 @@ not a string from a DOM node, so these two are all Conduit needs: what
 kind of value a host value is, the frontend's types and the host's own
 checks say.
 
+`host_function(c)` gives the host a function that calls the closure `c`,
+as a `host`: in Wasm, a JavaScript function, which the host can call as
+any other, like an event listener or a `setTimeout` callback. It takes
+`c`'s reference, and the host holds the closure for as long as it holds
+the function. The closure's parameters and results must be ones the host
+can give and take, scalars and host values, and it runs with no handlers,
+as an export does. After lowering effects by evidence passing, the
+function's closure is of an adapter that makes fresh evidence and applies
+`c`, so the host only gives what `c` takes.
+
 #### Host values and the host's garbage collector
 
 Two collectors decide when a host value goes: Conduit's counts, and the
@@ -264,8 +274,8 @@ A frontend can avoid such cycles rather than collect them:
 - hold the host value weakly, through a JavaScript `WeakRef` that the
   closure captures in its place.
 
-Conduit can't call a closure from the host yet, so today no cycle goes
-through both heaps; this is what to keep in mind once it can.
+A host function holds its closure until the host lets go of it, so this
+is what to keep in mind with `host_function`.
 
 A tuple or struct is a `DataDecl` with one constructor. `Bool` and
 field-less enums are `I32`. Unit is zero values and `!` is zero results, so
@@ -1476,6 +1486,20 @@ exception handling, both part of Wasm 3.0.
   the module has handlers, which puts each `externref` it's given in a
   box, and turns each box it gives back into its `externref` and drops
   the box.
+- **Host functions** need the runtime to make a JavaScript function, so
+  a module with `host_function` imports `conduit.function(funcref, i32)
+  -> (ref extern)`, after its externs. For each signature of closure it
+  has a trampoline, `(closure, params..) -> results`, which runs like an
+  export's wrapper, with host values converted, and applies the closure,
+  with a `dup` first, since the host keeps it. `host_function(c)` is
+  `conduit.function(ref.func trampoline, c)`, and the runtime gives back
+  a function that calls the trampoline with `c` first:
+  `(...args) => trampoline(c, ...args)`. The module exports
+  `conduit_release(closure)`, which drops the closure, and which the
+  runtime calls once the host lets go of the function, from a
+  `FinalizationRegistry`. The trampolines and `conduit_release` come after
+  the shadow stack's functions, and a declarative element segment names
+  the trampolines for `ref.func`.
 - With `Options::cycles` too, cycles are collected by trial deletion.
   The header's count is then 28 bits, with the collector's color and a
   "buffered" bit above it, and the sign bit for immortal. A `drop` that
@@ -1705,8 +1729,8 @@ fn fn1(%0: i32) -> (i32) {
   `handle handler30(..)`, `perform effect20.0(..)`, `resume(..)`,
   `discontinue effect20.0(..)`, `dup(..)`, `drop(..)`, `is_unique(..)`,
   `free(..)`, `decref(..)`, `drop_reuse(..)`, `reuse_token(..)`,
-  `reuse data10.1(..)`, `host_null()`, `host_is_null(..)` and
-  `host_unwrap(..)`.
+  `reuse data10.1(..)`, `host_null()`, `host_is_null(..)`,
+  `host_unwrap(..)` and `host_function(..)`.
   A reuse token's type is `reuse data10.1`.
 - **Literals** carry their type: `5i32`, `-1i64`, `1.5f32`, `1e300f64`.
   Finite floats are printed in the shortest form that reads back exactly.
@@ -1752,7 +1776,13 @@ doesn't need a deep stack.
   objects'. A host function sees `Value::Host(n)` instead, both as an
   argument and as what it gives, and a null as `Value::Null`, which isn't
   an object. It must give what its extern says: as many results, and a
-  null only for a `nullable host`.
+  null only for a `nullable host`. A host function is `Value::Function(k)`
+  to a host, which it calls with `Machine::call_function(k, args)` and lets
+  go of with `Machine::release_function(k)`, once the call that gave it to
+  the host is done: the machine doesn't run while it calls the host, so
+  unlike in Wasm, a host can't call one before it returns, as
+  `Array.prototype.map` would. The closures the host holds are roots for
+  `Machine::leaks`.
 - **Objects know their mutability.** Every object that can be `Imm` or
   `Mut` carries an "is mut" flag. A write to an `Imm` object is an error,
   which can only happen if an optimization broke the mutability rules.

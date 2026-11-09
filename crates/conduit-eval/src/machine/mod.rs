@@ -138,6 +138,9 @@ type Step<T> = Result<T, ErrorKind>;
 pub struct Machine<'p, P: ?Sized, H> {
     p: &'p P,
     pub host: H,
+    /// The closures of the host functions the host holds, by number, until
+    /// it lets go of them.
+    functions: Vec<Option<Value>>,
     heap: Vec<Object<'p>>,
     /// The count of each object in `heap`, kept even when the machine
     /// doesn't count, so that nothing is ever freed then.
@@ -186,6 +189,7 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
         Machine {
             p,
             host,
+            functions: Vec::new(),
             heap: Vec::new(),
             counts: Vec::new(),
             stack: Vec::new(),
@@ -241,33 +245,132 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
             ),
             None => (Vec::new(), Vec::new()),
         };
-        let mut args = args;
-        for (a, ty) in args.iter_mut().zip(&params) {
-            if let (true, Value::Host(n)) = (ty.is_host(), *a) {
-                *a = self.alloc(Object::Host(n));
+        self.run_from_host(func, margs, Vec::new(), args, &params, &results)
+    }
+
+    /// Runs `func` for the host, with `captures` before `args`, which are
+    /// the host's, of types `params`, converting host values both ways, as
+    /// at an extern call.
+    fn run_from_host(
+        &mut self,
+        func: FuncId,
+        margs: Vec<Mutability>,
+        captures: Vec<Value>,
+        args: Vec<Value>,
+        params: &[Ty],
+        results: &[Ty],
+    ) -> Result<Vec<Value>, Error> {
+        let result = (|| {
+            let mut all = captures;
+            for (a, ty) in args.into_iter().zip(params) {
+                let a = self
+                    .take_from_host(a, ty)
+                    .map_err(|what| unverified(format!("a {what} argument for a {ty}")))?;
+                all.push(a);
             }
-        }
-        let result = self
-            .enter(func, args, margs)
-            .and_then(|()| self.run())
-            .and_then(|mut values| {
-                for (v, ty) in values.iter_mut().zip(&results) {
-                    if ty.is_host()
-                        && let Value::Obj(id) = *v
-                        && let Some(Object::Host(n)) = self.heap.get(id.0 as usize)
-                    {
-                        let n = *n;
-                        self.drop_value(*v)?;
-                        *v = Value::Host(n);
-                    }
+            self.enter(func, all, margs)?;
+            let mut values = self.run()?;
+            for (v, ty) in values.iter_mut().zip(results) {
+                let given = self.give_to_host(*v, ty)?;
+                if given != *v {
+                    self.drop_value(*v)?;
                 }
-                Ok(values)
-            });
+                *v = given;
+            }
+            Ok(values)
+        })();
         result.map_err(|kind| {
             let error = self.error(kind);
             self.stack.clear();
             error
         })
+    }
+
+    /// What the host gave, of type `ty`, as the machine holds it: a host
+    /// value or host function becomes an object. What doesn't fit, as a
+    /// word for an error.
+    fn take_from_host(&mut self, v: Value, ty: &Ty) -> Result<Value, &'static str> {
+        Ok(match v {
+            Value::Host(n) if ty.is_host() => self.alloc(Object::Host(n)),
+            Value::Function(k) if ty.is_host() => self.alloc(Object::HostFunction(k)),
+            Value::Null if *ty == Ty::NullableHost => v,
+            Value::Host(_) | Value::Function(_) => return Err("host"),
+            Value::Null => return Err("null"),
+            _ if ty.is_host() => return Err("non-host"),
+            _ => v,
+        })
+    }
+
+    /// A value of type `ty` as the host sees it: a host value as its
+    /// number, and a host function as its own. The object stays the
+    /// machine's.
+    fn give_to_host(&self, v: Value, ty: &Ty) -> Step<Value> {
+        if !ty.is_host() || v == Value::Null {
+            return Ok(v);
+        }
+        Ok(match self.object_ref(obj(v)?)? {
+            Object::Host(n) => Value::Host(*n),
+            Object::HostFunction(k) => Value::Function(*k),
+            _ => return Err(unverified("a host value that isn't one")),
+        })
+    }
+
+    /// Calls the closure of host function `k`, which a `host_function` gave
+    /// the host, with `args`, as the host does when it calls the function:
+    /// after the call that gave it is done, as from an event loop, since
+    /// the machine doesn't run while it's calling the host.
+    pub fn call_function(&mut self, k: u32, args: Vec<Value>) -> Result<Vec<Value>, Error> {
+        if !self.stack.is_empty() {
+            return Err(self.error(unverified("the machine is already running")));
+        }
+        let closure = match self.functions.get(k as usize) {
+            Some(Some(c)) => *c,
+            _ => return Err(self.error(unverified(format!("no host function {k}")))),
+        };
+        let found = obj(closure).and_then(|id| {
+            self.object_ref(id).map(|o| match o {
+                Object::Closure {
+                    func,
+                    margs,
+                    captures,
+                    ..
+                } => Some((*func, margs.clone(), captures.clone())),
+                _ => None,
+            })
+        });
+        let Ok(Some((func, margs, captures))) = found else {
+            return Err(self.error(unverified(
+                "a host function of something that isn't a closure",
+            )));
+        };
+        let (params, results): (Vec<Ty>, Vec<Ty>) = match self.p.func(func) {
+            Some(f) => (
+                f.params[captures.len()..]
+                    .iter()
+                    .map(|v| f.var_ty(*v).clone())
+                    .collect(),
+                f.results.clone(),
+            ),
+            None => return Err(self.error(unverified(format!("unknown function {func}")))),
+        };
+        // The host keeps the closure: the function owns its parameters, so
+        // it gets references of its own to the captures, as `apply` gives.
+        self.dup_all(&captures).map_err(|kind| self.error(kind))?;
+        self.run_from_host(func, margs, captures, args, &params, &results)
+    }
+
+    /// Lets go of the closure of host function `k`, as the host does when
+    /// it's done with the function.
+    pub fn release_function(&mut self, k: u32) -> Result<(), Error> {
+        let Some(closure) = self.functions.get_mut(k as usize).and_then(Option::take) else {
+            return Err(self.error(unverified(format!("no host function {k}"))));
+        };
+        self.drop_value(closure).map_err(|kind| self.error(kind))
+    }
+
+    /// The closures of the host functions the host still holds.
+    pub(crate) fn held_functions(&self) -> impl Iterator<Item = &Value> {
+        self.functions.iter().flatten()
     }
 
     /// An object, unless it has been freed.
@@ -665,12 +768,7 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                 // is itself.
                 let mut args = args;
                 for (a, ty) in args.iter_mut().zip(&decl.sig.params) {
-                    if ty.is_host() && *a != Value::Null {
-                        *a = match self.object_ref(obj(*a)?)? {
-                            Object::Host(n) => Value::Host(*n),
-                            _ => return Err(unverified("a host argument that isn't one")),
-                        };
-                    }
+                    *a = self.give_to_host(*a, ty)?;
                 }
                 let mut arrays = Arrays {
                     heap: &mut self.heap,
@@ -686,20 +784,11 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                     )));
                 }
                 for (r, ty) in results.iter_mut().zip(&decl.sig.results) {
-                    let what = match *r {
-                        Value::Host(n) if ty.is_host() => {
-                            *r = self.alloc(Object::Host(n));
-                            continue;
-                        }
-                        Value::Null if *ty == Ty::NullableHost => continue,
-                        Value::Host(_) => "host",
-                        Value::Null => "null",
-                        _ if ty.is_host() => "non-host",
-                        _ => continue,
-                    };
-                    return Err(ErrorKind::Host(format!(
-                        "{name} gave a {what} result where its extern has a {ty}"
-                    )));
+                    *r = self.take_from_host(*r, ty).map_err(|what| {
+                        ErrorKind::Host(format!(
+                            "{name} gave a {what} result where its extern has a {ty}"
+                        ))
+                    })?;
                 }
                 results
             }
@@ -750,6 +839,13 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                 Value::Null => return Err(ErrorKind::Trap),
                 v => vec![v],
             },
+            // The host holds the closure from now on.
+            Op::HostFunction => {
+                let closure = arg(&args, 0)?;
+                let k = self.functions.len() as u32;
+                self.functions.push(Some(closure));
+                vec![self.alloc(Object::HostFunction(k))]
+            }
             Op::Get(c, i) => match self.object_ref(obj(arg(&args, 0)?)?)? {
                 Object::Data { ctor, fields, .. } if ctor == c => {
                     vec![

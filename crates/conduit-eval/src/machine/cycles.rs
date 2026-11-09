@@ -150,6 +150,6 @@ pub(super) fn may_cycle(o: &Object) -> bool {
         | Object::Array { is_mut, .. }
         | Object::Closure { is_mut, .. } => *is_mut,
         Object::Ref(_) | Object::Any { .. } => true,
-        Object::Cont(_) | Object::Host(_) => false,
+        Object::Cont(_) | Object::Host(_) | Object::HostFunction(_) => false,
     }
 }

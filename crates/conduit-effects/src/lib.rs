@@ -199,6 +199,9 @@ struct Lower {
     perf: HashMap<(EffectId, u32, Vec<Ty>), FuncId>,
     /// `const(vals.., ev) -> vals`, by the types of the values.
     consts: HashMap<Vec<Ty>, FuncId>,
+    /// The adapter of `host_function` for each signature, by its
+    /// parameters and results before lowering.
+    host_adapters: HashMap<(Vec<Ty>, Vec<Ty>), FuncId>,
     /// The adapter of a `perform`'s continuation, by effect and operation.
     force: BTreeMap<(EffectId, u32), FuncId>,
     /// Tuples to box several values in, by their types.
@@ -397,6 +400,7 @@ impl Lower {
             handlers: BTreeMap::new(),
             perf: HashMap::new(),
             consts: HashMap::new(),
+            host_adapters: HashMap::new(),
             force: BTreeMap::new(),
             tuples: HashMap::new(),
             sites: HashMap::new(),
@@ -1823,42 +1827,8 @@ impl Lower {
         f.mut_params = src.mut_params.clone();
         f.debug.name = src.debug.name.clone();
         let mut lets = Vec::new();
+        let (ev, st) = self.fresh_ev(&mut f, &mut lets);
         let yc = Runtime::ctor(self.rt.yield_d, 0);
-        let zero = let1(
-            &mut f,
-            &mut lets,
-            Ty::Any(Mutability::Imm),
-            Op::Box(Ty::I32),
-            vec![int(0)],
-        );
-        let no_cont = let1(
-            &mut f,
-            &mut lets,
-            self.rt.piece_ty(),
-            Op::Undefined,
-            Vec::new(),
-        );
-        let st = let1(
-            &mut f,
-            &mut lets,
-            self.rt.yield_ty(),
-            Op::New(yc),
-            vec![int(0), int(0), v(zero), v(no_cont), int(1)],
-        );
-        let hs = let1(
-            &mut f,
-            &mut lets,
-            self.rt.hs_ty(),
-            Op::New(Runtime::ctor(self.rt.hs_d, 0)),
-            Vec::new(),
-        );
-        let ev = let1(
-            &mut f,
-            &mut lets,
-            self.rt.ev_ty(),
-            Op::New(Runtime::ctor(self.rt.ev_d, 0)),
-            vec![v(st), v(hs)],
-        );
         let mut args = vs(&f.params.clone());
         args.push(v(ev));
         let rs = letn(
@@ -1874,6 +1844,78 @@ impl Lower {
             case_zero(mk, block(vec![], ret(vs(&rs))), Tail::Unreachable.into()),
         );
         f
+    }
+
+    /// Evidence for code the host calls: no handlers, and nothing
+    /// yielding. Gives the evidence and its yield state, whose marker is 0
+    /// unless the code performed an operation that nothing handles.
+    fn fresh_ev(&self, f: &mut Func, lets: &mut Vec<Let>) -> (Var, Var) {
+        let yc = Runtime::ctor(self.rt.yield_d, 0);
+        let zero = let1(
+            f,
+            lets,
+            Ty::Any(Mutability::Imm),
+            Op::Box(Ty::I32),
+            vec![int(0)],
+        );
+        let no_cont = let1(f, lets, self.rt.piece_ty(), Op::Undefined, Vec::new());
+        let st = let1(
+            f,
+            lets,
+            self.rt.yield_ty(),
+            Op::New(yc),
+            vec![int(0), int(0), v(zero), v(no_cont), int(1)],
+        );
+        let hs = let1(
+            f,
+            lets,
+            self.rt.hs_ty(),
+            Op::New(Runtime::ctor(self.rt.hs_d, 0)),
+            Vec::new(),
+        );
+        let ev = let1(
+            f,
+            lets,
+            self.rt.ev_ty(),
+            Op::New(Runtime::ctor(self.rt.ev_d, 0)),
+            vec![v(st), v(hs)],
+        );
+        (ev, st)
+    }
+
+    /// The function behind `host_function` of a closure of signature `sig`
+    /// before lowering: it takes the lowered closure, which takes evidence,
+    /// then the host's arguments, and applies the closure with fresh
+    /// evidence, as an export's wrapper calls its function. So the closure
+    /// the host gets takes only what the host gives.
+    fn host_adapter(&mut self, sig: &Sig) -> FuncId {
+        let key = (sig.params.clone(), sig.results.clone());
+        if let Some(&id) = self.host_adapters.get(&key) {
+            return id;
+        }
+        let id = self.fresh_func();
+        let params = self.tys(&sig.params);
+        let results = self.tys(&sig.results);
+        // `ro`, so that it takes the closure whatever its mutability.
+        let closure = self.ty(&Ty::Fn(Box::new(sig.clone()), Mutability::ReadOnly));
+        let mut all = vec![closure];
+        all.extend(params);
+        let mut f = new_func(all, results.clone());
+        f.debug.name = Some("host_adapter".into());
+        let mut lets = Vec::new();
+        let (ev, st) = self.fresh_ev(&mut f, &mut lets);
+        let mut args = vs(&f.params.clone());
+        args.push(v(ev));
+        let rs = letn(&mut f, &mut lets, results, Op::Apply, args);
+        let yc = Runtime::ctor(self.rt.yield_d, 0);
+        let mk = let1(&mut f, &mut lets, Ty::I32, Op::Get(yc, 0), vec![v(st)]);
+        f.body = block(
+            lets,
+            case_zero(mk, block(vec![], ret(vs(&rs))), Tail::Unreachable.into()),
+        );
+        self.out.funcs.insert(id, f);
+        self.host_adapters.insert(key, id);
+        id
     }
 
     /// The lowered `lets[start..]` and tail of `b`.
@@ -2336,6 +2378,33 @@ impl Lower {
             }
             Op::Box(t) => (Op::Box(self.ty(t)), l.args.clone()),
             Op::Unbox(t) => (Op::Unbox(self.ty(t)), l.args.clone()),
+            // The host gives no evidence, so it gets a closure of the
+            // adapter, which makes some.
+            Op::HostFunction => {
+                let c = l.args[0].clone();
+                let sig = match &c {
+                    Atom::Var(x) => match o.src.var_ty(*x) {
+                        Ty::Fn(sig, _) => (**sig).clone(),
+                        _ => panic!("host_function of something that isn't a closure"),
+                    },
+                    Atom::Lit(_) => panic!("host_function of a literal"),
+                };
+                let id = self.host_adapter(&sig);
+                let lowered = Sig {
+                    params: self.tys(&sig.params),
+                    results: self.tys(&sig.results),
+                    row: Row::NOTHING,
+                };
+                let ty = Ty::Fn(Box::new(lowered), Mutability::Mut);
+                let a = let1(
+                    &mut o.f,
+                    lets,
+                    ty,
+                    Op::Closure(id, Vec::new(), Vec::new()),
+                    vec![c],
+                );
+                (Op::HostFunction, vec![v(a)])
+            }
             op => (op.clone(), l.args.clone()),
         };
         lets.push(Let {

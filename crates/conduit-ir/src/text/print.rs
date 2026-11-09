@@ -797,5 +797,6 @@ pub(crate) fn op_name(op: &Op) -> String {
         Op::HostNull => "host_null".into(),
         Op::HostIsNull => "host_is_null".into(),
         Op::HostUnwrap => "host_unwrap".into(),
+        Op::HostFunction => "host_function".into(),
     }
 }

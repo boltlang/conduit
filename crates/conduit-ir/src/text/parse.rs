@@ -1316,6 +1316,7 @@ impl Parser {
             "host_null" => Op::HostNull,
             "host_is_null" => Op::HostIsNull,
             "host_unwrap" => Op::HostUnwrap,
+            "host_function" => Op::HostFunction,
             "get" | "set" => {
                 let c = self.ctor()?;
                 self.punct(".")?;

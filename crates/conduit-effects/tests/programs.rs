@@ -88,7 +88,7 @@ fn runtime_cycles<H: conduit_eval::Host>(
                     Object::Closure { func, .. } => func.to_string(),
                     Object::Any { .. } => "any".into(),
                     Object::Cont(_) => "cont".into(),
-                    Object::Host(_) => "host".into(),
+                    Object::Host(_) | Object::HostFunction(_) => "host".into(),
                 })
                 .collect();
             return Err(format!(

@@ -40,7 +40,8 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                 }
             }
         };
-        for v in roots {
+        // The closures of host functions the host holds are its, as roots.
+        for v in roots.iter().chain(self.held_functions()) {
             point(v, &mut refs, &mut leaks);
         }
         for id in (0..n).filter(|&id| matches!(self.counts[id], Count::Live(_) | Count::Immortal)) {
@@ -99,7 +100,11 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
         // object reaches is lost through it. What's left, if live, only
         // garbage holds, so cycles keep it alive.
         let mut seen = vec![false; n];
-        todo = roots.iter().filter_map(as_obj).collect();
+        todo = roots
+            .iter()
+            .chain(self.held_functions())
+            .filter_map(as_obj)
+            .collect();
         todo.extend(leaks.undropped.iter().chain(&leaks.lost).map(|(o, _)| *o));
         while let Some(o) = todo.pop() {
             let id = o.0 as usize;
