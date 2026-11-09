@@ -41,7 +41,7 @@ impl Borrows {
 ///   otherwise the caller would drop `y` after the call, and a loop
 ///   written as tail calls would grow the stack. Calling back includes
 ///   through closures and handlers, as a scheduler's tasks and
-///   continuations do (see [`reaches`]). Other tail
+///   continuations do (see `reaches`). Other tail
 ///   calls can lose that: one frame more is cheaper than counting in every
 ///   call of `f`.
 pub fn borrows(m: &Module) -> Borrows {
