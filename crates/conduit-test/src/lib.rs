@@ -98,10 +98,12 @@ impl Program {
         relative(&self.path)
     }
 
-    /// The module the program's text describes.
-    /// The program's module, with each function a `run` check calls
-    /// exported to the evaluator's host, under its own name, since it's
-    /// called from outside the module (see [`link_for_wasm`]).
+    /// The module the program's text describes, with each function a `run`
+    /// check calls exported to the evaluator's host, under its own name,
+    /// since it's called from outside the module (see [`link_for_wasm`]).
+    /// Unless the program has `verify-error` checks, it must verify as
+    /// written: otherwise this fails, before a pass, a backend or the
+    /// evaluator could be blamed for what's wrong with it.
     pub fn module(&self) -> Result<Module, String> {
         let mut m =
             conduit_ir::text::parse(&self.text).map_err(|e| format!("{}:{e}", self.shown()))?;
@@ -116,6 +118,19 @@ impl Program {
                 };
                 m.exports.insert(id, conduit_ir::Export::Emu { name });
             }
+        }
+        // A program that should verify does before anything uses it, so
+        // that an invalid one isn't taken for a pass or a backend that
+        // breaks it, nor run by the evaluator, which only takes valid IR.
+        if !self.has(|k| matches!(k, CheckKind::VerifyError(_)))
+            && let Err(errors) = conduit_ir::verify::verify_module(&m)
+        {
+            let errors: Vec<String> = errors.iter().map(|e| e.named(&m)).collect();
+            return Err(format!(
+                "{}: the program as written doesn't verify:\n{}",
+                self.shown(),
+                errors.join("\n")
+            ));
         }
         Ok(m)
     }
@@ -339,4 +354,49 @@ pub fn main(applies: fn(&Program) -> bool, test: fn(&Program) -> Result<(), Stri
         })
         .collect();
     libtest_mimic::run(&args, trials).exit()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn program(text: &str) -> Program {
+        Program {
+            path: PathBuf::from("tests/programs/test.conduit"),
+            name: "test".into(),
+            text: text.into(),
+            checks: checks::parse(text).unwrap(),
+        }
+    }
+
+    /// An `imm` closure can't capture a ref, so this doesn't verify, and
+    /// its module says so before a harness lowers or runs it, rather than
+    /// the harness blaming what it did to it (#37).
+    const INVALID: &str = "fn read(%r: ref i32) -> (i32) {
+  let %x: i32 = ref_get(%r)
+  jump ret(%x)
+}
+
+fn main() -> (i32) {
+  let %r: ref i32 = ref_new(1i32)
+  let %c: imm fn() -> (i32) = closure read(%r)
+  let %x: i32 = apply(%c)
+  jump ret(%x)
+}
+
+//# run main() == 1i32
+";
+
+    #[test]
+    fn a_program_that_should_verify_must() {
+        let error = program(INVALID).module().unwrap_err();
+        assert!(
+            error.contains("the program as written doesn't verify")
+                && error.contains("an imm closure can't capture a ref i32"),
+            "{error}"
+        );
+        let expected =
+            format!("{INVALID}//# verify-error: an imm closure can't capture a ref i32\n");
+        assert!(program(&expected).module().is_ok());
+    }
 }
