@@ -135,7 +135,7 @@ fn check(
     }
     for (i, run) in runs.iter().enumerate() {
         let results = &m.funcs[&run.func].results;
-        let mut live = None;
+        let (mut live, mut hosts) = (None, None);
         let got = Command::new(&exe)
             .arg(i.to_string())
             .output()
@@ -146,7 +146,9 @@ fn check(
                     let out = String::from_utf8_lossy(&o.stdout);
                     let mut words: Vec<&str> = out.split_whitespace().collect();
                     if counts {
-                        live = words.pop().and_then(|w| i64::from_str_radix(w, 16).ok());
+                        let mut last = || words.pop().and_then(|w| i64::from_str_radix(w, 16).ok());
+                        hosts = last();
+                        live = last();
                     }
                     parse(&words, results).map(Outcome::Values)
                 }
@@ -155,13 +157,24 @@ fn check(
         let gave = matches!(got, Ok(Outcome::Values(_)));
         run.check(p, got)?;
         if counts && gave {
-            let expected = evaluator_live(emu, run, options.cycles)?;
+            let (expected, expected_hosts) = evaluator_live(emu, run, options.cycles)?;
+            let shown = |n: Option<i64>| n.map_or("an unknown number of".into(), |n| n.to_string());
             if live != Some(expected) {
                 return Err(format!(
                     "{}: {}: native code leaves {} objects live, but the evaluator {expected}",
                     p.at(run.line),
                     run.name,
-                    live.map_or("an unknown number of".into(), |n| n.to_string())
+                    shown(live)
+                ));
+            }
+            // Each box holds one reference to a value of its own, which the
+            // host lets go of when the box releases it.
+            if hosts != Some(expected_hosts) {
+                return Err(format!(
+                    "{}: {}: the C host holds {} host values, but the evaluator {expected_hosts} boxes of them",
+                    p.at(run.line),
+                    run.name,
+                    shown(hosts)
                 ));
             }
         }
@@ -170,8 +183,9 @@ fn check(
 }
 
 /// How many objects the evaluator leaves live after `run`, counting, with
-/// cycles collected at the end if `cycles`, as the native code does.
-fn evaluator_live(m: &Module, run: &Run<'_>, cycles: bool) -> Result<i64, String> {
+/// cycles collected at the end if `cycles`, as the native code does, and
+/// how many of them are host values.
+fn evaluator_live(m: &Module, run: &Run<'_>, cycles: bool) -> Result<(i64, i64), String> {
     let mut machine = conduit_eval::Machine::new(m, conduit_test::eval::TestHost);
     machine.counting = true;
     machine.cycles = cycles;
@@ -184,10 +198,13 @@ fn evaluator_live(m: &Module, run: &Run<'_>, cycles: bool) -> Result<i64, String
     if cycles {
         machine.collect_cycles();
     }
-    Ok(machine
-        .objects()
+    let live: Vec<_> = (machine.objects())
         .filter(|(id, _)| matches!(machine.count(*id), Some(conduit_eval::Count::Live(_))))
-        .count() as i64)
+        .collect();
+    let hosts = (live.iter())
+        .filter(|(_, o)| matches!(o, conduit_eval::Object::Host(_)))
+        .count();
+    Ok((live.len() as i64, hosts as i64))
 }
 
 /// A C `main` that calls the function of run check `argv[1]` and prints
@@ -263,6 +280,9 @@ fn driver(m: &Module, runs: &[Run<'_>], counts: bool) -> Result<Vec<Item>, Strin
             ));
             let live = b.load(Type::I64, Value::global("conduit_live"));
             printf(&mut b, live);
+            let hosts = Call::c(Type::I64, Value::global("conduit_test_hosts_live"), vec![]);
+            let hosts = b.call_value(hosts);
+            printf(&mut b, hosts);
         }
         b.br(&done);
     }
@@ -281,6 +301,7 @@ fn driver(m: &Module, runs: &[Run<'_>], counts: bool) -> Result<Vec<Item>, Strin
         }
         .into(),
         Declare::new(Type::I32, "atoi", vec![Type::Ptr]).into(),
+        Declare::new(Type::I64, "conduit_test_hosts_live", vec![]).into(),
         b.finish().into(),
     ])
 }

@@ -415,22 +415,12 @@ mod tests {
             .collect()
     }
 
-    // The hosts declare the same functions, with the same signatures,
-    // but for C's, which leaves out host values.
+    // The hosts declare the same functions, with the same signatures.
     #[test]
     fn hosts_agree() {
         let emu = host_externs(Target::Emu);
         assert_eq!(host_externs(Target::Wasm), emu);
-        let c = host_externs(Target::C);
-        for (name, decl) in &c {
-            assert_eq!(
-                emu.get(name),
-                Some(decl),
-                "C's {name} differs from the evaluator's"
-            );
-        }
-        let missing: Vec<&String> = emu.keys().filter(|n| !c.contains_key(*n)).collect();
-        assert_eq!(missing, ["maybe", "unwrap", "unwrap_or", "wrap"]);
+        assert_eq!(host_externs(Target::C), emu);
     }
 
     fn program(text: &str) -> Program {

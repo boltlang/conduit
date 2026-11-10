@@ -4,10 +4,11 @@
 compile, with no LLVM library to link: a first step towards a native
 backend, to find the shape of the lowering before moving to the LLVM API
 (inkwell, for LLVM 23). The lowering builds a small model of LLVM IR, in
-`conduit_llvm::ir`, which printing makes text. It handles everything but handlers, which lowering
-effects removes first, and host values, and says so for what it doesn't
-handle. With `Options::counts`, memory is freed by reference counting;
-cycles aren't collected yet.
+`conduit_llvm::ir`, which printing makes text. It handles everything but
+handlers, which lowering effects removes first, and `host_function`, and
+says so for what it doesn't handle. With `Options::counts`, memory is
+freed by reference counting, and with `Options::cycles`, cycles are
+collected too.
 
 ## What it handles
 
@@ -91,12 +92,54 @@ explicit, objects are counted and freed (`src/counts.rs`):
 Without counts, nothing is freed: `dup` and `drop` do nothing, no object
 is unique, and a reuse token holds no memory.
 
+## Host values
+
+A native host's value is its own pointer, with the functions that keep
+it alive and let it go, as C passes them:
+
+```c
+typedef struct conduit_host_ops {
+  void (*retain)(void *value);
+  void (*release)(void *value);
+} conduit_host_ops;
+
+typedef struct conduit_host {
+  void *value;                 // null for a null `nullable host`
+  const conduit_host_ops *ops;
+} conduit_host;
+```
+
+Each value brings its own `ops`, so one module can hold values of
+different libraries. Inside the module, a host value is a box of 24
+bytes, counted like any other object: the header, then `value` at 8 and
+`ops` at 16. A null `nullable host` is a null box, which isn't counted.
+The box holds one of the host's references, and when its count gets to 0
+it calls `ops->release(value)` and is freed. Counting a `dup` doesn't call
+the host: it only hears of a value when it comes in and when it goes.
+
+At the boundary:
+
+| Where | As | Who owns it |
+|---|---|---|
+| extern parameter | `void *value` | borrowed for the call: a host that keeps it calls `retain` itself |
+| extern result | `conduit_host` | the host gives Conduit a reference, which goes in a new box; a null where the type is `host` traps |
+| export parameter | `conduit_host`, as its two words | the caller gives Conduit a reference |
+| export result | `conduit_host` | Conduit calls `retain` for the caller, and drops its box |
+
+Several results are a struct, so an extern or export giving a host value
+and others gives a struct with a `conduit_host` in it. The flat ABI can't
+pass host values, as in Wasm.
+
+Without counts, nothing is released: every host value Conduit gets stays
+alive, as in Wasm.
+
 Not yet:
 
 - **Handlers:** lower effects first. Evidence passing gives ordinary
   data, closures and `any`s, which this backend handles, so the rest of
   the pipeline is the same as for Wasm without stack switching.
-- **Host values,** which need a host like JavaScript.
+- **`host_function`:** closures the host calls, which the host has to
+  make the function of (#53).
 
 ## How
 
@@ -125,6 +168,8 @@ function, and prints the bits of each result. A trap is a signal. Without
 
 With counts, each run must also leave as many objects live as the
 evaluator does, counting the same way: with cycles collected at the end,
-when they are, on the program built for the evaluator. 120 of the 148
-test programs run this way. The rest have no `run` checks or use host
-values.
+when they are, on the program built for the evaluator, and the C host
+must hold as many host values as the evaluator has boxes of them. 123
+of the 148 test programs run this way: all that have `run` checks.
+`tests/host_exports.rs` calls exports that take and give host values from
+C, checking each `retain` and `release`.

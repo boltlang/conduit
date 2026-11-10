@@ -1,9 +1,8 @@
 // The test host for native programs: `crates/conduit-llvm/tests/host.c`,
 // whose functions are `conduit_test_` and the name, since C can't name a
 // function `double`. A program with a `//# host` check gets this after
-// its text when it's built for C. It has no host values, which C doesn't
-// have, so a program that uses them isn't built for C. Otherwise each
-// target's file declares the same functions, with the same signatures.
+// its text when it's built for C. Each target's file declares the same
+// functions, with the same signatures.
 
 // What the host's functions do, which they never perform.
 effect io {}
@@ -32,3 +31,13 @@ extern scale(i32) -> (i32, i64) does io
 #[link(c, symbol = "conduit_test_byte")]
 #[abi(flat)]
 extern byte(i8) -> (i32) does io
+
+// Host values: a number the host counts, which `unwrap` borrows.
+#[link(c, symbol = "conduit_test_wrap")]
+extern wrap(i32) -> (host)
+#[link(c, symbol = "conduit_test_unwrap")]
+extern unwrap(host) -> (i32)
+#[link(c, symbol = "conduit_test_maybe")]
+extern maybe(i32) -> (nullable host)
+#[link(c, symbol = "conduit_test_unwrap_or")]
+extern unwrap_or(nullable host, i32) -> (i32)

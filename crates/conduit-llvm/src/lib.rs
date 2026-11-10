@@ -2,9 +2,10 @@
 //!
 //! An experiment, and a first step towards a native backend: it handles
 //! functions, calls, join points, `case`, the integer and float ops,
-//! objects (data, arrays, refs, `any`, closures) and constants, and says
-//! what it doesn't handle yet: handlers, which lowering effects removes
-//! first, host values, and freeing memory. See `docs/llvm.md`.
+//! objects (data, arrays, refs, `any`, closures), constants, host values,
+//! and freeing by reference counting, and says what it doesn't handle
+//! yet: handlers, which lowering effects removes first, and
+//! `host_function`. See `docs/llvm.md`.
 //!
 //! The lowering builds an [`ir::Module`], which printing makes text.
 //!
@@ -16,12 +17,14 @@
 //!   need no phi nodes: LLVM's `mem2reg` makes SSA of them again.
 //! - **Join points** are basic blocks, and a jump stores its arguments in
 //!   the parameters' slots and branches. A `case` is a `switch`.
-//! - **Objects** are `ptr`s to memory from `malloc`, laid out as in the
+//! - **Objects** are `ptr`s to memory from `calloc`, laid out as in the
 //!   Wasm backend: a header word for the count, then a word with the
 //!   constructor, the length or the kind, then the fields from offset 8,
 //!   each at a multiple of its size. A closure holds its entry function's
-//!   address at 8, the function that frees it at 16, then its captures; an
-//!   `any` holds its value at 8 and the drop of the value at 16. With
+//!   address at 8, its descriptor at 16 (the functions that free it and
+//!   visit what it holds), then its captures; an `any` holds its value at
+//!   8 and the descriptor of what it holds at 16; a host value's box holds
+//!   the host's pointer at 8 and its `conduit_host_ops` at 16. With
 //!   [`Options::counts`], objects are counted and freed (see `counts`);
 //!   without, nothing is freed, and the ops that count do nothing, as in
 //!   the Wasm backend.
@@ -125,15 +128,97 @@ pub fn ty(ty: &Ty) -> Result<Type, String> {
         Ty::I64 => Type::I64,
         Ty::F32 => Type::Float,
         Ty::F64 => Type::Double,
-        Ty::Data(..) | Ty::Array(..) | Ty::Fn(..) | Ty::Ref(_) | Ty::Any(_) | Ty::Reuse(_) => {
-            Type::Ptr
-        }
+        // A host value is its box, or null.
+        Ty::Data(..)
+        | Ty::Array(..)
+        | Ty::Fn(..)
+        | Ty::Ref(_)
+        | Ty::Any(_)
+        | Ty::Reuse(_)
+        | Ty::Host
+        | Ty::NullableHost => Type::Ptr,
         other => return Err(format!("values of type {other} aren't supported yet")),
     })
 }
 
-/// What a function giving `results` returns: `void`, the one result, or a
-/// struct of them.
+/// A new object of `size` bytes, an `i64` constant or value, with its
+/// count at 1 and `word` at 4, counted live with `counts`. Trapping if
+/// there's no memory left.
+fn alloc(b: &mut FnBuilder, counts: bool, size: impl Into<Value>, word: impl Into<Value>) -> Value {
+    // Zeroed, so that an array's elements that aren't set are null.
+    let args = vec![Type::I64.val(1), Type::I64.val(size)];
+    let p = b.call_value(Call::c(Type::Ptr, Value::global("calloc"), args));
+    if counts {
+        let live = Value::global("conduit_live");
+        let n = b.load(Type::I64, &live);
+        let n1 = b.bin(BinOp::Add, Type::I64, n, 1);
+        b.store(Type::I64, n1, &live);
+    }
+    let null = b.icmp(IntPred::Eq, Type::Ptr, &p, Value::Null);
+    trap_if(b, null);
+    b.store(Type::I32, 1, &p);
+    b.store_at(Type::I32, word, &p, 4);
+    p
+}
+
+/// Traps if `cond`, an `i1`, is true.
+fn trap_if(b: &mut FnBuilder, cond: Value) {
+    let (trapped, ok) = (b.new_block(), b.new_block());
+    b.cond_br(cond, &trapped, &ok);
+    b.start(&trapped);
+    trap(b);
+    b.start(&ok);
+}
+
+/// What `then` gives if `cond`, an `i1`, is true, else null: a pointer,
+/// which `then` makes in a block of its own.
+fn ptr_if(b: &mut FnBuilder, cond: Value, then: impl FnOnce(&mut FnBuilder) -> Value) -> Value {
+    let slot = b.alloca(Type::Ptr);
+    b.store(Type::Ptr, Value::Null, &slot);
+    let (yes, done) = (b.new_block(), b.new_block());
+    b.cond_br(cond, &yes, &done);
+    b.start(&yes);
+    let v = then(b);
+    b.store(Type::Ptr, v, &slot);
+    b.br(&done);
+    b.start(&done);
+    b.load(Type::Ptr, &slot)
+}
+
+/// A host value the host gives Conduit, `value` with its `ops`, in a new
+/// box of 24 bytes: the header, then `value` at 8 and `ops` at 16. The box
+/// owns the host's reference, which dropping it releases. A null `value`
+/// is a null box if `nullable`, and traps if not, as the type promised a
+/// value.
+fn host_in(b: &mut FnBuilder, counts: bool, value: Value, ops: Value, nullable: bool) -> Value {
+    let null = b.icmp(IntPred::Eq, Type::Ptr, &value, Value::Null);
+    let some = b.icmp(IntPred::Ne, Type::Ptr, &value, Value::Null);
+    let boxed = |b: &mut FnBuilder| {
+        let p = alloc(b, counts, 24, 0);
+        b.store_at(Type::Ptr, value, &p, 8);
+        b.store_at(Type::Ptr, ops, &p, 16);
+        p
+    };
+    if nullable {
+        ptr_if(b, some, boxed)
+    } else {
+        trap_if(b, null);
+        boxed(b)
+    }
+}
+
+/// The host's value in box `p`, or null for a null box, which only a
+/// `nullable host` is.
+fn host_out(b: &mut FnBuilder, p: &Value, nullable: bool) -> Value {
+    if nullable {
+        let some = b.icmp(IntPred::Ne, Type::Ptr, p, Value::Null);
+        let p = p.clone();
+        ptr_if(b, some, |b| b.load_at(Type::Ptr, p, 8))
+    } else {
+        b.load_at(Type::Ptr, p, 8)
+    }
+}
+
 /// The C signature of extern `ext`: its return type and its parameters'.
 /// Under the flat ABI, which natively is the C ABI (see [`Abi::Flat`]): an
 /// array is a pointer to its elements and an `i32` length, or the pointer
@@ -146,7 +231,7 @@ pub fn extern_sig(ext: &conduit_ir::Extern) -> Result<(Type, Vec<Type>), String>
     let sig = &ext.sig;
     if ext.abi != Abi::Flat {
         let params = sig.params.iter().map(ty).collect::<Result<_, _>>()?;
-        return Ok((ret_ty(&sig.results)?, params));
+        return Ok((c_ret_ty(&sig.results)?, params));
     }
     let mut params = Vec::new();
     for (i, t) in sig.params.iter().enumerate() {
@@ -161,6 +246,30 @@ pub fn extern_sig(ext: &conduit_ir::Extern) -> Result<(Type, Vec<Type>), String>
     Ok((ret_ty(&sig.results[..sig.results.len().min(1)])?, params))
 }
 
+/// A host value as C passes it into Conduit, from an extern or to an
+/// export: `struct conduit_host { void *value; const struct
+/// conduit_host_ops *ops; }`, whose `ops` are `{ void (*retain)(void *);
+/// void (*release)(void *); }`. A null is a null `value`. Out of Conduit,
+/// to an extern, it's the `value` alone, which the host borrows for the
+/// call.
+fn host_pair() -> Type {
+    Type::Struct(vec![Type::Ptr, Type::Ptr])
+}
+
+/// What a C function giving `results` to Conduit, or an export giving
+/// them to C, returns: as [`ret_ty`], with each host value a
+/// [`host_pair`].
+fn c_ret_ty(results: &[Ty]) -> Result<Type, String> {
+    let one = |t: &Ty| if t.is_host() { Ok(host_pair()) } else { ty(t) };
+    Ok(match results {
+        [] => Type::Void,
+        [t] => one(t)?,
+        many => Type::Struct(many.iter().map(one).collect::<Result<_, _>>()?),
+    })
+}
+
+/// What a function giving `results` returns: `void`, the one result, or a
+/// struct of them.
 pub fn ret_ty(results: &[Ty]) -> Result<Type, String> {
     Ok(match results {
         [] => Type::Void,
@@ -394,6 +503,13 @@ pub fn lower_module_with(m: &Module, options: &Options) -> Result<ir::Module, Er
         if !entries.is_empty() {
             kinds.insert(Kind::Closure);
         }
+        // An export that gives a host value drops its box.
+        let gives_host = (m.exports.iter())
+            .filter(|(_, e)| matches!(e, conduit_ir::Export::C { .. }))
+            .any(|(id, _)| m.funcs[id].results.iter().any(Ty::is_host));
+        if gives_host {
+            kinds.insert(Kind::Host);
+        }
         out.items.extend(counts::runtime(options.cycles));
         let drops = counts::drops(m, &kinds, options.cycles);
         out.items
@@ -404,20 +520,110 @@ pub fn lower_module_with(m: &Module, options: &Options) -> Result<ir::Module, Er
             continue;
         };
         let f = &m.funcs[&id];
-        let e = |message| err(Some(id), message);
-        let ret = ret_ty(&f.results).map_err(e)?;
-        let params: Vec<(Type, String)> = (f.params.iter().enumerate())
-            .map(|(i, v)| ty(f.var_ty(*v)).map(|t| (t, format!("p{i}"))))
-            .collect::<Result<_, _>>()
-            .map_err(e)?;
-        let mut b = FnBuilder::new(CallConv::C, ret.clone(), symbol.clone(), params.clone());
-        let args = (0..params.len())
-            .map(|i| params[i].0.val(b.param(i)))
-            .collect();
-        b.return_call(Call::tailcc(ret, self::symbol(id), args));
-        out.push(b.finish());
+        let wrapper = export_fn(f, id, symbol, options.counts);
+        out.push(wrapper.map_err(|message| err(Some(id), message))?);
     }
     Ok(out)
+}
+
+/// The C function `symbol` that calls function `id`, `f`. A host value
+/// comes in as a [`host_pair`], whose reference the caller gives Conduit,
+/// and goes in a box; one going out is retained for the caller, and its
+/// box dropped.
+fn export_fn(f: &Func, id: FuncId, symbol: &str, counts: bool) -> Result<ir::Function, String> {
+    let tys: Vec<&Ty> = f.params.iter().map(|v| f.var_ty(*v)).collect();
+    let mut params = Vec::new();
+    for (i, t) in tys.iter().enumerate() {
+        if t.is_host() {
+            params.push((Type::Ptr, format!("p{i}.value")));
+            params.push((Type::Ptr, format!("p{i}.ops")));
+        } else {
+            params.push((ty(t)?, format!("p{i}")));
+        }
+    }
+    let inner = ret_ty(&f.results)?;
+    let ret = c_ret_ty(&f.results)?;
+    let mut b = FnBuilder::new(CallConv::C, ret.clone(), symbol.to_string(), params);
+    let mut args = Vec::with_capacity(tys.len());
+    let mut k = 0;
+    for t in &tys {
+        if t.is_host() {
+            let (value, ops) = (b.param(k), b.param(k + 1));
+            k += 2;
+            args.push(Type::Ptr.val(host_in(&mut b, counts, value, ops, **t == Ty::NullableHost)));
+        } else {
+            args.push(ty(t)?.val(b.param(k)));
+            k += 1;
+        }
+    }
+    let call = Call::tailcc(inner.clone(), self::symbol(id), args);
+    if !f.results.iter().any(Ty::is_host) {
+        b.return_call(call);
+        return Ok(b.finish());
+    }
+    let r = b.call_value(call);
+    let mut gave = Vec::with_capacity(f.results.len());
+    for (i, t) in f.results.iter().enumerate() {
+        let v = if f.results.len() == 1 {
+            r.clone()
+        } else {
+            b.extract_value(inner.clone(), &r, i as u32)
+        };
+        gave.push(if t.is_host() {
+            host_give(&mut b, counts, v, *t == Ty::NullableHost)
+        } else {
+            v
+        });
+    }
+    let value = match gave.len() {
+        1 => gave.pop().unwrap(),
+        _ => {
+            let mut agg = Value::Undef;
+            for (i, (v, t)) in gave.into_iter().zip(&f.results).enumerate() {
+                let t = if t.is_host() { host_pair() } else { ty(t)? };
+                agg = b.insert_value(ret.clone(), agg, t.val(v), i as u32);
+            }
+            agg
+        }
+    };
+    b.ret(Some(ret.val(value)));
+    Ok(b.finish())
+}
+
+/// What box `p` holds as a [`host_pair`] for the host: its value and ops,
+/// retained, as the host now holds a reference too, and then the box's
+/// reference dropped. A null box is a null value.
+fn host_give(b: &mut FnBuilder, counts: bool, p: Value, nullable: bool) -> Value {
+    let (vslot, oslot) = (b.alloca(Type::Ptr), b.alloca(Type::Ptr));
+    b.store(Type::Ptr, Value::Null, &vslot);
+    b.store(Type::Ptr, Value::Null, &oslot);
+    let (some, done) = (b.new_block(), b.new_block());
+    if nullable {
+        let has = b.icmp(IntPred::Ne, Type::Ptr, &p, Value::Null);
+        b.cond_br(has, &some, &done);
+    } else {
+        b.br(&some);
+    }
+    b.start(&some);
+    let value = b.load_at(Type::Ptr, &p, 8);
+    let ops = b.load_at(Type::Ptr, &p, 16);
+    let retain = b.load(Type::Ptr, &ops);
+    b.call(Call::c(Type::Void, retain, vec![Type::Ptr.val(&value)]));
+    b.store(Type::Ptr, value, &vslot);
+    b.store(Type::Ptr, ops, &oslot);
+    if counts {
+        b.call(Call::tailcc(
+            Type::Void,
+            Kind::Host.drop_fn(),
+            vec![Type::Ptr.val(&p)],
+        ));
+    }
+    b.br(&done);
+    b.start(&done);
+    let value = b.load(Type::Ptr, &vslot);
+    let ops = b.load(Type::Ptr, &oslot);
+    let pair = b.insert_value(host_pair(), Value::Undef, Type::Ptr.val(value), 0);
+    b.insert_value(host_pair(), pair, Type::Ptr.val(ops), 1)
 }
 
 /// A global for constant `value` of type `t`, as an object laid out as
@@ -641,20 +847,7 @@ impl<'m> Lower<'m> {
     /// A new object of `size` bytes, an `i64` constant or value, with its
     /// count at 1 and `word` at 4. Trapping if there's no memory left.
     fn alloc(&mut self, size: impl Into<Value>, word: impl Into<Value>) -> Value {
-        // Zeroed, so that an array's elements that aren't set are null.
-        let args = vec![Type::I64.val(1), Type::I64.val(size)];
-        let p = (self.b).call_value(Call::c(Type::Ptr, Value::global("calloc"), args));
-        if self.counts {
-            let live = Value::global("conduit_live");
-            let n = self.b.load(Type::I64, &live);
-            let n1 = self.b.bin(BinOp::Add, Type::I64, n, 1);
-            self.b.store(Type::I64, n1, &live);
-        }
-        let null = self.b.icmp(IntPred::Eq, Type::Ptr, &p, Value::Null);
-        self.trap_if(null);
-        self.b.store(Type::I32, 1, &p);
-        self.b.store_at(Type::I32, word, &p, 4);
-        p
+        alloc(&mut self.b, self.counts, size, word)
     }
 
     fn block(&mut self, b: &Block) -> Result<(), String> {
@@ -1081,6 +1274,21 @@ impl<'m> Lower<'m> {
                     (self.b).call_value(Call::tailcc(Type::Ptr, take, vec![Type::Ptr.val(x)]));
                 self.bind(binds, token)?;
             }
+            // A null host value is a null box.
+            Op::HostNull => self.bind(binds, Value::Null)?,
+            Op::HostIsNull => {
+                let x = self.value(&args[0])?;
+                let null = self.b.icmp(IntPred::Eq, Type::Ptr, x, Value::Null);
+                let r = self.b.cast(CastOp::ZExt, Type::I1, null, Type::I32);
+                self.bind(binds, r)?;
+            }
+            // The same box, with the same reference.
+            Op::HostUnwrap => {
+                let x = self.value(&args[0])?;
+                let null = self.b.icmp(IntPred::Eq, Type::Ptr, &x, Value::Null);
+                self.trap_if(null);
+                self.bind(binds, x)?;
+            }
             other => return Err(format!("{other:?} isn't supported yet")),
         }
         Ok(())
@@ -1238,10 +1446,41 @@ impl<'m> Lower<'m> {
         if ext.abi == Abi::Flat {
             return self.call_flat(symbol, ext, args, binds);
         }
-        let ret = ret_ty(&ext.sig.results)?;
-        let args = self.args(args)?;
-        let call = Call::c(ret, Value::global(&**symbol), args);
-        self.bind_results(call, binds)
+        // A host value goes out as the host's value, which it borrows, and
+        // comes back with its ops, in a new box.
+        let (ret, _) = extern_sig(ext)?;
+        let mut out = Vec::with_capacity(args.len());
+        for (a, t) in args.iter().zip(&ext.sig.params) {
+            let v = self.value(a)?;
+            let v = if t.is_host() {
+                host_out(&mut self.b, &v, *t == Ty::NullableHost)
+            } else {
+                v
+            };
+            out.push(Typed(ty(t)?, v));
+        }
+        let r = self
+            .b
+            .call(Call::c(ret.clone(), Value::global(&**symbol), out));
+        let results = &ext.sig.results;
+        let values: Vec<Value> = match (results.len(), r) {
+            (0, _) | (_, None) => Vec::new(),
+            (1, Some(r)) => vec![r],
+            (n, Some(r)) => (0..n)
+                .map(|i| self.b.extract_value(ret.clone(), &r, i as u32))
+                .collect(),
+        };
+        for ((t, v), &b) in results.iter().zip(values).zip(binds) {
+            let v = if t.is_host() {
+                let value = self.b.extract_value(host_pair(), &v, 0);
+                let ops = self.b.extract_value(host_pair(), &v, 1);
+                host_in(&mut self.b, self.counts, value, ops, *t == Ty::NullableHost)
+            } else {
+                v
+            };
+            self.store(b, v)?;
+        }
+        Ok(())
     }
 
     /// A call of `#[abi(flat)]` extern `ext`, as [`extern_sig`] says. The
@@ -1427,11 +1666,7 @@ impl<'m> Lower<'m> {
 
     /// Branches to a trap if `cond` holds, and goes on in a new block.
     fn trap_if(&mut self, cond: Value) {
-        let (trapped, ok) = (self.b.new_block(), self.b.new_block());
-        self.b.cond_br(cond, &trapped, &ok);
-        self.b.start(&trapped);
-        trap(&mut self.b);
-        self.b.start(&ok);
+        trap_if(&mut self.b, cond);
     }
 
     fn prim(&mut self, p: &Prim, args: &[Atom]) -> Result<Value, String> {

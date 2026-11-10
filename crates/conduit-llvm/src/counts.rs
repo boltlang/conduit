@@ -51,6 +51,8 @@ pub(crate) enum Kind {
     Ref(Option<Box<Kind>>),
     Closure,
     Any,
+    /// A box of a host value, whose own `release` lets go of it.
+    Host,
 }
 
 impl Kind {
@@ -62,6 +64,7 @@ impl Kind {
             Ty::Ref(t) => Kind::Ref(Kind::of(t).map(Box::new)),
             Ty::Fn(..) => Kind::Closure,
             Ty::Any(_) => Kind::Any,
+            Ty::Host | Ty::NullableHost => Kind::Host,
             _ => return None,
         })
     }
@@ -73,6 +76,7 @@ impl Kind {
             Kind::Ref(e) => format!("ref.{}", e.as_ref().map_or("_".into(), |e| e.name())),
             Kind::Closure => "closure".into(),
             Kind::Any => "any".into(),
+            Kind::Host => "host".into(),
         }
     }
 
@@ -867,6 +871,15 @@ fn drop_fn(m: &Module, k: &Kind, cycles: bool, imm: bool) -> Result<Function, St
             b.start(&end);
             b.ret_void();
         }
+        // The host's value, and its `release`, after the box is freed.
+        Kind::Host => {
+            let v = b.load_at(Type::Ptr, &p, 8);
+            let ops = b.load_at(Type::Ptr, &p, 16);
+            call_void(&mut b, conduit_free(), vec![ptr(&p)]);
+            let release = b.load_at(Type::Ptr, ops, 8);
+            b.call(Call::c(Type::Void, release, vec![ptr(v)]));
+            b.ret_void();
+        }
     }
     Ok(b.finish())
 }
@@ -903,7 +916,8 @@ fn visit_fn(m: &Module, k: &Kind) -> Result<Function, String> {
             let x = b.load_at(Type::Ptr, &p, 8);
             b.return_call(step(x, e.visit_fn(), &op).tail());
         }
-        Kind::Array(None) | Kind::Ref(None) => b.ret_void(),
+        // A box holds no Conduit objects.
+        Kind::Array(None) | Kind::Ref(None) | Kind::Host => b.ret_void(),
         // Its own visit function, in its descriptor, if it has one; an
         // `any`'s is in the descriptor of what it holds.
         Kind::Closure | Kind::Any => {

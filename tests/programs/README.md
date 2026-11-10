@@ -114,8 +114,7 @@ compiles for:
 | `host/c.conduit` | native, through LLVM | `crates/conduit-llvm/tests/host.c`, as `conduit_test_<name>` |
 
 They declare the same functions with the same signatures, which a test
-in `conduit-test` checks, but for C's, which has no host values. A
-program that uses those isn't built for C.
+in `conduit-test` checks.
 
 | Extern | Signature | Gives |
 |---|---|---|
