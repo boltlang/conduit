@@ -144,7 +144,7 @@ impl Cx<'_> {
             Op::ArrayLen | Op::Unbox(_) => Kind::Fixed,
             Op::New(_) | Op::ArrayNew | Op::ArrayFill if imm => Kind::Fixed,
             Op::ArrayClone if imm => reads(self),
-            Op::Get(..) | Op::ArrayGet | Op::RefGet => reads(self),
+            Op::Get(..) | Op::ArrayGet | Op::ArrayLoad | Op::RefGet => reads(self),
             // A call that only reads gives the same again, unless it makes
             // something that can change, which two calls make two of.
             Op::Call(g, ..) if self.reads_only(*g) && deep_imm(self.p, self.ty(bind)) => {
@@ -318,6 +318,10 @@ impl Cx<'_> {
             (Op::Set(c, i), [x, v], []) => put(Op::Get(*c, *i), vec![x.clone()], v),
             (Op::RefSet, [r, v], []) => put(Op::RefGet, vec![r.clone()], v),
             (Op::ArraySet, [a, i, v], []) => put(Op::ArrayGet, vec![a.clone(), i.clone()], v),
+            // Read back as the same type only: a load of another type
+            // at the same offset doesn't match, since its variable's type
+            // differs.
+            (Op::ArrayStore, [a, at, v], []) => put(Op::ArrayLoad, vec![a.clone(), at.clone()], v),
             (Op::RefNew, [v], [r]) => put(Op::RefGet, vec![Atom::Var(*r)], v),
             (Op::New(c), fields, [x]) if fresh_mut => {
                 for (i, v) in fields.iter().enumerate() {

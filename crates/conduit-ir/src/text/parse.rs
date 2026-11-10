@@ -1352,6 +1352,8 @@ impl Parser {
             "array_copy" => Op::ArrayCopy,
             "array_get" => Op::ArrayGet,
             "array_set" => Op::ArraySet,
+            "array_load" => Op::ArrayLoad,
+            "array_store" => Op::ArrayStore,
             "array_len" => Op::ArrayLen,
             "array_clone" => Op::ArrayClone,
             "ref_new" => Op::RefNew,

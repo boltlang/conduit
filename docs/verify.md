@@ -29,7 +29,8 @@ has already proven them, and breaking one is **undefined behavior**:
 
 - `Unbox(ty)` of a value that wasn't boxed at a subtype of `ty`.
 - `ArrayFreeze` of an array that something else can still reach.
-- `array_get` of an element that `array_alloc` made and nothing has set.
+- `array_get` of an element that `array_alloc` made and nothing has set,
+  or an `array_load` that reads such a byte.
 - Using what `undefined` gives: as the operand of an op that looks at it,
   or in a `case`. Passing it on, storing it or returning it is fine.
   Counting it is using it: `dup`, `drop`, dropping what holds it, or a
@@ -150,6 +151,8 @@ an array, and `ref_new`.
 | `array_get` | an array and an `i32` index | an element |
 | `array_set` | a `mut` array, an `i32` index, then an element | nothing |
 | `array_len` | an array | `i32` |
+| `array_load` | an array of `i8` and an `i32` byte offset | the scalar it binds |
+| `array_store` | a `mut` array of `i8`, an `i32` byte offset, then a scalar | nothing |
 | `array_copy` | a `mut` array, an `i32` start, an array whose elements fit the first's, an `i32` start and an `i32` count | nothing |
 | `array_clone` | an array whose elements fit the array it binds | the array it binds |
 | `array_freeze` | the same, binding an `imm` array | the array it binds |

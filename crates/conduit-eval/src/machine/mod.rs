@@ -1015,6 +1015,56 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                 }
                 vec![]
             }
+            Op::ArrayLoad => {
+                let ty = self.bind_ty(binds)?;
+                let at = index(arg(&args, 1)?)?;
+                let size = scalar_size(&ty)?;
+                let mut bytes = [0u8; 8];
+                match self.object_ref(obj(arg(&args, 0)?)?)? {
+                    Object::Array { elems, .. } => {
+                        let end = at + size;
+                        let from = elems
+                            .get(at..end)
+                            .ok_or_else(|| out_of_bounds(end, elems.len()))?;
+                        for (k, e) in from.iter().enumerate() {
+                            bytes[k] = match *e {
+                                Value::I8(b) => b as u8,
+                                Value::Unset => {
+                                    return Err(ErrorKind::Undefined(format!(
+                                        "array load of byte {}, which isn't set",
+                                        at + k
+                                    )));
+                                }
+                                _ => {
+                                    return Err(unverified("array load from bytes that aren't i8"));
+                                }
+                            };
+                        }
+                    }
+                    _ => return Err(unverified("array load on something that isn't an array")),
+                }
+                vec![from_le_bytes(&ty, bytes)?]
+            }
+            Op::ArrayStore => {
+                let (at, value) = (index(arg(&args, 1)?)?, arg(&args, 2)?);
+                let bytes = to_le_bytes(value)?;
+                match self.object_mut(obj(arg(&args, 0)?)?)? {
+                    Object::Array { elems, is_mut } => {
+                        if !*is_mut {
+                            return Err(ErrorKind::WriteToImm);
+                        }
+                        let (end, len) = (at + bytes.len(), elems.len());
+                        let to = elems
+                            .get_mut(at..end)
+                            .ok_or_else(|| out_of_bounds(end, len))?;
+                        for (e, &b) in to.iter_mut().zip(&bytes) {
+                            *e = Value::I8(b as i8);
+                        }
+                    }
+                    _ => return Err(unverified("array store on something that isn't an array")),
+                }
+                vec![]
+            }
             Op::ArrayLen => match self.object_ref(obj(arg(&args, 0)?)?)? {
                 Object::Array { elems, .. } => vec![Value::I32(elems.len() as i32)],
                 _ => return Err(unverified("array len on something that isn't an array")),
@@ -1325,6 +1375,48 @@ fn index(value: Value) -> Step<usize> {
         Value::I32(i) => Ok(i as u32 as usize),
         _ => Err(unverified("an index that isn't an i32")),
     }
+}
+
+/// How many bytes `ArrayLoad` reads for a scalar of type `ty`.
+fn scalar_size(ty: &Ty) -> Step<usize> {
+    match ty {
+        Ty::I8 => Ok(1),
+        Ty::I16 => Ok(2),
+        Ty::I32 | Ty::F32 => Ok(4),
+        Ty::I64 | Ty::F64 => Ok(8),
+        _ => Err(unverified("an array load of something that isn't a scalar")),
+    }
+}
+
+/// The scalar of type `ty` whose little-endian bytes start `bytes`.
+fn from_le_bytes(ty: &Ty, b: [u8; 8]) -> Step<Value> {
+    Ok(match ty {
+        Ty::I8 => Value::I8(b[0] as i8),
+        Ty::I16 => Value::I16(i16::from_le_bytes([b[0], b[1]])),
+        Ty::I32 => Value::I32(i32::from_le_bytes([b[0], b[1], b[2], b[3]])),
+        Ty::F32 => Value::F32(f32::from_le_bytes([b[0], b[1], b[2], b[3]])),
+        Ty::I64 => Value::I64(i64::from_le_bytes(b)),
+        Ty::F64 => Value::F64(f64::from_le_bytes(b)),
+        _ => return Err(unverified("an array load of something that isn't a scalar")),
+    })
+}
+
+/// A scalar's bytes, little-endian, as `ArrayStore` writes them.
+fn to_le_bytes(value: Value) -> Step<Vec<u8>> {
+    Ok(match value {
+        Value::I8(n) => vec![n as u8],
+        Value::I16(n) => n.to_le_bytes().to_vec(),
+        Value::I32(n) => n.to_le_bytes().to_vec(),
+        Value::I64(n) => n.to_le_bytes().to_vec(),
+        Value::F32(x) => x.to_le_bytes().to_vec(),
+        Value::F64(x) => x.to_le_bytes().to_vec(),
+        Value::Unset => return Err(undefined_use()),
+        _ => {
+            return Err(unverified(
+                "an array store of something that isn't a scalar",
+            ));
+        }
+    })
 }
 
 fn out_of_bounds(index: usize, len: usize) -> ErrorKind {

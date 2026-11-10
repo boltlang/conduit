@@ -221,6 +221,29 @@ pub(crate) fn op_results<P: Program + ?Sized>(
             }
             _ => Err("array set needs an array, an i32 index and a value".into()),
         },
+        Op::ArrayLoad => match (tys, out) {
+            ([Ty::Array(b, _), Ty::I32], [ty]) if **b == Ty::I8 && ty.is_scalar() => {
+                Ok(out.to_vec())
+            }
+            ([Ty::Array(b, _), Ty::I32], [ty]) if **b == Ty::I8 => {
+                Err(format!("array load reads a scalar, not a {ty}"))
+            }
+            _ => Err(
+                "array load needs an array of i8 and an i32 offset, and binds one scalar".into(),
+            ),
+        },
+        Op::ArrayStore => match tys {
+            [Ty::Array(b, Mutability::Mut), Ty::I32, ty] if **b == Ty::I8 && ty.is_scalar() => {
+                Ok(vec![])
+            }
+            [Ty::Array(b, Mutability::Mut), Ty::I32, ty] if **b == Ty::I8 => {
+                Err(format!("array store writes a scalar, not a {ty}"))
+            }
+            [array @ Ty::Array(b, _), Ty::I32, _] if **b == Ty::I8 => {
+                Err(format!("can't store into a {array}"))
+            }
+            _ => Err("array store needs an array of i8, an i32 offset and a scalar".into()),
+        },
         Op::ArrayLen => match tys {
             [Ty::Array(..)] => Ok(vec![Ty::I32]),
             _ => Err("array len needs an array".into()),

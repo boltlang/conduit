@@ -67,7 +67,18 @@ fn mem(offset: u32, s: Storage) -> MemArg {
 }
 
 pub(crate) fn load(s: Storage, offset: u32) -> I<'static> {
-    let m = mem(offset, s);
+    load_with(s, mem(offset, s))
+}
+
+/// The bytes of an `ArrayLoad` or `ArrayStore`, at any alignment.
+fn unaligned(offset: u32, s: Storage) -> MemArg {
+    MemArg {
+        align: 0,
+        ..mem(offset, s)
+    }
+}
+
+fn load_with(s: Storage, m: MemArg) -> I<'static> {
     match s {
         Storage::I8 => I::I32Load8S(m),
         Storage::I16 => I::I32Load16S(m),
@@ -79,7 +90,10 @@ pub(crate) fn load(s: Storage, offset: u32) -> I<'static> {
 }
 
 pub(crate) fn store(s: Storage, offset: u32) -> I<'static> {
-    let m = mem(offset, s);
+    store_with(s, mem(offset, s))
+}
+
+fn store_with(s: Storage, m: MemArg) -> I<'static> {
     match s {
         Storage::I8 => I::I32Store8(m),
         Storage::I16 => I::I32Store16(m),
@@ -914,6 +928,17 @@ impl<'m> FuncCx<'_, 'm> {
                     let s = self.elem_of(&self.atom_ty(&args[0]))?;
                     self.elem_addr(&args[0], &args[1], s);
                     self.emit(load(s, 8));
+                }
+                Op::ArrayLoad => {
+                    let s = Storage::of(self.var_ty(binds[0]));
+                    self.byte_addr(&args[0], &args[1], s);
+                    self.emit(load_with(s, unaligned(8, s)));
+                }
+                Op::ArrayStore => {
+                    let s = Storage::of(&self.atom_ty(&args[2]));
+                    self.byte_addr(&args[0], &args[1], s);
+                    self.atom(&args[2]);
+                    self.emit(store_with(s, unaligned(8, s)));
                 }
                 Op::ArraySet => {
                     let ty = self.atom_ty(&args[0]);
@@ -1973,6 +1998,24 @@ impl<'m> FuncCx<'_, 'm> {
         self.atom(array);
         self.atom(index);
         self.scale(s);
+        self.emit(I::I32Add);
+    }
+
+    /// Pushes the address, less 8, of the bytes of an array of `i8` from
+    /// `offset`, for a scalar of storage `s`, trapping unless they're all
+    /// in the array. In 64 bits, so that the end can't wrap around.
+    fn byte_addr(&mut self, array: &Atom, offset: &Atom, s: Storage) {
+        self.atom(offset);
+        self.emit(I::I64ExtendI32U);
+        self.emit(I::I64Const(i64::from(s.size())));
+        self.emit(I::I64Add);
+        self.atom(array);
+        self.emit(load(Storage::I32, 4));
+        self.emit(I::I64ExtendI32U);
+        self.emit(I::I64GtU);
+        self.trap_if();
+        self.atom(array);
+        self.atom(offset);
         self.emit(I::I32Add);
     }
 

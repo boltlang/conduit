@@ -778,6 +778,8 @@ pub(crate) fn op_name(op: &Op) -> String {
         Op::ArrayCopy => "array_copy".into(),
         Op::ArrayGet => "array_get".into(),
         Op::ArraySet => "array_set".into(),
+        Op::ArrayLoad => "array_load".into(),
+        Op::ArrayStore => "array_store".into(),
         Op::ArrayLen => "array_len".into(),
         Op::ArrayClone => "array_clone".into(),
         Op::RefNew => "ref_new".into(),

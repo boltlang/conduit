@@ -52,6 +52,17 @@ pub enum Op {
     ArraySet,
     /// Args: the array.
     ArrayLen,
+    /// Reads a scalar, of the type of the variable it binds, from the bytes
+    /// of an array of `i8` that start at a byte offset: little-endian, at
+    /// any alignment. It traps unless all its bytes are in the array.
+    /// Reading a byte that isn't set is undefined behavior. For the structs
+    /// a host writes, under the flat ABI. Args: the array, then the offset,
+    /// an `i32`.
+    ArrayLoad,
+    /// Writes a scalar into the bytes of a `Mut` array of `i8` that start at
+    /// a byte offset, as `ArrayLoad` reads them; binds nothing. Args: the
+    /// array, the offset, then the value.
+    ArrayStore,
     /// Copies elements from one array into a `Mut` one, as if through a
     /// temporary, so the two can be the same array and the ranges can
     /// overlap; binds nothing. Unset elements stay unset. Args: the
@@ -249,7 +260,7 @@ impl Op {
             // It changes objects that nothing else can reach any more.
             Op::ArrayFreeze => (Reads, false),
             // Bounds checks and failed casts trap.
-            Op::ArrayGet | Op::Unbox(_) => (Reads, true),
+            Op::ArrayGet | Op::ArrayLoad | Op::Unbox(_) => (Reads, true),
             Op::Set(..) | Op::RefSet => (Writes, false),
             // They write the count, and `Drop` may free.
             Op::Dup | Op::Drop | Op::Free | Op::DecRef | Op::DropReuse | Op::ReuseToken => {
@@ -261,7 +272,7 @@ impl Op {
             // must not be removed, since its token would be lost.
             Op::Reuse(_) => (Writes, false),
             Op::IsUnique => (Reads, false),
-            Op::ArraySet | Op::ArrayCopy => (Writes, true),
+            Op::ArraySet | Op::ArrayStore | Op::ArrayCopy => (Writes, true),
             Op::Call(..) | Op::CallExtern(_) | Op::Apply => (Unknown, true),
             Op::Handle(..) | Op::Perform(..) | Op::Resume | Op::Discontinue(..) => (Unknown, true),
         };

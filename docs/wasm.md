@@ -233,6 +233,8 @@ Status:
 | `ArrayGet` | bounds check, then `*.load` | ✅ |
 | `ArraySet` | bounds check, then `*.store` | ✅ |
 | `ArrayLen` | `i32.load` of the length | ✅ |
+| `ArrayLoad` | bounds check of every byte, in 64 bits, then `*.load` with alignment 1 | ✅ |
+| `ArrayStore` | bounds check of every byte, in 64 bits, then `*.store` with alignment 1 | ✅ |
 | `ArrayAlloc` | allocate, which is zeroed | ✅ |
 | `ArrayCopy` | bounds checks, then `memory.copy` | ✅ |
 | `ArrayClone` | allocate, then `memory.copy` | ✅ |

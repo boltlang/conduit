@@ -195,6 +195,8 @@ fn kept(op: &Op, p: usize, keeps: &BTreeMap<FuncId, Vec<bool>>) -> bool {
         Op::Prim(_)
         | Op::Get(..)
         | Op::ArrayGet
+        | Op::ArrayLoad
+        | Op::ArrayStore
         | Op::ArrayLen
         | Op::RefGet
         | Op::ArrayClone

@@ -140,7 +140,7 @@ fn fn1(%0: i32) -> (i32) {
   `get data10.0.1(..)`,
   `set data10.0.1(..)`,
   `array_new`, `array_fill`, `array_alloc`, `array_get`, `array_set`,
-  `array_len`, `array_copy`,
+  `array_len`, `array_load`, `array_store`, `array_copy`,
   `array_clone`, `array_freeze`,
   `ref_new`, `ref_get`, `ref_set`, `box[i32](..)`, `unbox[i32](..)`,
   `handle handler30(..)`, `perform effect20.0(..)`, `resume(..)`,

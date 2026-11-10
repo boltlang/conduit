@@ -198,14 +198,18 @@ pub enum Inst {
         dest: String,
         ty: Type,
     },
+    /// With `align`, the alignment in bytes the address is known to have;
+    /// without, the type's own.
     Load {
         dest: String,
         ty: Type,
         ptr: Value,
+        align: Option<u32>,
     },
     Store {
         value: Typed,
         ptr: Value,
+        align: Option<u32>,
     },
     Gep {
         dest: String,
@@ -504,13 +508,39 @@ impl FnBuilder {
 
     pub fn load(&mut self, ty: Type, ptr: impl Into<Value>) -> Value {
         let ptr = ptr.into();
-        self.def(|dest| Inst::Load { dest, ty, ptr })
+        self.def(|dest| Inst::Load {
+            dest,
+            ty,
+            ptr,
+            align: None,
+        })
+    }
+
+    /// A load from an address that may have any alignment.
+    pub fn load_unaligned(&mut self, ty: Type, ptr: impl Into<Value>) -> Value {
+        let ptr = ptr.into();
+        self.def(|dest| Inst::Load {
+            dest,
+            ty,
+            ptr,
+            align: Some(1),
+        })
     }
 
     pub fn store(&mut self, ty: Type, value: impl Into<Value>, ptr: impl Into<Value>) {
         self.push(Inst::Store {
             value: Typed(ty, value.into()),
             ptr: ptr.into(),
+            align: None,
+        });
+    }
+
+    /// A store to an address that may have any alignment.
+    pub fn store_unaligned(&mut self, ty: Type, value: impl Into<Value>, ptr: impl Into<Value>) {
+        self.push(Inst::Store {
+            value: Typed(ty, value.into()),
+            ptr: ptr.into(),
+            align: Some(1),
         });
     }
 
@@ -880,8 +910,19 @@ impl Display for Inst {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Inst::Alloca { dest, ty } => write!(f, "%{dest} = alloca {ty}"),
-            Inst::Load { dest, ty, ptr } => write!(f, "%{dest} = load {ty}, ptr {ptr}"),
-            Inst::Store { value, ptr } => write!(f, "store {value}, ptr {ptr}"),
+            Inst::Load {
+                dest,
+                ty,
+                ptr,
+                align,
+            } => {
+                write!(f, "%{dest} = load {ty}, ptr {ptr}")?;
+                align.map_or(Ok(()), |a| write!(f, ", align {a}"))
+            }
+            Inst::Store { value, ptr, align } => {
+                write!(f, "store {value}, ptr {ptr}")?;
+                align.map_or(Ok(()), |a| write!(f, ", align {a}"))
+            }
             Inst::Gep {
                 dest,
                 elem,

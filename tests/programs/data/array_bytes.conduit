@@ -1,0 +1,89 @@
+// `array_load` and `array_store`: scalars in the bytes of an `[i8]`, as a
+// host lays out a struct. Little-endian, at any offset, trapping unless
+// every byte is in the array.
+
+const bytes: imm [i8] = b"\x01\x02\x03\x04\x05\x06\x07\x08\xff"
+
+fn load_i8(%at: i32) -> (i8) {
+  let %b: imm [i8] = const bytes()
+  let %r: i8 = array_load(%b, %at)
+  jump ret(%r)
+}
+
+fn load_i16(%at: i32) -> (i16) {
+  let %b: imm [i8] = const bytes()
+  let %r: i16 = array_load(%b, %at)
+  jump ret(%r)
+}
+
+fn load_i32(%at: i32) -> (i32) {
+  let %b: imm [i8] = const bytes()
+  let %r: i32 = array_load(%b, %at)
+  jump ret(%r)
+}
+
+fn load_i64(%at: i32) -> (i64) {
+  let %b: imm [i8] = const bytes()
+  let %r: i64 = array_load(%b, %at)
+  jump ret(%r)
+}
+
+// Writes `%x` at `%at` of 16 zero bytes, and reads it back.
+fn round_trip(%x: i64, %at: i32) -> (i64) {
+  let %buf: mut [i8] = array_fill(16i32, 0i8)
+  let = array_store(%buf, %at, %x)
+  let %r: i64 = array_load(%buf, %at)
+  jump ret(%r)
+}
+
+// The lowest byte comes first.
+fn first_byte(%x: i32) -> (i8, i8) {
+  let %buf: mut [i8] = array_fill(4i32, 0i8)
+  let = array_store(%buf, 0i32, %x)
+  let %lo: i8 = array_get(%buf, 0i32)
+  let %hi: i8 = array_get(%buf, 3i32)
+  jump ret(%lo, %hi)
+}
+
+// The bits of a float, and a float back from its bytes.
+fn float_bits(%x: f64) -> (i64) {
+  let %buf: mut [i8] = array_fill(9i32, 0i8)
+  let = array_store(%buf, 1i32, %x)
+  let %r: i64 = array_load(%buf, 1i32)
+  jump ret(%r)
+}
+
+fn f32_back(%x: f32) -> (f32) {
+  let %buf: mut [i8] = array_fill(7i32, 0i8)
+  let = array_store(%buf, 3i32, %x)
+  let %r: f32 = array_load(%buf, 3i32)
+  jump ret(%r)
+}
+
+// An `i16` writes 2 bytes and an `i8` 1, and they leave the others alone:
+// the bytes are fe ff 00 ff.
+fn narrow_store(%x: i16) -> (i32) {
+  let %buf: mut [i8] = array_fill(4i32, -1i8)
+  let = array_store(%buf, 0i32, %x)
+  let = array_store(%buf, 2i32, 0i8)
+  let %r: i32 = array_load(%buf, 0i32)
+  jump ret(%r)
+}
+
+//# run load_i8(0i32) == 1i8
+//# run load_i8(8i32) == -1i8
+//# run load_i8(9i32) traps
+//# run load_i16(1i32) == 770i16
+//# run load_i32(1i32) == 84148994i32
+//# run load_i32(5i32) == -16251130i32
+//# run load_i32(6i32) traps
+//# run load_i32(-1i32) traps
+//# run load_i64(1i32) == -69798071788895486i64
+//# run load_i64(2i32) traps
+//# run round_trip(-2i64, 3i32) == -2i64
+//# run round_trip(1234567890123i64, 8i32) == 1234567890123i64
+//# run round_trip(1i64, 9i32) traps
+//# run first_byte(16909060i32) == (4i8, 1i8)
+//# run float_bits(1.5f64) == 4609434218613702656i64
+//# run f32_back(2.5f32) == 2.5f32
+//# run narrow_store(-2i16) == -16711682i32

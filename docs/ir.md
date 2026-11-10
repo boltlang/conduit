@@ -105,6 +105,7 @@ pub enum Op {
     ArrayAlloc,            // args = a length; a Mut array whose elements aren't set yet
     ArrayCopy,             // args = dst, dst start, src, src start, count; binds nothing
     ArrayGet, ArraySet, ArrayLen,   // ArraySet: Mut arrays only
+    ArrayLoad, ArrayStore, // a scalar in the bytes of an [i8] from a byte offset: little-endian, any alignment
     ArrayClone,            // args = an array; a new one with the same elements: see "Mutability"
     ArrayFreeze,           // args = an array; `ArrayClone` to `Imm` done in place
     RefNew,                // args = initial value; result has type Ref(ty)
@@ -191,6 +192,8 @@ in [verify.md](verify.md).
 | `array_get(%a, %i)` | reads | yes | — |
 | `array_set(%a, %i, %v)` | writes | yes | `%v` |
 | `array_len(%a)` | reads | no | — |
+| `array_load(%a, %at)` | reads | yes | — |
+| `array_store(%a, %at, %v)` | writes | yes | — |
 | `array_copy(%d, %ds, %s, %ss, %n)` | writes | yes | — |
 | `array_clone(%a)` | reads | no | — |
 | `array_freeze(%a)` | reads | no | `%a` |

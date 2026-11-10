@@ -1,0 +1,18 @@
+// `array_load` and `array_store` on what isn't an array of `i8`, of what
+// isn't a scalar, or into an array that isn't `mut`.
+
+fn fn1(%0: mut [i32], %1: imm [i8], %2: mut [i8], %3: imm [i32]) -> () {
+  let %4: i32 = array_load(%0, 0i32)
+  let %5: imm [i32] = array_load(%1, 0i32)
+  let %6: i32 = array_load(%1, 0i64)
+  let = array_store(%1, 0i32, 1i32)
+  let = array_store(%2, 0i32, %3)
+  let = array_store(%0, 0i32, 1i32)
+  jump ret()
+}
+
+//# verify-error: fn1: array load needs an array of i8 and an i32 offset, and binds one scalar
+//# verify-error: fn1: array load reads a scalar, not a imm [i32]
+//# verify-error: fn1: can't store into a imm [i8]
+//# verify-error: fn1: array store writes a scalar, not a imm [i32]
+//# verify-error: fn1: array store needs an array of i8, an i32 offset and a scalar

@@ -32,7 +32,8 @@ cycles aren't collected yet.
   `@fn<f>_entry<n>(closure, params..)`, which reads the captures and
   tail-calls the function. An `any` holds its value at 8 and, at 16, the
   descriptor of the kind of what it holds (its drop and visit functions),
-  or null. Array accesses and copies out of bounds,
+  or null. `array_load` and `array_store` are a `load` or `store` with
+  `align 1` at the byte offset. Array accesses and copies out of bounds,
   and negative lengths, trap.
 - Constants, as globals laid out the same way, with the immortal bit set
   in their header. A constant closure holds its function's entry for no

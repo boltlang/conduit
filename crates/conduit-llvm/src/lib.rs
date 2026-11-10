@@ -707,6 +707,17 @@ impl<'m> Lower<'m> {
         self.trap_if(out);
     }
 
+    /// Traps unless the `n` bytes of array `a` from `at`, an `i32` value,
+    /// are all in it. In 64 bits, so that the end can't wrap around.
+    fn check_bytes(&mut self, a: &Value, at: &Value, n: u64) {
+        let len = self.b.load_at(Type::I32, a, 4);
+        let len = self.b.cast(CastOp::ZExt, Type::I32, len, Type::I64);
+        let start = self.b.cast(CastOp::ZExt, Type::I32, at, Type::I64);
+        let end = self.b.bin(BinOp::Add, Type::I64, start, n);
+        let out = self.b.icmp(IntPred::Ugt, Type::I64, &end, len);
+        self.trap_if(out);
+    }
+
     /// A new array of `n` elements, an `i32` value, trapping if `n` is
     /// negative.
     fn new_array(&mut self, n: &Value, stride: u64) -> Value {
@@ -845,6 +856,24 @@ impl<'m> Lower<'m> {
                 } else {
                     let v = self.value(&args[2])?;
                     self.replace_at(&e, v, &a, o)?;
+                }
+            }
+            Op::ArrayLoad | Op::ArrayStore => {
+                let t = match op {
+                    Op::ArrayLoad => self.f.var_ty(binds[0]).clone(),
+                    _ => self.atom_ty(&args[2]),
+                };
+                let a = self.value(&args[0])?;
+                let at = self.value(&args[1])?;
+                self.check_bytes(&a, &at, size(&t));
+                let o = elem_offset(&mut self.b, &at, 1);
+                let q = self.b.offset(&a, o);
+                if *op == Op::ArrayLoad {
+                    let x = self.b.load_unaligned(ty(&t)?, q);
+                    self.bind(binds, x)?;
+                } else {
+                    let v = self.value(&args[2])?;
+                    self.b.store_unaligned(ty(&t)?, v, q);
                 }
             }
             Op::ArrayLen => {
