@@ -3,27 +3,6 @@
 // out-parameters, and narrow ints zero-extended. The evaluator's host
 // reads the same arrays as values.
 
-effect io {}
-
-#[link(emu)]
-#[abi(flat)]
-extern sum(imm [i8]) -> (i32) does io
-#[link(emu)]
-#[abi(flat)]
-extern fill(mut [i8], i32) -> () does io
-#[link(emu)]
-#[abi(flat)]
-extern gather(imm [imm [i8]]) -> (i32, i32) does io
-#[link(emu)]
-#[abi(flat)]
-extern squares(#[addr] mut [i32], i32) -> () does io
-#[link(emu)]
-#[abi(flat)]
-extern scale(i32) -> (i32, i64) does io
-#[link(emu)]
-#[abi(flat)]
-extern byte(i8) -> (i32) does io
-
 const hello: imm [i8] = b"hello"
 const world: imm [i8] = b"world"
 
@@ -75,6 +54,7 @@ fn narrow(%b: i8) -> (i32) does io {
   jump ret(%r)
 }
 
+//# host
 //# run sum_hello() == 532i32
 //# run filled(3i32, 7i32) == 7i8
 //# run filled(1i32, 300i32) == 44i8

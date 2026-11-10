@@ -1,0 +1,43 @@
+// The test host for Wasm: the module "test", which the Wasm runners'
+// linker provides (`crates/conduit-test/src/wasm.rs`). A program with a
+// `//# host` check gets this after its text when it's built for Wasm.
+// Each target's file declares the same functions, with the same
+// signatures.
+
+// What the host's functions do, which they never perform.
+effect io {}
+
+#[link(wasm, module = "test")]
+extern double(i32) -> (i32)
+// `double` again, requiring `io`.
+#[link(wasm, module = "test", name = "double")]
+extern double_io(i32) -> (i32) does io
+
+#[link(wasm, module = "test")]
+#[abi(flat)]
+extern sum(imm [i8]) -> (i32) does io
+#[link(wasm, module = "test")]
+#[abi(flat)]
+extern fill(mut [i8], i32) -> () does io
+#[link(wasm, module = "test")]
+#[abi(flat)]
+extern gather(imm [imm [i8]]) -> (i32, i32) does io
+#[link(wasm, module = "test")]
+#[abi(flat)]
+extern squares(#[addr] mut [i32], i32) -> () does io
+#[link(wasm, module = "test")]
+#[abi(flat)]
+extern scale(i32) -> (i32, i64) does io
+#[link(wasm, module = "test")]
+#[abi(flat)]
+extern byte(i8) -> (i32) does io
+
+// Host values, which only the evaluator and Wasm have.
+#[link(wasm, module = "test")]
+extern wrap(i32) -> (host)
+#[link(wasm, module = "test")]
+extern unwrap(host) -> (i32)
+#[link(wasm, module = "test")]
+extern maybe(i32) -> (nullable host)
+#[link(wasm, module = "test")]
+extern unwrap_or(nullable host, i32) -> (i32)

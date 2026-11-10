@@ -24,25 +24,37 @@ use libtest_mimic::{Arguments, Failed, Trial};
 
 pub use checks::{Check, CheckKind, Expect};
 
-/// Links `m`'s externs and exports for the Wasm runner, as a frontend does
-/// for the target it compiles for: each `#[link(emu, name = n)]` that test
-/// programs write becomes `#[link(wasm, module = "test", name = n)]`, which
-/// the runner's linker provides, the same functions as
-/// [`eval::TestHost`]'s, and each `#[export(emu, name = n)]`
-/// `#[export(wasm, name = n)]`.
-pub fn link_for_wasm(m: &mut Module) {
-    for export in m.exports.values_mut() {
-        if let conduit_ir::Export::Emu { name } = export {
-            *export = conduit_ir::Export::Wasm { name: name.clone() };
+/// What a test program is built for, which decides how it reaches the
+/// test host and how its functions are exported, as a frontend decides
+/// for the target it compiles for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Target {
+    /// The evaluator, with [`eval::TestHost`].
+    Emu,
+    /// The Wasm runners, whose linker provides the host as the module
+    /// `"test"`.
+    Wasm,
+    /// The LLVM backend's native programs, linked with
+    /// `crates/conduit-llvm/tests/host.c`.
+    C,
+}
+
+impl Target {
+    /// The name of its host file, and of its link and export kinds.
+    pub fn name(self) -> &'static str {
+        match self {
+            Target::Emu => "emu",
+            Target::Wasm => "wasm",
+            Target::C => "c",
         }
     }
-    for ext in m.externs.values_mut() {
-        if let conduit_ir::Link::Emu { name } = &ext.link {
-            ext.link = conduit_ir::Link::Wasm {
-                module: "test".into(),
-                name: name.clone(),
-            };
-        }
+
+    /// The text that declares the test host for this target.
+    pub fn host(self) -> Result<String, String> {
+        let path = programs_dir()
+            .join("host")
+            .join(format!("{}.conduit", self.name()));
+        fs::read_to_string(&path).map_err(|e| format!("{}: {e}", relative(&path)))
     }
 }
 
@@ -98,15 +110,35 @@ impl Program {
         relative(&self.path)
     }
 
-    /// The module the program's text describes, with each function a `run`
-    /// check calls exported to the evaluator's host, under its own name,
-    /// since it's called from outside the module (see [`link_for_wasm`]).
-    /// Unless the program has `verify-error` checks, it must verify as
-    /// written: otherwise this fails, before a pass, a backend or the
-    /// evaluator could be blamed for what's wrong with it.
+    /// The module for the evaluator: [`Program::module_for`] with
+    /// [`Target::Emu`].
     pub fn module(&self) -> Result<Module, String> {
-        let mut m =
-            conduit_ir::text::parse(&self.text).map_err(|e| format!("{}:{e}", self.shown()))?;
+        self.module_for(Target::Emu)
+    }
+
+    /// The module the program's text describes, built for `target`: with
+    /// a `host` check, the target's host file goes after the text, and
+    /// each function a `run` check calls is exported under its own name,
+    /// since it's called from outside the module, except in C, whose test
+    /// driver goes in the same module. Unless the program has
+    /// `verify-error` checks, it must verify as written: otherwise this
+    /// fails, before a pass, a backend or the evaluator could be blamed for
+    /// what's wrong with it.
+    pub fn module_for(&self, target: Target) -> Result<Module, String> {
+        let text = if self.has(|k| *k == CheckKind::Host) {
+            let host = target.host()?;
+            // On its own first, so that a mistake in it says where.
+            conduit_ir::text::parse(&host).map_err(|e| {
+                let path = programs_dir()
+                    .join("host")
+                    .join(format!("{}.conduit", target.name()));
+                format!("{}:{e}", relative(&path))
+            })?;
+            format!("{}\n{host}", self.text)
+        } else {
+            self.text.clone()
+        };
+        let mut m = conduit_ir::text::parse(&text).map_err(|e| format!("{}:{e}", self.shown()))?;
         for c in &self.checks {
             if let CheckKind::Run { func, .. } = &c.kind
                 && let Ok(id) = conduit_ir::text::find_func(&m, func)
@@ -116,7 +148,12 @@ impl Program {
                     Some(name) => name.clone(),
                     None => id.to_string().into(),
                 };
-                m.exports.insert(id, conduit_ir::Export::Emu { name });
+                let export = match target {
+                    Target::Emu => conduit_ir::Export::Emu { name },
+                    Target::Wasm => conduit_ir::Export::Wasm { name },
+                    Target::C => continue,
+                };
+                m.exports.insert(id, export);
             }
         }
         // A program that should verify does before anything uses it, so
@@ -289,6 +326,10 @@ pub fn programs() -> Vec<Result<Program, (String, String)>> {
     let root = programs_dir();
     let mut paths = Vec::new();
     collect(&root, &mut paths);
+    // What the host files declare goes after programs' text: they aren't
+    // programs of their own.
+    let hosts = root.join("host");
+    paths.retain(|p| !p.starts_with(&hosts));
     paths.sort();
     paths
         .into_iter()
@@ -359,6 +400,38 @@ pub fn main(applies: fn(&Program) -> bool, test: fn(&Program) -> Result<(), Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each extern a host file declares, by name: everything about it but
+    /// its link.
+    fn host_externs(target: Target) -> std::collections::BTreeMap<String, String> {
+        let m = conduit_ir::text::parse(&target.host().unwrap()).unwrap();
+        m.externs
+            .values()
+            .map(|e| {
+                let name = e.debug_name.as_deref().unwrap_or_default().to_string();
+                let rest = format!("{:?} {:?} {:?}", e.sig, e.abi, e.addr);
+                (name, rest)
+            })
+            .collect()
+    }
+
+    // The hosts declare the same functions, with the same signatures,
+    // but for C's, which leaves out host values.
+    #[test]
+    fn hosts_agree() {
+        let emu = host_externs(Target::Emu);
+        assert_eq!(host_externs(Target::Wasm), emu);
+        let c = host_externs(Target::C);
+        for (name, decl) in &c {
+            assert_eq!(
+                emu.get(name),
+                Some(decl),
+                "C's {name} differs from the evaluator's"
+            );
+        }
+        let missing: Vec<&String> = emu.keys().filter(|n| !c.contains_key(*n)).collect();
+        assert_eq!(missing, ["maybe", "unwrap", "unwrap_or", "wrap"]);
+    }
 
     fn program(text: &str) -> Program {
         Program {

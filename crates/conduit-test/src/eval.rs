@@ -118,10 +118,11 @@ fn lit(v: Value) -> Result<Lit, String> {
     })
 }
 
-/// The host functions test programs can import, with an
-/// `#[link(emu, ..)]`. Every backend's runner provides the same ones: the
-/// Wasm runner as imports from the module `"test"`, which it links the
-/// externs to (see [`crate::link_for_wasm`]).
+/// The host functions a program with a `//# host` check calls, which
+/// `tests/programs/host/emu.conduit` declares. Every backend's runner
+/// provides the same ones: the Wasm runner as imports from the module
+/// `"test"`, and native programs from `crates/conduit-llvm/tests/host.c`
+/// (see [`crate::Target`]).
 ///
 /// - `double(i32) -> i32` gives twice its argument.
 ///

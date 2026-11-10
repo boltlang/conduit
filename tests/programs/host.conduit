@@ -3,11 +3,6 @@
 // value is an `externref` in a table, and Conduit holds the slot's box,
 // which fields, `any`s, closures and refs hold like any other object.
 
-#[link(emu)]
-extern wrap(i32) -> (host)
-#[link(emu)]
-extern unwrap(host) -> (i32)
-
 data Pair {
   (host, host)
 }
@@ -81,6 +76,7 @@ fn many(%n: i32) -> (i32) {
   in jump again(0i32, 0i32)
 }
 
+//# host
 //# run round_trip(42i32) == 42i32
 //# run round_trip(-7i32) == -7i32
 //# run pair(3i32, 4i32) == 34i32

@@ -5,15 +5,6 @@
 // `host`, or traps on a null. In Wasm a null is the address 0, which no box
 // has, so it's never counted.
 
-#[link(emu)]
-extern wrap(i32) -> (host)
-#[link(emu)]
-extern unwrap(host) -> (i32)
-#[link(emu)]
-extern maybe(i32) -> (nullable host)
-#[link(emu)]
-extern unwrap_or(nullable host, i32) -> (i32)
-
 data Slot {
   (nullable host)
 }
@@ -59,6 +50,7 @@ fn in_a_field(%n: i32) -> (i32) {
   }
 }
 
+//# host
 //# run is_null(-1i32) == 1i32
 //# run is_null(4i32) == 0i32
 //# run unwrapped(4i32) == 4i32

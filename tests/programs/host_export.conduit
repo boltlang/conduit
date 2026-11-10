@@ -5,11 +5,6 @@
 // What the host gives them is checked in conduit-wasm's tests; here they're
 // called from inside the module too.
 
-#[link(emu)]
-extern wrap(i32) -> (host)
-#[link(emu)]
-extern unwrap(host) -> (i32)
-
 #[export(wasm, name = "echo")]
 fn echo(%h: host) -> (host) {
   jump ret(%h)
@@ -35,4 +30,5 @@ fn through(%n: i32) -> (i32) {
   jump ret(%r)
 }
 
+//# host
 //# run through(8i32) == 8i32

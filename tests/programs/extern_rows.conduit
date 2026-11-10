@@ -2,13 +2,8 @@
 // operations and only limits who may call `double`. The host grants it to
 // `main` by calling it, so `main` needs no handler.
 
-effect io {}
-
-#[link(emu)]
-extern double(i32) -> (i32) does io
-
 fn twice(%x: i32) -> (i32) does io {
-  let %y: i32 = call_extern double(%x)
+  let %y: i32 = call_extern double_io(%x)
   jump ret(%y)
 }
 
@@ -18,4 +13,5 @@ fn main(%x: i32) -> (i32) does io {
   jump ret(%z)
 }
 
+//# host
 //# run main(20i32) == 41i32

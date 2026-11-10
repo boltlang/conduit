@@ -1,12 +1,10 @@
 // `test.double` is a host function every test runner provides.
 
-#[link(emu)]
-extern double(i32) -> (i32)
-
 fn main(%x: i32) -> (i32) {
   let %y: i32 = call_extern double(%x)
   let %z: i32 = add(%y, 1i32)
   jump ret(%z)
 }
 
+//# host
 //# run main(20i32) == 41i32

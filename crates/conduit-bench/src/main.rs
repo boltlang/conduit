@@ -43,7 +43,7 @@ use std::time::{Duration, Instant};
 
 use conduit_bench::{CONFIGS, Config, prepare};
 use conduit_ir::{Atom, Module, Ty};
-use conduit_test::{CheckKind, Program};
+use conduit_test::{CheckKind, Program, Target};
 use conduit_wasm::Options;
 use serde_json::{Value as Json, json};
 use wasmtime::{Engine, Store};
@@ -258,7 +258,7 @@ fn markdown(results: &[Result1], baseline: Option<&Baseline>) {
 /// The modules of `p`, one for each config asked for, with the options to
 /// lower it with.
 fn modules(p: &Program, configs: &[String]) -> Result<Vec<(String, Module, Options)>, String> {
-    let optimized = prepare(p.module()?)?;
+    let optimized = prepare(p.module_for(Target::Wasm)?)?;
     let mut out = Vec::new();
     for name in configs {
         let config = Config::named(name).ok_or_else(|| format!("unknown config {name}"))?;
@@ -281,8 +281,6 @@ fn bench(p: &Program, args: &Args) -> Result<Vec<Result1>, String> {
     // Each config compiled, once for fuel and once for timing.
     let mut compiled = Vec::new();
     for (config, m, options) in modules(p, &args.configs)? {
-        let mut m = m;
-        conduit_test::link_for_wasm(&mut m);
         let bytes =
             conduit_wasm::emit_module_with(&m, &options).map_err(|e| format!("{config}: {e}"))?;
         let fuel_module =

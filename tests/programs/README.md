@@ -40,6 +40,7 @@ checks apply to that crate.
 | `//# opt: dce, copies` | The same, but after only those passes, in that order, each run until nothing changes. |
 | `//# counted` | The program counts its references by hand: the evaluator runs its `run` checks counting, and each run must free everything but its results. |
 | `//# counts` | The program with reuse and counts inserted and drops specialized matches `<name>.counts.conduit`. |
+| `//# host` | The program calls the test host, which each target declares in its own file: see "Host functions". |
 | `//# max-frames: 100` | The evaluator runs each `run` check with at most that many frames, and stops with a stack overflow past them, instead of its default of 100000. A program that must run in constant stack, like a loop written as tail calls, checks it with a small limit. |
 | `//# bench` | What each `run` check does in the evaluator matches `<name>.bench`: steps, allocations, frees, the most objects live at once, count ops, reuse and cycle collections. A row for each way of compiling it, each adding one thing after the optimizer: no counts (`optimized`), `counts` with every parameter owned, `+borrows`, `+reuse`, `+specialized` drops, and `+cycles` collected. These are the same every time, so a pass that makes a program do more shows up as a diff. `bench/` has benchmarks from the Perceus paper's set. |
 
@@ -99,20 +100,37 @@ that much.
 
 ## Host functions
 
-Programs can import these host functions, which every runner provides,
-with an `#[link(emu)]`, since the evaluator runs them as they are. The
-Wasm runners link each to the import of the same name from the module
-`"test"` first, as a frontend links a module for the target it compiles
-for (`conduit_test::link_for_wasm`):
+A program with a `//# host` check can call the test host's functions,
+which every runner provides. The program doesn't declare them: each
+target declares them in its own file under `host/`, with its own links,
+which goes after the program's text when it's built for that target
+(`conduit_test::Target`), as a frontend picks the links for the target it
+compiles for:
 
-| Name | Signature | Gives |
+| File | Target | Host |
 |---|---|---|
-| `"double"` | `(i32) -> (i32)` | twice its argument |
-| `"sum"` | `#[abi(flat)]`, `(imm [i8]) -> (i32)` | the sum of its bytes, as signed |
-| `"fill"` | `#[abi(flat)]`, `(mut [i8], i32) -> ()` | sets every byte to the second argument's low byte |
-| `"gather"` | `#[abi(flat)]`, `(imm [imm [i8]]) -> (i32, i32)` | how many buffers, and the sum of all their bytes |
-| `"squares"` | `#[abi(flat)]`, `(#[addr] mut [i32], i32) -> ()` | sets elements 0 to n - 1 to their index squared |
-| `"scale"` | `#[abi(flat)]`, `(i32) -> (i32, i64)` | 0, and its argument times 10^12 |
-| `"byte"` | `#[abi(flat)]`, `(i8) -> (i32)` | its argument zero-extended |
+| `host/emu.conduit` | the evaluator | `conduit_test::eval::TestHost` |
+| `host/wasm.conduit` | the Wasm runners | the module `"test"` of their linker |
+| `host/c.conduit` | native, through LLVM | `crates/conduit-llvm/tests/host.c`, as `conduit_test_<name>` |
 
-For example: `#[link(emu)] extern double(i32) -> (i32)`, or with the flat ABI, `#[link(emu)] #[abi(flat)] extern sum(imm [i8]) -> (i32)`.
+They declare the same functions with the same signatures, which a test
+in `conduit-test` checks, but for C's, which has no host values. A
+program that uses those isn't built for C.
+
+| Extern | Signature | Gives |
+|---|---|---|
+| `double` | `(i32) -> (i32)` | twice its argument |
+| `double_io` | `(i32) -> (i32) does io` | the same, requiring the effect `io` |
+| `sum` | `#[abi(flat)]`, `(imm [i8]) -> (i32) does io` | the sum of its bytes, as signed |
+| `fill` | `#[abi(flat)]`, `(mut [i8], i32) -> () does io` | sets every byte to the second argument's low byte |
+| `gather` | `#[abi(flat)]`, `(imm [imm [i8]]) -> (i32, i32) does io` | how many buffers, and the sum of all their bytes |
+| `squares` | `#[abi(flat)]`, `(#[addr] mut [i32], i32) -> () does io` | sets elements 0 to n - 1 to their index squared |
+| `scale` | `#[abi(flat)]`, `(i32) -> (i32, i64) does io` | 0, and its argument times 10^12 |
+| `byte` | `#[abi(flat)]`, `(i8) -> (i32) does io` | its argument zero-extended |
+| `wrap` | `(i32) -> (host)` | a host value holding its argument |
+| `unwrap` | `(host) -> (i32)` | what a host value holds |
+| `maybe` | `(i32) -> (nullable host)` | null for a negative argument, else a host value holding it |
+| `unwrap_or` | `(nullable host, i32) -> (i32)` | what a host value holds, or the second argument for null |
+
+The host files also declare `effect io {}`, which the flat ones require,
+so a program that uses them doesn't declare `io` itself.

@@ -1,0 +1,34 @@
+// The test host for native programs: `crates/conduit-llvm/tests/host.c`,
+// whose functions are `conduit_test_` and the name, since C can't name a
+// function `double`. A program with a `//# host` check gets this after
+// its text when it's built for C. It has no host values, which C doesn't
+// have, so a program that uses them isn't built for C. Otherwise each
+// target's file declares the same functions, with the same signatures.
+
+// What the host's functions do, which they never perform.
+effect io {}
+
+#[link(c, symbol = "conduit_test_double")]
+extern double(i32) -> (i32)
+// `double` again, requiring `io`.
+#[link(c, symbol = "conduit_test_double")]
+extern double_io(i32) -> (i32) does io
+
+#[link(c, symbol = "conduit_test_sum")]
+#[abi(flat)]
+extern sum(imm [i8]) -> (i32) does io
+#[link(c, symbol = "conduit_test_fill")]
+#[abi(flat)]
+extern fill(mut [i8], i32) -> () does io
+#[link(c, symbol = "conduit_test_gather")]
+#[abi(flat)]
+extern gather(imm [imm [i8]]) -> (i32, i32) does io
+#[link(c, symbol = "conduit_test_squares")]
+#[abi(flat)]
+extern squares(#[addr] mut [i32], i32) -> () does io
+#[link(c, symbol = "conduit_test_scale")]
+#[abi(flat)]
+extern scale(i32) -> (i32, i64) does io
+#[link(c, symbol = "conduit_test_byte")]
+#[abi(flat)]
+extern byte(i8) -> (i32) does io

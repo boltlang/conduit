@@ -48,6 +48,11 @@ pub enum CheckKind {
     /// stack overflow past that many frames, instead of its default, so a
     /// test can show that a program runs in constant stack.
     MaxFrames(usize),
+    /// `//# host`: the program calls the test host, whose functions and
+    /// the effect `io` each target declares in its own file,
+    /// `tests/programs/host/<target>.conduit`, which goes after the
+    /// program's text. See [`crate::Target`].
+    Host,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -97,6 +102,7 @@ fn check(s: &str) -> Result<CheckKind, String> {
         "wat" => none(CheckKind::Wat),
         "opt" => opt(rest),
         "counted" => none(CheckKind::Counted),
+        "host" => none(CheckKind::Host),
         "counts" => none(CheckKind::Counts),
         "bench" => none(CheckKind::Bench),
         "max-frames" => match rest.trim().parse() {

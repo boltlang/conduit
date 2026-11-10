@@ -13,14 +13,14 @@
 //! that, then given reuse, counted and its drops specialized, and for a
 //! program with a general handler, again with stack switching instead of
 //! evidence passing. Each run must then leave as many objects live as the
-//! evaluator's run of the same module does, not counting its
+//! evaluator's run of the program built for it does, not counting its
 //! continuations, of which Wasm doesn't make one per `perform`, both with
 //! cycles collected at the end.
 
 mod support;
 
 use conduit_ir::Module;
-use conduit_test::{CheckKind, Program};
+use conduit_test::{CheckKind, Program, Target};
 use conduit_wasm::Options;
 use support::{call, instantiate};
 use wasmparser::WasmFeatures;
@@ -35,7 +35,9 @@ fn applies(p: &Program) -> bool {
 }
 
 fn test(p: &Program) -> Result<(), String> {
-    let m = p.module()?;
+    // Built for Wasm, and for the evaluator, which the counted runs
+    // compare with.
+    let (m, emu) = (p.module_for(Target::Wasm)?, p.module()?);
     let Some(bytes) = lower(p, &m, false)? else {
         return Ok(());
     };
@@ -45,9 +47,9 @@ fn test(p: &Program) -> Result<(), String> {
     }
     run(p, &m, &bytes, false)?;
     if p.has_runs() && !p.has(|k| matches!(k, CheckKind::WasmError(_))) {
-        counted(p, &m, false)?;
+        counted(p, &m, &emu, false)?;
         if !conduit_ir::clause::direct_handlers(&m) {
-            counted(p, &m, true)?;
+            counted(p, &m, &emu, true)?;
         }
     }
     // A general handler is lowered by evidence passing without stack
@@ -88,9 +90,7 @@ fn lower_with(p: &Program, m: &Module, options: Options) -> Result<Option<Vec<u8
         CheckKind::WasmError(m) => Some(m),
         _ => None,
     });
-    let mut m = m.clone();
-    conduit_test::link_for_wasm(&mut m);
-    let bytes = match conduit_wasm::emit_module_with(&m, &options) {
+    let bytes = match conduit_wasm::emit_module_with(m, &options) {
         Ok(_) if !expected.is_empty() => {
             return Err(format!(
                 "lowering should fail with {}, but succeeds",
@@ -138,8 +138,9 @@ fn run(p: &Program, m: &Module, bytes: &[u8], stack_switching: bool) -> Result<(
     Ok(())
 }
 
-/// Runs `p` counted and with freeing: see the crate's tests' documentation.
-fn counted(p: &Program, m: &Module, stack_switching: bool) -> Result<(), String> {
+/// `m` with its counts, and its effects lowered unless handlers switch
+/// stacks.
+fn with_counts(p: &Program, m: &Module, stack_switching: bool) -> Result<Module, String> {
     let mut c = m.clone();
     if !stack_switching && !conduit_ir::clause::direct_handlers(&c) {
         conduit_effects::lower_effects(&mut c)?;
@@ -150,6 +151,15 @@ fn counted(p: &Program, m: &Module, stack_switching: bool) -> Result<(), String>
         conduit_opt::ownership::insert_counts(&mut c)?;
         conduit_opt::ownership::specialize_drops(&mut c);
     }
+    Ok(c)
+}
+
+/// Runs `p` counted and with freeing: see the crate's tests' documentation.
+/// `m` is built for Wasm and `emu` for the evaluator, which the same
+/// passes then make the same but for their links.
+fn counted(p: &Program, m: &Module, emu: &Module, stack_switching: bool) -> Result<(), String> {
+    let c = with_counts(p, m, stack_switching)?;
+    let e = with_counts(p, emu, stack_switching)?;
     let options = Options {
         stack_switching,
         counts: true,
@@ -176,7 +186,7 @@ fn counted(p: &Program, m: &Module, stack_switching: bool) -> Result<(), String>
         }
         collect.call(&mut store, ()).map_err(|e| e.to_string())?;
         let left = live.get(&mut store).unwrap_i32() - before;
-        let mut machine = conduit_eval::Machine::new(&c, conduit_test::eval::TestHost);
+        let mut machine = conduit_eval::Machine::new(&e, conduit_test::eval::TestHost);
         machine.counting = true;
         machine.cycles = true;
         let args = run

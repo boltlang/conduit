@@ -1,0 +1,42 @@
+// The test host for the evaluator: `conduit_test::eval::TestHost`, which
+// finds each function by its name. A program with a `//# host` check gets
+// this after its text when it's built for the evaluator. Each target's
+// file declares the same functions, with the same signatures.
+
+// What the host's functions do, which they never perform.
+effect io {}
+
+#[link(emu)]
+extern double(i32) -> (i32)
+// `double` again, requiring `io`.
+#[link(emu, name = "double")]
+extern double_io(i32) -> (i32) does io
+
+#[link(emu)]
+#[abi(flat)]
+extern sum(imm [i8]) -> (i32) does io
+#[link(emu)]
+#[abi(flat)]
+extern fill(mut [i8], i32) -> () does io
+#[link(emu)]
+#[abi(flat)]
+extern gather(imm [imm [i8]]) -> (i32, i32) does io
+#[link(emu)]
+#[abi(flat)]
+extern squares(#[addr] mut [i32], i32) -> () does io
+#[link(emu)]
+#[abi(flat)]
+extern scale(i32) -> (i32, i64) does io
+#[link(emu)]
+#[abi(flat)]
+extern byte(i8) -> (i32) does io
+
+// Host values, which only the evaluator and Wasm have.
+#[link(emu)]
+extern wrap(i32) -> (host)
+#[link(emu)]
+extern unwrap(host) -> (i32)
+#[link(emu)]
+extern maybe(i32) -> (nullable host)
+#[link(emu)]
+extern unwrap_or(nullable host, i32) -> (i32)
