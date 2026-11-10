@@ -45,7 +45,16 @@ cycles aren't collected yet.
   null, a token that holds no memory. `forget` is nothing.
 - Externs with `#[link(c, symbol = "..")]`, called with the C calling
   convention, and exports with `#[export(c, symbol = "..")]`, which get a
-  C-callable function.
+  C-callable function. Externs that link to the same symbol share its
+  declaration, and must agree on its signature.
+- `#[abi(flat)]` externs, for which the flat ABI is the C ABI: an array
+  is a pointer to its elements, 8 bytes into the object, and its length
+  as an `i32`, or the pointer alone if it's `#[addr]`; a list of byte
+  buffers is a pointer to a `struct iovec`, `{void *base, size_t len}`,
+  for each, from `calloc` and freed after the call, and how many there
+  are; an `i8` or `i16` is zero-extended to an `i32`, as in Wasm, which C
+  takes for a narrower parameter too; and each result after the first is
+  a pointer to an `alloca` the callee writes it to.
 
 ## Reference counts
 
@@ -104,7 +113,9 @@ Not yet:
 ## Tests
 
 `crates/conduit-llvm/tests/programs.rs` compiles every test program it can
-lower with `clang -O2`, as written and after the optimizer, after lowering
+lower with `clang -O2`, built for C (see "Host functions" in
+[tests/programs/README.md](../tests/programs/README.md)) and linked with
+the test host in `tests/host.c`, as written and after the optimizer, after lowering
 its effects when it has any, each without counts, with them, and with
 cycles collected too, and runs
 its
@@ -114,6 +125,6 @@ function, and prints the bits of each result. A trap is a signal. Without
 
 With counts, each run must also leave as many objects live as the
 evaluator does, counting the same way: with cycles collected at the end,
-when they are. 114 of the 145 test
-programs run this way. The rest have no `run` checks,
-or call the test hosts' `emu` functions or use host values.
+when they are, on the program built for the evaluator. 120 of the 148
+test programs run this way. The rest have no `run` checks or use host
+values.

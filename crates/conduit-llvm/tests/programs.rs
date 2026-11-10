@@ -18,7 +18,7 @@ use conduit_llvm::Options;
 use conduit_llvm::ir::{
     Call, CallConv, CastOp, Declare, FnBuilder, Global, Item, Label, Type, Value,
 };
-use conduit_test::{CheckKind, Outcome, Program, Run};
+use conduit_test::{CheckKind, Outcome, Program, Run, Target};
 
 fn main() {
     conduit_test::main(applies, test)
@@ -27,7 +27,7 @@ fn main() {
 fn applies(p: &Program) -> bool {
     !p.has(|k| matches!(k, CheckKind::VerifyError(_)))
         && p.has_runs()
-        && p.module()
+        && p.module_for(Target::C)
             .is_ok_and(|m| conduit_llvm::emit_module(&without_handlers(m)).is_ok())
 }
 
@@ -53,18 +53,22 @@ fn test(p: &Program) -> Result<(), String> {
         eprintln!("{}: skipped, since clang isn't installed", p.name);
         return Ok(());
     }
-    let m = without_handlers(p.module()?);
-    let mut optimized = m.clone();
-    conduit_opt::optimize_module(&mut optimized);
-    for (when, m) in [("as written", m), ("after optimizing", optimized)] {
-        check(p, &m, when, Options::default()).map_err(|e| format!("{when}: {e}"))?;
+    // Built for C, and for the evaluator, which the counted runs compare
+    // with: the same passes make them the same but for their links.
+    let m = without_handlers(p.module_for(Target::C)?);
+    let emu = without_handlers(p.module()?);
+    let optimized = |mut m: Module| {
+        conduit_opt::optimize_module(&mut m);
+        m
+    };
+    let versions = [
+        ("as written", m.clone(), emu.clone()),
+        ("after optimizing", optimized(m), optimized(emu)),
+    ];
+    for (when, m, emu) in versions {
+        check(p, &m, &emu, when, Options::default()).map_err(|e| format!("{when}: {e}"))?;
         // With counts too, which must free all the evaluator does.
-        let mut c = m.clone();
-        if !p.has(|k| matches!(k, CheckKind::Counted)) {
-            conduit_opt::ownership::insert_reuse(&mut c);
-            conduit_opt::ownership::insert_counts(&mut c)?;
-            conduit_opt::ownership::specialize_drops(&mut c);
-        }
+        let (c, emu) = (with_counts(p, m)?, with_counts(p, emu)?);
         for cycles in [false, true] {
             let counted = format!(
                 "{when}, with counts{}",
@@ -74,13 +78,32 @@ fn test(p: &Program) -> Result<(), String> {
                 counts: true,
                 cycles,
             };
-            check(p, &c, &counted, options).map_err(|e| format!("{counted}: {e}"))?;
+            check(p, &c, &emu, &counted, options).map_err(|e| format!("{counted}: {e}"))?;
         }
     }
     Ok(())
 }
 
-fn check(p: &Program, m: &Module, when: &str, options: Options) -> Result<(), String> {
+/// `m` with reuse and counts, unless the program counts by hand.
+fn with_counts(p: &Program, mut m: Module) -> Result<Module, String> {
+    if !p.has(|k| matches!(k, CheckKind::Counted)) {
+        conduit_opt::ownership::insert_reuse(&mut m);
+        conduit_opt::ownership::insert_counts(&mut m)?;
+        conduit_opt::ownership::specialize_drops(&mut m);
+    }
+    Ok(m)
+}
+
+/// Compiles `m` with the test host, and runs its `run` checks. With
+/// counts, each must leave as many objects live as the evaluator does on
+/// `emu`, the program built for it.
+fn check(
+    p: &Program,
+    m: &Module,
+    emu: &Module,
+    when: &str,
+    options: Options,
+) -> Result<(), String> {
     let runs = p.runs(m)?;
     let counts = options.counts;
     let mut module = conduit_llvm::lower_module_with(m, &options).map_err(|e| e.to_string())?;
@@ -100,6 +123,7 @@ fn check(p: &Program, m: &Module, when: &str, options: Options) -> Result<(), St
         .args(["-O2", "-Wno-override-module", "-o"])
         .arg(&exe)
         .arg(&ll)
+        .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/host.c"))
         .output()
         .map_err(|e| e.to_string())?;
     if !out.status.success() {
@@ -131,7 +155,7 @@ fn check(p: &Program, m: &Module, when: &str, options: Options) -> Result<(), St
         let gave = matches!(got, Ok(Outcome::Values(_)));
         run.check(p, got)?;
         if counts && gave {
-            let expected = evaluator_live(m, run, options.cycles)?;
+            let expected = evaluator_live(emu, run, options.cycles)?;
             if live != Some(expected) {
                 return Err(format!(
                     "{}: {}: native code leaves {} objects live, but the evaluator {expected}",

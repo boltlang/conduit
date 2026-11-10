@@ -34,7 +34,7 @@
 mod counts;
 pub mod ir;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use counts::Kind;
 use ir::{
@@ -43,8 +43,8 @@ use ir::{
 };
 
 use conduit_ir::{
-    Atom, Block, ConstId, ConstValue, CtorId, ExternId, Func, FuncId, JoinDef, Label, Link, Lit,
-    Module, Op, Prim, Sign, Tag, Tail, Ty, Var,
+    Abi, Atom, Block, ConstId, ConstValue, CtorId, ExternId, Func, FuncId, JoinDef, Label, Link,
+    Lit, Module, Op, Prim, Sign, Tag, Tail, Ty, Var,
 };
 
 /// Why a module can't be lowered: an item, and what's wrong.
@@ -134,6 +134,33 @@ pub fn ty(ty: &Ty) -> Result<Type, String> {
 
 /// What a function giving `results` returns: `void`, the one result, or a
 /// struct of them.
+/// The C signature of extern `ext`: its return type and its parameters'.
+/// Under the flat ABI, which natively is the C ABI (see [`Abi::Flat`]): an
+/// array is a pointer to its elements and an `i32` length, or the pointer
+/// alone if it's `#[addr]`; a list of byte buffers is a pointer to a
+/// `struct iovec` for each and how many there are; an `i8` or `i16` is
+/// zero-extended to an `i32`, as Wasm passes it, which C's ABI takes for
+/// a narrower parameter too; and each result after the first is a pointer
+/// to where the callee writes it.
+pub fn extern_sig(ext: &conduit_ir::Extern) -> Result<(Type, Vec<Type>), String> {
+    let sig = &ext.sig;
+    if ext.abi != Abi::Flat {
+        let params = sig.params.iter().map(ty).collect::<Result<_, _>>()?;
+        return Ok((ret_ty(&sig.results)?, params));
+    }
+    let mut params = Vec::new();
+    for (i, t) in sig.params.iter().enumerate() {
+        match t {
+            Ty::Array(..) if ext.addr(i) => params.push(Type::Ptr),
+            Ty::Array(..) => params.extend([Type::Ptr, Type::I32]),
+            Ty::I8 | Ty::I16 => params.push(Type::I32),
+            t => params.push(ty(t)?),
+        }
+    }
+    params.extend(sig.results.iter().skip(1).map(|_| Type::Ptr));
+    Ok((ret_ty(&sig.results[..sig.results.len().min(1)])?, params))
+}
+
 pub fn ret_ty(results: &[Ty]) -> Result<Type, String> {
     Ok(match results {
         [] => Type::Void,
@@ -298,17 +325,30 @@ pub fn lower_module_with(m: &Module, options: &Options) -> Result<ir::Module, Er
             out.push(Declare::new(t.clone(), format!("llvm.{op}.{s}"), params));
         }
     }
+    // Externs that link to the same symbol share its declaration, so
+    // they must agree on its signature.
+    let mut declared: BTreeMap<&str, (ExternId, (Type, Vec<Type>))> = BTreeMap::new();
     for (&id, ext) in &m.externs {
         let Link::C { symbol, .. } = &ext.link else {
             continue;
         };
-        let e = |message| err(None, format!("extern {id}: {message}"));
-        let params = (ext.sig.params.iter())
-            .map(ty)
-            .collect::<Result<_, _>>()
-            .map_err(e)?;
-        let ret = ret_ty(&ext.sig.results).map_err(e)?;
-        out.push(Declare::new(ret, symbol.clone(), params));
+        let sig =
+            extern_sig(ext).map_err(|message| err(None, format!("extern {id}: {message}")))?;
+        match declared.get(&**symbol) {
+            Some((first, other)) if *other != sig => {
+                return Err(err(
+                    None,
+                    format!(
+                        "externs {first} and {id} both link to `{symbol}`, with different signatures"
+                    ),
+                ));
+            }
+            Some(_) => {}
+            None => {
+                out.push(Declare::new(sig.0.clone(), symbol.clone(), sig.1.clone()));
+                declared.insert(symbol, (id, sig));
+            }
+        }
     }
     let mut entries = BTreeSet::new();
     for (&c, decl) in &m.consts {
@@ -1195,10 +1235,104 @@ impl<'m> Lower<'m> {
                 ext.link.kind()
             ));
         };
+        if ext.abi == Abi::Flat {
+            return self.call_flat(symbol, ext, args, binds);
+        }
         let ret = ret_ty(&ext.sig.results)?;
         let args = self.args(args)?;
         let call = Call::c(ret, Value::global(&**symbol), args);
         self.bind_results(call, binds)
+    }
+
+    /// A call of `#[abi(flat)]` extern `ext`, as [`extern_sig`] says. The
+    /// iovecs of a list come from `calloc`, and are freed after the call;
+    /// the out-parameters are `alloca`s.
+    fn call_flat(
+        &mut self,
+        symbol: &str,
+        ext: &conduit_ir::Extern,
+        args: &[Atom],
+        binds: &[Var],
+    ) -> Result<(), String> {
+        let (ret, _) = extern_sig(ext)?;
+        let mut out = Vec::new();
+        let mut lists = Vec::new();
+        for (i, (a, t)) in args.iter().zip(&ext.sig.params).enumerate() {
+            let v = self.value(a)?;
+            match t {
+                Ty::Array(e, _) if matches!(**e, Ty::Array(..)) => {
+                    let n = self.b.load_at(Type::I32, &v, 4);
+                    let iov = self.iovecs(&v, &n);
+                    out.push(Typed(Type::Ptr, iov.clone()));
+                    out.push(Typed(Type::I32, n));
+                    lists.push(iov);
+                }
+                Ty::Array(..) => {
+                    let elems = self.b.offset(&v, 8);
+                    out.push(Typed(Type::Ptr, elems));
+                    if !ext.addr(i) {
+                        let n = self.b.load_at(Type::I32, &v, 4);
+                        out.push(Typed(Type::I32, n));
+                    }
+                }
+                Ty::I8 | Ty::I16 => {
+                    let wide = self.b.cast(CastOp::ZExt, ty(t)?, v, Type::I32);
+                    out.push(Typed(Type::I32, wide));
+                }
+                t => out.push(Typed(ty(t)?, v)),
+            }
+        }
+        let mut outs = Vec::new();
+        for t in ext.sig.results.iter().skip(1) {
+            let t = ty(t)?;
+            let p = self.b.alloca(t.clone());
+            out.push(Typed(Type::Ptr, p.clone()));
+            outs.push((t, p));
+        }
+        let r = self.b.call(Call::c(ret, Value::global(symbol), out));
+        for iov in lists {
+            let free = Call::c(
+                Type::Void,
+                Value::global("free"),
+                vec![Typed(Type::Ptr, iov)],
+            );
+            self.b.call(free);
+        }
+        if let (Some(r), Some(&b)) = (r, binds.first()) {
+            self.store(b, r)?;
+        }
+        for ((t, p), &b) in outs.into_iter().zip(binds.iter().skip(1)) {
+            let x = self.b.load(t, p);
+            self.store(b, x)?;
+        }
+        Ok(())
+    }
+
+    /// A `struct iovec`, `{void *base, size_t len}`, for each of the `n`
+    /// byte buffers of list `l`, an `i32` value, in memory from `calloc`
+    /// that the caller frees. Traps if there's no memory left.
+    fn iovecs(&mut self, l: &Value, n: &Value) -> Value {
+        let count = self.b.cast(CastOp::ZExt, Type::I32, n, Type::I64);
+        let args = vec![Type::I64.val(count), Type::I64.val(16)];
+        let iov = (self.b).call_value(Call::c(Type::Ptr, Value::global("calloc"), args));
+        // `calloc` may give null for no buffers, which the callee doesn't read.
+        let null = self.b.icmp(IntPred::Eq, Type::Ptr, &iov, Value::Null);
+        let some = self.b.icmp(IntPred::Ne, Type::I32, n, 0);
+        let failed = self.b.bin(BinOp::And, Type::I1, null, some);
+        self.trap_if(failed);
+        count_loop(&mut self.b, n, |b, k| {
+            let e = elem_offset(b, k, 8);
+            let buf = b.load_at(Type::Ptr, l, e);
+            let base = b.offset(&buf, 8);
+            let len = b.load_at(Type::I32, &buf, 4);
+            let len = b.cast(CastOp::ZExt, Type::I32, len, Type::I64);
+            let k = b.cast(CastOp::ZExt, Type::I32, k, Type::I64);
+            let at = b.bin(BinOp::Mul, Type::I64, k, 16);
+            b.store_at(Type::Ptr, base, &iov, &at);
+            let at8 = b.bin(BinOp::Add, Type::I64, at, 8);
+            b.store_at(Type::I64, len, &iov, at8);
+        });
+        iov
     }
 
     /// The block of join point `l`.
@@ -1485,5 +1619,45 @@ fn int_bits(t: &Ty) -> u32 {
         Ty::I16 => 16,
         Ty::I32 => 32,
         _ => 64,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    fn emit(src: &str) -> Result<String, String> {
+        let m = conduit_ir::text::parse(src).map_err(|e| e.to_string())?;
+        crate::emit_module(&m).map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn externs_share_a_symbol() {
+        let text = emit(
+            "#[link(c, symbol = \"f\")]\nextern a(i32) -> (i32)\n\
+             #[link(c, symbol = \"f\")]\nextern b(i32) -> (i32)\n",
+        )
+        .unwrap();
+        assert_eq!(text.matches("declare i32 @f(").count(), 1, "{text}");
+        let e = emit(
+            "#[link(c, symbol = \"f\")]\nextern a(i32) -> (i32)\n\
+             #[link(c, symbol = \"f\")]\nextern b(i64) -> (i32)\n",
+        )
+        .unwrap_err();
+        assert!(
+            e.contains("both link to `f`, with different signatures"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn flat_externs_take_pointers_and_lengths() {
+        let text = emit(
+            "#[link(c, symbol = \"g\")]\n#[abi(flat)]\n\
+             extern g(imm [imm [i8]], #[addr] mut [i32], i8) -> (i32, i64)\n",
+        )
+        .unwrap();
+        assert!(
+            text.contains("declare i32 @g(ptr, i32, ptr, i32, ptr)"),
+            "{text}"
+        );
     }
 }
