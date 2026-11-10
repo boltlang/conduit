@@ -1011,7 +1011,7 @@ let %3: imm fn(i32) -> (i32) does Effect20 = closure fn2()
   and arrays of `[i8]` can be passed, and only scalars given back:
   - a scalar is itself, an `i8` or `i16` zero-extended;
   - an array is its elements' address, then its length, or the address
-    alone for a `#[nolen]` parameter, like `args_get`'s buffers;
+    alone for a `#[addr]` parameter, like `args_get`'s buffers;
   - an array of `[i8]` is the address and count of an iovec list, a list
     of (address, length) pairs the call makes;
   - the first result is the import's result, and each other result is an

@@ -786,7 +786,7 @@ fn flat_sig(ext: &conduit_ir::Extern) -> FnSig {
     let mut params = Vec::new();
     for (i, ty) in ext.sig.params.iter().enumerate() {
         match ty {
-            Ty::Array(..) if ext.nolen(i) => params.push(ValType::I32),
+            Ty::Array(..) if ext.addr(i) => params.push(ValType::I32),
             Ty::Array(..) => params.extend([ValType::I32, ValType::I32]),
             ty => params.push(val(ty)),
         }

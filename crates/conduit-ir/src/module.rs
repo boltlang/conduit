@@ -171,7 +171,7 @@ pub struct Extern {
     pub abi: Abi,
     /// For each parameter, whether a [`Abi::Flat`] array is passed as its
     /// elements' address alone, without its length. Empty for none.
-    pub nolen: Vec<bool>,
+    pub addr: Vec<bool>,
     /// Names to show its parameters by in Conduit, which mean nothing to
     /// the host. Empty for none.
     pub param_names: Vec<Option<Box<str>>>,
@@ -247,15 +247,15 @@ impl Extern {
             link,
             sig,
             abi: Abi::Conduit,
-            nolen: Vec::new(),
+            addr: Vec::new(),
             param_names: Vec::new(),
             debug_name: None,
         }
     }
 
     /// Whether parameter `i` is passed without its length.
-    pub fn nolen(&self, i: usize) -> bool {
-        self.nolen.get(i).copied().unwrap_or(false)
+    pub fn addr(&self, i: usize) -> bool {
+        self.addr.get(i).copied().unwrap_or(false)
     }
 }
 
@@ -273,7 +273,7 @@ pub enum Abi {
     ///
     /// - a scalar is itself, an `i8` or `i16` zero-extended;
     /// - an array is its elements' address, then its length, or the
-    ///   address alone if the parameter is `nolen`;
+    ///   address alone if the parameter is `#[addr]`;
     /// - a list of byte buffers is the address and count of a list of
     ///   (address, length) pairs, an iovec list, made for the call;
     /// - the first result is the import's result, and each other result

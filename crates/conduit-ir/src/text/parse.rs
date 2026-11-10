@@ -307,16 +307,16 @@ impl Parser {
     /// An extern's parameter: its attributes, its name if it has one, and
     /// its type.
     fn extern_param(&mut self) -> Res<(bool, Option<Box<str>>, Ty)> {
-        let mut nolen = false;
+        let mut addr = false;
         for attr in self.attrs()? {
             match (attr.name.as_str(), &attr.args[..]) {
-                ("nolen", []) => nolen = true,
-                ("nolen", _) => return self.error_at(attr.pos, "`nolen` takes no arguments"),
+                ("addr", []) => addr = true,
+                ("addr", _) => return self.error_at(attr.pos, "`addr` takes no arguments"),
                 _ => {
                     return self.error_at(
                         attr.pos,
                         format!(
-                            "`{}` isn't an attribute of a parameter: only `nolen` is",
+                            "`{}` isn't an attribute of a parameter: only `addr` is",
                             attr.name
                         ),
                     );
@@ -332,7 +332,7 @@ impl Parser {
             }
             _ => None,
         };
-        Ok((nolen, name, self.ty()?))
+        Ok((addr, name, self.ty()?))
     }
 
     /// What an extern's attributes say: its `#[link(..)]`, which it must
@@ -552,7 +552,7 @@ impl Parser {
                         self.punct("->")?;
                         let results = self.list(Self::ty)?;
                         let row = self.row()?;
-                        let nolen = if params.iter().any(|p| p.0) {
+                        let addr = if params.iter().any(|p| p.0) {
                             params.iter().map(|p| p.0).collect()
                         } else {
                             Vec::new()
@@ -571,7 +571,7 @@ impl Parser {
                             link,
                             sig,
                             abi,
-                            nolen,
+                            addr,
                             param_names,
                             debug_name,
                         };

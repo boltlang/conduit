@@ -63,7 +63,7 @@ parameters:
   is called.
 - `#[abi(flat)]` is its ABI (`abi` of `Extern`), when it isn't the
   default, `#[abi(conduit)]`.
-- `#[nolen]` before a parameter of an `#[abi(flat)]` extern passes the
+- `#[addr]` before a parameter of an `#[abi(flat)]` extern passes the
   array's address alone.
 - A parameter can have a name, `%fd: i32`, which only shows what it is
   (`param_names` of `Extern`).
@@ -83,7 +83,7 @@ extern fd_write(%fd: i32, %iovs: imm [imm [i8]]) -> (i32, i32)
 
 #[link(wasm, module = "wasi_snapshot_preview1")]
 #[abi(flat)]
-extern args_get(#[nolen] %argv: mut [i32], #[nolen] %buf: mut [i8]) -> (i32)
+extern args_get(#[addr] %argv: mut [i32], #[addr] %buf: mut [i8]) -> (i32)
 
 effect effect20 {
   (i32) -> ()

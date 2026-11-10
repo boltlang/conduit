@@ -25,7 +25,7 @@ extern extern1(%x: i32) -> ()
 
 #[link(wasm, module = "env", name = "fill")]
 #[abi(flat)]
-extern extern2(#[nolen] %buf: mut [i8], i32) -> ()
+extern extern2(#[addr] %buf: mut [i8], i32) -> ()
 
 const const40: imm [i8] = b"hi \"\\\n\t\r\0\x01\xff é"
 
@@ -543,12 +543,12 @@ fn parse_errors() {
             "1:3: an `abi` is one word, like `abi(flat)`",
         ),
         (
-            "#[link(wasm, module = \"a\")]\nextern f(#[nolen(x)] i32) -> ()",
-            "2:12: `nolen` takes no arguments",
+            "#[link(wasm, module = \"a\")]\nextern f(#[addr(x)] i32) -> ()",
+            "2:12: `addr` takes no arguments",
         ),
         (
             "#[link(wasm, module = \"a\")]\nextern f(#[cold] i32) -> ()",
-            "2:12: `cold` isn't an attribute of a parameter: only `nolen` is",
+            "2:12: `cold` isn't an attribute of a parameter: only `addr` is",
         ),
         (
             "fn fn1(% : i32) -> () { jump ret() }",

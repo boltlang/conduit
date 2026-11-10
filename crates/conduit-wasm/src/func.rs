@@ -1749,7 +1749,7 @@ impl<'m> FuncCx<'_, 'm> {
                     self.atom(a);
                     self.emit(I::I32Const(8));
                     self.emit(I::I32Add);
-                    if !ext.nolen(i) {
+                    if !ext.addr(i) {
                         self.atom(a);
                         self.emit(load(Storage::I32, 4));
                     }

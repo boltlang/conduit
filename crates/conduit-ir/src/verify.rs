@@ -588,34 +588,34 @@ pub(crate) fn row_ok<P: Program + ?Sized>(p: &P, row: &Row, params: u32) -> Resu
 /// Checks what an extern's ABI can pass: see [`Abi::Flat`].
 fn abi_ok(ext: &Extern) -> Result<(), String> {
     let n = ext.sig.params.len();
-    if !ext.nolen.is_empty() && ext.nolen.len() != n {
+    if !ext.addr.is_empty() && ext.addr.len() != n {
         return Err(format!(
-            "has {} nolen flags for {n} parameters",
-            ext.nolen.len()
+            "has {} addr flags for {n} parameters",
+            ext.addr.len()
         ));
     }
     match ext.abi {
-        Abi::Conduit => match (0..n).find(|&i| ext.nolen(i)) {
+        Abi::Conduit => match (0..n).find(|&i| ext.addr(i)) {
             Some(i) => Err(format!(
-                "parameter {i} is #[nolen], which only the flat ABI has"
+                "parameter {i} is #[addr], which only the flat ABI has"
             )),
             None => Ok(()),
         },
         Abi::Flat => {
             for (i, ty) in ext.sig.params.iter().enumerate() {
                 let ok = match ty {
-                    ty if ty.is_scalar() => !ext.nolen(i),
+                    ty if ty.is_scalar() => !ext.addr(i),
                     Ty::Array(elem, _) if elem.is_scalar() => true,
                     Ty::Array(elem, _) => {
-                        matches!(&**elem, Ty::Array(b, _) if **b == Ty::I8) && !ext.nolen(i)
+                        matches!(&**elem, Ty::Array(b, _) if **b == Ty::I8) && !ext.addr(i)
                     }
                     _ => false,
                 };
                 if !ok {
-                    let what = if ext.nolen(i) { "#[nolen] " } else { "" };
+                    let what = if ext.addr(i) { "#[addr] " } else { "" };
                     return Err(format!(
                         "the flat ABI can't pass parameter {i}, a {what}{ty}: only scalars, \
-                         arrays of scalars, #[nolen] or not, and arrays of [i8]"
+                         arrays of scalars, #[addr] or not, and arrays of [i8]"
                     ));
                 }
             }

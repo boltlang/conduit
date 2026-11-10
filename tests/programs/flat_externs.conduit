@@ -16,7 +16,7 @@ extern fill(mut [i8], i32) -> () does io
 extern gather(imm [imm [i8]]) -> (i32, i32) does io
 #[link(emu)]
 #[abi(flat)]
-extern squares(#[nolen] mut [i32], i32) -> () does io
+extern squares(#[addr] mut [i32], i32) -> () does io
 #[link(emu)]
 #[abi(flat)]
 extern scale(i32) -> (i32, i64) does io

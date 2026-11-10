@@ -55,9 +55,9 @@ Others are checked at run time:
   use `inherit` and the declaration's mutability parameters.
 - **Externs and effects:** every type in their signatures is well formed,
   with no `inherit` and no parameters. An extern with `#[abi(flat)]` only
-  takes scalars, arrays of scalars and arrays of `[i8]`, and `#[nolen]`
+  takes scalars, arrays of scalars and arrays of `[i8]`, and `#[addr]`
   only on an array of scalars, and gives only scalars: no data, closures
-  or host values. `#[nolen]` needs the flat ABI.
+  or host values. `#[addr]` needs the flat ABI.
 - **Handlers:**
   - The effect and the return clause exist.
   - The environment's types are well formed.

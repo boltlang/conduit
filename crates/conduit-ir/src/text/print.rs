@@ -233,14 +233,14 @@ pub(super) fn module(m: &Module) -> String {
         };
         let params: Vec<String> = (ext.sig.params.iter().enumerate())
             .map(|(i, ty)| {
-                let nolen = if ext.nolen(i) { "#[nolen] " } else { "" };
+                let addr = if ext.addr(i) { "#[addr] " } else { "" };
                 let name = match ext.param_names.get(i) {
                     Some(Some(n)) if n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') => {
                         format!("%{n}: ")
                     }
                     _ => String::new(),
                 };
-                format!("{nolen}{name}{}", names.ty(ty))
+                format!("{addr}{name}{}", names.ty(ty))
             })
             .collect();
         items.push(format!(

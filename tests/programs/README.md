@@ -111,7 +111,7 @@ for (`conduit_test::link_for_wasm`):
 | `"sum"` | `#[abi(flat)]`, `(imm [i8]) -> (i32)` | the sum of its bytes, as signed |
 | `"fill"` | `#[abi(flat)]`, `(mut [i8], i32) -> ()` | sets every byte to the second argument's low byte |
 | `"gather"` | `#[abi(flat)]`, `(imm [imm [i8]]) -> (i32, i32)` | how many buffers, and the sum of all their bytes |
-| `"squares"` | `#[abi(flat)]`, `(#[nolen] mut [i32], i32) -> ()` | sets elements 0 to n - 1 to their index squared |
+| `"squares"` | `#[abi(flat)]`, `(#[addr] mut [i32], i32) -> ()` | sets elements 0 to n - 1 to their index squared |
 | `"scale"` | `#[abi(flat)]`, `(i32) -> (i32, i64)` | 0, and its argument times 10^12 |
 | `"byte"` | `#[abi(flat)]`, `(i8) -> (i32)` | its argument zero-extended |
 
