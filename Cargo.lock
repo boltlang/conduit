@@ -209,6 +209,7 @@ dependencies = [
  "conduit-effects",
  "conduit-eval",
  "conduit-ir",
+ "conduit-llvm",
  "conduit-opt",
  "conduit-test",
  "conduit-wasm",

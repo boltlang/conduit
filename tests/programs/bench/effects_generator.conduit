@@ -1,0 +1,60 @@
+// A generator: a body that yields 0 to n - 1, and a loop that sums what it
+// yields. The clause keeps each continuation, which the loop resumes, so
+// it's neither tail-resumptive nor aborting: the Wasm backend lowers it
+// by evidence passing, or by switching stacks, and native code by
+// evidence passing.
+
+effect Yield {
+  (i32) -> ()
+}
+
+// Keeps the continuation and what was yielded, and gives 1: there's more.
+handler parking for Yield env(ref ro any, ref i32) ops(park) ret parked_done
+
+fn park(%cell: ref ro any, %last: ref i32, %x: i32, %k: cont() -> (i32)) -> (i32) {
+  let %boxed: mut any = box[cont() -> (i32)](%k)
+  let = ref_set(%cell, %boxed)
+  let = ref_set(%last, %x)
+  jump ret(1i32)
+}
+
+// The body is done: there's no more.
+fn parked_done(%cell: ref ro any, %last: ref i32, %r: i32) -> (i32) {
+  jump ret(0i32)
+}
+
+fn produce(%i: i32, %n: i32) -> (i32) does Yield {
+  let %more: i32 = lt.s(%i, %n)
+  case %more {
+    0 => jump ret(0i32)
+    _ =>
+      let = perform Yield.0(%i)
+      let %i1: i32 = add(%i, 1i32)
+      let %r: i32 = call produce(%i1, %n)
+      jump ret(%r)
+  }
+}
+
+fn sum_generated(%n: i32) -> (i32) {
+  let %empty: imm any = box[i32](0i32)
+  let %cell: ref ro any = ref_new(%empty)
+  let %last: ref i32 = ref_new(0i32)
+  let %body: imm fn() -> (i32) does Yield = closure produce(0i32, %n)
+  let %first: i32 = handle parking(%cell, %last, %body)
+  join rec next(%more: i32, %acc: i32) =
+    case %more {
+      0 => jump ret(%acc)
+      _ =>
+        let %x: i32 = ref_get(%last)
+        let %acc1: i32 = add(%acc, %x)
+        let %boxed: ro any = ref_get(%cell)
+        let %k: cont() -> (i32) = unbox[cont() -> (i32)](%boxed)
+        let %more1: i32 = resume(%k)
+        jump next(%more1, %acc1)
+    }
+  in jump next(%first, 0i32)
+}
+
+//# run sum_generated(10i32) == 45i32
+//# run sum_generated(20000i32) == 199990000i32
+//# bench

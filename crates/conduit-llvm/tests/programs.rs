@@ -191,4 +191,3 @@ fn evaluator_live(m: &Module, run: &Run<'_>, cycles: bool) -> Result<(i64, i64),
         .count();
     Ok((live.len() as i64, hosts as i64))
 }
-

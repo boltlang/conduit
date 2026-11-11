@@ -1,0 +1,54 @@
+// A state handler, whose clauses are tail-resumptive, around a recursive
+// function that gets and puts the state each round: the cost of a
+// `perform` that's a call of its clause, through the Wasm backend's
+// handler frames, or evidence passing natively. The function calls
+// itself, so the handler can't be run directly, and each `perform` stays.
+
+effect State {
+  () -> (i32)
+  (i32) -> ()
+}
+
+handler state for State env(ref i32) ops(get, put) ret finish
+
+fn get(%s: ref i32, %k: cont(i32) -> (i32)) -> (i32) {
+  let %x: i32 = ref_get(%s)
+  let %r: i32 = resume(%k, %x)
+  jump ret(%r)
+}
+
+fn put(%s: ref i32, %x: i32, %k: cont() -> (i32)) -> (i32) {
+  let = ref_set(%s, %x)
+  let %r: i32 = resume(%k)
+  jump ret(%r)
+}
+
+fn finish(%s: ref i32, %r: i32) -> (i32) {
+  jump ret(%r)
+}
+
+// Adds each of i to n - 1 to the state, then gives it.
+fn count(%i: i32, %n: i32) -> (i32) does State {
+  let %x: i32 = perform State.0()
+  let %more: i32 = lt.s(%i, %n)
+  case %more {
+    0 => jump ret(%x)
+    _ =>
+      let %x1: i32 = add(%x, %i)
+      let = perform State.1(%x1)
+      let %i1: i32 = add(%i, 1i32)
+      let %r: i32 = call count(%i1, %n)
+      jump ret(%r)
+  }
+}
+
+fn sum_state(%n: i32) -> (i32) {
+  let %s: ref i32 = ref_new(0i32)
+  let %body: imm fn() -> (i32) does State = closure count(0i32, %n)
+  let %r: i32 = handle state(%s, %body)
+  jump ret(%r)
+}
+
+//# run sum_state(10i32) == 45i32
+//# run sum_state(50000i32) == 1249975000i32
+//# bench

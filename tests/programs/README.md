@@ -98,6 +98,27 @@ worth comparing between runs on the same quiet machine, and within about
 down slows them all, but two modules with the same code can still differ
 that much.
 
+`--backend` runs them on other backends too, side by side, with how each
+time compares with Wasm's:
+
+```sh
+cargo run --release -p conduit-bench -- --backend wasm,wasm-switch,native
+```
+
+- `wasm`, the default, and the only one CI runs: Wasm, with handlers that
+  need it lowered by evidence passing.
+- `wasm-switch`: Wasm with stack switching for those handlers, for a
+  program that has some. Wasmtime runs it only on x86-64 Linux and macOS.
+- `native`: the LLVM backend, compiled with `clang`, which lowers every
+  handler by evidence passing. It has no fuel. Each timed call runs in a
+  forked process, after a call that warms it up, pinned to one core on
+  Linux (see `conduit_llvm::native::TIMER`). Without `clang`, it's
+  skipped.
+
+`effects_state`, `effects_generator` and `effects_exceptions` measure
+handlers: tail-resumptive clauses, clauses that keep their continuation,
+and aborting ones, each kept from being optimized away.
+
 ## Host functions
 
 A program with a `//# host` check can call the test host's functions,

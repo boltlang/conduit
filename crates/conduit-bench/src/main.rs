@@ -1,6 +1,8 @@
-//! Runs the programs in `tests/programs` that have a `bench` check as Wasm,
-//! in Wasmtime, and measures each of their `run` checks, compiled each of
-//! the ways the `bench` snapshots compare ([`conduit_bench::CONFIGS`]):
+//! Runs the programs in `tests/programs` that have a `bench` check, as Wasm
+//! in Wasmtime and, with `--backend`, as Wasm with stack switching or as
+//! native code (see [`conduit_bench::Backend`]), and measures each of their
+//! `run` checks, compiled each of the ways the `bench` snapshots compare
+//! ([`conduit_bench::CONFIGS`]):
 //!
 //! - **fuel**: what Wasmtime counts as it runs the code, about one per Wasm
 //!   instruction. It's the same every time, so it can be compared exactly.
@@ -8,9 +10,12 @@
 //!   runs spread around it, over enough runs to fill `--time`. The module
 //!   is compiled once, and each run gets a fresh instance, outside the
 //!   timing. Times are only worth comparing on a quiet machine, with
-//!   `--release`.
+//!   `--release`. Native code is timed by `conduit_llvm::native::TIMER`,
+//!   each call in a forked process, which a call before it warms up, a
+//!   batch of calls each time the configs take turns.
 //! - **code**: the size of the module, in bytes, and **pages**: how much
-//!   memory it has after the call, in 64 KiB pages.
+//!   memory it has after the call, in 64 KiB pages. Native code has
+//!   neither, and no fuel.
 //!
 //! Each call's results must be what its `run` check says.
 //!
@@ -21,7 +26,11 @@
 //! - `filter`: only programs whose name contains it, like `nqueens`.
 //! - `--config NAME,..`: only those ways of compiling: `optimized`,
 //!   `counts`, `+borrows`, `+reuse`, `+specialized`, `+cycles`.
-//! - `--fuel`: no times, which is quick and the same every time.
+//! - `--backend NAME,..`: the backends to run on: `wasm`, the default,
+//!   `wasm-switch` and `native`. Results show each backend's time next to
+//!   Wasm's, as a ratio.
+//! - `--fuel`: no times, which is quick and the same every time, and only
+//!   Wasm, which counts fuel.
 //! - `--time MS`: how long to time each call for, 300 by default.
 //! - `--json FILE`: also write the results to `FILE`, with the commit.
 //! - `--compare FILE`: compare with results `--json` wrote, and show what
@@ -41,8 +50,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use conduit_bench::{CONFIGS, Config, prepare};
+use conduit_bench::{Backend, CONFIGS, Config, prepare, prepare_for};
 use conduit_ir::{Atom, Module, Ty};
+use conduit_llvm::native;
 use conduit_test::{CheckKind, Program, Target};
 use conduit_wasm::Options;
 use serde_json::{Value as Json, json};
@@ -51,6 +61,7 @@ use wasmtime::{Engine, Store};
 struct Args {
     filter: Option<String>,
     configs: Vec<String>,
+    backends: Vec<Backend>,
     fuel_only: bool,
     time: Duration,
     json: Option<PathBuf>,
@@ -64,6 +75,7 @@ fn args() -> Result<Args, String> {
     let mut args = Args {
         filter: None,
         configs: CONFIGS.iter().map(|c| c.name.to_string()).collect(),
+        backends: vec![Backend::Wasm],
         fuel_only: false,
         time: Duration::from_millis(300),
         json: None,
@@ -82,6 +94,19 @@ fn args() -> Result<Args, String> {
                     let names: Vec<&str> = CONFIGS.iter().map(|c| c.name).collect();
                     return Err(format!("unknown config {c}: expected one of {names:?}"));
                 }
+            }
+            "--backend" => {
+                let names = value("--backend")?;
+                args.backends = (names.split(','))
+                    .map(|b| {
+                        Backend::named(b).ok_or_else(|| {
+                            let names: Vec<&str> = Backend::ALL.iter().map(|b| b.name()).collect();
+                            format!("unknown backend {b}: expected one of {names:?}")
+                        })
+                    })
+                    .collect::<Result<_, _>>()?;
+                args.backends.sort();
+                args.backends.dedup();
             }
             "--fuel" => args.fuel_only = true,
             "--time" => {
@@ -102,7 +127,7 @@ fn args() -> Result<Args, String> {
             }
             "--help" | "-h" => {
                 return Err(
-                    "usage: conduit-bench [--config NAME,..] [--fuel] [--time MS] \
+                    "usage: conduit-bench [--config NAME,..] [--backend NAME,..] [--fuel] [--time MS] \
                             [--json FILE] [--compare FILE] [--markdown] [--check PCT] [--badges DIR] [filter]"
                         .into(),
                 );
@@ -124,18 +149,34 @@ fn main() {
     }
 }
 
-/// One measurement, of one `run` check compiled one way.
-/// What one `run` check of a program did, compiled one way.
+/// What one `run` check of a program did, compiled one way, for one
+/// backend. Native code has no fuel, and its size and memory aren't
+/// measured.
 struct Measured {
     program: String,
     run: String,
     config: String,
-    fuel: u64,
+    backend: Backend,
+    fuel: Option<u64>,
     /// The median and the median distance from it, if timed.
     time: Option<(Duration, Duration)>,
-    code: usize,
-    pages: u64,
+    code: Option<usize>,
+    pages: Option<u64>,
 }
+
+impl Measured {
+    fn key(&self) -> Key {
+        (
+            self.program.clone(),
+            self.run.clone(),
+            self.config.clone(),
+            self.backend.name().to_string(),
+        )
+    }
+}
+
+/// A measurement's program, run, config and backend.
+type Key = (String, String, String, String);
 
 fn run() -> Result<(), String> {
     let args = args()?;
@@ -174,6 +215,7 @@ fn run() -> Result<(), String> {
                 "program": r.program,
                 "run": r.run,
                 "config": r.config,
+                "backend": r.backend.name(),
                 "fuel": r.fuel,
                 "time_ns": r.time.map(|t| t.0.as_nanos() as u64),
                 "spread_ns": r.time.map(|t| t.1.as_nanos() as u64),
@@ -212,9 +254,9 @@ fn run() -> Result<(), String> {
 fn fuel_changes<'r>(results: &'r [Measured], baseline: &Baseline) -> Vec<(&'r Measured, u64, u64)> {
     (results.iter())
         .filter_map(|r| {
-            let key = (r.program.clone(), r.run.clone(), r.config.clone());
-            let &(before, _) = baseline.get(&key)?;
-            (before != r.fuel).then_some((r, before, r.fuel))
+            let after = r.fuel?;
+            let before = baseline.get(&r.key())?.0?;
+            (before != after).then_some((r, before, after))
         })
         .collect()
 }
@@ -230,43 +272,61 @@ fn markdown(results: &[Measured], baseline: Option<&Baseline>) {
                 println!("No change in fuel in any benchmark.");
                 return;
             }
-            println!("| Program | Run | Config | Before | After | Change |");
-            println!("|---|---|---|---:|---:|---:|");
+            println!("| Program | Run | Config | Backend | Before | After | Change |");
+            println!("|---|---|---|---|---:|---:|---:|");
             for (r, before, after) in changes {
                 println!(
-                    "| `{}` | `{}` | `{}` | {before} | {after} | {} |",
+                    "| `{}` | `{}` | `{}` | {} | {before} | {after} | {} |",
                     r.program,
                     r.run,
                     r.config,
+                    r.backend.name(),
                     change(before as f64, after as f64)
                 );
             }
         }
         None => {
-            println!("| Program | Run | Config | Fuel | Time | Code | Pages |");
-            println!("|---|---|---|---:|---:|---:|---:|");
+            println!("| Program | Run | Config | Backend | Fuel | Time | Code | Pages |");
+            println!("|---|---|---|---|---:|---:|---:|---:|");
             for r in results {
                 let time = r.time.map_or("-".into(), |(t, _)| show(t));
                 println!(
-                    "| `{}` | `{}` | `{}` | {} | {time} | {} | {} |",
-                    r.program, r.run, r.config, r.fuel, r.code, r.pages
+                    "| `{}` | `{}` | `{}` | {} | {} | {time} | {} | {} |",
+                    r.program,
+                    r.run,
+                    r.config,
+                    r.backend.name(),
+                    or_dash(r.fuel),
+                    or_dash(r.code),
+                    or_dash(r.pages)
                 );
             }
         }
     }
 }
 
-/// The modules of `p`, one for each config asked for, with the options to
-/// lower it with.
-fn modules(p: &Program, configs: &[String]) -> Result<Vec<(String, Module, Options)>, String> {
-    let optimized = prepare(p.module_for(Target::Wasm)?)?;
+/// The modules of `p` for Wasm, one for each config asked for, with the
+/// options to lower it with: with stack switching for
+/// [`Backend::WasmSwitch`], for which there are none if `p`'s handlers
+/// don't need it.
+fn modules(
+    p: &Program,
+    configs: &[String],
+    backend: Backend,
+) -> Result<Vec<(String, Module, Options)>, String> {
+    let m = p.module_for(Target::Wasm)?;
+    let switching = backend == Backend::WasmSwitch;
+    if switching && conduit_ir::clause::direct_handlers(&m) {
+        return Ok(Vec::new());
+    }
+    let optimized = prepare_for(m, backend)?;
     let mut out = Vec::new();
     for name in configs {
         let config = Config::named(name).ok_or_else(|| format!("unknown config {name}"))?;
         let mut m = optimized.clone();
         config.apply(&mut m)?;
         let options = Options {
-            stack_switching: false,
+            stack_switching: switching,
             counts: config.counts,
             cycles: config.cycles,
             ..Default::default()
@@ -276,12 +336,48 @@ fn modules(p: &Program, configs: &[String]) -> Result<Vec<(String, Module, Optio
     Ok(out)
 }
 
+/// Every measurement of `p`, of each backend asked for, ordered by run,
+/// then config, then backend.
 fn bench(p: &Program, args: &Args) -> Result<Vec<Measured>, String> {
-    let fuel_engine = engine(true)?;
-    let time_engine = engine(false)?;
+    let mut out = Vec::new();
+    for &backend in &args.backends {
+        let measured = match backend {
+            Backend::Wasm | Backend::WasmSwitch => bench_wasm(p, args, backend),
+            Backend::Native => bench_native(p, args),
+        };
+        out.extend(measured.map_err(|e| format!("{}: {e}", backend.name()))?);
+    }
+    // The same order as the program's runs and the configs asked for.
+    let runs: Vec<String> = (p.checks.iter())
+        .filter_map(|c| match &c.kind {
+            CheckKind::Run { func, args, .. } => Some(call_text(func, args)),
+            _ => None,
+        })
+        .collect();
+    let at = |list: &[String], x: &String| list.iter().position(|y| y == x);
+    out.sort_by_key(|r| (at(&runs, &r.run), at(&args.configs, &r.config), r.backend));
+    Ok(out)
+}
+
+/// A run check's call, as results show it: `nqueens(8i32)`.
+fn call_text(func: &str, args: &[conduit_ir::Lit]) -> String {
+    let args: Vec<String> = args.iter().map(|&l| Atom::Lit(l).to_string()).collect();
+    format!("{func}({})", args.join(", "))
+}
+
+/// `p` as Wasm in Wasmtime: fuel, pages and results in one run of each
+/// config, then times, the configs taking turns.
+fn bench_wasm(p: &Program, args: &Args, backend: Backend) -> Result<Vec<Measured>, String> {
+    let switching = backend == Backend::WasmSwitch;
+    let compiled_modules = modules(p, &args.configs, backend)?;
+    if compiled_modules.is_empty() {
+        return Ok(Vec::new());
+    }
+    let fuel_engine = engine(true, switching)?;
+    let time_engine = engine(false, switching)?;
     // Each config compiled, once for fuel and once for timing.
     let mut compiled = Vec::new();
-    for (config, m, options) in modules(p, &args.configs)? {
+    for (config, m, options) in compiled_modules {
         let bytes =
             conduit_wasm::emit_module_with(&m, &options).map_err(|e| format!("{config}: {e}"))?;
         let fuel_module =
@@ -292,15 +388,12 @@ fn bench(p: &Program, args: &Args) -> Result<Vec<Measured>, String> {
             .map_err(|e| format!("{config}: {e:?}"))?;
         compiled.push((config, m, bytes.len(), fuel_module, time_module));
     }
-    let Some((_, first, ..)) = compiled.first() else {
-        return Ok(Vec::new());
-    };
+    let first = &compiled[0].1;
     // Passes keep functions' IDs, so the runs are the same in every config.
     let runs = p.runs(first)?;
     let mut out = Vec::new();
     for run in &runs {
-        let args_text: Vec<String> = run.args.iter().map(|&l| Atom::Lit(l).to_string()).collect();
-        let call = format!("{}({})", run.name, args_text.join(", "));
+        let call = call_text(run.name, run.args);
         let results = first
             .funcs
             .get(&run.func)
@@ -321,10 +414,11 @@ fn bench(p: &Program, args: &Args) -> Result<Vec<Measured>, String> {
                 program: p.name.clone(),
                 run: call.clone(),
                 config: config.clone(),
-                fuel,
+                backend,
+                fuel: Some(fuel),
                 time: None,
-                code: *code,
-                pages,
+                code: Some(*code),
+                pages: Some(pages),
             });
         }
         if args.fuel_only {
@@ -340,6 +434,145 @@ fn bench(p: &Program, args: &Args) -> Result<Vec<Measured>, String> {
         }
     }
     Ok(out)
+}
+
+/// How many timed calls a native executable makes each time it's run.
+const NATIVE_BATCH: usize = 10;
+
+/// `p` as native code, from the LLVM backend: each config compiled with
+/// `clang` and `conduit_llvm::native`'s timer, its results checked, then
+/// timed, the configs taking turns a batch of calls at a time. Nothing,
+/// with a note, without `clang`, or with `--fuel`, since native code has
+/// no fuel, or for a program the LLVM backend can't lower yet.
+fn bench_native(p: &Program, args: &Args) -> Result<Vec<Measured>, String> {
+    if args.fuel_only {
+        return Ok(Vec::new());
+    }
+    if !native::clang() {
+        eprintln!("{}: native: skipped, since clang isn't installed", p.name);
+        return Ok(Vec::new());
+    }
+    let base = prepare_for(p.module_for(Target::C)?, Backend::Native)?;
+    let runs = p.runs(&base)?;
+    let calls: Vec<native::Run<'_>> = (runs.iter())
+        .map(|r| native::Run {
+            func: r.func,
+            args: r.args,
+        })
+        .collect();
+    let dir = conduit_test::programs_dir().join("../../target/conduit-bench/native");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let timer = dir.join("timer.c");
+    std::fs::write(&timer, native::TIMER).map_err(|e| e.to_string())?;
+    let host = conduit_test::programs_dir().join("host/c.c");
+    let mut exes = Vec::new();
+    for name in &args.configs {
+        let config = Config::named(name).ok_or_else(|| format!("unknown config {name}"))?;
+        let mut m = base.clone();
+        config.apply(&mut m)?;
+        let options = conduit_llvm::Options {
+            counts: config.counts,
+            cycles: config.cycles,
+        };
+        let mut module = match conduit_llvm::lower_module_with(&m, &options) {
+            Ok(module) => module,
+            Err(e) => {
+                eprintln!("{}: native: skipped: {e}", p.name);
+                return Ok(Vec::new());
+            }
+        };
+        module.items.extend(native::print_runs(&m, &calls, false)?);
+        module.items.extend(native::bench_runs(&m, &calls)?);
+        let stem = format!("{}_{}", p.name.replace('/', "_"), name.replace('+', ""));
+        let exe = native::build(&dir, &stem, &module.to_string(), &[&timer, &host])?;
+        exes.push((name.clone(), exe));
+    }
+    let mut out = Vec::new();
+    for (k, run) in runs.iter().enumerate() {
+        let results = &base.funcs[&run.func].results;
+        for (config, exe) in &exes {
+            let got = native_check(exe, k, results);
+            run.check(p, got).map_err(|e| format!("{config}: {e}"))?;
+        }
+        let times = time_native(&exes, k, args.time)?;
+        for ((config, _), time) in exes.iter().zip(times) {
+            out.push(Measured {
+                program: p.name.clone(),
+                run: call_text(run.name, run.args),
+                config: config.clone(),
+                backend: Backend::Native,
+                fuel: None,
+                time: Some(time),
+                code: None,
+                pages: None,
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// What call `k` of the executable `exe` gives, as its `check` prints it.
+fn native_check(exe: &Path, k: usize, results: &[Ty]) -> Result<conduit_test::Outcome, String> {
+    use std::os::unix::process::ExitStatusExt;
+    let out = std::process::Command::new(exe)
+        .args(["check", &k.to_string()])
+        .output()
+        .map_err(|e| e.to_string())?;
+    if let Some(signal) = out.status.signal() {
+        return Ok(conduit_test::Outcome::Trap(format!("signal {signal}")));
+    }
+    if !out.status.success() {
+        return Err(format!("exited with {}", out.status));
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let words: Vec<&str> = text.split_whitespace().collect();
+    native::parse_results(&words, results).map(conduit_test::Outcome::Values)
+}
+
+/// For each of `exes`, the median time of call `k`, and the median
+/// distance from it, as [`time_calls`] does for Wasm, a batch of calls of
+/// each executable a round.
+fn time_native(
+    exes: &[(String, PathBuf)],
+    k: usize,
+    budget: Duration,
+) -> Result<Vec<(Duration, Duration)>, String> {
+    let batch = |exe: &Path| -> Result<Vec<Duration>, String> {
+        let out = std::process::Command::new(exe)
+            .args(["time", &k.to_string(), &NATIVE_BATCH.to_string()])
+            .output()
+            .map_err(|e| e.to_string())?;
+        if !out.status.success() {
+            return Err(format!("timing {} failed: {}", exe.display(), out.status));
+        }
+        let text = String::from_utf8_lossy(&out.stdout);
+        (text.lines())
+            .map(|l| {
+                l.trim()
+                    .parse()
+                    .map(Duration::from_nanos)
+                    .map_err(|e| format!("{e}"))
+            })
+            .collect()
+    };
+    let mut times = vec![Vec::new(); exes.len()];
+    let start = Instant::now();
+    let total = budget * exes.len() as u32;
+    while times[0].len() < 5 || (start.elapsed() < total && times[0].len() < 100_000) {
+        for ((_, exe), ts) in exes.iter().zip(&mut times) {
+            ts.extend(batch(exe)?);
+        }
+    }
+    Ok(times.into_iter().map(median_and_spread).collect())
+}
+
+/// The median of `ts`, and the median distance from it.
+fn median_and_spread(mut ts: Vec<Duration>) -> (Duration, Duration) {
+    ts.sort();
+    let median = ts[ts.len() / 2];
+    let mut spread: Vec<Duration> = ts.iter().map(|&t| t.abs_diff(median)).collect();
+    spread.sort();
+    (median, spread[spread.len() / 2])
 }
 
 /// For each of `modules`, the median time of calling `run`, and the median
@@ -375,25 +608,26 @@ fn time_calls(
             ts.push(once(m)?);
         }
     }
-    Ok(times
-        .into_iter()
-        .map(|mut ts| {
-            ts.sort();
-            let median = ts[ts.len() / 2];
-            let mut spread: Vec<Duration> = ts.iter().map(|&t| t.abs_diff(median)).collect();
-            spread.sort();
-            (median, spread[spread.len() / 2])
-        })
-        .collect())
+    Ok(times.into_iter().map(median_and_spread).collect())
 }
 
-fn engine(fuel: bool) -> Result<Engine, String> {
+fn engine(fuel: bool, stack_switching: bool) -> Result<Engine, String> {
     let mut config = conduit_test::wasm::config();
     config
         .consume_fuel(fuel)
+        .wasm_gc(stack_switching)
+        .wasm_stack_switching(stack_switching)
         // Instantiating from a pool is quicker, which leaves more of the
-        // time for runs.
-        .allocation_strategy(wasmtime::InstanceAllocationStrategy::pooling());
+        // time for runs. Stack switching has a table for each operation's
+        // continuations, which needs a slot for each one alive, and host
+        // values one more.
+        .allocation_strategy(wasmtime::InstanceAllocationStrategy::Pooling({
+            let mut pool = wasmtime::PoolingAllocationConfig::default();
+            pool.max_tables_per_module(64)
+                .total_tables(64 * 1000)
+                .table_elements(1 << 20);
+            pool
+        }));
     Engine::new(&config).map_err(|e| e.to_string())
 }
 
@@ -408,7 +642,7 @@ fn instantiate(
 
 /// A baseline's measurements, by program, run and config: fuel, and the
 /// time and spread in nanoseconds, if timed.
-type Baseline = BTreeMap<(String, String, String), (u64, Option<(u64, u64)>)>;
+type Baseline = BTreeMap<Key, (Option<u64>, Option<(u64, u64)>)>;
 
 fn load(path: &PathBuf) -> Result<Baseline, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -420,9 +654,11 @@ fn load(path: &PathBuf) -> Result<Baseline, String> {
     {
         let s = |k: &str| r[k].as_str().unwrap_or_default().to_string();
         let time = r["time_ns"].as_u64().zip(r["spread_ns"].as_u64());
+        // Results from before there were other backends are Wasm's.
+        let backend = r["backend"].as_str().unwrap_or("wasm").to_string();
         out.insert(
-            (s("program"), s("run"), s("config")),
-            (r["fuel"].as_u64().unwrap_or(0), time),
+            (s("program"), s("run"), s("config"), backend),
+            (r["fuel"].as_u64(), time),
         );
     }
     Ok(out)
@@ -430,13 +666,18 @@ fn load(path: &PathBuf) -> Result<Baseline, String> {
 
 fn print(results: &[Measured], baseline: Option<&Baseline>) {
     let mut last = (String::new(), String::new());
+    let backends = results.iter().any(|r| r.backend != Backend::Wasm);
     for r in results {
         if (&r.program, &r.run) != (&last.0, &last.1) {
             println!("\n{} {}", r.program, r.run);
-            println!(
-                "  {:<14}{:>14}{:>12}{:>10}{:>9}{:>7}",
-                "", "fuel", "time", "±", "code", "pages"
+            let mut head = format!(
+                "  {:<14}{:<13}{:>14}{:>12}{:>10}{:>9}{:>7}",
+                "", "", "fuel", "time", "±", "code", "pages"
             );
+            if backends {
+                head.push_str(&format!("{:>10}", "vs wasm"));
+            }
+            println!("{head}");
             last = (r.program.clone(), r.run.clone());
         }
         let (time, spread) = match r.time {
@@ -444,13 +685,35 @@ fn print(results: &[Measured], baseline: Option<&Baseline>) {
             None => ("-".into(), "-".into()),
         };
         let mut line = format!(
-            "  {:<14}{:>14}{:>12}{:>10}{:>9}{:>7}",
-            r.config, r.fuel, time, spread, r.code, r.pages
+            "  {:<14}{:<13}{:>14}{:>12}{:>10}{:>9}{:>7}",
+            r.config,
+            r.backend.name(),
+            or_dash(r.fuel),
+            time,
+            spread,
+            or_dash(r.code),
+            or_dash(r.pages)
         );
-        let key = (r.program.clone(), r.run.clone(), r.config.clone());
-        if let Some(&(fuel, base_time)) = baseline.and_then(|b| b.get(&key)) {
-            if fuel != r.fuel {
-                line.push_str(&format!("  fuel {}", change(fuel as f64, r.fuel as f64)));
+        // How the time compares with Wasm's, for the same config.
+        if backends {
+            let wasm = (results.iter()).find(|w| {
+                w.backend == Backend::Wasm
+                    && (&w.program, &w.run, &w.config) == (&r.program, &r.run, &r.config)
+            });
+            let ratio = match (r.backend, r.time, wasm.and_then(|w| w.time)) {
+                (Backend::Wasm, ..) => String::new(),
+                (_, Some((t, _)), Some((w, _))) => {
+                    format!("{:.2}", t.as_secs_f64() / w.as_secs_f64())
+                }
+                _ => "-".into(),
+            };
+            line.push_str(&format!("{ratio:>10}"));
+        }
+        if let Some(&(fuel, base_time)) = baseline.and_then(|b| b.get(&r.key())) {
+            if let (Some(before), Some(after)) = (fuel, r.fuel)
+                && before != after
+            {
+                line.push_str(&format!("  fuel {}", change(before as f64, after as f64)));
             }
             if let (Some((t, s)), Some((bt, bs))) = (r.time, base_time) {
                 let (t, bt) = (t.as_nanos() as f64, bt as f64);
@@ -462,6 +725,11 @@ fn print(results: &[Measured], baseline: Option<&Baseline>) {
         }
         println!("{line}");
     }
+}
+
+/// A number, or `-` for none.
+fn or_dash(n: Option<impl ToString>) -> String {
+    n.map_or("-".into(), |n| n.to_string())
 }
 
 fn change(before: f64, after: f64) -> String {
@@ -504,22 +772,28 @@ const BADGE_PROGRAMS: &str = "bench/";
 /// allocates with reuse than with counts alone, over all the runs; and
 /// `benchmarks.json`, how many there are.
 fn badges(results: &[Measured], programs: &[Program], dir: &Path) -> Result<(), String> {
+    // Wasm's fuel, the only measurement that's the same every time.
+    let wasm: Vec<&Measured> = (results.iter())
+        .filter(|r| r.backend == Backend::Wasm)
+        .collect();
     let fuel = |program: &str, run: &str, config: &str| {
-        (results.iter())
+        (wasm.iter())
             .find(|r| r.program == program && r.run == run && r.config == config)
-            .map(|r| r.fuel as f64)
+            .and_then(|r| r.fuel)
+            .map(|f| f as f64)
     };
     let mut logs = Vec::new();
-    for r in results
+    for r in wasm
         .iter()
         .filter(|r| r.program.starts_with(BADGE_PROGRAMS))
     {
         if r.config != "optimized" {
             continue;
         }
-        let counted = fuel(&r.program, &r.run, "+cycles")
-            .ok_or("the badges need the optimized and +cycles configs")?;
-        logs.push((counted / r.fuel as f64).ln());
+        let (Some(counted), Some(plain)) = (fuel(&r.program, &r.run, "+cycles"), r.fuel) else {
+            return Err("the badges need the optimized and +cycles configs, as Wasm".into());
+        };
+        logs.push((counted / plain as f64).ln());
     }
     if logs.is_empty() {
         return Err(format!(

@@ -1,0 +1,16 @@
+sum_state(10i32)
+                     steps   allocs    frees   peak  count ops  reused  fresh cycles
+  optimized            121       23        0     23          0       0      0      0
+  counts               143       23       23      2         22       0      0      0
+  +borrows             143       23       23      2         22       0      0      0
+  +reuse               143       23       23      2         22       0      0      0
+  +specialized         143       23       23      2         22       0      0      0
+  +cycles              143       23       23      2         22       0      0      1
+sum_state(50000i32)
+                     steps   allocs    frees   peak  count ops  reused  fresh cycles
+  optimized         550011   100003        0 100003          0       0      0      0
+  counts            650013   100003   100003      2     100002       0      0      0
+  +borrows          650013   100003   100003      2     100002       0      0      0
+  +reuse            650013   100003   100003      2     100002       0      0      0
+  +specialized      650013   100003   100003      2     100002       0      0      0
+  +cycles           650013   100003   100003      2     100002       0      0      1

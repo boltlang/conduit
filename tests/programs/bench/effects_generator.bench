@@ -1,0 +1,16 @@
+sum_generated(10i32)
+                     steps   allocs    frees   peak  count ops  reused  fresh cycles
+  optimized            864      136        0    136          0       0      0      0
+  counts              1308      136      120     21        444       0      0      0
+  +borrows            1308      136      120     21        444       0      0      0
+  +reuse              1308      136      120     21        444       0      0      0
+  +specialized        1308      136      120     21        444       0      0      0
+  +cycles             1308      136      136     21        444       0      0      1
+sum_generated(20000i32)
+                     steps   allocs    frees   peak  count ops  reused  fresh cycles
+  optimized        1640044   240016        0 240016          0       0      0      0
+  counts           2480068   240016   240000     21     840024       0      0      0
+  +borrows         2480068   240016   240000     21     840024       0      0      0
+  +reuse           2480068   240016   240000     21     840024       0      0      0
+  +specialized     2480068   240016   240000     21     840024       0      0      0
+  +cycles          2480068   240016   240016     21     840024       0      0     17

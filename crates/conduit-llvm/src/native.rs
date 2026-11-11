@@ -213,12 +213,20 @@ pub fn parse_results(words: &[&str], results: &[Ty]) -> Result<Vec<Lit>, String>
 /// - `exe time K N` times `N` calls of `conduit_bench_run(K)`, and prints
 ///   each one's nanoseconds on a line.
 ///
-/// It makes the call once first, to warm up. Then each call runs in a
-/// process of its own, forked from that one, so that each starts from the
-/// same memory, as a fresh Wasm instance does: what one leaves behind,
-/// when nothing is freed, doesn't slow down the next. The fork isn't
-/// timed.
+/// Each timed call runs in a process of its own, forked, so that each
+/// starts from the same memory, as a fresh Wasm instance does: what one
+/// leaves behind, when nothing is freed, doesn't slow down the next. The
+/// process makes the call once before the one it times, so that the
+/// pages that call writes are its own already: the first write to a page
+/// after a fork copies it, which would otherwise take several
+/// microseconds of every call, however little it does. The fork isn't
+/// timed. On Linux, it stays on one core, as do the processes it forks,
+/// so that each starts with the caches the one before warmed.
 pub const TIMER: &str = r#"
+#ifdef __linux__
+#define _GNU_SOURCE
+#include <sched.h>
+#endif
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -249,7 +257,14 @@ int main(int argc, char **argv) {
   }
   int32_t k = atoi(argv[2]);
   int n = atoi(argv[3]);
-  sink = conduit_bench_run(k);
+#ifdef __linux__
+  // On the core it's on, which each process it forks inherits, so that
+  // each starts with that core's caches, not another's.
+  cpu_set_t one;
+  CPU_ZERO(&one);
+  CPU_SET(sched_getcpu(), &one);
+  sched_setaffinity(0, sizeof one, &one);
+#endif
   for (int i = 0; i < n; i++) {
     int fd[2];
     if (pipe(fd) != 0) return 1;
@@ -257,6 +272,7 @@ int main(int argc, char **argv) {
     if (pid < 0) return 1;
     if (pid == 0) {
       close(fd[0]);
+      sink = conduit_bench_run(k);
       int64_t start = now();
       sink = conduit_bench_run(k);
       int64_t took = now() - start;

@@ -9,6 +9,7 @@ publish.workspace = true
 conduit-effects = { path = "../conduit-effects" }
 conduit-eval = { path = "../conduit-eval" }
 conduit-ir = { path = "../conduit-ir" }
+conduit-llvm = { path = "../conduit-llvm" }
 conduit-opt = { path = "../conduit-opt" }
 conduit-test = { path = "../conduit-test", features = ["wasmtime"] }
 conduit-wasm = { path = "../conduit-wasm" }
