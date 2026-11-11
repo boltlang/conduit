@@ -107,14 +107,6 @@ impl Flow {
             parent: (0..n).collect(),
             escapes: vec![false; n],
         };
-        let mut params: BTreeMap<Label, &[Var]> = BTreeMap::new();
-        for b in f.body.blocks() {
-            if let Tail::Join { defs, .. } = &b.tail {
-                for d in defs {
-                    params.insert(d.label, &d.params);
-                }
-            }
-        }
         let defs = conduit_ir::tail::join_defs(&f.body, f.labels);
         let mut escaping = Vec::new();
         for b in f.body.blocks() {
@@ -134,7 +126,10 @@ impl Flow {
                 }
             }
             if let Tail::Jump { target, args, .. } = &b.tail {
-                let to = params.get(target).copied().unwrap_or(&[]);
+                let to = match defs.get(target.0 as usize) {
+                    Some(Some(d)) => &d.params[..],
+                    _ => &[],
+                };
                 for (i, a) in args.iter().enumerate() {
                     let Atom::Var(v) = a else { continue };
                     match to.get(i) {
