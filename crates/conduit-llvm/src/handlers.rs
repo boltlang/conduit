@@ -27,9 +27,9 @@
 //!   the `perform` it handles, which `@conduit_site` holds while a clause
 //!   runs, and performs.
 //!
-//! As with Wasm's exceptions, an abort doesn't drop what the frames it
-//! skips own, nor the handler's environment: the evaluator, which drops
-//! the continuation, doesn't free what it held either.
+//! An abort doesn't drop what the frames it skips own, nor the handlers'
+//! environments, which the IR says dropping the continuation does: they
+//! leak, as in the evaluator and Wasm (#56).
 
 use std::borrow::Cow;
 use std::collections::BTreeSet;

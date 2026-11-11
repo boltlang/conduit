@@ -216,9 +216,10 @@ of exceptions (see `crates/conduit-llvm/src/handlers.rs`):
 - An export, or a trampoline of `host_function`, runs with no handlers,
   and puts its caller's back when it returns.
 
-As with Wasm's exceptions, an abort doesn't drop what the frames it skips
-own, nor the handler's environment, which leak; the evaluator, which
-drops the continuation, doesn't free what that held either. A `handle`
+An abort doesn't drop what the frames it skips own, nor the handlers'
+environments, though the IR says dropping the continuation does: they
+leak, as they do in the evaluator and Wasm (#56). Running cleanups as an
+abort passes needs #55. A `handle`
 of a handler with an aborting clause costs a `_setjmp`, even when nothing
 aborts: #55 is about LLVM's own exception handling, which wouldn't.
 

@@ -123,6 +123,10 @@ reset.
 
 ## What still leaks
 
+- **What an abort skips.** The IR says that dropping a continuation drops
+  what its frames own and its handlers' environments, but an aborting
+  clause's exception skips the frames without dropping anything, as the
+  evaluator does too: #56.
 - **Objects the unwound frames owned.** Counting has no cleanup on
   unwinding: a frame's variables that own references are never dropped,
   so their objects, and what they hold, host values among them, leak.

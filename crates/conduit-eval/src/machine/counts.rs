@@ -25,7 +25,8 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
     /// The values in a continuation's frames aren't counted as references,
     /// since a frame keeps values it has already given away. So what a
     /// continuation that's never resumed holds shows up as lost, apart from
-    /// what's undropped.
+    /// what's undropped: the IR says dropping it drops what its frames own,
+    /// which the evaluator doesn't do yet (#56).
     pub fn leaks(&self, roots: &[Value]) -> Leaks {
         let n = self.heap.len();
         let live = |id: usize| matches!(self.counts[id], Count::Live(_));

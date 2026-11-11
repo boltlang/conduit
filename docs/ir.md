@@ -657,7 +657,8 @@ and an op either **takes** an argument's reference, moving it, or
   dup the captures they pass to the function and then drop the closure,
   which frees it if nothing else holds it; and each `Perform` dups the handler's environment for
   the clause, while the handler keeps its own, which its return clause
-  takes.
+  takes, or, if a clause doesn't resume, its continuation, whose drop
+  drops it.
 
 Constants are never counted: a `Dup` or `Drop` of one does nothing.
 Using an object after it's freed, or dropping one whose count is already
@@ -676,8 +677,13 @@ doesn't drop the value instead. `Forget` of a counted object leaks it.
 It isn't one of the counting ops: a frontend or pass may write it before
 counts are explicit, and passes keep it. An `Undefined` of type
 `Reuse(C)` is a token that holds no memory, as specializing a
-`DropReuse` makes when the object is shared. A continuation that's
-dropped without being resumed or discontinued loses what its frames hold.
+`DropReuse` makes when the object is shared. A continuation owns what
+its frames own: each frame's references that the rest of its code would
+have dropped or given away, and the environment of each handler in it.
+Dropping one that hasn't been resumed or discontinued drops all of
+those, so a clause that aborts, which drops its continuation, frees the
+computation it abandons, as returning from it would have. The evaluator,
+the Wasm backend and native code don't do this yet: #56.
 Cycles are never freed by counting alone.
 
 `conduit_opt::ownership::insert_counts` adds the `Dup`s and `Drop`s, after

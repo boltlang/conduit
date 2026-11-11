@@ -4,7 +4,7 @@
 //! in the evaluator with counting on and cycles collected, with every count
 //! right: nothing undropped, dropped too often or used after it's freed,
 //! and no cycles left. What a continuation that's never resumed holds may
-//! still be left.
+//! still be left, which the evaluator doesn't drop yet (#56).
 //!
 //! It does so for the program as written, after the optimizer, and after
 //! lowering effects by evidence passing and then optimizing, each time with
