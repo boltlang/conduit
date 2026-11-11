@@ -1169,7 +1169,7 @@ fn prim_results(prim: &Prim, tys: &[Ty]) -> Checked<Vec<Ty>> {
 }
 
 /// Whether `n` is in the range of the integer type `ty`, read as signed.
-fn fits_int(ty: &Ty, n: i64) -> bool {
+pub(crate) fn fits_int(ty: &Ty, n: i64) -> bool {
     match ty {
         Ty::I8 => i8::try_from(n).is_ok(),
         Ty::I16 => i16::try_from(n).is_ok(),

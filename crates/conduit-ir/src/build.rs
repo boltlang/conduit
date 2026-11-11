@@ -48,7 +48,11 @@
 //!
 //! A function that calls itself, or functions that call each other, must be
 //! declared in the [`Program`] first, for example with a placeholder
-//! [`Func::new`], so that the builder knows their signatures.
+//! [`Func::new`], so that the builder knows their signatures. Or the
+//! builder can be told about functions and data types the program doesn't
+//! have, with [`declare_func`](FuncBuilder::declare_func) and
+//! [`declare_data`](FuncBuilder::declare_data), as a pass that makes them
+//! while it builds does.
 
 use std::fmt;
 
@@ -262,6 +266,63 @@ pub struct FuncBuilder<'p, P: ?Sized> {
     /// long as they're in scope: a variable is only used where it's in
     /// scope, so they hold everywhere.
     made: Vec<(Var, CtorId)>,
+    /// Functions and data types declared to the builder, which `p`
+    /// doesn't have.
+    extra: Module,
+}
+
+/// The program as a builder sees it: what it was given, with what was
+/// declared to it.
+struct Scope<'a, P: ?Sized> {
+    p: &'a P,
+    extra: &'a Module,
+}
+
+impl<P: Program + ?Sized> Program for Scope<'_, P> {
+    fn func(&self, id: FuncId) -> Option<&Func> {
+        self.extra.funcs.get(&id).or_else(|| self.p.func(id))
+    }
+
+    fn func_sig(&self, id: FuncId) -> Option<Sig> {
+        match self.extra.funcs.get(&id) {
+            Some(f) => Some(f.sig()),
+            None => self.p.func_sig(id),
+        }
+    }
+
+    fn func_mut_params(&self, id: FuncId) -> Option<MutParams> {
+        match self.extra.funcs.get(&id) {
+            Some(f) => Some(f.mut_params.clone()),
+            None => self.p.func_mut_params(id),
+        }
+    }
+
+    fn func_effect_params(&self, id: FuncId) -> Option<u32> {
+        match self.extra.funcs.get(&id) {
+            Some(f) => Some(f.effect_params),
+            None => self.p.func_effect_params(id),
+        }
+    }
+
+    fn data(&self, id: DataId) -> Option<&DataDecl> {
+        self.extra.data.get(&id).or_else(|| self.p.data(id))
+    }
+
+    fn extern_fn(&self, id: ExternId) -> Option<&Extern> {
+        self.p.extern_fn(id)
+    }
+
+    fn effect(&self, id: EffectId) -> Option<&EffectDecl> {
+        self.p.effect(id)
+    }
+
+    fn handler(&self, id: HandlerId) -> Option<&HandlerDecl> {
+        self.p.handler(id)
+    }
+
+    fn constant(&self, id: ConstId) -> Option<&ConstDecl> {
+        self.p.constant(id)
+    }
 }
 
 /// Emits a binary or unary scalar op.
@@ -295,6 +356,42 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
             source: None,
             errors: Vec::new(),
             made: Vec::new(),
+            extra: Module::default(),
+        }
+    }
+
+    /// Tells the builder about function `f`, which the program doesn't
+    /// have yet, so that it can be called or made a closure of: its
+    /// signature, and its mutability and effect parameters.
+    pub fn declare_func(&mut self, f: FuncId, sig: Sig, mut_params: MutParams, effect_params: u32) {
+        let mut decl = Func::new(sig.params, sig.results);
+        decl.row = sig.row;
+        decl.mut_params = mut_params;
+        decl.effect_params = effect_params;
+        self.extra.funcs.insert(f, decl);
+    }
+
+    /// Tells the builder about data type `d`, which the program doesn't
+    /// have yet.
+    pub fn declare_data(&mut self, d: DataId, decl: DataDecl) {
+        self.extra.data.insert(d, decl);
+    }
+
+    /// Whether the builder knows function `f`, from the program or
+    /// declared to it.
+    pub fn knows_func(&self, f: FuncId) -> bool {
+        self.scope().func_sig(f).is_some()
+    }
+
+    /// Whether the builder knows data type `d`.
+    pub fn knows_data(&self, d: DataId) -> bool {
+        self.scope().data(d).is_some()
+    }
+
+    fn scope(&self) -> Scope<'_, P> {
+        Scope {
+            p: self.p,
+            extra: &self.extra,
         }
     }
 
@@ -346,6 +443,11 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
     /// Parameter `i`. Panics if there's no such parameter.
     pub fn param(&self, i: usize) -> Var {
         self.func.params[i]
+    }
+
+    /// The function's parameters, however many it has.
+    pub fn param_vars(&self) -> &[Var] {
+        &self.func.params
     }
 
     /// The type of a variable made by this builder.
@@ -462,15 +564,21 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
             return fallback(self, out);
         };
         let given = out.clone().unwrap_or_default();
+        // Only these ops look at what's known about their object, and
+        // finding it takes as long as there are `new`s before.
+        let known = match op {
+            Op::Get(..) | Op::Set(..) | Op::DropReuse | Op::ReuseToken => self.known(),
+            _ => Vec::new(),
+        };
         let results = match op_results(
-            self.p,
+            &self.scope(),
             &self.func.mut_params,
             self.func.effect_params,
             &op,
             &args,
             &tys,
             &given,
-            &self.known(),
+            &known,
         ) {
             Ok(results) => results,
             Err(message) if out.is_none() && needs_result_type(&op) => {
@@ -505,7 +613,7 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
         if let [v] = binds[..] {
             let made = match &op {
                 Op::New(c) => Some(*c),
-                Op::Const(id) => match crate::const_value(self.p, *id) {
+                Op::Const(id) => match crate::const_value(&self.scope(), *id) {
                     Some(ConstValue::New(c, _)) => Some(*c),
                     _ => None,
                 },
@@ -680,7 +788,7 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
         captures: impl Atoms,
     ) -> Var {
         let captures = captures.atoms();
-        let Some(sig) = self.p.func_sig(f) else {
+        let Some(sig) = self.scope().func_sig(f) else {
             self.error(format!("unknown function {f}"));
             return self.func.new_var(Ty::I32);
         };
@@ -763,7 +871,7 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
     pub fn fields(&mut self, c: CtorId, obj: impl Into<Atom>) -> Vec<Var> {
         let obj = obj.into();
         let n = self
-            .p
+            .scope()
             .data(c.data)
             .and_then(|d| d.ctors.get(c.index as usize))
             .map_or(0, |ctor| ctor.fields.len());
@@ -1061,7 +1169,7 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
             self.error("the case is on a variable this builder didn't make");
             Ty::I32
         });
-        if !matches!(scrut_ty, Ty::I32 | Ty::I64 | Ty::Data(..)) {
+        if !(scrut_ty.is_int() || matches!(scrut_ty, Ty::Data(..))) {
             self.error(format!("can't branch on a value of type {scrut_ty}"));
         }
         let case = CaseRef(self.cases.len() as u32);
@@ -1167,12 +1275,12 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
                 "the case on {scrut} already has an arm {}",
                 tag_text(tag)
             )),
-            (Ty::I32, Tag::Int(n)) if i32::try_from(n).is_err() => Some(format!(
-                "the case on {scrut} is on an i32, so it can't have a tag {n}"
+            (ty, Tag::Int(n)) if ty.is_int() && !crate::verify::fits_int(ty, n) => Some(format!(
+                "the case on {scrut} is on an {ty}, so it can't have a tag {n}"
             )),
-            (Ty::I32 | Ty::I64, Tag::Int(_)) => None,
+            (ty, Tag::Int(_)) if ty.is_int() => None,
             (Ty::Data(d, ..), Tag::Ctor(ctor)) => {
-                let ctors = self.p.data(*d).map_or(0, |decl| decl.ctors.len());
+                let ctors = self.scope().data(*d).map_or(0, |decl| decl.ctors.len());
                 (ctor.data != *d || ctor.index as usize >= ctors)
                     .then(|| format!("{ctor} isn't a constructor of {d}"))
             }
@@ -1187,7 +1295,12 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
     }
 
     /// The finished function, or every mistake found while building it.
-    pub fn finish(mut self) -> Result<Func, Vec<Error>> {
+    pub fn finish(self) -> Result<Func, Vec<Error>> {
+        self.finish_with_decls().map(|(f, _)| f)
+    }
+
+    /// [`finish`](Self::finish), with what was declared to the builder.
+    fn finish_with_decls(mut self) -> Result<(Func, Module), Vec<Error>> {
         for i in 0..self.cases.len() {
             let c = &self.cases[i];
             if c.default.is_some() {
@@ -1195,7 +1308,7 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
             }
             let missing = match &c.scrut_ty {
                 Ty::Data(d, ..) => {
-                    let ctors = self.p.data(*d).map_or(0, |decl| decl.ctors.len()) as u32;
+                    let ctors = self.scope().data(*d).map_or(0, |decl| decl.ctors.len()) as u32;
                     (0..ctors).any(|index| {
                         let tag = Tag::Ctor(CtorId { data: *d, index });
                         !c.arms.iter().any(|(t, _)| *t == tag)
@@ -1222,15 +1335,16 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
         }
         let mut func = self.func;
         func.body = assemble(&mut self.blocks, &self.cases, BlockRef(0));
-        Ok(func)
+        Ok((func, self.extra))
     }
 
     /// Like [`finish`](Self::finish), then runs the verifier on the
     /// function, as function `id` of the program.
     pub fn finish_verified(self, id: FuncId) -> Result<Func, Vec<Error>> {
         let p = self.p;
-        let func = self.finish()?;
-        verify::verify_func(p, id, &func).map_err(|errors| {
+        let (func, extra) = self.finish_with_decls()?;
+        let scope = Scope { p, extra: &extra };
+        verify::verify_func(&scope, id, &func).map_err(|errors| {
             errors
                 .into_iter()
                 .map(|e| Error {

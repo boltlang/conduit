@@ -937,3 +937,66 @@ fn handlers_and_effect_params() {
 }"
     );
 }
+
+#[test]
+fn declared_items() {
+    // A function and a data type the program doesn't have, declared to
+    // the builder: a call of it, and an object of it.
+    let m = module("", vec![I32], vec![I32]);
+    let mut f = FuncBuilder::new(&m, vec![I32], vec![I32]);
+    let g = FuncId(7);
+    let pair = DataId(3);
+    assert!(!f.knows_func(g));
+    f.declare_func(g, Sig::new(vec![I32], vec![I32]), MutParams::default(), 0);
+    f.declare_data(
+        pair,
+        DataDecl {
+            ctors: vec![CtorDecl {
+                fields: vec![I32, I32],
+            }],
+            ..DataDecl::default()
+        },
+    );
+    assert!(f.knows_func(g) && f.knows_data(pair));
+    let [x] = f.params();
+    let y = f.call1(g, [x]);
+    let c = CtorId {
+        data: pair,
+        index: 0,
+    };
+    let p = f.new_object(c, Mutability::Imm, [x, y]);
+    let z = f.get(c, 1, p);
+    f.ret([z]);
+    let func = f.finish().unwrap_or_else(|e| panic!("{e:#?}"));
+    let got = print_func(F, &func);
+    assert!(
+        got.contains("call fn7(%0)") && got.contains("get data3.0.1"),
+        "{got}"
+    );
+}
+
+#[test]
+fn case_on_a_byte() {
+    let m = module("", vec![Ty::I8], vec![I32]);
+    let mut f = FuncBuilder::new(&m, vec![Ty::I8], vec![I32]);
+    let [x] = f.params();
+    let case = f.case(x);
+    f.arm(case, -1i64);
+    f.ret([1i32]);
+    f.default(case);
+    f.ret([0i32]);
+    let got = text(f);
+    assert!(got.contains("-1 =>"), "{got}");
+    // A tag outside the byte's range.
+    let mut f = FuncBuilder::new(&m, vec![Ty::I8], vec![I32]);
+    let [x] = f.params();
+    let case = f.case(x);
+    f.arm(case, 300i64);
+    f.ret([1i32]);
+    f.default(case);
+    f.ret([0i32]);
+    assert_eq!(
+        messages(f),
+        ["the case on %0 is on an i8, so it can't have a tag 300"]
+    );
+}
