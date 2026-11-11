@@ -24,9 +24,8 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
     ///
     /// The values in a continuation's frames aren't counted as references,
     /// since a frame keeps values it has already given away. So what a
-    /// continuation that's never resumed holds shows up as lost, apart from
-    /// what's undropped: the IR says dropping it drops what its frames own,
-    /// which the evaluator doesn't do yet (#56).
+    /// continuation that's never resumed nor dropped holds shows up as
+    /// lost, apart from what's undropped.
     pub fn leaks(&self, roots: &[Value]) -> Leaks {
         let n = self.heap.len();
         let live = |id: usize| matches!(self.counts[id], Count::Live(_));
@@ -156,7 +155,8 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
 
     /// Takes 1 from the count of `value`'s object, if it has one, and frees
     /// it at 0, which drops what it holds, without recursion. A
-    /// continuation's frames aren't dropped: what they hold is lost.
+    /// continuation that was never resumed holds what its frames own (see
+    /// [`Self::frames_own`]).
     pub(super) fn drop_value(&mut self, value: Value) -> Step<()> {
         if !self.counting {
             return Ok(());
@@ -171,6 +171,11 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                     self.freed();
                     self.no_undefined(i)?;
                     todo.extend_from_slice(self.heap[i].values());
+                    if let Object::Cont(cont) = &mut self.heap[i]
+                        && let Some(frames) = cont.frames.take()
+                    {
+                        todo.extend(self.frames_own(&frames)?);
+                    }
                 }
                 Some(Count::Live(c)) => {
                     *c -= 1;
@@ -182,6 +187,39 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
             }
         }
         Ok(())
+    }
+
+    /// What `frames`, of a continuation that's never resumed, own, a value
+    /// for each reference: what each running function's code would have
+    /// given away or dropped after the `let` it waits on (see
+    /// [`conduit_ir::owned`]), and each handler's environment, which its
+    /// return clause would have taken.
+    fn frames_own(&self, frames: &[Frame<'p>]) -> Step<Vec<Value>> {
+        let p = self.p;
+        let mut out = Vec::new();
+        for frame in frames {
+            match frame {
+                Frame::Handler { env, .. } => out.extend_from_slice(env),
+                Frame::Code(code) => {
+                    let Some((_, next)) = code.waiting else {
+                        return Err(unverified("a continuation's frame that doesn't wait"));
+                    };
+                    let f = (p.func(code.func))
+                        .ok_or_else(|| unverified(format!("unknown function {}", code.func)))?;
+                    let owned = conduit_ir::owned::Owned::new(f, |g, i| {
+                        p.func(g).is_some_and(|g| g.is_borrowed(i))
+                    });
+                    for (v, n) in owned.during(next.block, next.index - 1) {
+                        let value = code.vars.get(v.0 as usize).copied().flatten();
+                        let value = value.ok_or_else(|| {
+                            unverified(format!("{v} owns a reference, but has no value"))
+                        })?;
+                        out.extend(std::iter::repeat_n(value, n as usize));
+                    }
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// Fails if object `i`, which is being freed, holds an undefined value,
@@ -313,8 +351,8 @@ pub struct Leaks {
     /// something dropped a reference it didn't own.
     pub overdropped: Vec<(ObjId, u32)>,
     /// Undropped objects that the frames of a continuation that was never
-    /// resumed can reach: dropping a continuation loses what its frames
-    /// hold, which is expected until a dropped continuation is unwound.
+    /// resumed can reach: they were lost with it, since it was never
+    /// dropped either, which would have dropped what its frames own.
     pub lost: Vec<(ObjId, u32)>,
     /// Freed objects that a live object or a root still refers to.
     pub dangling: Vec<ObjId>,

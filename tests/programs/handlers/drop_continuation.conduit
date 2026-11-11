@@ -1,0 +1,67 @@
+// A clause that resumes some times and not others, so that it's neither
+// tail-resumptive nor aborting: when it doesn't, it drops the
+// continuation, which drops what the body's frames own, a box in each of
+// a few calls, and the handler's environment, `%e` (#56).
+
+data Box {
+  (i32)
+}
+
+effect Check {
+  (i32) -> (i32)
+}
+
+handler checked for Check env(imm Box) ops(check) ret done
+
+// Resumes with the argument if it's positive, and gives the environment's
+// number otherwise.
+fn check(%e: imm Box, %x: i32, %k: cont(i32) -> (i32)) -> (i32) {
+  let %bad: i32 = le.s(%x, 0i32)
+  case %bad {
+    0 =>
+      let %r: i32 = resume(%k, %x)
+      jump ret(%r)
+    _ =>
+      let %v: i32 = get Box.0.0(%e)
+      jump ret(%v)
+  }
+}
+
+fn done(%e: imm Box, %r: i32) -> (i32) {
+  jump ret(%r)
+}
+
+// A box on the heap: in Wasm, one that doesn't outlive the function that
+// makes it goes on the shadow stack, which the live count doesn't see.
+fn make(%d: i32) -> (imm Box) {
+  let %b: imm Box = new Box.0(%d)
+  jump ret(%b)
+}
+
+// Checks n, d calls down, holding a box at each.
+fn dig(%n: i32, %d: i32) -> (i32) does Check {
+  let %b: imm Box = call make(%d)
+  case %d {
+    0 =>
+      let %x: i32 = perform Check.0(%n)
+      let %y: i32 = get Box.0.0(%b)
+      let %r: i32 = add(%x, %y)
+      jump ret(%r)
+    _ =>
+      let %d1: i32 = sub(%d, 1i32)
+      let %x1: i32 = call dig(%n, %d1)
+      let %y1: i32 = get Box.0.0(%b)
+      let %r1: i32 = add(%x1, %y1)
+      jump ret(%r1)
+  }
+}
+
+fn main(%n: i32) -> (i32) {
+  let %e: imm Box = new Box.0(-1i32)
+  let %f: imm fn() -> (i32) does Check = closure dig(%n, 3i32)
+  let %r: i32 = handle checked(%e, %f)
+  jump ret(%r)
+}
+
+//# run main(5i32) == 11i32
+//# run main(0i32) == -1i32

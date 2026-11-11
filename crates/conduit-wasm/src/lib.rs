@@ -99,7 +99,7 @@ const HANDLERS: u32 = 1;
 
 /// The global holding the handler stack of the `perform` whose clause is
 /// running, under which a `discontinue` in that clause performs.
-const SITE: u32 = 2;
+pub(crate) const SITE: u32 = 2;
 
 /// The exception an aborting clause throws, holding its handler's frame.
 const ABORT: u32 = 0;
@@ -228,6 +228,10 @@ pub(crate) struct Cx<'m> {
     /// The exception `discontinue` throws into a continuation: the address
     /// of a closure that performs the operation.
     pub disc_tag: Option<u32>,
+    /// With counts, the exception thrown into a continuation that's freed
+    /// without being used, so that its stack unwinds, dropping what its
+    /// frames own: it has no value.
+    pub cancel_tag: Option<u32>,
     /// The function `discontinue E.i` performs with.
     thunks: Thunks,
     /// The functions of reference counting, if the module counts.
@@ -508,6 +512,8 @@ pub(crate) struct Switch {
     /// and the table of its Wasm continuations.
     pub drive: Vec<u32>,
     pub throw: Vec<u32>,
+    /// With counts, for each operation: cancels its continuation.
+    pub cancel: Vec<u32>,
     pub kont_slots: Vec<u32>,
     pub disc_slots: Vec<u32>,
     pub conts: Vec<u32>,
@@ -877,6 +883,7 @@ pub fn emit_module_with(m: &Module, options: &Options) -> Result<Vec<u8>, Error>
     let switched = lower_switching(&mut cx, &switching)?;
     // Tag types, after the abort's.
     let disc_tag_ty = cx.disc_tag.map(|_| cx.sig(FnSig::new([ValType::I32], [])));
+    let cancel_tag_ty = cx.cancel_tag.map(|_| cx.sig(FnSig::new([], [])));
     let mut control_tag_tys = Vec::new();
     for &(e, i) in cx.tags.clone().keys() {
         let op = &m.effects[&e].ops[i as usize];
@@ -952,10 +959,11 @@ pub fn emit_module_with(m: &Module, options: &Options) -> Result<Vec<u8>, Error>
     });
     module.section(&memories);
     // The abort's tag first, then the one `discontinue` throws, then the
-    // control tags.
+    // one that cancels a continuation, then the control tags.
     let tag_tys: Vec<u32> = abort_ty
         .into_iter()
         .chain(disc_tag_ty)
+        .chain(cancel_tag_ty)
         .chain(control_tag_tys)
         .collect();
     if !tag_tys.is_empty() {
@@ -1148,6 +1156,7 @@ impl<'m> Cx<'m> {
             switch_funcs: 0,
             tags: BTreeMap::new(),
             disc_tag: None,
+            cancel_tag: None,
             thunks,
             rt: None,
             stack: None,
@@ -1400,6 +1409,12 @@ fn lower_switching(
             for i in 0..n {
                 let body = switch::lower_kont_children(cx, h, i).map_err(&err)?;
                 switched.push((two, body));
+            }
+            for i in 0..n {
+                let start = switch::Start::Cancel(i);
+                let sig = cx.drive_sig(h, start).map_err(&err)?;
+                let body = switch::lower_drive(cx, h, start).map_err(&err)?;
+                switched.push((cx.sig(sig), body));
             }
         }
     }
@@ -1873,10 +1888,10 @@ fn plan_switching(cx: &mut Cx<'_>, switching: &BTreeSet<HandlerId>) -> Result<u3
         } else {
             (Vec::new(), Vec::new())
         };
-        let (kont_frees, kont_children) = if cx.rt.is_some() {
-            (take(&mut func, n), take(&mut func, n))
+        let (kont_frees, kont_children, cancel) = if cx.rt.is_some() {
+            (take(&mut func, n), take(&mut func, n), take(&mut func, n))
         } else {
-            (Vec::new(), Vec::new())
+            (Vec::new(), Vec::new(), Vec::new())
         };
         let kont_slots = take(&mut slot, n);
         let disc_slots = if disc { take(&mut slot, n) } else { Vec::new() };
@@ -1888,6 +1903,7 @@ fn plan_switching(cx: &mut Cx<'_>, switching: &BTreeSet<HandlerId>) -> Result<u3
                 tramp,
                 drive,
                 throw,
+                cancel,
                 kont_slots,
                 disc_slots,
                 conts,
@@ -1902,6 +1918,10 @@ fn plan_switching(cx: &mut Cx<'_>, switching: &BTreeSet<HandlerId>) -> Result<u3
     let mut tag = u32::from(!cx.aborts.is_empty());
     if disc {
         cx.disc_tag = Some(tag);
+        tag += 1;
+    }
+    if cx.rt.is_some() && !switching.is_empty() {
+        cx.cancel_tag = Some(tag);
         tag += 1;
     }
     let effects: BTreeSet<EffectId> = (switching.iter())

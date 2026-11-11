@@ -1,0 +1,40 @@
+// An abort drops what it abandons (#56): the clause doesn't resume, so it
+// drops its continuation, which owns what the frames between the `perform`
+// and the `handle` would have dropped, `%b` here, and the handler's
+// environment, `%e`, which only the return clause would have taken.
+// With counts, every implementation frees both.
+
+data Box {
+  (i32)
+}
+
+effect Fail {
+  () -> ()
+}
+
+handler caught for Fail env(imm Box) ops(fail) ret done
+
+fn fail(%e: imm Box, %k: cont() -> (i32)) -> (i32) {
+  let %v: i32 = get Box.0.0(%e)
+  jump ret(%v)
+}
+
+fn done(%e: imm Box, %r: i32) -> (i32) {
+  jump ret(%r)
+}
+
+fn body(%n: i32) -> (i32) does Fail {
+  let %b: imm Box = new Box.0(%n)
+  let = perform Fail.0()
+  let %v: i32 = get Box.0.0(%b)
+  jump ret(%v)
+}
+
+fn main(%n: i32) -> (i32) {
+  let %e: imm Box = new Box.0(7i32)
+  let %f: imm fn() -> (i32) does Fail = closure body(%n)
+  let %r: i32 = handle caught(%e, %f)
+  jump ret(%r)
+}
+
+//# run main(3i32) == 7i32

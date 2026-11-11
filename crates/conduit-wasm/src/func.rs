@@ -47,6 +47,9 @@ struct FuncCx<'a, 'm> {
     /// Whether the object of the `let` being lowered goes on the shadow
     /// stack, which its allocation takes.
     on_stack: bool,
+    /// When counting, what the frame owns at each `let`, to drop when an
+    /// abort unwinds it, if one can.
+    owned: Option<conduit_ir::owned::Owned<'m>>,
 }
 
 /// Case arms on a dense range of `i32` tags dispatch with `br_table` when
@@ -129,7 +132,14 @@ pub(crate) fn lower_func<'m>(cx: &mut Cx<'m>, f: &'m Func) -> Result<Body, Strin
         depth: 0,
         code: Vec::new(),
         on_stack: false,
+        owned: None,
     };
+    if fcx.cx.rt.is_some() && !f.row.is_nothing() {
+        let m = fcx.cx.m;
+        fcx.owned = Some(conduit_ir::owned::Owned::new(f, move |g, i| {
+            m.funcs.get(&g).is_some_and(|g| g.is_borrowed(i))
+        }));
+    }
     // A function with objects on the shadow stack pops them when it
     // returns, or makes a tail call: it saves the pointer and limit, and
     // puts them back before each.
@@ -391,8 +401,17 @@ impl<'m> FuncCx<'_, 'm> {
 
     fn block(&mut self, b: &'m Block) -> Result<(), String> {
         conduit_ir::deep(|| {
+            let owned = (self.owned.as_ref()).map(|o| o.during_each(b));
             for (i, l) in b.lets.iter().enumerate() {
-                if self.let_(&l.binds, &l.op, &l.args, b, i + 1)? {
+                let cleanup = match &owned {
+                    Some(owned) if conduit_ir::owned::may_unwind(self.cx.m, self.f, l) => {
+                        &owned[i][..]
+                    }
+                    _ => &[],
+                };
+                if !cleanup.is_empty() {
+                    self.let_with_cleanup(l, b, i + 1, cleanup)?;
+                } else if self.let_(&l.binds, &l.op, &l.args, b, i + 1)? {
                     return Ok(());
                 }
             }
@@ -631,6 +650,62 @@ impl<'m> FuncCx<'_, 'm> {
         } else {
             I::Unreachable
         });
+        Ok(())
+    }
+
+    /// Lowers `l`, which `next` follows in `block`, and which an abort may
+    /// unwind while the frame owns `owned`: in a `try_table` that catches
+    /// everything, drops those, and rethrows. It's never a tail call,
+    /// since the frame drops what it owns after it.
+    fn let_with_cleanup(
+        &mut self,
+        l: &'m conduit_ir::Let,
+        block: &'m Block,
+        next: usize,
+        owned: &[(Var, u32)],
+    ) -> Result<(), String> {
+        self.open(I::Block(BlockType::Empty));
+        self.open(I::Block(BlockType::Result(ValType::Ref(
+            wasm_encoder::RefType::EXNREF,
+        ))));
+        let catches = vec![wasm_encoder::Catch::AllRef { label: 0 }];
+        self.open(I::TryTable(BlockType::Empty, Cow::Owned(catches)));
+        if self.let_(&l.binds, &l.op, &l.args, block, next)? {
+            return Err("a tail call while the frame still owns something".into());
+        }
+        self.close();
+        self.emit(I::Br(1));
+        self.close();
+        let exn = self.new_local(ValType::Ref(wasm_encoder::RefType::EXNREF));
+        self.emit(I::LocalSet(exn));
+        for &(v, n) in owned {
+            let ty = self.var_ty(v);
+            if let Some(k) = self.counted(ty) {
+                for _ in 0..n {
+                    self.drop_local(self.local(v), &k, is_imm(ty));
+                }
+            }
+        }
+        self.emit(I::LocalGet(exn));
+        self.emit(I::ThrowRef);
+        self.close();
+        Ok(())
+    }
+
+    /// Drops the environment of `h` in the frame in local `frame`, when
+    /// counting, once an abort is past the `handle` or lands in it: the
+    /// return clause that would have taken it won't run.
+    fn drop_env(&mut self, h: conduit_ir::HandlerId, frame: u32) -> Result<(), String> {
+        let decl = &self.cx.m.handlers[&h];
+        let (fields, _) = self.cx.frame(h)?;
+        let at = 2 + decl.len();
+        for (&(offset, s), ty) in fields[at..at + decl.env.len()].iter().zip(&decl.env) {
+            if let Some(k) = self.counted(ty) {
+                self.emit(I::LocalGet(frame));
+                self.emit(load(s, offset));
+                self.call_rt(|rt| rt.drop(&k, is_imm(ty)));
+            }
+        }
         Ok(())
     }
 
@@ -1299,6 +1374,7 @@ impl<'m> FuncCx<'_, 'm> {
                 self.close();
                 self.emit(I::Br(1));
                 self.close();
+                self.drop_env(h, frame)?;
                 self.release_frame(frame, size);
                 self.emit(I::ThrowRef);
                 self.close();
@@ -1383,6 +1459,7 @@ impl<'m> FuncCx<'_, 'm> {
         self.emit(I::LocalTee(thrown));
         self.emit(I::LocalGet(frame));
         self.emit(I::I32Ne);
+        self.drop_env(h, frame)?;
         self.open(I::If(BlockType::Empty));
         self.release_frame(frame, size);
         self.emit(I::LocalGet(thrown));
@@ -1408,6 +1485,7 @@ impl<'m> FuncCx<'_, 'm> {
             self.emit(I::Br(1));
             self.close();
             // A foreign exception: the frame goes back, and it goes on.
+            self.drop_env(h, frame)?;
             self.release_frame(frame, size);
             self.emit(I::ThrowRef);
         }

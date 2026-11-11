@@ -123,15 +123,15 @@ reset.
 
 ## What still leaks
 
-- **What an abort skips.** The IR says that dropping a continuation drops
-  what its frames own and its handlers' environments, but an aborting
-  clause's exception skips the frames without dropping anything, as the
-  evaluator does too: #56.
-- **Objects the unwound frames owned.** Counting has no cleanup on
-  unwinding: a frame's variables that own references are never dropped,
-  so their objects, and what they hold, host values among them, leak.
-  Dropping them would need a landing pad in every function that owns
-  something, as C++ has, which costs on every call for a rare case.
+- **Objects the unwound frames owned, mostly.** An abort drops what the
+  frames it skips own (#56): when counting, each call that may perform,
+  in a function whose row isn't empty, is in a `try_table` that catches
+  everything, drops what the frame owns then (see `conduit_ir::owned`),
+  and rethrows, and a `handle` that's unwound drops its handler's
+  environment. A foreign exception runs those too, but a frame that owns
+  something only has one at a call that may perform: one unwound from a
+  call of an extern, or from a function whose row is empty, leaks what
+  it owns, host values among them.
 - **After a trap:** the same, and the boxes an entry point made for host
   values it was given, and with stack switching, the shadow stack segments
   of the continuation that trapped. A trap in the middle of a cycle

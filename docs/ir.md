@@ -640,10 +640,16 @@ and an op either **takes** an argument's reference, moving it, or
   continuation of `Resume` and
   `Discontinue`, and what a jump passes or returns. A function owns its
   parameters, unless a convention between it and its callers says one is
-  borrowed, which only changes where the `Drop`s go. An exported
-  function always owns them, since a caller from outside the module
-  can't know the convention: it gives away what it passes, and owns what
-  it gets back, as every caller owns a function's results.
+  borrowed, which only changes where the `Drop`s go. The module keeps the
+  convention, as `Func::borrowed`, written `#[borrow]` before the
+  parameter, which `insert_counts` sets, so that code that needs to know
+  what a frame owns can tell what a call takes. Only an object can be
+  borrowed, and only by a function that's called by name: one made into
+  a closure, a clause or an exported function always owns its
+  parameters, since `apply`, `perform`, `handle` and a caller from
+  outside the module can't know the convention: they give away what they
+  pass, and own what they get back, as every caller owns a function's
+  results.
 - They borrow: what `Get`, `ArrayGet`, `ArrayLen`, `RefGet`, `Unbox`,
   `ArrayClone`, `CallExtern` and `case` look at. What `Get`, `ArrayGet`, `RefGet` and `Unbox` give
   is borrowed from the object it was read from: code that keeps it longer
@@ -682,8 +688,12 @@ its frames own: each frame's references that the rest of its code would
 have dropped or given away, and the environment of each handler in it.
 Dropping one that hasn't been resumed or discontinued drops all of
 those, so a clause that aborts, which drops its continuation, frees the
-computation it abandons, as returning from it would have. The evaluator,
-the Wasm backend and native code don't do this yet: #56.
+computation it abandons, as returning from it would have. What a frame
+owns while one of its `let`s runs is found from its counted code by
+`conduit_ir::owned`, which the evaluator and the backends share: what
+the rest would take, less what it would `dup`. A backend that unwinds the
+frames instead, as the Wasm backend and native code do for an abort,
+drops the same references on the way out.
 Cycles are never freed by counting alone.
 
 `conduit_opt::ownership::insert_counts` adds the `Dup`s and `Drop`s, after

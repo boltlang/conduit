@@ -304,6 +304,28 @@ impl Parser {
         Ok(attrs)
     }
 
+    /// The attributes of a function's parameter: whether it's
+    /// `#[borrow]`.
+    fn param_attrs(&mut self) -> Res<bool> {
+        let mut borrowed = false;
+        for attr in self.attrs()? {
+            match (attr.name.as_str(), &attr.args[..]) {
+                ("borrow", []) => borrowed = true,
+                ("borrow", _) => return self.error_at(attr.pos, "`borrow` takes no arguments"),
+                _ => {
+                    return self.error_at(
+                        attr.pos,
+                        format!(
+                            "`{}` isn't an attribute of a function's parameter: only `borrow` is",
+                            attr.name
+                        ),
+                    );
+                }
+            }
+        }
+        Ok(borrowed)
+    }
+
     /// An extern's parameter: its attributes, its name if it has one, and
     /// its type.
     fn extern_param(&mut self) -> Res<(bool, Option<Box<str>>, Ty)> {
@@ -1048,7 +1070,17 @@ impl Parser {
     /// A function after its mutability parameters.
     fn func_rest(&mut self) -> Res<Func> {
         let mut info = FuncInfo::default();
-        let params = self.list(|p| p.binder(&mut info))?;
+        let params = self.list(|p| {
+            let borrowed = p.param_attrs()?;
+            Ok((p.binder(&mut info)?, borrowed))
+        })?;
+        // Empty if no parameter is borrowed.
+        let borrowed = if params.iter().any(|p| p.1) {
+            params.iter().map(|p| p.1).collect()
+        } else {
+            Vec::new()
+        };
+        let params = params.into_iter().map(|p| p.0).collect();
         self.punct("->")?;
         let results = self.list(Self::ty)?;
         let row = self.row()?;
@@ -1093,6 +1125,7 @@ impl Parser {
             vars,
             labels: labels.unwrap_or(info.max_label + 1),
             params,
+            borrowed,
             results,
             row,
             body,

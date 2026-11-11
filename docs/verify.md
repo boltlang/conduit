@@ -59,6 +59,9 @@ Others are checked at run time:
   takes scalars, arrays of scalars and arrays of `[i8]`, and `#[addr]`
   only on an array of scalars, and gives only scalars: no data, closures
   or host values. `#[addr]` needs the flat ABI.
+- **Borrowed parameters:** a function's `#[borrow]` parameters are
+  objects, and a function made into a closure, a handler's clause or
+  return clause, or exported, borrows none.
 - **Handlers:**
   - The effect and the return clause exist.
   - The environment's types are well formed.

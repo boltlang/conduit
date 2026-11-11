@@ -219,6 +219,44 @@ impl Op {
         )
     }
 
+    /// Whether the op takes the reference of its argument `i`, moving it,
+    /// rather than borrowing it, as "Every op at a glance" in `docs/ir.md`
+    /// says, if no parameter of a call is borrowed: a call doesn't take
+    /// the arguments its callee borrows (see [`Func::borrowed`]). Of the
+    /// counting ops, those that take a reference away without moving it
+    /// anywhere, `Drop`, `Free` and `DecRef`, count as taking it too, and
+    /// `Dup`, which adds one, doesn't.
+    ///
+    /// [`Func::borrowed`]: crate::Func::borrowed
+    pub fn takes(&self, i: usize) -> bool {
+        match self {
+            Op::New(_)
+            | Op::ArrayNew
+            | Op::Closure(..)
+            | Op::Call(..)
+            | Op::Apply
+            | Op::Handle(..)
+            | Op::Perform(..)
+            | Op::Resume
+            | Op::Discontinue(..)
+            | Op::RefNew
+            | Op::Box(_)
+            | Op::ArrayFreeze
+            | Op::HostUnwrap
+            | Op::HostFunction
+            | Op::Forget
+            | Op::Drop
+            | Op::Free
+            | Op::DecRef
+            | Op::DropReuse
+            | Op::ReuseToken
+            | Op::Reuse(_) => true,
+            Op::Set(..) | Op::RefSet | Op::ArrayFill => i == 1,
+            Op::ArraySet => i == 2,
+            _ => false,
+        }
+    }
+
     /// What an op may perform, given its arguments' types: an operation's
     /// effect, a callee's, extern's, closure's or continuation's row, or a
     /// handler's. An extern's row only limits who may call it: the host

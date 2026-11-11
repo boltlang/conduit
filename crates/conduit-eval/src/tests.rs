@@ -1573,11 +1573,10 @@ fn fn0() -> (i32) {{
     assert_eq!(machine.stats.fresh, 1);
 }
 
-/// What a continuation that's dropped without being resumed held is lost
-/// with it: its frames aren't dropped, so the list the body was holding at
-/// the `perform` is reported apart.
+/// Dropping a continuation that was never resumed drops what its frames
+/// own: the list the body was holding at the `perform` is freed.
 #[test]
-fn what_a_dropped_continuation_held_is_reported() {
+fn a_dropped_continuation_drops_what_its_frames_own() {
     let src = format!(
         "{LIST_TEXT}
 effect Fail {{
@@ -1610,8 +1609,7 @@ fn body() -> (i32) does Fail {{
     );
     let (results, leaks) = counted(&src, vec![]).unwrap();
     assert_eq!(results, vec![Value::I32(0)]);
-    assert!(leaks.counts_ok(), "{leaks}");
-    assert_eq!(leaks.to_string(), "lost with continuations: #1 (+1)");
+    assert!(leaks.is_empty(), "{leaks}");
 }
 
 /// A host function must give what its extern says: as many results, and

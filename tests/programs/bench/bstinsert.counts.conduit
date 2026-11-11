@@ -62,7 +62,7 @@ fn insert(%t: imm Tree, %k: i32) -> (imm Tree) {
   }
 }
 
-fn sum(%t: imm Tree) -> (i32) {
+fn sum(#[borrow] %t: imm Tree) -> (i32) {
   case %t {
     Tree.0 => jump ret(0i32)
     Tree.1 =>

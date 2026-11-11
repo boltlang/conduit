@@ -35,9 +35,12 @@
 //!   the `perform` it handles, which `@conduit_site` holds while a clause
 //!   runs, and performs.
 //!
-//! An abort doesn't drop what the frames it skips own, nor the handlers'
-//! environments, which the IR says dropping the continuation does: they
-//! leak, as in the evaluator and Wasm (#56).
+//! When counting, an abort drops what the IR says dropping the
+//! continuation would (#56): each call that may perform, in a function
+//! whose row isn't empty, while the frame owns something, is an `invoke`
+//! with a landing pad that drops that (see `conduit_ir::owned`) and goes
+//! on unwinding, and a `handle` that's unwound, or aborted to, drops its
+//! handler's environment.
 
 use std::borrow::Cow;
 use std::collections::BTreeSet;
@@ -166,6 +169,14 @@ impl Handlers {
         if self.discontinues {
             out.push(Item::Text(format!("@{SITE} = internal global ptr null\n")));
         }
+        // For the landing pads of aborts, and of what they unwind.
+        out.push(
+            Declare {
+                variadic: true,
+                ..Declare::new(Type::I32, PERSONALITY, vec![])
+            }
+            .into(),
+        );
         if !self.aborting.is_empty() {
             out.push(
                 Declare::new(
@@ -173,13 +184,6 @@ impl Handlers {
                     "_Unwind_ForcedUnwind",
                     vec![Type::Ptr, Type::Ptr, Type::Ptr],
                 )
-                .into(),
-            );
-            out.push(
-                Declare {
-                    variadic: true,
-                    ..Declare::new(Type::I32, PERSONALITY, vec![])
-                }
                 .into(),
             );
             out.push(stop_fn().into());

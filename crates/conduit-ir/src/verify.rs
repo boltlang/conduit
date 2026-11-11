@@ -128,6 +128,7 @@ pub fn verify_module(m: &Module) -> Result<(), Vec<Error>> {
             errors.extend(e);
         }
     }
+    borrows_ok(m, &mut errors);
     // Each export is of a function, by a name no other export of its kind
     // has.
     let mut names = BTreeMap::new();
@@ -176,6 +177,55 @@ pub fn verify_func<P: Program + ?Sized>(p: &P, id: FuncId, f: &Func) -> Result<(
         Ok(())
     } else {
         Err(cx.errors)
+    }
+}
+
+/// A function's borrowed parameters are objects, one flag for each
+/// parameter, and only a function whose callers all know the convention
+/// borrows: not one made into a closure, a handler's clause or an export,
+/// whose callers, `apply`, `perform`, `handle` and the host, give away
+/// what they pass.
+fn borrows_ok(m: &Module, errors: &mut Vec<Error>) {
+    let mut unknown_callers = BTreeSet::new();
+    for f in m.funcs.values() {
+        for l in f.body.all_lets() {
+            if let Op::Closure(g, ..) = l.op {
+                unknown_callers.insert(g);
+            }
+        }
+    }
+    for h in m.handlers.values() {
+        unknown_callers.extend(h.clauses().map(|(_, _, c)| c));
+        unknown_callers.insert(h.ret);
+    }
+    unknown_callers.extend(m.exports.keys());
+    for (&id, f) in &m.funcs {
+        if f.borrowed.is_empty() {
+            continue;
+        }
+        let mut problem = None;
+        if f.borrowed.len() != f.params.len() {
+            problem = Some(format!(
+                "it says whether {} parameters are borrowed, but has {}",
+                f.borrowed.len(),
+                f.params.len()
+            ));
+        } else if let Some(i) =
+            (0..f.params.len()).find(|&i| f.is_borrowed(i) && !f.var_ty(f.params[i]).is_object())
+        {
+            problem = Some(format!(
+                "its parameter {i} is borrowed, but isn't an object"
+            ));
+        } else if f.borrowed.contains(&true) && unknown_callers.contains(&id) {
+            problem = Some(
+                "it borrows a parameter, but it's a closure's function, a clause or an \
+                 export, whose callers give away what they pass"
+                    .into(),
+            );
+        }
+        if let Some(message) = problem {
+            errors.push(decl_error(Item::Func(id), message));
+        }
     }
 }
 

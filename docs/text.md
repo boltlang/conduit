@@ -68,6 +68,10 @@ parameters:
 - A parameter can have a name, `%fd: i32`, which only shows what it is
   (`param_names` of `Extern`).
 
+A function's parameter can be `#[borrow]`, `fn len(#[borrow] %l: imm
+List) -> (i32)`: the function borrows it, by the convention "Reference
+counts" in `ir.md` describes (`borrowed` of `Func`).
+
 ```
 data data11 {
   ()

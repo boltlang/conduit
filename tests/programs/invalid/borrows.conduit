@@ -1,0 +1,24 @@
+// A function borrows only object parameters, and only if every caller
+// knows it does: not when it's a closure's function, whose callers,
+// `apply`, give away what they pass.
+
+data Box {
+  (i32)
+}
+
+fn fn1(#[borrow] %x: i32) -> (i32) {
+  jump ret(%x)
+}
+
+fn fn2(#[borrow] %b: imm Box) -> (i32) {
+  let %x: i32 = get Box.0.0(%b)
+  jump ret(%x)
+}
+
+fn fn3(%b: imm Box) -> (imm fn() -> (i32)) {
+  let %f: imm fn() -> (i32) = closure fn2(%b)
+  jump ret(%f)
+}
+
+//# verify-error: fn1: its parameter 0 is borrowed, but isn't an object
+//# verify-error: fn2: it borrows a parameter, but it's a closure's function, a clause or an export, whose callers give away what they pass

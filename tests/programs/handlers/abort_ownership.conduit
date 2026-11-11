@@ -1,0 +1,87 @@
+// What an abort drops, where ownership is subtle (#56): a frame that
+// borrows a parameter doesn't own it, so only its caller drops it; and a
+// field read out of an object before the `perform`, whose `dup` and the
+// object's `drop` after it `specialize_drops` turns into a test of whether
+// the object is unique, is owned through the object until then.
+
+data List {
+  ()
+  (imm Box, imm List)
+}
+
+data Box {
+  (i32)
+}
+
+effect Fail {
+  (i32) -> ()
+}
+
+handler caught for Fail env() ops(fail) ret done
+
+fn fail(%x: i32, %k: cont() -> (i32)) -> (i32) {
+  jump ret(%x)
+}
+
+fn done(%r: i32) -> (i32) {
+  jump ret(%r)
+}
+
+// The sum of the list's boxes, failing with the sum so far at a negative
+// one. It only reads the list, so it borrows it.
+fn sum(%l: imm List, %acc: i32) -> (i32) does Fail {
+  case %l {
+    List.0 => jump ret(%acc)
+    List.1 =>
+      let %b: imm Box = get List.1.0(%l)
+      let %rest: imm List = get List.1.1(%l)
+      let %x: i32 = get Box.0.0(%b)
+      let %neg: i32 = lt.s(%x, 0i32)
+      case %neg {
+        0 =>
+          let %acc1: i32 = add(%acc, %x)
+          let %r: i32 = call sum(%rest, %acc1)
+          jump ret(%r)
+        _ =>
+          let = perform Fail.0(%acc)
+          jump ret(%acc)
+      }
+  }
+}
+
+// Reads the first box out of the list, checks the whole list, then uses
+// the box: the frame holds the list, and the box through it.
+fn first_plus_sum(%l: imm List) -> (i32) does Fail {
+  case %l {
+    List.0 => jump ret(0i32)
+    List.1 =>
+      let %b: imm Box = get List.1.0(%l)
+      let %s: i32 = call sum(%l, 0i32)
+      let %x: i32 = get Box.0.0(%b)
+      let %r: i32 = add(%s, %x)
+      jump ret(%r)
+  }
+}
+
+fn list(%a: i32, %b: i32, %c: i32) -> (imm List) {
+  let %nil: imm List = new List.0()
+  let %bc: imm Box = new Box.0(%c)
+  let %l3: imm List = new List.1(%bc, %nil)
+  let %bb: imm Box = new Box.0(%b)
+  let %l2: imm List = new List.1(%bb, %l3)
+  let %ba: imm Box = new Box.0(%a)
+  let %l1: imm List = new List.1(%ba, %l2)
+  jump ret(%l1)
+}
+
+fn main(%a: i32, %b: i32, %c: i32) -> (i32) {
+  let %l: imm List = call list(%a, %b, %c)
+  let %f: imm fn() -> (i32) does Fail = closure first_plus_sum(%l)
+  let %r: i32 = handle caught(%f)
+  jump ret(%r)
+}
+
+//# run main(1i32, 2i32, 3i32) == 7i32
+//# run main(1i32, -2i32, 3i32) == 1i32
+//# run main(1i32, 2i32, -3i32) == 3i32
+//# counts

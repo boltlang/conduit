@@ -93,8 +93,8 @@ pub fn aborting(f: &Func) -> Option<Func> {
 }
 
 /// `b` without the ops that count `k`'s references: without `k`, there's
-/// nothing to count, and what it held is lost, as when a continuation is
-/// dropped.
+/// nothing to count, and what dropping it would have dropped, the
+/// backend drops as the abort unwinds the frames instead.
 fn strip_counts(b: &mut Block, k: Var) {
     b.for_each_mut(|b| {
         b.lets.retain(|l| {

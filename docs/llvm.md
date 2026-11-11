@@ -222,10 +222,14 @@ has its own (see `crates/conduit-llvm/src/handlers.rs`):
 - An export, or a trampoline of `host_function`, runs with no handlers,
   and puts its caller's back when it returns.
 
-An abort doesn't drop what the frames it skips own, nor the handlers'
-environments, though the IR says dropping the continuation does: they
-leak, as they do in the evaluator and Wasm (#56); the unwinding could
-run cleanups for them, with landing pads at the calls that may abort.
+When counting, an abort drops what the IR says dropping the
+continuation would (#56): what the frames it skips own, and the
+environments of the handlers it passes and of the one it aborts to.
+Each call that may perform, in a function whose row isn't empty, while
+the frame owns something (see `conduit_ir::owned`), is an `invoke` whose
+cleanup landing pad drops that and resumes, and a `handle`'s landing pad
+drops its environment. Code that can't perform, or has nothing to drop,
+has no landing pads.
 
 A `handle` that nothing aborts to costs no more than one of a handler
 that doesn't abort, and an abort costs an unwinding, which reads the

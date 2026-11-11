@@ -38,6 +38,14 @@ pub struct Func {
     /// How many labels the body uses, [`Label::RET`] included.
     pub labels: u32,
     pub params: Vec<Var>,
+    /// Which parameters are borrowed, by the convention between the
+    /// function and its callers that "Reference counts" in `docs/ir.md`
+    /// describes: the caller keeps the reference, so a call doesn't take
+    /// it. Empty if none is; `conduit_opt::ownership::insert_counts` sets
+    /// it. It only means something in counted code, which says where
+    /// references go, and code that needs to know what a frame owns reads
+    /// it there (see [`owned`](crate::owned)).
+    pub borrowed: Vec<bool>,
     pub results: Vec<Ty>,
     /// The effects it may perform.
     pub row: Row,
@@ -78,6 +86,7 @@ impl Func {
             vars: self.vars.clone(),
             labels: self.labels,
             params: self.params.clone(),
+            borrowed: self.borrowed.clone(),
             results: self.results.clone(),
             row: self.row.clone(),
             body: Tail::Unreachable.into(),
@@ -95,11 +104,17 @@ impl Func {
             vars: params,
             labels: 1,
             params: (0..params_len).map(Var).collect(),
+            borrowed: Vec::new(),
             results,
             row: Row::NOTHING,
             body: Tail::Unreachable.into(),
             debug: FuncDebug::default(),
         }
+    }
+
+    /// Whether parameter `i` is borrowed.
+    pub fn is_borrowed(&self, i: usize) -> bool {
+        self.borrowed.get(i).copied().unwrap_or(false)
     }
 
     pub fn new_var(&mut self, ty: Ty) -> Var {

@@ -21,10 +21,13 @@
 //!   reference to the environment. Resuming or discontinuing it takes it:
 //!   it's marked used, what it holds is dupped for `drive`, its slot goes
 //!   on its table's free list, which `drive` takes slots from before it
-//!   grows the table, and it's dropped. Freed without being used, it gives
-//!   back the handler's frame, the frame's segment and its slot; what its
-//!   own stack holds is lost. Otherwise `drive` gives the frame back when
-//!   the body returns or throws.
+//!   grows the table, and it's dropped. Freed without being used, it's
+//!   cancelled: the cancel tag is thrown into it, so that its stack
+//!   unwinds, dropping what its frames own as an abort does, and its
+//!   `drive` gives back the handler's frame and its segments, and drops
+//!   the environment. Otherwise `drive` gives the frame back when the
+//!   body returns or throws. The collector frees one in a cycle without
+//!   cancelling it, so what its stack holds is lost then.
 //! - `discontinue F.j(k, args)` makes a closure that performs `F.j(args)`
 //!   and throws its address into `k` with `resume_throw`, which the
 //!   `perform` catches and calls, under its own handlers.
@@ -51,6 +54,10 @@ pub(crate) enum Start {
     Resume(u32),
     /// `throw`: throwing a closure into operation `i`'s continuation.
     Throw(u32),
+    /// `cancel`: throwing the cancel tag into operation `i`'s
+    /// continuation, which was freed without being used, so that it
+    /// unwinds.
+    Cancel(u32),
 }
 
 /// A nullable reference to the type at `idx`.
@@ -216,6 +223,7 @@ impl Cx<'_> {
                 params.push(nullable(self.op_cont(h, i)?));
                 params.push(ValType::I32);
             }
+            Start::Cancel(i) => params.push(nullable(self.op_cont(h, i)?)),
         }
         Ok(FnSig {
             params,
@@ -373,6 +381,15 @@ pub(crate) fn lower_drive(cx: &mut Cx<'_>, h: HandlerId, start: Start) -> Result
                 resume_table: table.into(),
             });
         }
+        Start::Cancel(i) => {
+            let tag = cx.cancel_tag.ok_or("no tag for cancelling")?;
+            code.push(I::LocalGet(1 + env));
+            code.push(I::ResumeThrow {
+                cont_type_index: cx.op_cont(h, i)?,
+                tag_index: tag,
+                resume_table: table.into(),
+            });
+        }
     }
     if catching {
         code.push(I::End);
@@ -473,12 +490,21 @@ pub(crate) fn lower_drive(cx: &mut Cx<'_>, h: HandlerId, start: Start) -> Result
     code.push(I::ReturnCall(cx.func_index(decl.ret)?));
     if catching {
         // The exception, after the body's segment and frame are given
-        // back.
+        // back, and when counting, the environment dropped, which the
+        // return clause won't take.
         code.push(I::End);
         if let Some(sh) = &shadow {
             code.extend(sh.leave());
         }
         release_frame(&mut code);
+        if let Some(rt) = &cx.rt {
+            for (j, ty) in decl.env.iter().enumerate() {
+                if let Some(k) = key_of(ty) {
+                    code.push(I::LocalGet(1 + j as u32));
+                    code.push(I::Call(rt.drop(&k, crate::counts::is_imm(ty))));
+                }
+            }
+        }
         code.push(I::ThrowRef);
     }
     code.push(I::End);
@@ -516,7 +542,7 @@ impl Shadow {
                 I::LocalGet(self.segment),
                 store(Storage::I32, at),
             ]),
-            Start::Resume(_) | Start::Throw(_) => code.extend([
+            Start::Resume(_) | Start::Throw(_) | Start::Cancel(_) => code.extend([
                 I::LocalGet(0),
                 load(Storage::I32, at),
                 I::LocalTee(self.segment),
@@ -662,10 +688,11 @@ pub(crate) fn lower_kont(
 }
 
 /// What a Conduit continuation of `h`'s clause `i` that was never used
-/// gives back when it's freed: the handler's frame, the shadow stack
-/// segment the frame holds, and the slot of its Wasm continuation, with
-/// local `node` for the slot's free list. What the continuation's own
-/// stack holds is lost.
+/// gives back when the collector frees it: the handler's frame, the
+/// shadow stack segment the frame holds, and the slot of its Wasm
+/// continuation, with local `node` for the slot's free list. What the
+/// continuation's own stack holds is lost, since running code to unwind
+/// it while collecting could change what's being collected.
 fn unused_kont(
     cx: &mut Cx<'_>,
     h: HandlerId,
@@ -737,15 +764,83 @@ fn kont_env(cx: &Cx<'_>, h: HandlerId) -> (Vec<(u32, conduit_ir::Ty)>, u32) {
 }
 
 /// The function that frees a Conduit continuation of `h`'s clause `i`,
-/// whose count is 0, and drops what it holds.
+/// whose count is 0, and drops what it holds. One that was never used is
+/// cancelled first (see [`cancel_kont`]).
 pub(crate) fn lower_kont_free(cx: &mut Cx<'_>, h: HandlerId, i: u32) -> Result<Body, String> {
-    let first = unused_kont(cx, h, i, 1)?;
+    let first = cancel_kont(cx, h, i, 1)?;
     let (env, size) = kont_env(cx, h);
     let rt = cx
         .rt
         .as_ref()
         .ok_or("a continuation is only freed when counting")?;
-    Ok(rt.free_fields(&env, size, first, vec![ValType::I32]))
+    Ok(rt.free_fields(&env, size, first, vec![ValType::I32; 3]))
+}
+
+/// If the Conduit continuation of `h`'s clause `i` in local 0 was never
+/// used: throws the cancel tag into its Wasm continuation, through `h`'s
+/// `cancel` function, so that its stack unwinds, dropping what its
+/// frames own, and catches it once it's out. `cancel` gives back the
+/// handler's frame and the continuation's segments, as `drive` does when
+/// a body throws, and its slot is given back first. Locals `node`,
+/// `node + 1` and `node + 2` are for the slot's free list and for the
+/// handler stack and `SITE`, which the unwinding leaves where it threw
+/// from and this puts back, since code goes on after it.
+fn cancel_kont(
+    cx: &mut Cx<'_>,
+    h: HandlerId,
+    i: u32,
+    node: u32,
+) -> Result<Vec<I<'static>>, String> {
+    let decl = &cx.m.handlers[&h];
+    let env = decl.env.len();
+    let (fields, _) = cx.kont_layout(h);
+    let sw = cx.switch(h)?.clone();
+    let t = sw.conts[i as usize];
+    let cont = cx.op_cont(h, i)?;
+    let tag = cx.cancel_tag.ok_or("no tag for cancelling")?;
+    let rt = cx
+        .rt
+        .as_ref()
+        .ok_or("a continuation is only freed when counting")?;
+    let (handlers, site) = (node + 1, node + 2);
+    let (used, s) = fields[3 + env];
+    let mut code = vec![
+        I::LocalGet(0),
+        load(s, used),
+        I::I32Eqz,
+        I::If(BlockType::Empty),
+        I::GlobalGet(HANDLERS),
+        I::LocalSet(handlers),
+    ];
+    if cx.discontinues {
+        code.extend([I::GlobalGet(crate::SITE), I::LocalSet(site)]);
+    }
+    code.push(I::Block(BlockType::Empty));
+    let catches = vec![Catch::One { tag, label: 0 }];
+    code.push(I::TryTable(BlockType::Empty, catches.into()));
+    // The frame, and the environment, which `cancel` drops, as the
+    // continuation keeps its own until it's freed.
+    for (j, &(at, s)) in fields[1..2 + env].iter().enumerate() {
+        code.push(I::LocalGet(0));
+        code.push(load(s, at));
+        if j > 0 && key_of(&decl.env[j - 1]).is_some() {
+            code.extend([I::LocalGet(0), load(s, at), I::Call(rt.dup())]);
+        }
+    }
+    let (at, s) = fields[2 + env];
+    code.extend([I::LocalGet(0), load(s, at), I::TableGet(t)]);
+    code.extend(cx.free_slot(t, cont, &[I::LocalGet(0), load(s, at)], node));
+    code.push(I::Call(sw.cancel[i as usize]));
+    // It never returns: the cancel tag always gets out.
+    code.push(I::Unreachable);
+    code.push(I::End);
+    code.push(I::End);
+    code.extend([I::LocalGet(handlers), I::GlobalSet(HANDLERS)]);
+    if cx.discontinues {
+        code.extend([I::LocalGet(site), I::GlobalSet(crate::SITE)]);
+    }
+    code.push(I::End);
+    Ok(code)
 }
 
 /// `children(p, op)` of a Conduit continuation of `h`'s clause `i`, for

@@ -19,7 +19,8 @@ pub fn insert_counts_with(m: &mut Module, borrows: &Borrows) -> Result<(), Strin
     Ok(())
 }
 
-/// Adds `dup`s and `drop`s to one function, `id`.
+/// Adds `dup`s and `drop`s to one function, `id`, and records which of
+/// its parameters are borrowed, in [`Func::borrowed`].
 pub fn count_func(id: FuncId, f: &mut Func, borrows: &Borrows) -> Result<(), String> {
     let mut counted: Vec<bool> = f.vars.iter().map(Ty::is_object).collect();
     // A borrowed variable isn't the function's to count: it only gets a
@@ -54,6 +55,14 @@ pub fn count_func(id: FuncId, f: &mut Func, borrows: &Borrows) -> Result<(), Str
     let owned: Set = f.params.iter().copied().filter(|v| cx.is(*v)).collect();
     let body = std::mem::replace(&mut f.body, Tail::Unreachable.into());
     f.body = cx.block(body, &owned, &live, &mut 0);
+    let borrowed: Vec<bool> = (0..f.params.len())
+        .map(|i| borrows.is_borrowed(id, i) && f.var_ty(f.params[i]).is_object())
+        .collect();
+    f.borrowed = if borrowed.contains(&true) {
+        borrowed
+    } else {
+        Vec::new()
+    };
     Ok(())
 }
 
@@ -363,31 +372,9 @@ pub(super) fn takes_with(b: &Borrows, op: &Op, i: usize) -> bool {
 }
 
 /// Whether `op` takes the reference of its argument `i`, rather than
-/// borrowing it, if every parameter of a call is owned.
+/// borrowing it, if every parameter of a call is owned: see [`Op::takes`].
 pub(super) fn takes(op: &Op, i: usize) -> bool {
-    match op {
-        Op::New(_)
-        | Op::ArrayNew
-        | Op::Closure(..)
-        | Op::Call(..)
-        | Op::Apply
-        | Op::Handle(..)
-        | Op::Perform(..)
-        | Op::Resume
-        | Op::Discontinue(..)
-        | Op::RefNew
-        | Op::Box(_)
-        | Op::ArrayFreeze
-        | Op::HostUnwrap
-        | Op::HostFunction
-        | Op::Forget
-        | Op::DropReuse
-        | Op::ReuseToken
-        | Op::Reuse(_) => true,
-        Op::Set(..) | Op::RefSet | Op::ArrayFill => i == 1,
-        Op::ArraySet => i == 2,
-        _ => false,
-    }
+    op.takes(i)
 }
 
 /// `dup`s so that `v`, owning one reference, has `n` to give.

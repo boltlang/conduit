@@ -16,7 +16,7 @@ fn build(%n: i32) -> (imm List) {
   }
 }
 
-fn len(%l: imm List) -> (i32) {
+fn len(#[borrow] %l: imm List) -> (i32) {
   case %l {
     List.0 => jump ret(0i32)
     List.1 =>
@@ -27,7 +27,7 @@ fn len(%l: imm List) -> (i32) {
   }
 }
 
-fn sum_to(%l: imm List, %acc: i32) -> (i32) {
+fn sum_to(#[borrow] %l: imm List, %acc: i32) -> (i32) {
   case %l {
     List.0 => jump ret(%acc)
     List.1 =>

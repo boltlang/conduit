@@ -42,7 +42,7 @@ fn map(%l: imm List) -> (imm List) {
   }
 }
 
-fn sum(%l: imm List) -> (i32) {
+fn sum(#[borrow] %l: imm List) -> (i32) {
   case %l {
     List.0 => jump ret(0i32)
     List.1 =>

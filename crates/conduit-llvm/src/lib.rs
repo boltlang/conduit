@@ -927,6 +927,15 @@ struct Lower<'m> {
     counts: bool,
     cycles: bool,
     kinds: BTreeSet<Kind>,
+    /// When counting, what the frame owns at each `let`, to drop when an
+    /// abort unwinds it, if one can.
+    owned: Option<conduit_ir::owned::Owned<'m>>,
+    /// While lowering a `let` that an abort can unwind while the frame
+    /// owns something: the landing pad its calls unwind to, and what it
+    /// drops.
+    unwind: Option<(ir::Label, Vec<(Var, u32)>)>,
+    /// Those landing pads, which go after the body.
+    pads: Vec<(ir::Label, Vec<(Var, u32)>)>,
 }
 
 impl<'m> Lower<'m> {
@@ -967,12 +976,52 @@ impl<'m> Lower<'m> {
             counts: options.counts,
             cycles: options.counts && options.cycles,
             kinds: BTreeSet::new(),
+            owned: (options.counts && !f.row.is_nothing()).then(|| {
+                conduit_ir::owned::Owned::new(f, |g, i| {
+                    m.funcs.get(&g).is_some_and(|g| g.is_borrowed(i))
+                })
+            }),
+            unwind: None,
+            pads: Vec::new(),
         })
     }
 
     fn func(mut self) -> Result<Lowered, String> {
         self.block(&self.f.body)?;
+        // An abort that unwinds the frame drops what it owns, and goes on.
+        for (pad, owned) in std::mem::take(&mut self.pads) {
+            self.b.start(&pad);
+            let landed = self.b.landing_pad();
+            self.drop_owned(&owned)?;
+            self.b.resume(landed);
+        }
         Ok((self.b.finish(), self.entries, self.kinds))
+    }
+
+    /// Drops what the frame owns, `owned`, as an abort unwinds it.
+    fn drop_owned(&mut self, owned: &[(Var, u32)]) -> Result<(), String> {
+        for &(v, n) in owned {
+            let t = self.f.var_ty(v);
+            let Some(k) = Kind::of(t) else { continue };
+            let x = self.value(&Atom::Var(v))?;
+            let drop = self.drop_of(t, k);
+            for _ in 0..n {
+                call_void(&mut self.b, drop.clone(), vec![Type::Ptr.val(&x)]);
+            }
+        }
+        Ok(())
+    }
+
+    /// A call that an abort can unwind: an `invoke` of the landing pad of
+    /// the `let` being lowered, if it has one.
+    fn call_out(&mut self, call: Call) -> Option<Value> {
+        match self.unwind.as_ref().map(|(pad, _)| pad.clone()) {
+            Some(pad) => {
+                self.b.personality(Value::global(handlers::PERSONALITY));
+                self.b.invoke(call, &pad)
+            }
+            None => self.b.call(call),
+        }
     }
 
     fn atom_ty(&self, a: &Atom) -> Ty {
@@ -1011,6 +1060,7 @@ impl<'m> Lower<'m> {
 
     fn block(&mut self, b: &Block) -> Result<(), String> {
         conduit_ir::deep(|| {
+            let owned = self.owned.as_ref().map(|o| o.during_each(b));
             for (i, l) in b.lets.iter().enumerate() {
                 let last = i + 1 == b.lets.len();
                 let tail = last && conduit_ir::tail::returns(&l.binds, &b.tail, &self.defs);
@@ -1035,7 +1085,15 @@ impl<'m> Lower<'m> {
                     self.tail_call(fp, args);
                     return Ok(());
                 }
-                self.let_(&l.op, &l.args, &l.binds)?;
+                let owned = owned.as_ref().map_or(&[][..], |o| &o[i][..]);
+                if !owned.is_empty() && conduit_ir::owned::may_unwind(self.m, self.f, l) {
+                    let pad = self.b.new_block();
+                    self.pads.push((pad.clone(), owned.to_vec()));
+                    self.unwind = Some((pad, owned.to_vec()));
+                }
+                let r = self.let_(&l.op, &l.args, &l.binds);
+                self.unwind = None;
+                r?;
             }
             self.tail(&b.tail)
         })
@@ -1070,7 +1128,7 @@ impl<'m> Lower<'m> {
     /// Makes `call`, and puts its results into `binds`.
     fn bind_results(&mut self, call: Call, binds: &[Var]) -> Result<(), String> {
         let ret = call.ret.clone();
-        let Some(r) = self.b.call(call) else {
+        let Some(r) = self.call_out(call) else {
             return Ok(());
         };
         if let Type::Struct(_) = ret {
@@ -1126,9 +1184,16 @@ impl<'m> Lower<'m> {
         let gives = ret_ty(&sig.results)?;
         let (fp, all) = self.apply_args(body)?;
         let call = Call::tailcc(gives.clone(), fp, all);
-        let r = match &aborted {
-            Some((pad, ..)) => self.b.invoke(call, pad),
-            None => self.b.call(call),
+        // When counting, an abort that unwinds the `handle` drops the
+        // environment, which the return clause won't take.
+        let env_counted = self.counts && decl.env.iter().any(|t| Kind::of(t).is_some());
+        let cleanup = (aborted.is_none() && env_counted).then(|| self.b.new_block());
+        let r = match (&aborted, &cleanup) {
+            (Some((pad, ..)), _) | (None, Some(pad)) => {
+                self.b.personality(Value::global(handlers::PERSONALITY));
+                self.b.invoke(call, pad)
+            }
+            (None, None) => self.call_out(call),
         };
         self.b.store(Type::Ptr, &saved, &stack);
         let ret_f =
@@ -1145,6 +1210,15 @@ impl<'m> Lower<'m> {
         }
         let ret = ret_ty(&ret_f.results)?;
         self.bind_results(Call::tailcc(ret, symbol(decl.ret), rargs), binds)?;
+        if let Some(pad) = cleanup {
+            let done = self.b.new_block();
+            self.b.br(&done);
+            self.b.start(&pad);
+            let landed = self.b.landing_pad();
+            self.unwinding(h, &at, &frame)?;
+            self.b.resume(landed);
+            self.b.start(&done);
+        }
         let Some((pad, exn, site)) = aborted else {
             return Ok(());
         };
@@ -1158,9 +1232,12 @@ impl<'m> Lower<'m> {
         let is_mine = self.b.icmp(IntPred::Eq, Type::Ptr, thrown, own);
         self.b.cond_br(is_mine, &mine, &other);
         self.b.start(&other);
+        self.unwinding(h, &at, &frame)?;
         self.b.resume(landed);
-        // It left the results in the frame.
+        // It left the results in the frame, and the return clause won't
+        // take the environment.
         self.b.start(&mine);
+        self.drop_env(h, &at, &frame)?;
         self.b.store(Type::Ptr, &saved, &stack);
         if let Some(site) = site {
             self.b.store(Type::Ptr, site, handlers::site_global());
@@ -1172,6 +1249,43 @@ impl<'m> Lower<'m> {
         }
         self.b.br(&done);
         self.b.start(&done);
+        Ok(())
+    }
+
+    /// When counting, drops the environment of `h` in its frame at `at`,
+    /// laid out as `frame`.
+    fn drop_env(
+        &mut self,
+        h: conduit_ir::HandlerId,
+        at: &Value,
+        frame: &handlers::Frame,
+    ) -> Result<(), String> {
+        if !self.counts {
+            return Ok(());
+        }
+        for (t, &off) in self.m.handlers[&h].env.iter().zip(&frame.env) {
+            if let Some(k) = Kind::of(t) {
+                let x = self.b.load_at(Type::Ptr, at, off);
+                let drop = self.drop_of(t, k);
+                call_void(&mut self.b, drop, vec![Type::Ptr.val(x)]);
+            }
+        }
+        Ok(())
+    }
+
+    /// An abort unwinds a `handle` of `h`, with its frame at `at`: it
+    /// drops the environment, and what the frame owns while the `handle`
+    /// runs.
+    fn unwinding(
+        &mut self,
+        h: conduit_ir::HandlerId,
+        at: &Value,
+        frame: &handlers::Frame,
+    ) -> Result<(), String> {
+        self.drop_env(h, at, frame)?;
+        if let Some((_, owned)) = self.unwind.clone() {
+            self.drop_owned(&owned)?;
+        }
         Ok(())
     }
 

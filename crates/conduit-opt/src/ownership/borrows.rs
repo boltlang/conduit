@@ -125,30 +125,10 @@ pub fn borrows(m: &Module) -> Borrows {
     }
 }
 
-/// The variables of function `id` that are borrowed: its borrowed
-/// parameters, and what's read out of a borrowed `imm` object, which the
-/// object keeps alive, and unchanged, for as long as the caller does.
+/// The variables of `id` that are lent rather than owned, with the
+/// borrowed parameters `b`: see [`conduit_ir::owned::lent`].
 pub(super) fn lent_vars(id: FuncId, f: &Func, b: &Borrows) -> Set {
-    let mut lent: Set = (f.params.iter().enumerate())
-        .filter(|(i, _)| b.is_borrowed(id, *i))
-        .map(|(_, p)| *p)
-        .collect();
-    // Variables are bound before they're used, and outer blocks before
-    // inner ones, so one pass in that order finds them all.
-    for block in f.body.blocks() {
-        for l in &block.lets {
-            let reads = matches!(l.op, Op::Get(..) | Op::ArrayGet | Op::Unbox(_));
-            if let ([Atom::Var(x), ..], [y]) = (&l.args[..], &l.binds[..])
-                && reads
-                && lent.contains(x)
-                && f.var_ty(*x).mutability() == Some(Mutability::Imm)
-                && f.var_ty(*y).is_object()
-            {
-                lent.insert(*y);
-            }
-        }
-    }
-    lent
+    conduit_ir::owned::lent(f, |i| b.is_borrowed(id, i))
 }
 
 /// The functions each function can call, directly or not. An `apply` can

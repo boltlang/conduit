@@ -355,7 +355,10 @@ fn func_with(names: &Items, id: FuncId, f: &Func) -> String {
         names,
         out: String::new(),
     };
-    let params = p.binders(&f.params);
+    let params = comma(f.params.iter().enumerate().map(|(i, &v)| {
+        let borrow = if f.is_borrowed(i) { "#[borrow] " } else { "" };
+        format!("{borrow}{}", p.binder(v))
+    }));
     let mparams = param_list(f.mut_params.count, f.effect_params);
     let _ = write!(
         p.out,

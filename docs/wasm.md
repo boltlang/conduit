@@ -175,13 +175,19 @@ three ops.
   list is a loop. A closure's wrapper has a function next to it in the
   table that frees it and drops its captures, and every `any` is then a
   box that holds the kind of what it holds. Handler frames are freed when
-  their `handle` is done, also when an abort unwinds through it. A module
+  their `handle` is done, also when an abort unwinds through it, which
+  drops the handler's environment then. An abort drops what the frames
+  it unwinds own (see `conduit_ir::owned`): each call that may perform,
+  in a function whose row isn't empty, while its frame owns something, is
+  in a `try_table` that catches everything, drops that and rethrows. A
+  module
   whose handlers need evidence passing must have it done before its
   counts are inserted. With stack switching, they needn't be: a captured
   continuation is counted, holds a reference to the handler's
-  environment, and gives back its table slot when it's used, or its slot,
-  the handler's frame and its shadow stack segment when it's freed
-  unused. The module exports `conduit_live`, the number of
+  environment, and gives back its table slot when it's used. Freed
+  unused, it's cancelled: an exception thrown into it unwinds its stack
+  as an abort does, which gives back the handler's frame and its shadow
+  stack segments and drops what its frames own. The module exports `conduit_live`, the number of
   objects not yet freed.
 - **Host values** are boxes of 16 bytes, counted like other objects, that
   hold the number of a slot in a table of `externref`s, and a null
