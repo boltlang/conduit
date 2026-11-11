@@ -131,7 +131,7 @@ reset.
   environment. A foreign exception runs those too, but a frame that owns
   something only has one at a call that may perform: one unwound from a
   call of an extern, or from a function whose row is empty, leaks what
-  it owns, host values among them.
+  it owns, host values among them: #59.
 - **After a trap:** the same, and the boxes an entry point made for host
   values it was given, and with stack switching, the shadow stack segments
   of the continuation that trapped. A trap in the middle of a cycle

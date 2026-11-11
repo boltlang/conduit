@@ -27,7 +27,7 @@
 //!   `drive` gives back the handler's frame and its segments, and drops
 //!   the environment. Otherwise `drive` gives the frame back when the
 //!   body returns or throws. The collector frees one in a cycle without
-//!   cancelling it, so what its stack holds is lost then.
+//!   cancelling it, so what its stack holds is lost then (#58).
 //! - `discontinue F.j(k, args)` makes a closure that performs `F.j(args)`
 //!   and throws its address into `k` with `resume_throw`, which the
 //!   `perform` catches and calls, under its own handlers.
