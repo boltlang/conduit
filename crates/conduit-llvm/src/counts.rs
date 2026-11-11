@@ -171,7 +171,7 @@ const COMMON: &str = r#"
 @conduit_live = global i64 0
 
 ; Frees an object's memory, without dropping what it holds.
-define tailcc void @conduit_release(ptr %p) {
+define tailcc void @conduit_dealloc(ptr %p) {
   call void @free(ptr %p)
   %n = load i64, ptr @conduit_live
   %n1 = sub i64 %n, 1
@@ -268,7 +268,7 @@ no:
 const NO_CYCLES: &str = r#"
 ; Frees an object whose count got to 0.
 define tailcc void @conduit_free(ptr %p) {
-  tail call tailcc void @conduit_release(ptr %p)
+  tail call tailcc void @conduit_dealloc(ptr %p)
   ret void
 }
 
@@ -312,7 +312,7 @@ keep:
   store i32 1073741824, ptr %p
   ret void
 go:
-  tail call tailcc void @conduit_release(ptr %p)
+  tail call tailcc void @conduit_dealloc(ptr %p)
   ret void
 }
 
@@ -615,7 +615,7 @@ drop:
   %dead = icmp eq i32 %h, 1073741824
   br i1 %dead, label %free, label %mnext
 free:
-  call tailcc void @conduit_release(ptr %p)
+  call tailcc void @conduit_dealloc(ptr %p)
   br label %mnext
 let_go:
   store i32 %unbuffered, ptr %p
@@ -666,7 +666,7 @@ fl:
 fbody:
   %fe = getelementptr ptr, ptr %ds, i64 %fi
   %fp = load ptr, ptr %fe
-  call tailcc void @conduit_release(ptr %fp)
+  call tailcc void @conduit_dealloc(ptr %fp)
   %fi1 = add i64 %fi, 1
   br label %fl
 done:

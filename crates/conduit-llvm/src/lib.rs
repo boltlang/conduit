@@ -2,10 +2,10 @@
 //!
 //! An experiment, and a first step towards a native backend: it handles
 //! functions, calls, join points, `case`, the integer and float ops,
-//! objects (data, arrays, refs, `any`, closures), constants, host values,
-//! and freeing by reference counting, and says what it doesn't handle
-//! yet: handlers, which lowering effects removes first, and
-//! `host_function`. See `docs/llvm.md`.
+//! objects (data, arrays, refs, `any`, closures), constants, host values
+//! and functions, and freeing by reference counting, and says what it
+//! doesn't handle yet: handlers, which lowering effects removes first.
+//! See `docs/llvm.md`.
 //!
 //! The lowering builds an [`ir::Module`], which printing makes text.
 //!
@@ -478,9 +478,17 @@ pub fn lower_module_with(m: &Module, options: &Options) -> Result<ir::Module, Er
             .map_err(|message| err(None, format!("constant {c}: {message}")))?;
         }
     }
+    let callbacks = callback_sigs(m);
+    if !callbacks.is_empty() {
+        out.push(Declare::new(
+            host_pair(),
+            "conduit_host_function",
+            vec![Type::Ptr, Type::Ptr],
+        ));
+    }
     let mut kinds = BTreeSet::new();
     for (&id, f) in &m.funcs {
-        let lowered = Lower::new(m, id, f, options).and_then(Lower::func);
+        let lowered = Lower::new(m, id, f, options, &callbacks).and_then(Lower::func);
         let (func, fn_entries, fn_kinds) = lowered.map_err(|message| err(Some(id), message))?;
         out.push(func);
         entries.extend(fn_entries);
@@ -503,15 +511,26 @@ pub fn lower_module_with(m: &Module, options: &Options) -> Result<ir::Module, Er
             out.push(counts::descriptor(desc_name(f, n), free, visit));
         }
     }
+    // What the host calls the closures of `host_function` through, and
+    // lets go of them with.
+    for (k, (params, results)) in callbacks.iter().enumerate() {
+        let tramp = trampoline(k, params, results, options.counts);
+        out.push(tramp.map_err(|message| err(None, message))?);
+    }
+    if !callbacks.is_empty() {
+        out.push(release_fn(options.counts));
+    }
     if options.counts {
-        // Entry functions drop their closure.
-        if !entries.is_empty() {
+        // Entry functions drop their closure, and so does
+        // `conduit_release`.
+        if !entries.is_empty() || !callbacks.is_empty() {
             kinds.insert(Kind::Closure);
         }
-        // An export that gives a host value drops its box.
+        // An export or trampoline that gives a host value drops its box.
         let gives_host = (m.exports.iter())
             .filter(|(_, e)| matches!(e, conduit_ir::Export::C { .. }))
-            .any(|(id, _)| m.funcs[id].results.iter().any(Ty::is_host));
+            .any(|(id, _)| m.funcs[id].results.iter().any(Ty::is_host))
+            || callbacks.iter().any(|(_, r)| r.iter().any(Ty::is_host));
         if gives_host {
             kinds.insert(Kind::Host);
         }
@@ -531,13 +550,69 @@ pub fn lower_module_with(m: &Module, options: &Options) -> Result<ir::Module, Er
     Ok(out)
 }
 
-/// The C function `symbol` that calls function `id`, `f`. A host value
-/// comes in as a [`host_pair`], whose reference the caller gives Conduit,
-/// and goes in a box; one going out is retained for the caller, and its
-/// box dropped.
+/// The C function `symbol` that calls function `id`, `f`, as an export.
 fn export_fn(f: &Func, id: FuncId, symbol: &str, counts: bool) -> Result<ir::Function, String> {
-    let tys: Vec<&Ty> = f.params.iter().map(|v| f.var_ty(*v)).collect();
-    let mut params = Vec::new();
+    let call = |_: &mut FnBuilder, ret: Type, args| Call::tailcc(ret, self::symbol(id), args);
+    c_entry(symbol, 0, &f.sig().params, &f.results, counts, call)
+}
+
+/// What `host_function` gives the host for a closure that takes `params`
+/// and gives `results`, the `k`th such signature: a C function
+/// `conduit_trampoline<k>(void *closure, params..)`, which runs the
+/// closure as an export runs its function. The host keeps its reference
+/// to the closure, and applying it takes one, so it adds one first.
+fn trampoline(
+    k: usize,
+    params: &[Ty],
+    results: &[Ty],
+    counts: bool,
+) -> Result<ir::Function, String> {
+    let call = |b: &mut FnBuilder, ret: Type, args: Vec<Typed>| {
+        let c = args[0].1.clone();
+        if counts {
+            call_void(b, Value::global("conduit_dup"), vec![Type::Ptr.val(&c)]);
+        }
+        let entry = b.load_at(Type::Ptr, &c, 8);
+        Call::tailcc(ret, entry, args)
+    };
+    c_entry(&trampoline_name(k), 1, params, results, counts, call)
+}
+
+/// The `k`th trampoline of `host_function`.
+fn trampoline_name(k: usize) -> String {
+    format!("conduit_trampoline{k}")
+}
+
+/// `conduit_release(closure)`, which the host calls when it lets go of a
+/// function `host_function` gave it: it drops the closure.
+fn release_fn(counts: bool) -> ir::Function {
+    let params = vec![(Type::Ptr, "c".to_string())];
+    let mut b = FnBuilder::new(CallConv::C, Type::Void, "conduit_release", params);
+    if counts {
+        let c = b.param(0);
+        call_void(&mut b, Kind::Closure.drop_fn(), vec![Type::Ptr.val(c)]);
+    }
+    b.ret_void();
+    b.finish()
+}
+
+/// A C function `name` that the host calls, an export's or a trampoline:
+/// it takes `lead` pointers as they are, then `params` as C passes them,
+/// and a pointer for each result after the first, and gives `results` as
+/// C takes them (see [`c_results`]). A host value comes in as a
+/// [`host_pair`], whose reference the caller gives Conduit, and goes in a
+/// box; one going out is retained for the caller, and its box dropped.
+/// `call` makes the call, of what returns `Type`, with the arguments as
+/// Conduit has them.
+fn c_entry(
+    name: &str,
+    lead: usize,
+    tys: &[Ty],
+    results: &[Ty],
+    counts: bool,
+    call: impl FnOnce(&mut FnBuilder, Type, Vec<Typed>) -> Call,
+) -> Result<ir::Function, String> {
+    let mut params: Vec<(Type, String)> = (0..lead).map(|i| (Type::Ptr, format!("c{i}"))).collect();
     for (i, t) in tys.iter().enumerate() {
         if t.is_host() {
             params.push((Type::Ptr, format!("p{i}.value")));
@@ -547,34 +622,34 @@ fn export_fn(f: &Func, id: FuncId, symbol: &str, counts: bool) -> Result<ir::Fun
         }
     }
     // Where the caller wants each result after the first.
-    let (ret, out_tys) = c_results(&f.results)?;
+    let (ret, out_tys) = c_results(results)?;
     let first_out = params.len();
-    for i in 1..f.results.len() {
+    for i in 1..results.len() {
         params.push((Type::Ptr, format!("r{i}")));
     }
-    let inner = ret_ty(&f.results)?;
-    let mut b = FnBuilder::new(CallConv::C, ret.clone(), symbol.to_string(), params);
-    let mut args = Vec::with_capacity(tys.len());
-    let mut k = 0;
-    for t in &tys {
+    let inner = ret_ty(results)?;
+    let mut b = FnBuilder::new(CallConv::C, ret.clone(), name.to_string(), params);
+    let mut args: Vec<Typed> = (0..lead).map(|i| Type::Ptr.val(b.param(i))).collect();
+    let mut k = lead;
+    for t in tys {
         if t.is_host() {
             let (value, ops) = (b.param(k), b.param(k + 1));
             k += 2;
-            args.push(Type::Ptr.val(host_in(&mut b, counts, value, ops, **t == Ty::NullableHost)));
+            args.push(Type::Ptr.val(host_in(&mut b, counts, value, ops, *t == Ty::NullableHost)));
         } else {
             args.push(ty(t)?.val(b.param(k)));
             k += 1;
         }
     }
-    let call = Call::tailcc(inner.clone(), self::symbol(id), args);
-    if f.results.len() <= 1 && !f.results.iter().any(Ty::is_host) {
+    let call = call(&mut b, inner.clone(), args);
+    if results.len() <= 1 && !results.iter().any(Ty::is_host) {
         b.return_call(call);
         return Ok(b.finish());
     }
     let r = b.call_value(call);
-    let mut gave = Vec::with_capacity(f.results.len());
-    for (i, t) in f.results.iter().enumerate() {
-        let v = if f.results.len() == 1 {
+    let mut gave = Vec::with_capacity(results.len());
+    for (i, t) in results.iter().enumerate() {
+        let v = if results.len() == 1 {
             r.clone()
         } else {
             b.extract_value(inner.clone(), &r, i as u32)
@@ -596,6 +671,26 @@ fn export_fn(f: &Func, id: FuncId, symbol: &str, counts: bool) -> Result<ir::Fun
         None => b.ret_void(),
     }
     Ok(b.finish())
+}
+
+/// The signatures of the closures that `host_function`s in `m` take, as
+/// their parameters and results, each once, in the order they're met.
+fn callback_sigs(m: &Module) -> Vec<(Vec<Ty>, Vec<Ty>)> {
+    let mut sigs = Vec::new();
+    for f in m.funcs.values() {
+        for l in f.body.all_lets() {
+            if l.op == Op::HostFunction
+                && let Some(Atom::Var(c)) = l.args.first()
+                && let Ty::Fn(sig, _) = f.var_ty(*c)
+            {
+                let key = (sig.params.clone(), sig.results.clone());
+                if !sigs.contains(&key) {
+                    sigs.push(key);
+                }
+            }
+        }
+    }
+    sigs
 }
 
 /// What box `p` holds as a [`host_pair`] for the host: its value and ops,
@@ -778,6 +873,9 @@ struct Lower<'m> {
     vars: Vec<Value>,
     /// The closure entry functions the function needs.
     entries: BTreeSet<(FuncId, usize)>,
+    /// The signatures of closures given to `host_function`, by the number
+    /// of their trampoline: see [`callback_sigs`].
+    callbacks: &'m [(Vec<Ty>, Vec<Ty>)],
     /// Whether to count, and the kinds of what it drops.
     counts: bool,
     cycles: bool,
@@ -785,7 +883,13 @@ struct Lower<'m> {
 }
 
 impl<'m> Lower<'m> {
-    fn new(m: &'m Module, id: FuncId, f: &'m Func, options: &Options) -> Result<Lower<'m>, String> {
+    fn new(
+        m: &'m Module,
+        id: FuncId,
+        f: &'m Func,
+        options: &Options,
+        callbacks: &'m [(Vec<Ty>, Vec<Ty>)],
+    ) -> Result<Lower<'m>, String> {
         let params = (f.params.iter())
             .map(|v| Ok((ty(f.var_ty(*v))?, format!("a{}", v.0))))
             .collect::<Result<_, String>>()?;
@@ -810,6 +914,7 @@ impl<'m> Lower<'m> {
             b,
             vars,
             entries: BTreeSet::new(),
+            callbacks,
             counts: options.counts,
             cycles: options.counts && options.cycles,
             kinds: BTreeSet::new(),
@@ -1284,6 +1389,29 @@ impl<'m> Lower<'m> {
                 let null = self.b.icmp(IntPred::Eq, Type::Ptr, &x, Value::Null);
                 self.trap_if(null);
                 self.bind(binds, x)?;
+            }
+            // The host makes a function of the trampoline for the
+            // closure's signature and the closure, whose reference it
+            // takes, and gives it back as a host value.
+            Op::HostFunction => {
+                let Ty::Fn(sig, _) = self.atom_ty(&args[0]) else {
+                    return Err("host_function of something that isn't a closure".into());
+                };
+                let k = (self.callbacks.iter())
+                    .position(|(p, r)| *p == sig.params && *r == sig.results)
+                    .ok_or("no trampoline for a host function")?;
+                let c = self.value(&args[0])?;
+                let tramp = Value::Global(trampoline_name(k));
+                let make = Value::global("conduit_host_function");
+                let pair = (self.b).call_value(Call::c(
+                    host_pair(),
+                    make,
+                    vec![Type::Ptr.val(tramp), Type::Ptr.val(c)],
+                ));
+                let value = self.b.extract_value(host_pair(), &pair, 0);
+                let ops = self.b.extract_value(host_pair(), &pair, 1);
+                let h = host_in(&mut self.b, self.counts, value, ops, false);
+                self.bind(binds, h)?;
             }
             other => return Err(format!("{other:?} isn't supported yet")),
         }

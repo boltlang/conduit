@@ -5,8 +5,8 @@ compile, with no LLVM library to link: a first step towards a native
 backend, to find the shape of the lowering before moving to the LLVM API
 (inkwell, for LLVM 23). The lowering builds a small model of LLVM IR, in
 `conduit_llvm::ir`, which printing makes text. It handles everything but
-handlers, which lowering effects removes first, and `host_function`, and
-says so for what it doesn't handle. With `Options::counts`, memory is
+handlers, which lowering effects removes first, and says so for what it
+doesn't handle. With `Options::counts`, memory is
 freed by reference counting, and with `Options::cycles`, cycles are
 collected too.
 
@@ -138,13 +138,39 @@ flat ABI can't pass host values, as in Wasm.
 Without counts, nothing is released: every host value Conduit gets stays
 alive, as in Wasm.
 
+### Functions the host calls
+
+`host_function(c)` gives the host a function that calls the closure `c`.
+A C function pointer can't hold a closure, so the host makes the
+function, as JavaScript does in Wasm, from two pointers the module gives
+it:
+
+```c
+conduit_host conduit_host_function(void *trampoline, void *closure);
+```
+
+- `trampoline` is a C function for each signature of closure,
+  `ret t(void *closure, args.., outs..)`, which runs the closure as an
+  export runs its function: it takes and gives host values and results
+  after the first as an export does, with no handlers around it.
+- The host wraps the two in its own callable, a struct of the two, a
+  block, a boxed `FnMut`, and gives it back as a host value with its own
+  `retain` and `release`. Conduit owns the reference it gives back, as an
+  extern's result.
+- The host keeps the closure's reference for as long as it holds the
+  function, and gives it back with `void conduit_release(void
+  *closure)`, which the module defines.
+
+After evidence passing, every closure takes evidence, so `host_function`
+gets an adapter's closure, as in Wasm. A cycle through Conduit and the
+host, like a callback that captures what holds it, leaks, as it does in
+JavaScript.
+
 Not yet:
 
 - **Handlers:** lower effects first. Evidence passing gives ordinary
   data, closures and `any`s, which this backend handles, so the rest of
   the pipeline is the same as for Wasm without stack switching.
-- **`host_function`:** closures the host calls, which the host has to
-  make the function of (#53).
 
 ## How
 
