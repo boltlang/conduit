@@ -35,7 +35,7 @@ pub enum Target {
     /// `"test"`.
     Wasm,
     /// The LLVM backend's native programs, linked with
-    /// `crates/conduit-llvm/tests/host.c`.
+    /// `tests/programs/host/c.c`.
     C,
 }
 

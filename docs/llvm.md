@@ -189,7 +189,7 @@ Not yet:
 `crates/conduit-llvm/tests/programs.rs` compiles every test program it can
 lower with `clang -O2`, built for C (see "Host functions" in
 [tests/programs/README.md](../tests/programs/README.md)) and linked with
-the test host in `tests/host.c`, as written and after the optimizer, after lowering
+the test host in `tests/programs/host/c.c`, as written and after the optimizer, after lowering
 its effects when it has any, each without counts, with them, and with
 cycles collected too, and runs
 its

@@ -1,4 +1,4 @@
-// The test host for native programs: `crates/conduit-llvm/tests/host.c`,
+// The test host for native programs: `tests/programs/host/c.c`,
 // whose functions are `conduit_test_` and the name, since C can't name a
 // function `double`. A program with a `//# host` check gets this after
 // its text when it's built for C. Each target's file declares the same

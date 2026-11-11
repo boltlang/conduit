@@ -36,6 +36,7 @@
 
 mod counts;
 pub mod ir;
+pub mod native;
 
 use std::collections::{BTreeMap, BTreeSet};
 

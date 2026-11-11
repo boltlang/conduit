@@ -111,7 +111,7 @@ compiles for:
 |---|---|---|
 | `host/emu.conduit` | the evaluator | `conduit_test::eval::TestHost` |
 | `host/wasm.conduit` | the Wasm runners | the module `"test"` of their linker |
-| `host/c.conduit` | native, through LLVM | `crates/conduit-llvm/tests/host.c`, as `conduit_test_<name>` |
+| `host/c.conduit` | native, through LLVM | `tests/programs/host/c.c`, as `conduit_test_<name>` |
 
 They declare the same functions with the same signatures, which a test
 in `conduit-test` checks.

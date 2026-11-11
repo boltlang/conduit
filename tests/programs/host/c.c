@@ -1,5 +1,6 @@
-// The test host for native programs, which `tests/programs.rs` links
-// with each one: the functions of `conduit_test::eval::TestHost`, which
+// The test host for native programs, which conduit-llvm's tests and the
+// benchmarks link with each one: the functions of
+// `conduit_test::eval::TestHost`, which
 // `tests/programs/host/c.conduit` declares. Each is `conduit_test_` and
 // its name, since C can't name a function `double`. The flat ones take
 // what the flat ABI passes natively, which is the C ABI: an array as a

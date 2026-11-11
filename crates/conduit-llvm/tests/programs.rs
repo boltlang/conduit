@@ -1,9 +1,10 @@
 //! Compiles each test program that only uses what conduit-llvm handles,
 //! with `clang`, and runs its `run` checks as a native program: as written
 //! and after the optimizer, or, for a program with handlers, after lowering
-//! its effects, and then after the optimizer. A `main` of the test's own
-//! picks the check by its number, calls the function, and prints the bits
-//! of each result. A trap is a signal. Skipped, with a note, when `clang` isn't installed.
+//! its effects, and then after the optimizer. `conduit_llvm::native`'s
+//! `main` picks the check by its number, calls the function, and prints
+//! the bits of each result. A trap is a signal. Skipped, with a note, when
+//! `clang` isn't installed.
 //!
 //! Each is also run with counts, and then with cycles collected too: each
 //! run must then leave as many objects live as the evaluator's run does,
@@ -13,11 +14,9 @@ use std::os::unix::process::ExitStatusExt;
 use std::path::PathBuf;
 use std::process::Command;
 
-use conduit_ir::{Lit, Module, Ty};
+use conduit_ir::Module;
 use conduit_llvm::Options;
-use conduit_llvm::ir::{
-    Call, CallConv, CastOp, Declare, FnBuilder, Global, Item, Label, Type, Value,
-};
+use conduit_llvm::native;
 use conduit_test::{CheckKind, Outcome, Program, Run, Target};
 
 fn main() {
@@ -41,15 +40,8 @@ fn without_handlers(mut m: Module) -> Module {
     m
 }
 
-fn clang() -> bool {
-    Command::new("clang")
-        .arg("--version")
-        .output()
-        .is_ok_and(|o| o.status.success())
-}
-
 fn test(p: &Program) -> Result<(), String> {
-    if !clang() {
+    if !native::clang() {
         eprintln!("{}: skipped, since clang isn't installed", p.name);
         return Ok(());
     }
@@ -106,38 +98,31 @@ fn check(
 ) -> Result<(), String> {
     let runs = p.runs(m)?;
     let counts = options.counts;
+    let calls: Vec<native::Run<'_>> = (runs.iter())
+        .map(|r| native::Run {
+            func: r.func,
+            args: r.args,
+        })
+        .collect();
     let mut module = conduit_llvm::lower_module_with(m, &options).map_err(|e| e.to_string())?;
-    module.items.extend(driver(m, &runs, counts)?);
-    let text = module.to_string();
+    module.items.extend(native::print_runs(m, &calls, counts)?);
+    module.items.extend(native::bench_runs(m, &calls)?);
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("llvm");
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let stem = format!(
         "{}_{}",
         p.name.replace('/', "_"),
         when.replace([' ', ','], "_")
     );
-    let ll = dir.join(format!("{stem}.ll"));
-    let exe = dir.join(stem);
-    std::fs::write(&ll, &text).map_err(|e| e.to_string())?;
-    let out = Command::new("clang")
-        .args(["-O2", "-Wno-override-module", "-o"])
-        .arg(&exe)
-        .arg(&ll)
-        .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/host.c"))
-        .output()
-        .map_err(|e| e.to_string())?;
-    if !out.status.success() {
-        return Err(format!(
-            "clang failed on {}:\n{}",
-            ll.display(),
-            String::from_utf8_lossy(&out.stderr)
-        ));
-    }
+    let main = dir.join("timer.c");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    std::fs::write(&main, native::TIMER).map_err(|e| e.to_string())?;
+    let host = conduit_test::programs_dir().join("host/c.c");
+    let exe = native::build(&dir, &stem, &module.to_string(), &[&main, &host])?;
     for (i, run) in runs.iter().enumerate() {
         let results = &m.funcs[&run.func].results;
         let (mut live, mut hosts) = (None, None);
         let got = Command::new(&exe)
-            .arg(i.to_string())
+            .args(["check", &i.to_string()])
             .output()
             .map_err(|e| e.to_string())
             .and_then(|o| match o.status.signal() {
@@ -150,7 +135,7 @@ fn check(
                         hosts = last();
                         live = last();
                     }
-                    parse(&words, results).map(Outcome::Values)
+                    native::parse_results(&words, results).map(Outcome::Values)
                 }
                 None => Err(format!("exited with {}", o.status)),
             });
@@ -207,124 +192,3 @@ fn evaluator_live(m: &Module, run: &Run<'_>, cycles: bool) -> Result<(i64, i64),
     Ok((live.len() as i64, hosts as i64))
 }
 
-/// A C `main` that calls the function of run check `argv[1]` and prints
-/// the bits of what it gives, in hex.
-fn driver(m: &Module, runs: &[Run<'_>], counts: bool) -> Result<Vec<Item>, String> {
-    let fmt = Value::global(".fmt");
-    let printf = |b: &mut FnBuilder, bits: Value| {
-        let call = Call {
-            variadic: Some(vec![Type::Ptr]),
-            ..Call::c(
-                Type::I32,
-                Value::global("printf"),
-                vec![Type::Ptr.val(&fmt), Type::I64.val(bits)],
-            )
-        };
-        b.call(call);
-    };
-    let params = vec![(Type::I32, "argc".into()), (Type::Ptr, "argv".into())];
-    let mut b = FnBuilder::new(CallConv::C, Type::I32, "main", params);
-    let argv = b.param(1);
-    let p = b.gep(Type::Ptr, argv, vec![Type::I64.val(1)]);
-    let a = b.load(Type::Ptr, p);
-    let k = b.call_value(Call::c(
-        Type::I32,
-        Value::global("atoi"),
-        vec![Type::Ptr.val(a)],
-    ));
-    let labels: Vec<Label> = runs.iter().map(|_| b.new_block()).collect();
-    let done = b.new_block();
-    let cases = labels.iter().cloned().enumerate();
-    b.switch(
-        Type::I32.val(k),
-        &done,
-        cases.map(|(i, l)| (i as i64, l)).collect(),
-    );
-    for (run, label) in runs.iter().zip(&labels) {
-        b.start(label);
-        let f = &m.funcs[&run.func];
-        let ret = conduit_llvm::ret_ty(&f.results)?;
-        let args = (f.params.iter().zip(run.args))
-            .map(|(v, a)| Ok(conduit_llvm::ty(f.var_ty(*v))?.val(conduit_llvm::lit(a))))
-            .collect::<Result<_, String>>()?;
-        let r = b.call(Call::tailcc(
-            ret.clone(),
-            conduit_llvm::symbol(run.func),
-            args,
-        ));
-        for (j, t) in f.results.iter().enumerate() {
-            let r = r.clone().expect("a call with results");
-            let v = if f.results.len() == 1 {
-                r
-            } else {
-                b.extract_value(ret.clone(), r, j as u32)
-            };
-            let bits = match t {
-                Ty::I64 => v,
-                Ty::F64 => b.cast(CastOp::Bitcast, Type::Double, v, Type::I64),
-                Ty::F32 => {
-                    let c = b.cast(CastOp::Bitcast, Type::Float, v, Type::I32);
-                    b.cast(CastOp::ZExt, Type::I32, c, Type::I64)
-                }
-                _ => b.cast(CastOp::ZExt, conduit_llvm::ty(t)?, v, Type::I64),
-            };
-            printf(&mut b, bits);
-        }
-        // Then how many objects are left live, once cycles are collected,
-        // if they are.
-        if counts {
-            b.call(Call::c(
-                Type::Void,
-                Value::global("conduit_collect"),
-                vec![],
-            ));
-            let live = b.load(Type::I64, Value::global("conduit_live"));
-            printf(&mut b, live);
-            let hosts = Call::c(Type::I64, Value::global("conduit_test_hosts_live"), vec![]);
-            let hosts = b.call_value(hosts);
-            printf(&mut b, hosts);
-        }
-        b.br(&done);
-    }
-    b.start(&done);
-    b.ret(Some(Type::I32.val(0)));
-    Ok(vec![
-        Global::constant(
-            ".fmt",
-            Type::Array(6, Box::new(Type::I8)),
-            Value::Bytes(b"%llx \0".to_vec()),
-        )
-        .into(),
-        Declare {
-            variadic: true,
-            ..Declare::new(Type::I32, "printf", vec![Type::Ptr])
-        }
-        .into(),
-        Declare::new(Type::I32, "atoi", vec![Type::Ptr]).into(),
-        Declare::new(Type::I64, "conduit_test_hosts_live", vec![]).into(),
-        b.finish().into(),
-    ])
-}
-
-/// The results the driver printed, as literals of their types.
-fn parse(words: &[&str], results: &[Ty]) -> Result<Vec<Lit>, String> {
-    if words.len() != results.len() {
-        return Err(format!("printed {words:?} for {} results", results.len()));
-    }
-    words
-        .iter()
-        .zip(results)
-        .map(|(w, t)| {
-            let b = u64::from_str_radix(w, 16).map_err(|e| e.to_string())?;
-            Ok(match t {
-                Ty::I8 => Lit::I8(b as u8 as i8),
-                Ty::I16 => Lit::I16(b as u16 as i16),
-                Ty::I32 => Lit::I32(b as u32 as i32),
-                Ty::I64 => Lit::I64(b as i64),
-                Ty::F32 => Lit::F32(b as u32),
-                Ty::F64 => Lit::F64(b),
-                other => return Err(format!("a result of type {other}")),
-            })
-        })
-        .collect()
-}
