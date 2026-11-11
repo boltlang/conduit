@@ -125,7 +125,8 @@ fn main() {
 }
 
 /// One measurement, of one `run` check compiled one way.
-struct Result1 {
+/// What one `run` check of a program did, compiled one way.
+struct Measured {
     program: String,
     run: String,
     config: String,
@@ -208,7 +209,7 @@ fn run() -> Result<(), String> {
 
 /// The results whose fuel differs from `baseline`'s, with the fuel before
 /// and after. Results the baseline doesn't have aren't changes.
-fn fuel_changes<'r>(results: &'r [Result1], baseline: &Baseline) -> Vec<(&'r Result1, u64, u64)> {
+fn fuel_changes<'r>(results: &'r [Measured], baseline: &Baseline) -> Vec<(&'r Measured, u64, u64)> {
     (results.iter())
         .filter_map(|r| {
             let key = (r.program.clone(), r.run.clone(), r.config.clone());
@@ -220,7 +221,7 @@ fn fuel_changes<'r>(results: &'r [Result1], baseline: &Baseline) -> Vec<(&'r Res
 
 /// The results as a Markdown table: with a baseline, only the fuel that
 /// changed, else all of them.
-fn markdown(results: &[Result1], baseline: Option<&Baseline>) {
+fn markdown(results: &[Measured], baseline: Option<&Baseline>) {
     match baseline {
         Some(baseline) => {
             let changes = fuel_changes(results, baseline);
@@ -275,7 +276,7 @@ fn modules(p: &Program, configs: &[String]) -> Result<Vec<(String, Module, Optio
     Ok(out)
 }
 
-fn bench(p: &Program, args: &Args) -> Result<Vec<Result1>, String> {
+fn bench(p: &Program, args: &Args) -> Result<Vec<Measured>, String> {
     let fuel_engine = engine(true)?;
     let time_engine = engine(false)?;
     // Each config compiled, once for fuel and once for timing.
@@ -316,7 +317,7 @@ fn bench(p: &Program, args: &Args) -> Result<Vec<Result1>, String> {
                 .get_memory(&mut store, "memory")
                 .map_or(0, |mem| mem.size(&store));
             run.check(p, got).map_err(|e| format!("{config}: {e}"))?;
-            out.push(Result1 {
+            out.push(Measured {
                 program: p.name.clone(),
                 run: call.clone(),
                 config: config.clone(),
@@ -427,7 +428,7 @@ fn load(path: &PathBuf) -> Result<Baseline, String> {
     Ok(out)
 }
 
-fn print(results: &[Result1], baseline: Option<&Baseline>) {
+fn print(results: &[Measured], baseline: Option<&Baseline>) {
     let mut last = (String::new(), String::new());
     for r in results {
         if (&r.program, &r.run) != (&last.0, &last.1) {
@@ -502,7 +503,7 @@ const BADGE_PROGRAMS: &str = "bench/";
 /// (`optimized`); `reuse.json`, how many fewer objects the evaluator
 /// allocates with reuse than with counts alone, over all the runs; and
 /// `benchmarks.json`, how many there are.
-fn badges(results: &[Result1], programs: &[Program], dir: &Path) -> Result<(), String> {
+fn badges(results: &[Measured], programs: &[Program], dir: &Path) -> Result<(), String> {
     let fuel = |program: &str, run: &str, config: &str| {
         (results.iter())
             .find(|r| r.program == program && r.run == run && r.config == config)

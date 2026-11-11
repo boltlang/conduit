@@ -309,6 +309,11 @@ fn case_zero(x: Var, zero: Block, other: Block) -> Tail {
     }
 }
 
+/// The number after every ID of `items`, which are ordered by ID.
+fn next_id<K: Copy, V>(items: &BTreeMap<K, V>, number: impl Fn(K) -> u64) -> u64 {
+    items.keys().next_back().map_or(0, |&k| number(k) + 1)
+}
+
 /// The mutability parameters of a function as arguments to another with
 /// the same ones.
 fn same_margs(f: &Func) -> Vec<Mutability> {
@@ -373,9 +378,9 @@ fn defined_labels(b: &Block) -> BTreeSet<Label> {
 
 impl Lower {
     fn new(m: &Module) -> Result<Lower, String> {
-        let next_func = m.funcs.keys().map(|f| f.0 + 1).max().unwrap_or(0);
-        let next_data = m.data.keys().map(|d| d.0 + 1).max().unwrap_or(0);
-        let next_const = m.consts.keys().map(|c| c.0 + 1).max().unwrap_or(0);
+        let next_func = next_id(&m.funcs, |f| f.0);
+        let next_data = next_id(&m.data, |d| d.0);
+        let next_const = next_id(&m.consts, |c| c.0);
         let mut cx = Lower {
             src: m.clone(),
             out: Module::default(),
@@ -487,8 +492,7 @@ impl Lower {
             starts[self.effect_number(*e) as usize] = start;
             start += clauses.len() as i32;
         }
-        let next = (self.src.consts.keys().map(|c| c.0 + 1).max().unwrap_or(0))
-            .max(self.out.consts.keys().map(|c| c.0 + 1).max().unwrap_or(0));
+        let next = next_id(&self.src.consts, |c| c.0).max(next_id(&self.out.consts, |c| c.0));
         let id = ConstId(next);
         let name = decl.debug_name.as_deref().unwrap_or("handler");
         self.out.consts.insert(
