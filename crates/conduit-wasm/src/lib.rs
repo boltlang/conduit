@@ -1634,8 +1634,7 @@ pub fn emit_module_with(m: &Module, options: &Options) -> Result<Vec<u8>, Error>
 fn with_thunks(m: &Module) -> (Module, BTreeMap<(EffectId, u32), FuncId>) {
     let mut ops = BTreeSet::new();
     for f in m.funcs.values() {
-        let mut todo = vec![&f.body];
-        while let Some(b) = todo.pop() {
+        for b in f.body.blocks() {
             for l in &b.lets {
                 if let (conduit_ir::Op::Discontinue(e, i), Some(conduit_ir::Atom::Var(k))) =
                     (&l.op, l.args.first())
@@ -1644,7 +1643,6 @@ fn with_thunks(m: &Module) -> (Module, BTreeMap<(EffectId, u32), FuncId>) {
                     ops.insert((*e, *i));
                 }
             }
-            todo.extend(b.children());
         }
     }
     let mut out = m.clone();

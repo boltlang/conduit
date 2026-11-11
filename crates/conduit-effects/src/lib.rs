@@ -320,7 +320,7 @@ fn same_margs(f: &Func) -> Vec<Mutability> {
 }
 
 fn any_let(b: &Block, test: &mut impl FnMut(&Let) -> bool) -> bool {
-    b.blocks().any(|b| b.lets.iter().any(&mut *test))
+    b.all_lets().any(test)
 }
 
 /// The variables `b` uses but doesn't bind, in order.

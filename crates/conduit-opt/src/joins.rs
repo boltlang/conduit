@@ -22,7 +22,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use conduit_ir::const_value;
 use conduit_ir::{
-    Arm, Atom, Block, ConstValue, Func, FuncId, JoinDef, Label, Op, Program, Tail, Ty, Var,
+    Atom, Block, ConstValue, Func, FuncId, JoinDef, Label, Op, Program, Tail, Ty, Var,
 };
 
 use crate::Pass;
@@ -228,23 +228,9 @@ impl Cx {
                         source,
                     }
                 }
-                Tail::Case {
-                    scrut,
-                    arms,
-                    default,
-                } => Tail::Case {
-                    scrut,
-                    arms: arms
-                        .into_iter()
-                        .map(|a| Arm {
-                            tag: a.tag,
-                            body: self.block(a.body, f),
-                        })
-                        .collect(),
-                    default: default.map(|d| Box::new(self.block(*d, f))),
-                },
-                Tail::Unreachable => Tail::Unreachable,
-                Tail::Trap => Tail::Trap,
+                t @ (Tail::Case { .. } | Tail::Unreachable | Tail::Trap) => {
+                    t.map_blocks(|b| self.block(b, f))
+                }
             })
         })
     }
@@ -273,25 +259,23 @@ impl Cx {
             s.vars
                 .extend(d.params.iter().copied().zip(args.iter().cloned()));
             // Fresh variables and labels for what the copy binds and defines.
+            let mut fresh = BTreeSet::new();
             for b in d.body.blocks() {
                 for l in &b.lets {
-                    s.fresh.extend(l.binds.iter().copied());
-                }
-                if let Tail::Join { defs, .. } = &b.tail {
-                    for d in defs {
-                        s.fresh.extend(d.params.iter().copied());
-                        s.fresh_labels.push(d.label);
-                    }
+                    fresh.extend(l.binds.iter().copied());
                 }
             }
-            for v in std::mem::take(&mut s.fresh) {
+            for inner in d.body.defs() {
+                fresh.extend(inner.params.iter().copied());
+            }
+            for v in fresh {
                 let new = f.new_var(f.var_ty(v).clone());
                 if let Some(name) = f.debug.vars.get(&v).cloned() {
                     f.debug.vars.insert(new, name);
                 }
                 s.vars.insert(v, Atom::Var(new));
             }
-            for l in std::mem::take(&mut s.fresh_labels) {
+            for l in d.body.defs().map(|d| d.label) {
                 let new = f.new_label();
                 if let Some(name) = f.debug.labels.get(&l).cloned() {
                     f.debug.labels.insert(new, name);
@@ -309,8 +293,6 @@ impl Cx {
 struct Subst {
     vars: BTreeMap<Var, Atom>,
     labels: BTreeMap<Label, Label>,
-    fresh: BTreeSet<Var>,
-    fresh_labels: Vec<Label>,
 }
 
 impl Subst {
@@ -335,63 +317,23 @@ impl Subst {
     }
 
     fn block(&self, mut b: Block) -> Block {
-        conduit_ir::deep(|| {
+        b.for_each_mut(|b| {
             for l in &mut b.lets {
-                l.args.iter_mut().for_each(|a| self.atom(a));
                 l.binds.iter_mut().for_each(|v| self.var(v));
             }
-            b.tail = match b.tail {
-                Tail::Join { rec, defs, body } => Tail::Join {
-                    rec,
-                    defs: defs
-                        .into_iter()
-                        .map(|mut d| {
-                            self.label(&mut d.label);
-                            d.params.iter_mut().for_each(|v| self.var(v));
-                            JoinDef {
-                                body: self.block(d.body),
-                                ..d
-                            }
-                        })
-                        .collect(),
-                    body: Box::new(self.block(*body)),
-                },
-                Tail::Jump {
-                    mut target,
-                    mut args,
-                    source,
-                } => {
-                    self.label(&mut target);
-                    args.iter_mut().for_each(|a| self.atom(a));
-                    Tail::Jump {
-                        target,
-                        args,
-                        source,
+            b.atoms_mut().for_each(|a| self.atom(a));
+            match &mut b.tail {
+                Tail::Join { defs, .. } => {
+                    for d in defs {
+                        self.label(&mut d.label);
+                        d.params.iter_mut().for_each(|v| self.var(v));
                     }
                 }
-                Tail::Case {
-                    mut scrut,
-                    arms,
-                    default,
-                } => {
-                    self.atom(&mut scrut);
-                    Tail::Case {
-                        scrut,
-                        arms: arms
-                            .into_iter()
-                            .map(|a| Arm {
-                                tag: a.tag,
-                                body: self.block(a.body),
-                            })
-                            .collect(),
-                        default: default.map(|d| Box::new(self.block(*d))),
-                    }
-                }
-                Tail::Unreachable => Tail::Unreachable,
-                Tail::Trap => Tail::Trap,
-            };
-            b
-        })
+                Tail::Jump { target, .. } => self.label(target),
+                Tail::Case { .. } | Tail::Unreachable | Tail::Trap => {}
+            }
+        });
+        b
     }
 }
 

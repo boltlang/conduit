@@ -362,5 +362,5 @@ impl Cx<'_> {
 
 /// Whether `test` holds for every `let` in `b`, nested ones included.
 fn lets_all(b: &Block, test: &mut impl FnMut(&Let) -> bool) -> bool {
-    b.blocks().all(|b| b.lets.iter().all(&mut *test))
+    b.all_lets().all(test)
 }

@@ -34,8 +34,7 @@ pub fn specialize_drops(m: &mut Module) {
 /// `drop` with nothing to cancel is as fast as its expansion.
 pub fn specialize_func(data: &BTreeMap<DataId, DataDecl>, f: &mut Func) {
     let mut reads = BTreeMap::new();
-    let mut todo = vec![&f.body];
-    while let Some(b) = todo.pop() {
+    for b in f.body.blocks() {
         for l in &b.lets {
             if let (Op::Get(c, i), [Atom::Var(x)], [y]) = (&l.op, &l.args[..], &l.binds[..])
                 && matches!(f.var_ty(*x), Ty::Data(_, Mutability::Imm, ..))
@@ -43,7 +42,6 @@ pub fn specialize_func(data: &BTreeMap<DataId, DataDecl>, f: &mut Func) {
                 reads.insert(*y, (*x, *c, *i));
             }
         }
-        todo.extend(b.children());
     }
     let body = std::mem::replace(&mut f.body, Tail::Unreachable.into());
     f.body = Specialize { data, f, reads }.block(body);

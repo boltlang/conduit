@@ -47,11 +47,11 @@ impl Borrows {
 pub fn borrows(m: &Module) -> Borrows {
     let mut always_owned: BTreeSet<FuncId> = BTreeSet::new();
     for f in m.funcs.values() {
-        each_let(&f.body, &mut |l| {
+        for l in f.body.all_lets() {
             if let Op::Closure(g, ..) = l.op {
                 always_owned.insert(g);
             }
-        });
+        }
     }
     for h in m.handlers.values() {
         always_owned.extend(h.clauses().map(|(_, _, c)| c));
@@ -82,8 +82,7 @@ pub fn borrows(m: &Module) -> Borrows {
                     owned.push((*id, index(v).unwrap()));
                 }
             };
-            let mut todo = vec![&f.body];
-            while let Some(block) = todo.pop() {
+            for block in f.body.blocks() {
                 for (n, l) in block.lets.iter().enumerate() {
                     for (i, a) in l.args.iter().enumerate() {
                         if takes_with(&b, &l.op, i) {
@@ -109,7 +108,6 @@ pub fn borrows(m: &Module) -> Borrows {
                         give(a, &mut owned);
                     }
                 }
-                todo.extend(block.children());
             }
         }
         let mut changed = false;
@@ -137,8 +135,7 @@ pub(super) fn lent_vars(id: FuncId, f: &Func, b: &Borrows) -> Set {
         .collect();
     // Variables are bound before they're used, and outer blocks before
     // inner ones, so one pass in that order finds them all.
-    let mut todo = vec![&f.body];
-    while let Some(block) = todo.pop() {
+    for block in f.body.blocks() {
         for l in &block.lets {
             let reads = matches!(l.op, Op::Get(..) | Op::ArrayGet | Op::Unbox(_));
             if let ([Atom::Var(x), ..], [y]) = (&l.args[..], &l.binds[..])
@@ -150,7 +147,6 @@ pub(super) fn lent_vars(id: FuncId, f: &Func, b: &Borrows) -> Set {
                 lent.insert(*y);
             }
         }
-        todo.extend(block.children());
     }
     lent
 }
@@ -162,11 +158,11 @@ pub(super) fn lent_vars(id: FuncId, f: &Func, b: &Borrows) -> Set {
 pub(super) fn reaches(m: &Module) -> BTreeMap<FuncId, BTreeSet<FuncId>> {
     let mut closures = BTreeSet::new();
     for f in m.funcs.values() {
-        each_let(&f.body, &mut |l| {
+        for l in f.body.all_lets() {
             if let Op::Closure(g, ..) = l.op {
                 closures.insert(g);
             }
-        });
+        }
     }
     let mut clauses: BTreeSet<FuncId> = closures.clone();
     for h in m.handlers.values() {
@@ -178,16 +174,18 @@ pub(super) fn reaches(m: &Module) -> BTreeMap<FuncId, BTreeSet<FuncId>> {
         .iter()
         .map(|(id, f)| {
             let mut callees = BTreeSet::new();
-            each_let(&f.body, &mut |l| match l.op {
-                Op::Call(g, ..) => {
-                    callees.insert(g);
+            for l in f.body.all_lets() {
+                match l.op {
+                    Op::Call(g, ..) => {
+                        callees.insert(g);
+                    }
+                    Op::Apply => callees.extend(closures.iter().copied()),
+                    Op::Perform(..) | Op::Resume | Op::Discontinue(..) | Op::Handle(..) => {
+                        callees.extend(clauses.iter().copied());
+                    }
+                    _ => {}
                 }
-                Op::Apply => callees.extend(closures.iter().copied()),
-                Op::Perform(..) | Op::Resume | Op::Discontinue(..) | Op::Handle(..) => {
-                    callees.extend(clauses.iter().copied());
-                }
-                _ => {}
-            });
+            }
             (*id, callees)
         })
         .collect();
@@ -204,12 +202,4 @@ pub(super) fn reaches(m: &Module) -> BTreeMap<FuncId, BTreeSet<FuncId>> {
             (id, seen)
         })
         .collect()
-}
-
-pub(super) fn each_let(b: &Block, f: &mut impl FnMut(&Let)) {
-    let mut todo = vec![b];
-    while let Some(b) = todo.pop() {
-        b.lets.iter().for_each(&mut *f);
-        todo.extend(b.children());
-    }
 }

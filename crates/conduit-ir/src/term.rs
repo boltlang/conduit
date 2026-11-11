@@ -153,6 +153,11 @@ impl Block {
         Blocks { todo: vec![self] }
     }
 
+    /// Every `let` in this block and the blocks nested in it.
+    pub fn all_lets(&self) -> impl Iterator<Item = &Let> {
+        self.blocks().flat_map(|b| &b.lets)
+    }
+
     /// Every join definition in this block and the blocks nested in it.
     pub fn defs(&self) -> impl Iterator<Item = &JoinDef> {
         self.blocks().flat_map(|b| match &b.tail {

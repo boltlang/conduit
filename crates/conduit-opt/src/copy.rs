@@ -86,7 +86,7 @@ pub(crate) fn join_around(label: Label, params: Vec<Var>, rest: Block, body: Blo
 
 /// Whether some op in `b` is one that `is` holds for.
 pub(crate) fn has_op(b: &Block, is: &dyn Fn(&Op) -> bool) -> bool {
-    b.blocks().any(|b| b.lets.iter().any(|l| is(&l.op)))
+    b.all_lets().any(|l| is(&l.op))
 }
 
 /// A copy of a callee's body for the caller.

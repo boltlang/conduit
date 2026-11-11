@@ -196,14 +196,12 @@ impl Runtime {
         for f in m.funcs.values() {
             tys.extend(&f.vars);
             tys.extend(&f.results);
-            let mut todo = vec![&f.body];
-            while let Some(b) = todo.pop() {
+            for b in f.body.blocks() {
                 for l in &b.lets {
                     if let Op::Box(t) | Op::Unbox(t) = &l.op {
                         tys.push(t);
                     }
                 }
-                todo.extend(b.children());
             }
         }
         for d in m.data.values() {

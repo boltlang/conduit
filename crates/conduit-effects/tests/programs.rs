@@ -165,8 +165,7 @@ fn effects_left(m: &Module) -> Option<String> {
         if !f.row.is_nothing() {
             return Some(format!("a row on {id}"));
         }
-        let mut todo = vec![&f.body];
-        while let Some(b) = todo.pop() {
+        for b in f.body.blocks() {
             for l in &b.lets {
                 if matches!(
                     l.op,
@@ -175,7 +174,6 @@ fn effects_left(m: &Module) -> Option<String> {
                     return Some(format!("an effect op in {id}"));
                 }
             }
-            todo.extend(b.children());
         }
     }
     None

@@ -65,7 +65,7 @@ impl Pass for Direct {
 /// Returns whether anything changed.
 pub fn direct(p: &dyn Program, f: &mut Func) -> bool {
     let mut closures = BTreeMap::new();
-    for l in f.body.blocks().flat_map(|b| &b.lets) {
+    for l in f.body.all_lets() {
         if let (Op::Closure(g, ms, rs), [c]) = (&l.op, &l.binds[..]) {
             closures.insert(*c, (*g, ms.clone(), rs.clone(), l.args.clone()));
         }
@@ -132,14 +132,10 @@ impl<'p> Cx<'p> {
             return None;
         }
         // Only the handled effects, and only performed by the body itself.
-        let ok = body
-            .body
-            .blocks()
-            .flat_map(|b| &b.lets)
-            .all(|l| match l.op {
-                Op::Perform(e, _) => decl.handles(e),
-                _ => l.row(self.p, body).is_nothing(),
-            });
+        let ok = body.body.all_lets().all(|l| match l.op {
+            Op::Perform(e, _) => decl.handles(e),
+            _ => l.row(self.p, body).is_nothing(),
+        });
         if !ok {
             return None;
         }

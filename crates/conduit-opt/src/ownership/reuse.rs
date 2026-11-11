@@ -44,17 +44,18 @@ pub(super) fn reuse_func(shapes: &Module, f: &mut Func) {
     let mut todo = vec![&mut f.body];
     let vars = &mut f.vars;
     while let Some(b) = todo.pop() {
-        match &mut b.tail {
-            Tail::Case { scrut, arms, .. } => {
-                for arm in arms.iter_mut() {
-                    if let (Atom::Var(x), Tag::Ctor(c)) = (&*scrut, arm.tag)
-                        && matches!(vars[x.0 as usize], Ty::Data(..))
-                    {
-                        reuse_arm(&cx, shapes, &mut arm.body, *x, c, vars);
-                    }
+        if let Tail::Case {
+            scrut: Atom::Var(x),
+            arms,
+            ..
+        } = &mut b.tail
+            && matches!(vars[x.0 as usize], Ty::Data(..))
+        {
+            for arm in arms.iter_mut() {
+                if let Tag::Ctor(c) = arm.tag {
+                    reuse_arm(&cx, shapes, &mut arm.body, *x, c, vars);
                 }
             }
-            Tail::Join { .. } | Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
         }
         todo.extend(b.children_mut());
     }
@@ -71,12 +72,7 @@ pub(super) fn reuse_arm(
     vars: &mut Vec<Ty>,
 ) {
     conduit_ir::deep(|| {
-        let mut afters = vec![Set::new(); b.lets.len()];
-        let mut live = cx.live_tail(&b.tail);
-        for (i, l) in b.lets.iter().enumerate().rev() {
-            afters[i] = live.clone();
-            cx.step_back(l, &mut live);
-        }
+        let (afters, live) = cx.live_after(&b.lets, cx.live_tail(&b.tail));
         // Where `x` is dead from: after its last use, if it's in the block.
         // A last use that gives `x` away leaves no memory to reuse. If `x` is
         // still live then, the tail uses it, and its branches can still reuse

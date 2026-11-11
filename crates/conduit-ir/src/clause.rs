@@ -63,7 +63,9 @@ pub fn direct_handlers(m: &Module) -> bool {
 /// Whether some way out of `f`, a plain function from [`plain_call`],
 /// discontinues.
 pub fn discontinues(f: &Func) -> bool {
-    (f.body.blocks()).any(|b| b.lets.iter().any(|l| matches!(l.op, Op::Discontinue(..))))
+    f.body
+        .all_lets()
+        .any(|l| matches!(l.op, Op::Discontinue(..)))
 }
 
 /// The clause `f` without its continuation `k`, its last parameter, if

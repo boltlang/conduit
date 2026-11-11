@@ -27,11 +27,10 @@
 //!   on a length they can't make. An element of an `Imm` one at a literal
 //!   index in bounds is what it was made with.
 //! - **Parts of a constant.** A constant that's a literal is the literal.
-//!   A `case` on a constant takes its arm, as for
-//!   `new`. A field of a constant, its length and an element at a literal
-//!   index in bounds are known: a literal, or `const` of the constant that
-//!   part is. A part that's neither, like a nested array, has no name, so
-//!   reading it stays.
+//!   A `case` on a constant takes its arm, as for `new`. A field of a
+//!   constant, its length and an element at a literal index in bounds are
+//!   known: a literal, or `const` of the constant that part is. A part
+//!   that's neither, like a nested array, has no name, so reading it stays.
 //!
 //! These go together since each gives the others more to do: a folded
 //! comparison picks a `case` arm, whose ops may then fold, and a field
@@ -332,29 +331,22 @@ impl<'f> Cx<'f> {
                     // it's that arm, unless it reads a field of what the
                     // `case` is on, which only the arm shows can be read.
                     let dead = |b: &Block| b.lets.is_empty() && matches!(b.tail, Tail::Unreachable);
-                    let total = arms.len() + usize::from(default.is_some());
-                    let live = arms.iter().filter(|a| !dead(&a.body)).count()
-                        + usize::from(default.as_deref().is_some_and(|d| !dead(d)));
-                    if live == 0 {
-                        self.changed = true;
-                        return Ok(Tail::Unreachable);
-                    }
-                    if live == 1 && total > 1 {
-                        let only = arms
-                            .iter()
-                            .map(|a| &a.body)
-                            .chain(default.as_deref())
-                            .find(|b| !dead(b))
-                            .unwrap();
-                        if !reads_fields(only, &scrut) {
-                            let only = arms
-                                .into_iter()
-                                .map(|a| a.body)
-                                .chain(default.map(|d| *d))
-                                .find(|b| !dead(b))
-                                .unwrap();
-                            return Err(only);
+                    let bodies: Vec<&Block> = (arms.iter().map(|a| &a.body))
+                        .chain(default.as_deref())
+                        .collect();
+                    let live: Vec<usize> =
+                        (0..bodies.len()).filter(|&i| !dead(bodies[i])).collect();
+                    match live[..] {
+                        [] => {
+                            self.changed = true;
+                            return Ok(Tail::Unreachable);
                         }
+                        [i] if bodies.len() > 1 && !reads_fields(bodies[i], &scrut) => {
+                            let mut bodies =
+                                (arms.into_iter().map(|a| a.body)).chain(default.map(|d| *d));
+                            return Err(bodies.nth(i).unwrap());
+                        }
+                        _ => {}
                     }
                     let arms = arms
                         .into_iter()
@@ -369,9 +361,9 @@ impl<'f> Cx<'f> {
                         default: default.map(|d| Box::new(self.block(*d))),
                     }
                 }
-                join @ Tail::Join { .. } => join.map_blocks(|b| self.block(b)),
-                Tail::Unreachable => Tail::Unreachable,
-                Tail::Trap => Tail::Trap,
+                t @ (Tail::Join { .. } | Tail::Unreachable | Tail::Trap) => {
+                    t.map_blocks(|b| self.block(b))
+                }
             })
         })
     }
@@ -489,15 +481,7 @@ fn identity(p: &Prim, args: &[Atom]) -> Option<Atom> {
 
 /// Whether `b` reads or writes a field of `obj`.
 fn reads_fields(b: &Block, obj: &Atom) -> bool {
-    let mut todo = vec![b];
-    while let Some(b) = todo.pop() {
-        if b.lets
-            .iter()
-            .any(|l| matches!(l.op, Op::Get(..) | Op::Set(..)) && l.args.first() == Some(obj))
-        {
-            return true;
-        }
-        todo.extend(b.children());
-    }
-    false
+    let accesses =
+        |l: &Let| matches!(l.op, Op::Get(..) | Op::Set(..)) && l.args.first() == Some(obj);
+    b.all_lets().any(accesses)
 }

@@ -28,8 +28,7 @@ pub fn count_func(id: FuncId, f: &mut Func, borrows: &Borrows) -> Result<(), Str
     for v in &lent {
         counted[v.0 as usize] = false;
     }
-    let mut todo = vec![&f.body];
-    while let Some(b) = todo.pop() {
+    for b in f.body.blocks() {
         for l in &b.lets {
             match l.op {
                 // `drop_reuse` comes before, from `insert_reuse`.
@@ -44,7 +43,6 @@ pub fn count_func(id: FuncId, f: &mut Func, borrows: &Borrows) -> Result<(), Str
                 _ => {}
             }
         }
-        todo.extend(b.children());
     }
     let mut cx = Counts {
         counted,
@@ -112,13 +110,7 @@ impl Counts<'_> {
             let at = out.len();
             out.push((Set::new(), Set::new()));
             let tail = match &b.tail {
-                Tail::Jump { target, args, .. } => {
-                    let mut live: Set = args.iter().filter_map(|a| self.var(a)).collect();
-                    if let Some(free) = self.free.get(target) {
-                        live.extend(free);
-                    }
-                    live
-                }
+                Tail::Jump { target, args, .. } => self.live_jump(*target, args),
                 Tail::Case {
                     scrut,
                     arms,
@@ -168,6 +160,27 @@ impl Counts<'_> {
         })
     }
 
+    /// What's live at a jump to `target` with `args`: what it passes, and
+    /// what the join point's body uses from outside.
+    fn live_jump(&self, target: Label, args: &[Atom]) -> Set {
+        let mut live: Set = args.iter().filter_map(|a| self.var(a)).collect();
+        if let Some(free) = self.free.get(&target) {
+            live.extend(free);
+        }
+        live
+    }
+
+    /// What's live after each of `lets`, given `live`, what's live after
+    /// the last one, and what's live before the first.
+    pub(super) fn live_after(&self, lets: &[Let], mut live: Set) -> (Vec<Set>, Set) {
+        let mut afters = vec![Set::new(); lets.len()];
+        for (i, l) in lets.iter().enumerate().rev() {
+            afters[i] = live.clone();
+            self.step_back(l, &mut live);
+        }
+        (afters, live)
+    }
+
     /// `live` after `l` becomes `live` before it.
     pub(super) fn step_back(&self, l: &Let, live: &mut Set) {
         for v in &l.binds {
@@ -178,13 +191,7 @@ impl Counts<'_> {
 
     pub(super) fn live_tail(&self, tail: &Tail) -> Set {
         conduit_ir::deep(|| match tail {
-            Tail::Jump { target, args, .. } => {
-                let mut live: Set = args.iter().filter_map(|a| self.var(a)).collect();
-                if let Some(free) = self.free.get(target) {
-                    live.extend(free);
-                }
-                live
-            }
+            Tail::Jump { target, args, .. } => self.live_jump(*target, args),
             Tail::Case {
                 scrut,
                 arms,
@@ -223,12 +230,7 @@ impl Counts<'_> {
             if !stops {
                 lets.extend(owned.difference(live_in).map(|v| count(Op::Drop, *v)));
             }
-            let mut afters = vec![Set::new(); b.lets.len()];
-            let mut live = tail_live.clone();
-            for (i, l) in b.lets.iter().enumerate().rev() {
-                afters[i] = live.clone();
-                self.step_back(l, &mut live);
-            }
+            let (afters, _) = self.live_after(&b.lets, tail_live.clone());
             for (l, after) in b.lets.into_iter().zip(afters) {
                 self.let_(l, &after, &mut lets);
             }

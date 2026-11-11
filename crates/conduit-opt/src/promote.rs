@@ -110,12 +110,7 @@ fn promotable(f: &Func) -> BTreeSet<Var> {
 /// For each label, the promoted refs whose value a path from the start of
 /// its join definition reads before writing.
 fn needs(f: &Func, refs: &BTreeSet<Var>) -> Vec<BTreeSet<Var>> {
-    let mut defs: Vec<&JoinDef> = Vec::new();
-    for b in f.body.blocks() {
-        if let Tail::Join { defs: ds, .. } = &b.tail {
-            defs.extend(ds);
-        }
-    }
+    let defs: Vec<&JoinDef> = f.body.defs().collect();
     let mut needs = vec![BTreeSet::new(); f.labels.max(1) as usize];
     // The sets only grow, and are bounded by `refs`, so this ends.
     loop {
