@@ -111,7 +111,7 @@ fn check(s: &str) -> Result<CheckKind, String> {
         },
         _ => Err(format!(
             "unknown check `{word}`: expected `run`, `verify-error`, `wasm-error`, \
-             `wasm-skip`, `wat`, `opt`, `counted`, `counts`, `bench` or `max-frames`"
+             `wasm-skip`, `wat`, `opt`, `counted`, `counts`, `bench`, `max-frames` or `host`"
         )),
     }
 }

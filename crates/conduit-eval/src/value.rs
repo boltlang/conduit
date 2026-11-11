@@ -45,6 +45,23 @@ impl From<Lit> for Value {
     }
 }
 
+impl Value {
+    /// The scalar as a literal, or `None` if it isn't one.
+    pub fn lit(self) -> Option<Lit> {
+        Some(match self {
+            Value::I8(n) => Lit::I8(n),
+            Value::I16(n) => Lit::I16(n),
+            Value::I32(n) => Lit::I32(n),
+            Value::I64(n) => Lit::I64(n),
+            Value::F32(x) => Lit::f32(x),
+            Value::F64(x) => Lit::f64(x),
+            Value::Obj(_) | Value::Host(_) | Value::Function(_) | Value::Null | Value::Unset => {
+                return None;
+            }
+        })
+    }
+}
+
 /// An object in the heap.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ObjId(pub u32);

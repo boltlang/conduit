@@ -320,9 +320,7 @@ fn same_margs(f: &Func) -> Vec<Mutability> {
 }
 
 fn any_let(b: &Block, test: &mut impl FnMut(&Let) -> bool) -> bool {
-    let mut found = false;
-    b.walk(|b| found |= b.lets.iter().any(&mut *test));
-    found
+    b.blocks().any(|b| b.lets.iter().any(&mut *test))
 }
 
 /// The variables `b` uses but doesn't bind, in order.
@@ -337,32 +335,12 @@ fn free_vars_of(lets: &[Let], tail: &Tail) -> BTreeSet<Var> {
     let mut bound = BTreeSet::new();
     let mut visit = |lets: &[Let], tail: &Tail| {
         for l in lets {
-            for a in &l.args {
-                if let Atom::Var(x) = a {
-                    used.insert(*x);
-                }
-            }
+            used.extend(l.args.iter().filter_map(Atom::var));
             bound.extend(l.binds.iter().copied());
         }
-        match tail {
-            Tail::Jump { args, .. } => {
-                for a in args {
-                    if let Atom::Var(x) = a {
-                        used.insert(*x);
-                    }
-                }
-            }
-            Tail::Case { scrut, .. } => {
-                if let Atom::Var(x) = scrut {
-                    used.insert(*x);
-                }
-            }
-            Tail::Join { defs, .. } => {
-                for d in defs {
-                    bound.extend(d.params.iter().copied());
-                }
-            }
-            Tail::Unreachable | Tail::Trap => {}
+        used.extend(tail.atoms().iter().filter_map(Atom::var));
+        if let Tail::Join { defs, .. } = tail {
+            bound.extend(defs.iter().flat_map(|d| d.params.iter().copied()));
         }
     };
     visit(lets, tail);
@@ -373,32 +351,25 @@ fn free_vars_of(lets: &[Let], tail: &Tail) -> BTreeSet<Var> {
             .collect(),
         Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => Vec::new(),
     };
-    for c in children {
-        c.walk(|b| visit(&b.lets, &b.tail));
+    for b in children.into_iter().flat_map(Block::blocks) {
+        visit(&b.lets, &b.tail);
     }
     used.difference(&bound).copied().collect()
 }
 
 /// The labels `b` jumps to.
 fn jumped_labels(b: &Block) -> BTreeSet<Label> {
-    let mut labels = BTreeSet::new();
-    b.walk(|b| {
-        if let Tail::Jump { target, .. } = &b.tail {
-            labels.insert(*target);
-        }
-    });
-    labels
+    (b.blocks())
+        .filter_map(|b| match &b.tail {
+            Tail::Jump { target, .. } => Some(*target),
+            _ => None,
+        })
+        .collect()
 }
 
 /// The labels `b` defines.
 fn defined_labels(b: &Block) -> BTreeSet<Label> {
-    let mut labels = BTreeSet::new();
-    b.walk(|b| {
-        if let Tail::Join { defs, .. } = &b.tail {
-            labels.extend(defs.iter().map(|d| d.label));
-        }
-    });
-    labels
+    b.defs().map(|d| d.label).collect()
 }
 
 // ---------------------------------------------------------------------
@@ -616,7 +587,7 @@ impl Lower {
         // time.
         let mut discontinued: Vec<(EffectId, u32, Vec<Ty>)> = Vec::new();
         for f in self.src.funcs.values() {
-            f.body.walk(|b| {
+            for b in f.body.blocks() {
                 for l in &b.lets {
                     if let (Op::Discontinue(e, i), Some(Atom::Var(k))) = (&l.op, l.args.first())
                         && let Some(Ty::Cont(sig)) = f.vars.get(k.0 as usize)
@@ -627,7 +598,7 @@ impl Lower {
                         }
                     }
                 }
-            });
+            }
         }
         for (e, i, takes) in discontinued {
             let op = &self.src.effects[&e].ops[i as usize];

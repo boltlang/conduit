@@ -3,7 +3,7 @@
 //! of those the passes left behind. Then a name, which the text writes
 //! instead of a number where it reads back to the same one, always does.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use conduit_ir::{Atom, Block, Func, Label, Tail, Var};
 
@@ -50,12 +50,12 @@ pub(crate) fn compact(f: &mut Func) {
 struct Order {
     vars: Vec<Var>,
     labels: Vec<Label>,
-    seen: HashMap<Var, ()>,
+    seen: HashSet<Var>,
 }
 
 impl Order {
     fn var(&mut self, v: Var) {
-        if self.seen.insert(v, ()).is_none() {
+        if self.seen.insert(v) {
             self.vars.push(v);
         }
     }

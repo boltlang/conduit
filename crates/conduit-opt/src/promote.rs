@@ -82,12 +82,9 @@ fn promotable(f: &Func) -> BTreeSet<Var> {
     let mut made = BTreeSet::new();
     let mut escaped = BTreeSet::new();
     let escape = |atoms: &[Atom], escaped: &mut BTreeSet<Var>| {
-        escaped.extend(atoms.iter().filter_map(|a| match a {
-            Atom::Var(v) => Some(*v),
-            Atom::Lit(_) => None,
-        }));
+        escaped.extend(atoms.iter().filter_map(Atom::var));
     };
-    f.body.walk(|b| {
+    for b in f.body.blocks() {
         for l in &b.lets {
             match l.op {
                 Op::RefNew => {
@@ -102,12 +99,8 @@ fn promotable(f: &Func) -> BTreeSet<Var> {
                 _ => escape(&l.args, &mut escaped),
             }
         }
-        match &b.tail {
-            Tail::Jump { args, .. } => escape(args, &mut escaped),
-            Tail::Case { scrut, .. } => escape(std::slice::from_ref(scrut), &mut escaped),
-            Tail::Join { .. } | Tail::Unreachable | Tail::Trap => {}
-        }
-    });
+        escape(b.tail.atoms(), &mut escaped);
+    }
     made.retain(|v| {
         !escaped.contains(v) && matches!(f.vars.get(v.0 as usize), Some(Ty::Ref(inner)) if !matches!(**inner, Ty::Cont(_)))
     });
@@ -118,11 +111,11 @@ fn promotable(f: &Func) -> BTreeSet<Var> {
 /// its join definition reads before writing.
 fn needs(f: &Func, refs: &BTreeSet<Var>) -> Vec<BTreeSet<Var>> {
     let mut defs: Vec<&JoinDef> = Vec::new();
-    f.body.walk(|b| {
+    for b in f.body.blocks() {
         if let Tail::Join { defs: ds, .. } = &b.tail {
             defs.extend(ds);
         }
-    });
+    }
     let mut needs = vec![BTreeSet::new(); f.labels.max(1) as usize];
     // The sets only grow, and are bounded by `refs`, so this ends.
     loop {

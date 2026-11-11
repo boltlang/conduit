@@ -171,13 +171,6 @@ impl Cx {
             if defs.len() != before {
                 self.changed = true;
             }
-            if defs.is_empty() {
-                return Tail::Join {
-                    rec,
-                    defs,
-                    body: Box::new(body),
-                };
-            }
             Tail::Join {
                 rec,
                 defs,

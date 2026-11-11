@@ -68,7 +68,7 @@ pub fn copies(p: &dyn Program, f: &mut Func) -> bool {
 fn remove_noop_copies(f: &mut Func) -> bool {
     let mut subst = BTreeMap::new();
     let vars = &f.vars;
-    for_each_block_mut(&mut f.body, &mut |b| {
+    f.body.for_each_mut(|b| {
         b.lets.retain(|l| {
             let (Op::ArrayClone, [Atom::Var(arg)], [bind]) = (&l.op, &l.args[..], &l.binds[..])
             else {
@@ -96,7 +96,7 @@ fn remove_rebuilds(f: &mut Func) -> bool {
     // What each field read reads: the object, the constructor, the field.
     let mut gets = BTreeMap::new();
     let mut news = Vec::new();
-    for_each_block(&f.body, &mut |b| {
+    for b in f.body.blocks() {
         for l in &b.lets {
             match (&l.op, &l.args[..], &l.binds[..]) {
                 (Op::Get(c, i), [Atom::Var(x)], [v]) => {
@@ -111,7 +111,7 @@ fn remove_rebuilds(f: &mut Func) -> bool {
                 _ => {}
             }
         }
-    });
+    }
 
     // A rebuild's fields can be rebuilds themselves, so this goes on until
     // nothing more is found.
@@ -151,7 +151,7 @@ fn remove_rebuilds(f: &mut Func) -> bool {
     if subst.is_empty() {
         return false;
     }
-    for_each_block_mut(&mut f.body, &mut |b| {
+    f.body.for_each_mut(|b| {
         b.lets
             .retain(|l| !l.binds.iter().any(|v| subst.contains_key(v)));
     });
@@ -168,7 +168,7 @@ fn freeze_in_place(p: &dyn Program, f: &mut Func) -> bool {
     // The clones that might be frozen: by their result, the region of
     // their argument.
     let mut candidates = BTreeMap::new();
-    for_each_block(&f.body, &mut |b| {
+    for b in f.body.blocks() {
         for l in &b.lets {
             if let (Op::ArrayClone, [Atom::Var(x)], [y]) = (&l.op, &l.args[..], &l.binds[..])
                 && matches!(f.vars[y.0 as usize], Ty::Array(_, Mutability::Imm))
@@ -178,7 +178,7 @@ fn freeze_in_place(p: &dyn Program, f: &mut Func) -> bool {
                 candidates.insert(*y, regions.of(*x));
             }
         }
-    });
+    }
     if candidates.is_empty() {
         return false;
     }
@@ -194,7 +194,7 @@ fn freeze_in_place(p: &dyn Program, f: &mut Func) -> bool {
     let blocked = live.blocked;
 
     let mut changed = false;
-    for_each_block_mut(&mut f.body, &mut |b| {
+    f.body.for_each_mut(|b| {
         for l in &mut b.lets {
             if let [y] = l.binds[..]
                 && l.op == Op::ArrayClone
@@ -227,17 +227,19 @@ impl Regions {
             label_params: vec![Vec::new(); f.labels.max(1) as usize],
             escaped,
         };
-        for_each_block(&f.body, &mut |b| {
+        for b in f.body.blocks() {
             if let Tail::Join { defs, .. } = &b.tail {
                 for d in defs {
                     cx.label_params[d.label.0 as usize] = d.params.clone();
                 }
             }
-        });
+        }
         for &p in &f.params {
             cx.escape(p);
         }
-        for_each_block(&f.body, &mut |b| cx.block(b));
+        for b in f.body.blocks() {
+            cx.block(b);
+        }
         Regions {
             region: (0..=escaped).map(|v| cx.find(v)).collect(),
             escaped: cx.find(escaped),
@@ -300,26 +302,25 @@ impl RegionCx<'_> {
 
     /// The `let`s and tail of `b`, but not the blocks nested in it.
     fn block(&mut self, b: &Block) {
-        conduit_ir::deep(|| {
-            for l in &b.lets {
-                self.let_(l);
+        for l in &b.lets {
+            self.let_(l);
+        }
+        let Tail::Jump { target, args, .. } = &b.tail else {
+            return;
+        };
+        if *target == Label::RET {
+            for v in vars(args) {
+                self.escape(v);
             }
-            if let Tail::Jump { target, args, .. } = &b.tail {
-                if *target == Label::RET {
-                    for v in vars(args) {
-                        self.escape(v);
-                    }
-                } else {
-                    let params = std::mem::take(&mut self.label_params[target.0 as usize]);
-                    for (a, &param) in args.iter().zip(&params) {
-                        if let Atom::Var(v) = a {
-                            self.unite([*v, param]);
-                        }
-                    }
-                    self.label_params[target.0 as usize] = params;
+        } else {
+            let params = std::mem::take(&mut self.label_params[target.0 as usize]);
+            for (a, &param) in args.iter().zip(&params) {
+                if let Atom::Var(v) = a {
+                    self.unite([*v, param]);
                 }
             }
-        })
+            self.label_params[target.0 as usize] = params;
+        }
     }
 
     fn let_(&mut self, l: &Let) {
@@ -440,80 +441,18 @@ impl Liveness<'_> {
 }
 
 fn vars(atoms: &[Atom]) -> impl Iterator<Item = Var> + '_ {
-    atoms.iter().filter_map(|a| match a {
-        Atom::Var(v) => Some(*v),
-        Atom::Lit(_) => None,
-    })
-}
-
-/// Calls `f` on `b` and every block nested in it.
-fn for_each_block(b: &Block, f: &mut impl FnMut(&Block)) {
-    conduit_ir::deep(|| {
-        f(b);
-        match &b.tail {
-            Tail::Join { defs, body, .. } => {
-                for d in defs {
-                    for_each_block(&d.body, f);
-                }
-                for_each_block(body, f);
-            }
-            Tail::Case { arms, default, .. } => {
-                for a in arms {
-                    for_each_block(&a.body, f);
-                }
-                if let Some(d) = default {
-                    for_each_block(d, f);
-                }
-            }
-            Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
-        }
-    })
-}
-
-/// Calls `f` on `b` and every block nested in it.
-fn for_each_block_mut(b: &mut Block, f: &mut impl FnMut(&mut Block)) {
-    conduit_ir::deep(|| {
-        f(b);
-        match &mut b.tail {
-            Tail::Join { defs, body, .. } => {
-                for d in defs {
-                    for_each_block_mut(&mut d.body, f);
-                }
-                for_each_block_mut(body, f);
-            }
-            Tail::Case { arms, default, .. } => {
-                for a in arms {
-                    for_each_block_mut(&mut a.body, f);
-                }
-                if let Some(d) = default {
-                    for_each_block_mut(d, f);
-                }
-            }
-            Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
-        }
-    })
+    atoms.iter().filter_map(Atom::var)
 }
 
 /// Replaces every use of a variable in `subst` with what it maps to.
 fn substitute(b: &mut Block, subst: &BTreeMap<Var, Atom>) {
-    conduit_ir::deep(|| {
-        // A copy's argument may itself be a removed copy's result.
-        let resolve = |a: &mut Atom| {
-            while let Atom::Var(v) = a
-                && let Some(to) = subst.get(v)
-            {
-                *a = to.clone();
-            }
-        };
-        for_each_block_mut(b, &mut |b| {
-            for l in &mut b.lets {
-                l.args.iter_mut().for_each(resolve);
-            }
-            match &mut b.tail {
-                Tail::Jump { args, .. } => args.iter_mut().for_each(resolve),
-                Tail::Case { scrut, .. } => resolve(scrut),
-                Tail::Join { .. } | Tail::Unreachable | Tail::Trap => {}
-            }
-        });
-    })
+    // A copy's argument may itself be a removed copy's result.
+    let resolve = |a: &mut Atom| {
+        while let Atom::Var(v) = a
+            && let Some(to) = subst.get(v)
+        {
+            *a = to.clone();
+        }
+    };
+    b.for_each_mut(|b| b.atoms_mut().for_each(resolve));
 }

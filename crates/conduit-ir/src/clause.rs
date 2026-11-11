@@ -94,27 +94,18 @@ pub fn aborting(f: &Func) -> Option<Func> {
 /// nothing to count, and what it held is lost, as when a continuation is
 /// dropped.
 fn strip_counts(b: &mut Block, k: Var) {
-    let mut todo = vec![b];
-    while let Some(b) = todo.pop() {
+    b.for_each_mut(|b| {
         b.lets.retain(|l| {
             // Those that bind something are never of a continuation.
             !(l.op.is_count() && l.binds.is_empty() && l.args == [Atom::Var(k)])
-        });
-        todo.extend(b.children_mut());
-    }
+        })
+    });
 }
 
 /// Whether `b` uses `v` anywhere.
 fn uses(b: &Block, v: Var) -> bool {
     let v = Atom::Var(v);
-    b.blocks().any(|b| {
-        b.lets.iter().any(|l| l.args.contains(&v))
-            || match &b.tail {
-                Tail::Jump { args, .. } => args.contains(&v),
-                Tail::Case { scrut, .. } => *scrut == v,
-                Tail::Join { .. } | Tail::Unreachable | Tail::Trap => false,
-            }
-    })
+    b.blocks().any(|b| b.atoms().any(|a| *a == v))
 }
 
 struct Rewrite<'a> {

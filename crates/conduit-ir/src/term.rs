@@ -42,6 +42,16 @@ impl Lit {
     }
 }
 
+impl Atom {
+    /// The variable, if it is one.
+    pub fn var(&self) -> Option<Var> {
+        match self {
+            Atom::Var(v) => Some(*v),
+            Atom::Lit(_) => None,
+        }
+    }
+}
+
 /// As in the text format.
 impl std::fmt::Display for Atom {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -143,9 +153,34 @@ impl Block {
         Blocks { todo: vec![self] }
     }
 
-    /// Calls `visit` on each of [`blocks`](Self::blocks).
-    pub fn walk<'a>(&'a self, mut visit: impl FnMut(&'a Block)) {
-        self.blocks().for_each(&mut visit);
+    /// Every join definition in this block and the blocks nested in it.
+    pub fn defs(&self) -> impl Iterator<Item = &JoinDef> {
+        self.blocks().flat_map(|b| match &b.tail {
+            Tail::Join { defs, .. } => &defs[..],
+            _ => &[],
+        })
+    }
+
+    /// Calls `visit` on this block and every block nested in it, to change
+    /// them, without recursion: a block before the blocks it ends in, which
+    /// it may change first.
+    pub fn for_each_mut(&mut self, mut visit: impl FnMut(&mut Block)) {
+        let mut todo = vec![self];
+        while let Some(b) = todo.pop() {
+            visit(b);
+            todo.extend(b.children_mut());
+        }
+    }
+
+    /// The operands of this block's own `let`s and tail, not those of the
+    /// blocks nested in it.
+    pub fn atoms(&self) -> impl Iterator<Item = &Atom> {
+        (self.lets.iter().flat_map(|l| &l.args)).chain(self.tail.atoms())
+    }
+
+    /// [`atoms`](Self::atoms), to change.
+    pub fn atoms_mut(&mut self) -> impl Iterator<Item = &mut Atom> {
+        (self.lets.iter_mut().flat_map(|l| &mut l.args)).chain(self.tail.atoms_mut())
     }
 
     /// How big this block is: its `let`s and tails, nested ones included.
@@ -265,6 +300,27 @@ pub enum Tail {
     /// Stops the program with an error, like an `abort()`. Unlike
     /// [`Tail::Unreachable`], reaching it is defined, so passes keep it.
     Trap,
+}
+
+impl Tail {
+    /// The operands of the tail itself: a jump's arguments, or what a
+    /// `case` is on.
+    pub fn atoms(&self) -> &[Atom] {
+        match self {
+            Tail::Jump { args, .. } => args,
+            Tail::Case { scrut, .. } => std::slice::from_ref(scrut),
+            Tail::Join { .. } | Tail::Unreachable | Tail::Trap => &[],
+        }
+    }
+
+    /// [`atoms`](Self::atoms), to change.
+    pub fn atoms_mut(&mut self) -> &mut [Atom] {
+        match self {
+            Tail::Jump { args, .. } => args,
+            Tail::Case { scrut, .. } => std::slice::from_mut(scrut),
+            Tail::Join { .. } | Tail::Unreachable | Tail::Trap => &mut [],
+        }
+    }
 }
 
 /// One definition of a [`Tail::Join`].

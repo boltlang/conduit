@@ -49,11 +49,16 @@ impl Target {
         }
     }
 
+    /// The file that declares the test host for this target.
+    fn host_path(self) -> PathBuf {
+        programs_dir()
+            .join("host")
+            .join(format!("{}.conduit", self.name()))
+    }
+
     /// The text that declares the test host for this target.
     pub fn host(self) -> Result<String, String> {
-        let path = programs_dir()
-            .join("host")
-            .join(format!("{}.conduit", self.name()));
+        let path = self.host_path();
         fs::read_to_string(&path).map_err(|e| format!("{}: {e}", relative(&path)))
     }
 }
@@ -128,12 +133,8 @@ impl Program {
         let text = if self.has(|k| *k == CheckKind::Host) {
             let host = target.host()?;
             // On its own first, so that a mistake in it says where.
-            conduit_ir::text::parse(&host).map_err(|e| {
-                let path = programs_dir()
-                    .join("host")
-                    .join(format!("{}.conduit", target.name()));
-                format!("{}:{e}", relative(&path))
-            })?;
+            conduit_ir::text::parse(&host)
+                .map_err(|e| format!("{}:{e}", relative(&target.host_path())))?;
             format!("{}\n{host}", self.text)
         } else {
             self.text.clone()
@@ -248,11 +249,7 @@ impl Run<'_> {
     /// Compares what running the function gave with what the check
     /// expects.
     pub fn check(&self, program: &Program, got: Result<Outcome, String>) -> Result<(), String> {
-        let call = format!(
-            "{}({})",
-            self.name,
-            self.args.iter().map(lit).collect::<Vec<_>>().join(", ")
-        );
+        let call = format!("{}({})", self.name, lit_list(self.args));
         let at = program.at(self.line);
         match (self.expect, got) {
             (_, Err(e)) => Err(format!("{at}: {call} failed: {e}")),
@@ -282,10 +279,15 @@ fn lit(l: &Lit) -> String {
     Atom::Lit(*l).to_string()
 }
 
+fn lit_list(ls: &[Lit]) -> String {
+    ls.iter().map(lit).collect::<Vec<_>>().join(", ")
+}
+
+/// Results: one alone, or several in parentheses.
 fn lits(ls: &[Lit]) -> String {
     match ls {
         [one] => lit(one),
-        _ => format!("({})", ls.iter().map(lit).collect::<Vec<_>>().join(", ")),
+        _ => format!("({})", lit_list(ls)),
     }
 }
 

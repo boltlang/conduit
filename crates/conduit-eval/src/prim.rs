@@ -256,15 +256,5 @@ fn convert(a: Value, to: &Ty, sign: Sign) -> Result<Option<Value>, ErrorKind> {
 /// it traps or the arguments don't fit. For constant folding.
 pub fn fold(prim: &Prim, args: &[Lit]) -> Option<Lit> {
     let args: Vec<Value> = args.iter().map(|&a| a.into()).collect();
-    Some(match eval(prim, &args).ok()? {
-        Value::I8(n) => Lit::I8(n),
-        Value::I16(n) => Lit::I16(n),
-        Value::I32(n) => Lit::I32(n),
-        Value::I64(n) => Lit::I64(n),
-        Value::F32(x) => Lit::f32(x),
-        Value::F64(x) => Lit::f64(x),
-        Value::Obj(_) | Value::Host(_) | Value::Function(_) | Value::Null | Value::Unset => {
-            return None;
-        }
-    })
+    eval(prim, &args).ok()?.lit()
 }

@@ -47,7 +47,7 @@ pub fn inline_joins(p: &dyn Program, f: &mut Func) -> bool {
     let mut jumps = HashMap::new();
     let mut known = BTreeSet::new();
     let mut size = 0;
-    f.body.walk(|b| {
+    for b in f.body.blocks() {
         size += b.lets.len() + 1;
         for l in &b.lets {
             let is_known = match (&l.op, &l.binds[..]) {
@@ -67,12 +67,12 @@ pub fn inline_joins(p: &dyn Program, f: &mut Func) -> bool {
         if let Tail::Jump { target, .. } = &b.tail {
             *jumps.entry(*target).or_insert(0usize) += 1;
         }
-    });
+    }
 
     // The definitions this run moves: those of a `join` that isn't
     // recursive, which only one jump goes to.
     let mut moved = BTreeSet::new();
-    f.body.walk(|b| {
+    for b in f.body.blocks() {
         if let Tail::Join {
             rec: false, defs, ..
         } = &b.tail
@@ -80,17 +80,17 @@ pub fn inline_joins(p: &dyn Program, f: &mut Func) -> bool {
             let once = defs.iter().filter(|d| jumps.get(&d.label) == Some(&1));
             moved.extend(once.map(|d| d.label));
         }
-    });
+    }
 
     // The definitions that may be copied, as they are before this run
     // changes them, and the parameters they `case` on.
     let mut copyable = HashMap::new();
-    f.body.walk(|b| {
+    for b in f.body.blocks() {
         let Tail::Join {
             rec: false, defs, ..
         } = &b.tail
         else {
-            return;
+            continue;
         };
         for d in defs {
             if jumps.get(&d.label).copied().unwrap_or(0) < 2
@@ -107,18 +107,16 @@ pub fn inline_joins(p: &dyn Program, f: &mut Func) -> bool {
             // A copy adds jumps to the labels the definition jumps to, so
             // if this run moves one of those to its only jump, the copy
             // would be left without it.
-            let inner = defined_labels(&d.body);
-            let mut jumps_to_moved = false;
-            d.body.walk(|b| {
-                if let Tail::Jump { target, .. } = &b.tail {
-                    jumps_to_moved |= !inner.contains(target) && moved.contains(target);
-                }
+            let inner: BTreeSet<Label> = d.body.defs().map(|d| d.label).collect();
+            let jumps_to_moved = d.body.blocks().any(|b| {
+                matches!(&b.tail, Tail::Jump { target, .. }
+                    if !inner.contains(target) && moved.contains(target))
             });
             if !jumps_to_moved {
                 copyable.insert(d.label, (d.clone(), scrutinized));
             }
         }
-    });
+    }
 
     let body = std::mem::replace(&mut f.body, Tail::Unreachable.into());
     let mut cx = Cx {
@@ -213,8 +211,8 @@ impl Cx {
                         // The copyable definitions inside it were taken
                         // before the move, and their copies are made after
                         // it, so they need the arguments too.
-                        for l in defined_labels(&d.body) {
-                            if let Some((c, _)) = self.copyable.get_mut(&l) {
+                        for inner in d.body.defs() {
+                            if let Some((c, _)) = self.copyable.get_mut(&inner.label) {
                                 let body = std::mem::replace(&mut c.body, Tail::Unreachable.into());
                                 c.body = s.block(body);
                             }
@@ -275,7 +273,7 @@ impl Cx {
             s.vars
                 .extend(d.params.iter().copied().zip(args.iter().cloned()));
             // Fresh variables and labels for what the copy binds and defines.
-            d.body.walk(|b| {
+            for b in d.body.blocks() {
                 for l in &b.lets {
                     s.fresh.extend(l.binds.iter().copied());
                 }
@@ -285,7 +283,7 @@ impl Cx {
                         s.fresh_labels.push(d.label);
                     }
                 }
-            });
+            }
             for v in std::mem::take(&mut s.fresh) {
                 let new = f.new_var(f.var_ty(v).clone());
                 if let Some(name) = f.debug.vars.get(&v).cloned() {
@@ -399,39 +397,15 @@ impl Subst {
 
 /// Whether a `case` in `b` is on `v`.
 fn cases_on(b: &Block, v: Var) -> bool {
-    let mut found = false;
-    b.walk(|b| {
-        found |= matches!(&b.tail, Tail::Case { scrut: Atom::Var(s), .. } if *s == v);
-    });
-    found
-}
-
-/// The labels `b` defines.
-fn defined_labels(b: &Block) -> BTreeSet<Label> {
-    let mut labels = BTreeSet::new();
-    b.walk(|b| {
-        if let Tail::Join { defs, .. } = &b.tail {
-            labels.extend(defs.iter().map(|d| d.label));
-        }
-    });
-    labels
+    b.blocks()
+        .any(|b| matches!(&b.tail, Tail::Case { scrut: Atom::Var(s), .. } if *s == v))
 }
 
 /// Whether `b` uses or binds a variable of a continuation type.
 fn mentions_cont(b: &Block, vars: &[Ty]) -> bool {
     let is_cont = |v: &Var| matches!(vars.get(v.0 as usize), Some(Ty::Cont(_)));
     let atom_cont = |a: &Atom| matches!(a, Atom::Var(v) if is_cont(v));
-    let mut found = false;
-    b.walk(|b| {
-        for l in &b.lets {
-            found |= l.args.iter().any(atom_cont) || l.binds.iter().any(is_cont);
-        }
-        found |= match &b.tail {
-            Tail::Jump { args, .. } => args.iter().any(atom_cont),
-            Tail::Case { scrut, .. } => atom_cont(scrut),
-            Tail::Join { defs, .. } => defs.iter().any(|d| d.params.iter().any(is_cont)),
-            Tail::Unreachable | Tail::Trap => false,
-        };
-    });
-    found
+    b.blocks()
+        .any(|b| b.atoms().any(atom_cont) || b.lets.iter().any(|l| l.binds.iter().any(is_cont)))
+        || b.defs().any(|d| d.params.iter().any(is_cont))
 }

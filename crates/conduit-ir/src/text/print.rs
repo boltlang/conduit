@@ -376,7 +376,7 @@ fn func_with(names: &Items, id: FuncId, f: &Func) -> String {
 
     let mut bound = BTreeSet::new();
     let mut max_label = 0;
-    f.body.walk(|b| {
+    for b in f.body.blocks() {
         for l in &b.lets {
             bound.extend(l.binds.iter().copied());
         }
@@ -386,7 +386,7 @@ fn func_with(names: &Items, id: FuncId, f: &Func) -> String {
                 max_label = max_label.max(def.label.0);
             }
         }
-    });
+    }
     bound.extend(f.params.iter().copied());
     if f.labels != max_label + 1 {
         let _ = write!(p.out, " labels {}", f.labels);

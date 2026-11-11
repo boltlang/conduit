@@ -46,7 +46,7 @@ struct Candidate {
 /// escape. Returns whether anything changed.
 pub fn sroa(p: &dyn Program, f: &mut Func) -> bool {
     let mut candidates: BTreeMap<Var, Candidate> = BTreeMap::new();
-    f.body.walk(|b| {
+    for b in f.body.blocks() {
         for l in &b.lets {
             let [x] = l.binds[..] else { continue };
             let ty = f.var_ty(x);
@@ -75,7 +75,7 @@ pub fn sroa(p: &dyn Program, f: &mut Func) -> bool {
                 candidates.insert(x, candidate);
             }
         }
-    });
+    }
     if candidates.is_empty() {
         return false;
     }
@@ -83,7 +83,7 @@ pub fn sroa(p: &dyn Program, f: &mut Func) -> bool {
     // Every use other than as the object of an access it can replace keeps
     // a candidate, such as being the value a `set` stores.
     let mut kept = BTreeSet::new();
-    f.body.walk(|b| {
+    for b in f.body.blocks() {
         for l in &b.lets {
             for (j, a) in l.args.iter().enumerate() {
                 let Atom::Var(v) = a else { continue };
@@ -93,17 +93,8 @@ pub fn sroa(p: &dyn Program, f: &mut Func) -> bool {
                 }
             }
         }
-        let mut keep = |a: &Atom| {
-            if let Atom::Var(v) = a {
-                kept.insert(*v);
-            }
-        };
-        match &b.tail {
-            Tail::Jump { args, .. } => args.iter().for_each(&mut keep),
-            Tail::Case { scrut, .. } => keep(scrut),
-            Tail::Join { .. } | Tail::Unreachable | Tail::Trap => {}
-        }
-    });
+        kept.extend(b.tail.atoms().iter().filter_map(Atom::var));
+    }
     candidates.retain(|v, _| !kept.contains(v));
     if candidates.is_empty() {
         return false;
