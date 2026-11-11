@@ -17,7 +17,8 @@
 //!   need no phi nodes: LLVM's `mem2reg` makes SSA of them again.
 //! - **Join points** are basic blocks, and a jump stores its arguments in
 //!   the parameters' slots and branches. A `case` is a `switch`.
-//! - **Objects** are `ptr`s to memory from `calloc`, laid out as in the
+//! - **Objects** are `ptr`s to memory from free lists by size (see
+//!   `heap`), laid out as in the
 //!   Wasm backend: a header word for the count, then a word with the
 //!   constructor, the length or the kind, then the fields from offset 8,
 //!   each at a multiple of its size. A closure holds its entry function's
@@ -35,6 +36,7 @@
 //!   accesses out of bounds trap.
 
 mod counts;
+mod heap;
 pub mod ir;
 pub mod native;
 
@@ -146,9 +148,9 @@ pub fn ty(ty: &Ty) -> Result<Type, String> {
 /// count at 1 and `word` at 4, counted live with `counts`. Trapping if
 /// there's no memory left.
 fn alloc(b: &mut FnBuilder, counts: bool, size: impl Into<Value>, word: impl Into<Value>) -> Value {
-    // Zeroed, so that an array's elements that aren't set are null.
-    let args = vec![Type::I64.val(1), Type::I64.val(size)];
-    let p = b.call_value(Call::c(Type::Ptr, Value::global("calloc"), args));
+    // Not zeroed: the caller sets what's read (see `heap`).
+    let args = vec![Type::I64.val(size)];
+    let p = b.call_value(Call::c(Type::Ptr, Value::global("conduit_alloc"), args));
     if counts {
         let live = Value::global("conduit_live");
         let n = b.load(Type::I64, &live);
@@ -422,6 +424,12 @@ pub fn lower_module_with(m: &Module, options: &Options) -> Result<ir::Module, Er
         vec![Type::I64, Type::I64],
     ));
     out.push(Declare::new(Type::Void, "free", vec![Type::Ptr]));
+    out.push(Declare::new(
+        Type::Void,
+        "llvm.memset.p0.i64",
+        vec![Type::Ptr, Type::I8, Type::I64, Type::I1],
+    ));
+    out.push(Item::Text(heap::runtime()));
     out.push(Declare::new(
         Type::Void,
         "llvm.memmove.p0.p0.i64",
@@ -1174,6 +1182,20 @@ impl<'m> Lower<'m> {
                 let e = self.elem(self.f.var_ty(binds[0]))?;
                 let n = self.value(&args[0])?;
                 let p = self.new_array(&n, size(&e));
+                // The elements that aren't set yet are null, or 0.
+                if *op == Op::ArrayAlloc {
+                    let bytes = elem_offset(&mut self.b, &n, size(&e));
+                    let elems = self.b.bin(BinOp::Sub, Type::I64, bytes, 8);
+                    let to = self.b.offset(&p, 8);
+                    let args = vec![
+                        Type::Ptr.val(to),
+                        Type::I8.val(0),
+                        Type::I64.val(elems),
+                        Type::I1.val(0),
+                    ];
+                    let memset = Value::global("llvm.memset.p0.i64");
+                    self.b.call(Call::c(Type::Void, memset, args));
+                }
                 if *op == Op::ArrayFill {
                     let v = self.value(&args[1])?;
                     let (t, stride) = (ty(&e)?, size(&e));

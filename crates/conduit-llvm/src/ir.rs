@@ -360,7 +360,7 @@ pub enum Item {
     Global(Global),
     Function(Function),
     /// LLVM IR written by hand, as is.
-    Text(&'static str),
+    Text(String),
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

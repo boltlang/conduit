@@ -23,8 +23,8 @@ collected too.
 - Converting a float to an integer traps when it's NaN or out of range,
   as in Wasm: a check against the range's bounds before `fptosi` or
   `fptoui`, which LLVM leaves undefined there.
-- Objects: data, arrays, refs, `any` and closures, from `calloc`, laid
-  out as in the Wasm backend: a header word for the count, then the
+- Objects: data, arrays, refs, `any` and closures, from the module's
+  heap (see "The heap" below), laid out as in the Wasm backend: a header word for the count, then the
   constructor, length or kind at 4, then the fields from 8, each at a
   multiple of its size. A closure holds its entry function's address at 8,
   with counts, the address of its descriptor at 16 (the functions that
@@ -61,6 +61,22 @@ collected too.
   are; an `i8` or `i16` is zero-extended to an `i32`, as in Wasm, which C
   takes for a narrower parameter too; and each result after the first is
   a pointer to an `alloca` the callee writes it to.
+
+## The heap
+
+Objects come from free lists by size, in front of `malloc`, as in the
+Wasm backend (`src/heap.rs`). Every 8 bytes up to 256 is a size class,
+with a free list. `conduit_alloc` takes a block from its class's list, or
+else bumps it from a chunk of 1 MiB that `malloc` gives; a bigger block
+comes from `malloc` alone. The 8 bytes before each object hold its class,
+or 0 for a big one, since `conduit_dealloc`, which every way of freeing
+goes through, has only the address: it puts the block back on its list,
+linked through its first word, or gives a big one back to `free`. Chunks
+are never given back. Without counts, nothing is freed, so every small
+object is bumped.
+
+Memory isn't zeroed, since an object's fields are all set when it's made.
+`array_alloc` zeroes its elements, which are null until they're set.
 
 ## Reference counts
 

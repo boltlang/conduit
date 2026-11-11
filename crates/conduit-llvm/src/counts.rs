@@ -143,10 +143,11 @@ pub(crate) fn is_imm(t: &Ty) -> bool {
 /// The runtime every counted module has: `dup`, `add`, `decref`, `release`,
 /// the counter of live objects, and with `cycles`, the collector. It's
 /// LLVM IR written by hand.
-pub(crate) fn runtime(cycles: bool) -> [Item; 2] {
+pub(crate) fn runtime(cycles: bool) -> [Item; 3] {
     [
-        Item::Text(COMMON),
-        Item::Text(if cycles { CYCLES } else { NO_CYCLES }),
+        Item::Text(COMMON.into()),
+        Item::Text(crate::heap::dealloc()),
+        Item::Text(if cycles { CYCLES } else { NO_CYCLES }.into()),
     ]
 }
 
@@ -169,15 +170,6 @@ fn ptr(v: impl Into<Value>) -> crate::ir::Typed {
 /// - all but buffered `!0x4000_0000` = -1073741825
 const COMMON: &str = r#"
 @conduit_live = global i64 0
-
-; Frees an object's memory, without dropping what it holds.
-define tailcc void @conduit_dealloc(ptr %p) {
-  call void @free(ptr %p)
-  %n = load i64, ptr @conduit_live
-  %n1 = sub i64 %n, 1
-  store i64 %n1, ptr @conduit_live
-  ret void
-}
 
 ; Adds %k to the count of %p, unless it's null or immortal, saturating:
 ; past 0x0fffffff, the object turns immortal.

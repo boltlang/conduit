@@ -113,7 +113,8 @@ fn check(
         p.name.replace('/', "_"),
         when.replace([' ', ','], "_")
     );
-    let main = dir.join("timer.c");
+    // One for each program, since the tests run at the same time.
+    let main = dir.join(format!("{stem}_timer.c"));
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     std::fs::write(&main, native::TIMER).map_err(|e| e.to_string())?;
     let host = conduit_test::programs_dir().join("host/c.c");
