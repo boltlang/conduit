@@ -313,6 +313,39 @@ impl Tail {
         }
     }
 
+    /// This tail with each block it ends in replaced by what `f` makes of
+    /// it, in the order of [`Block::children`]: a `join`'s definitions,
+    /// then its body, or a `case`'s arms, then its default.
+    pub fn map_blocks(self, mut f: impl FnMut(Block) -> Block) -> Tail {
+        match self {
+            Tail::Join { rec, defs, body } => Tail::Join {
+                rec,
+                defs: (defs.into_iter())
+                    .map(|d| JoinDef {
+                        body: f(d.body),
+                        ..d
+                    })
+                    .collect(),
+                body: Box::new(f(*body)),
+            },
+            Tail::Case {
+                scrut,
+                arms,
+                default,
+            } => Tail::Case {
+                scrut,
+                arms: (arms.into_iter())
+                    .map(|a| Arm {
+                        body: f(a.body),
+                        ..a
+                    })
+                    .collect(),
+                default: default.map(|d| Box::new(f(*d))),
+            },
+            t @ (Tail::Jump { .. } | Tail::Unreachable | Tail::Trap) => t,
+        }
+    }
+
     /// [`atoms`](Self::atoms), to change.
     pub fn atoms_mut(&mut self) -> &mut [Atom] {
         match self {

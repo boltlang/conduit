@@ -24,9 +24,9 @@
 
 use std::collections::BTreeMap;
 
-use conduit_ir::{Arm, Atom, Block, Func, FuncId, JoinDef, Label, Let, Op, Program, Tail};
+use conduit_ir::{Block, Func, FuncId, Label, Let, Op, Program, Tail};
 
-use crate::copy::{Rename, has_op};
+use crate::copy::{Rename, Splice, has_op, join_around, passes_on, splice};
 use crate::{MAX_CALLEE_SIZE, MAX_CALLER_SIZE, Pass};
 
 /// The inlining pass.
@@ -52,7 +52,7 @@ pub fn inline(p: &dyn Program, id: FuncId, f: &mut Func) -> bool {
         size: body.size(),
         changed: false,
     };
-    f.body = cx.block(body, f);
+    f.body = splice(&mut cx, body, f);
     cx.changed
 }
 
@@ -91,87 +91,27 @@ impl<'p> Cx<'p> {
             _ => false,
         })
     }
+}
 
-    fn block(&mut self, b: Block, f: &mut Func) -> Block {
-        conduit_ir::deep(|| {
-            let mut lets = Vec::with_capacity(b.lets.len());
-            let mut rest = b.lets.into_iter();
-            while let Some(l) = rest.next() {
-                let Some(callee) = self.callee(&l) else {
-                    lets.push(l);
-                    continue;
-                };
-                let after = self.block(
-                    Block {
-                        lets: rest.collect(),
-                        tail: b.tail,
-                    },
-                    f,
-                );
-                let inlined = self.inline_call(callee, l, after, f);
-                lets.extend(inlined.lets);
-                return Block {
-                    lets,
-                    tail: inlined.tail,
-                };
-            }
-            Block {
-                lets,
-                tail: self.tail(b.tail, f),
-            }
-        })
-    }
+impl<'p> Splice for Cx<'p> {
+    type Found = &'p Func;
 
-    fn tail(&mut self, t: Tail, f: &mut Func) -> Tail {
-        conduit_ir::deep(|| match t {
-            Tail::Join { rec, defs, body } => Tail::Join {
-                rec,
-                defs: defs
-                    .into_iter()
-                    .map(|d| JoinDef {
-                        body: self.block(d.body, f),
-                        ..d
-                    })
-                    .collect(),
-                body: Box::new(self.block(*body, f)),
-            },
-            Tail::Case {
-                scrut,
-                arms,
-                default,
-            } => Tail::Case {
-                scrut,
-                arms: arms
-                    .into_iter()
-                    .map(|a| Arm {
-                        body: self.block(a.body, f),
-                        ..a
-                    })
-                    .collect(),
-                default: default.map(|d| Box::new(self.block(*d, f))),
-            },
-            t @ (Tail::Jump { .. } | Tail::Unreachable | Tail::Trap) => t,
-        })
+    fn find(&mut self, l: &Let) -> Option<&'p Func> {
+        self.callee(l)
     }
 
     /// The block that replaces `call`, of `callee`, and `after`, the rest
     /// of the block it's in.
-    fn inline_call(&mut self, callee: &Func, call: Let, after: Block, f: &mut Func) -> Block {
+    fn replace(&mut self, callee: &'p Func, call: Let, after: Block, f: &mut Func) -> Block {
         conduit_ir::deep(|| {
             self.changed = true;
             self.size += callee.body.size();
             let Op::Call(_, margs, rows) = call.op else {
                 unreachable!("only calls are inlined")
             };
-            let binds_args: Vec<Atom> = call.binds.iter().map(|&b| Atom::Var(b)).collect();
             // After a tail call, or anything else that only passes the results
             // on, the callee can jump where they go.
-            let direct = match &after.tail {
-                Tail::Jump { target, args, .. } if after.lets.is_empty() && *args == binds_args => {
-                    Some(*target)
-                }
-                _ => None,
-            };
+            let direct = passes_on(&call.binds, &after);
             let ret = direct.unwrap_or_else(|| f.new_label());
             let mut r = Rename {
                 vars: callee
@@ -187,19 +127,10 @@ impl<'p> Cx<'p> {
                 callee,
             };
             let body = r.block(&callee.body, f);
-            if direct.is_some() {
-                return body;
+            match direct {
+                Some(_) => body,
+                None => join_around(ret, call.binds, after, body),
             }
-            Tail::Join {
-                rec: false,
-                defs: vec![JoinDef {
-                    label: ret,
-                    params: call.binds,
-                    body: after,
-                }],
-                body: Box::new(body),
-            }
-            .into()
         })
     }
 }

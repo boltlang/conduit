@@ -107,6 +107,7 @@ struct Cx<'f> {
 
 /// Whether an op can be shared, and if so, whether its result can change
 /// before it runs again.
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
     Never,
     Fixed,
@@ -212,10 +213,11 @@ impl Cx<'_> {
             self.changing.clear();
         }
         self.written(l);
-        let bind = match self.kind(l) {
-            Kind::Never => return false,
-            Kind::Fixed | Kind::Changing => l.binds[0],
-        };
+        let kind = self.kind(l);
+        if kind == Kind::Never {
+            return false;
+        }
+        let bind = l.binds[0];
         // The verifier counts the uses of a continuation along each path,
         // so one read twice, or read back, would look like it's used
         // twice.
@@ -223,7 +225,7 @@ impl Cx<'_> {
             return false;
         }
         let key = (l.op.clone(), l.args.clone());
-        let known = match self.kind(l) {
+        let known = match kind {
             Kind::Fixed => self.fixed.get(&key).map(|&v| Atom::Var(v)),
             _ => self.changing.get(&key).cloned(),
         };
@@ -234,7 +236,7 @@ impl Cx<'_> {
             }
             Some(_) => false,
             None => {
-                match self.kind(l) {
+                match kind {
                     Kind::Fixed => {
                         self.fixed_order.push(key.clone());
                         self.fixed.insert(key, bind);
@@ -360,12 +362,5 @@ impl Cx<'_> {
 
 /// Whether `test` holds for every `let` in `b`, nested ones included.
 fn lets_all(b: &Block, test: &mut impl FnMut(&Let) -> bool) -> bool {
-    let mut todo = vec![b];
-    while let Some(b) = todo.pop() {
-        if !b.lets.iter().all(&mut *test) {
-            return false;
-        }
-        todo.extend(b.children());
-    }
-    true
+    b.blocks().all(|b| b.lets.iter().all(&mut *test))
 }

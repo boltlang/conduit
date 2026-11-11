@@ -58,7 +58,8 @@ fn block(p: &dyn Program, b: &mut Block, f: &mut Func) -> bool {
                 Some((ret, rows)) => {
                     changed = true;
                     let (c, env) = l.args.split_last().expect("a handle has a body");
-                    let Ty::Fn(sig, _) = f.var_ty(var(c)).clone() else {
+                    let c_var = c.var().expect("a body is a closure");
+                    let Ty::Fn(sig, _) = f.var_ty(c_var).clone() else {
                         unreachable!("checked by `unused`")
                     };
                     let xs: Vec<_> = sig.results.iter().map(|t| f.new_var(t.clone())).collect();
@@ -83,22 +84,8 @@ fn block(p: &dyn Program, b: &mut Block, f: &mut Func) -> bool {
             }
         }
         b.lets = lets;
-        match &mut b.tail {
-            Tail::Join { defs, body, .. } => {
-                for d in defs {
-                    changed |= block(p, &mut d.body, f);
-                }
-                changed |= block(p, body, f);
-            }
-            Tail::Case { arms, default, .. } => {
-                for a in arms {
-                    changed |= block(p, &mut a.body, f);
-                }
-                if let Some(d) = default {
-                    changed |= block(p, d, f);
-                }
-            }
-            Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
+        for child in b.children_mut() {
+            changed |= block(p, child, f);
         }
         changed
     })
@@ -120,11 +107,4 @@ fn unused(p: &dyn Program, l: &Let, f: &Func) -> Option<(FuncId, Vec<Row>)> {
         return None;
     };
     sig.row.is_nothing().then(|| (decl.ret, rows.clone()))
-}
-
-fn var(a: &Atom) -> conduit_ir::Var {
-    match a {
-        Atom::Var(v) => *v,
-        Atom::Lit(_) => unreachable!("a body is a closure"),
-    }
 }

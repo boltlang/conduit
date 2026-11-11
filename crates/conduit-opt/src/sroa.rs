@@ -150,35 +150,7 @@ impl Cx<'_> {
                 self.let_(l, &mut lets);
             }
             b.lets = lets;
-            b.tail = match b.tail {
-                Tail::Join { rec, defs, body } => Tail::Join {
-                    rec,
-                    defs: defs
-                        .into_iter()
-                        .map(|mut d| {
-                            d.body = self.block(d.body);
-                            d
-                        })
-                        .collect(),
-                    body: Box::new(self.block(*body)),
-                },
-                Tail::Case {
-                    scrut,
-                    arms,
-                    default,
-                } => Tail::Case {
-                    scrut,
-                    arms: arms
-                        .into_iter()
-                        .map(|mut a| {
-                            a.body = self.block(a.body);
-                            a
-                        })
-                        .collect(),
-                    default: default.map(|d| Box::new(self.block(*d))),
-                },
-                t => t,
-            };
+            b.tail = b.tail.map_blocks(|b| self.block(b));
             b
         })
     }

@@ -45,8 +45,8 @@ use std::collections::HashMap;
 
 use conduit_ir::const_value;
 use conduit_ir::{
-    Arm, Atom, Block, ConstId, ConstValue, CtorId, Func, FuncId, JoinDef, Let, Lit, Mutability, Op,
-    Prim, Program, Tag, Tail, Ty, Var,
+    Arm, Atom, Block, ConstId, ConstValue, CtorId, Func, FuncId, Let, Lit, Mutability, Op, Prim,
+    Program, Tag, Tail, Ty, Var,
 };
 
 use crate::Pass;
@@ -369,17 +369,7 @@ impl<'f> Cx<'f> {
                         default: default.map(|d| Box::new(self.block(*d))),
                     }
                 }
-                Tail::Join { rec, defs, body } => Tail::Join {
-                    rec,
-                    defs: defs
-                        .into_iter()
-                        .map(|d| JoinDef {
-                            body: self.block(d.body),
-                            ..d
-                        })
-                        .collect(),
-                    body: Box::new(self.block(*body)),
-                },
+                join @ Tail::Join { .. } => join.map_blocks(|b| self.block(b)),
                 Tail::Unreachable => Tail::Unreachable,
                 Tail::Trap => Tail::Trap,
             })

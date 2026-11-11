@@ -41,12 +41,11 @@ use std::collections::BTreeMap;
 use conduit_ir::clause::{aborting, discontinues, plain_call};
 use conduit_ir::types::subst_all;
 use conduit_ir::{
-    Atom, Block, EffectId, Func, FuncId, JoinDef, Label, Let, Mutability, Op, Program, Row, Tail,
-    Var,
+    Atom, Block, EffectId, Func, FuncId, Label, Let, Mutability, Op, Program, Row, Tail, Var,
 };
 
 use crate::Pass;
-use crate::copy::{Rename, has_op};
+use crate::copy::{Rename, Splice, has_op, join_around, passes_on, splice};
 use crate::{MAX_CALLEE_SIZE, MAX_CALLER_SIZE};
 
 /// The pass that runs handlers directly.
@@ -66,14 +65,10 @@ impl Pass for Direct {
 /// Returns whether anything changed.
 pub fn direct(p: &dyn Program, f: &mut Func) -> bool {
     let mut closures = BTreeMap::new();
-    let mut todo = vec![&f.body];
-    while let Some(b) = todo.pop() {
-        for l in &b.lets {
-            if let (Op::Closure(g, ms, rs), [c]) = (&l.op, &l.binds[..]) {
-                closures.insert(*c, (*g, ms.clone(), rs.clone(), l.args.clone()));
-            }
+    for l in f.body.blocks().flat_map(|b| &b.lets) {
+        if let (Op::Closure(g, ms, rs), [c]) = (&l.op, &l.binds[..]) {
+            closures.insert(*c, (*g, ms.clone(), rs.clone(), l.args.clone()));
         }
-        todo.extend(b.children());
     }
     let body = std::mem::replace(&mut f.body, Tail::Unreachable.into());
     let mut cx = Cx {
@@ -82,7 +77,7 @@ pub fn direct(p: &dyn Program, f: &mut Func) -> bool {
         size: body.size(),
         changed: false,
     };
-    f.body = cx.block(body, f);
+    f.body = splice(&mut cx, body, f);
     cx.changed
 }
 
@@ -137,17 +132,14 @@ impl<'p> Cx<'p> {
             return None;
         }
         // Only the handled effects, and only performed by the body itself.
-        let mut ok = true;
-        let mut todo = vec![&body.body];
-        while let Some(b) = todo.pop() {
-            for l in &b.lets {
-                ok &= match l.op {
-                    Op::Perform(e, _) => decl.handles(e),
-                    _ => l.row(self.p, body).is_nothing(),
-                };
-            }
-            todo.extend(b.children());
-        }
+        let ok = body
+            .body
+            .blocks()
+            .flat_map(|b| &b.lets)
+            .all(|l| match l.op {
+                Op::Perform(e, _) => decl.handles(e),
+                _ => l.row(self.p, body).is_nothing(),
+            });
         if !ok {
             return None;
         }
@@ -177,78 +169,24 @@ impl<'p> Cx<'p> {
             ops: decl.clauses().map(|(e, i, _)| (e, i)).collect(),
         })
     }
+}
 
-    fn block(&mut self, b: Block, f: &mut Func) -> Block {
-        conduit_ir::deep(|| {
-            let mut lets = Vec::with_capacity(b.lets.len());
-            let mut rest = b.lets.into_iter();
-            while let Some(l) = rest.next() {
-                let Some(handled) = self.handled(&l) else {
-                    lets.push(l);
-                    continue;
-                };
-                let after = self.block(
-                    Block {
-                        lets: rest.collect(),
-                        tail: b.tail,
-                    },
-                    f,
-                );
-                let direct = self.run_directly(handled, l, after, f);
-                lets.extend(direct.lets);
-                return Block {
-                    lets,
-                    tail: direct.tail,
-                };
-            }
-            let tail = match b.tail {
-                Tail::Join { rec, defs, body } => Tail::Join {
-                    rec,
-                    defs: defs
-                        .into_iter()
-                        .map(|d| JoinDef {
-                            body: self.block(d.body, f),
-                            ..d
-                        })
-                        .collect(),
-                    body: Box::new(self.block(*body, f)),
-                },
-                Tail::Case {
-                    scrut,
-                    arms,
-                    default,
-                } => Tail::Case {
-                    scrut,
-                    arms: arms
-                        .into_iter()
-                        .map(|mut a| {
-                            a.body = self.block(a.body, f);
-                            a
-                        })
-                        .collect(),
-                    default: default.map(|d| Box::new(self.block(*d, f))),
-                },
-                t => t,
-            };
-            Block { lets, tail }
-        })
+impl<'p> Splice for Cx<'p> {
+    type Found = Handled<'p>;
+
+    fn find(&mut self, l: &Let) -> Option<Handled<'p>> {
+        self.handled(l)
     }
 
     /// The block that replaces `handle`, of what `h` describes, and `after`,
     /// the rest of the block it's in.
-    fn run_directly(&mut self, h: Handled<'_>, handle: Let, after: Block, f: &mut Func) -> Block {
+    fn replace(&mut self, h: Handled<'p>, handle: Let, after: Block, f: &mut Func) -> Block {
         conduit_ir::deep(|| {
             self.changed = true;
             let (_, margs, rows, caps) = h.closure;
             let env = handle.args[..handle.args.len() - 1].to_vec();
-            let rs_args: Vec<Atom> = handle.binds.iter().map(|&v| Atom::Var(v)).collect();
             // What follows the `handle`: where its results go.
-            let direct = match &after.tail {
-                Tail::Jump { target, args, .. } if after.lets.is_empty() && *args == rs_args => {
-                    Some(*target)
-                }
-                _ => None,
-            };
+            let direct = passes_on(&handle.binds, &after);
             let after_label = direct.unwrap_or_else(|| f.new_label());
             // `done(xs..)`: the body returned, so the return clause runs.
             let done = f.new_label();
@@ -291,31 +229,13 @@ impl<'p> Cx<'p> {
                 source: handle.source,
                 size: 0,
             };
-            let body = clauses.block(body, f);
+            let body = splice(&mut clauses, body, f);
             self.size += clauses.size;
-            let inner: Block = Tail::Join {
-                rec: false,
-                defs: vec![JoinDef {
-                    label: done,
-                    params: xs,
-                    body: done_body,
-                }],
-                body: Box::new(body),
+            let inner = join_around(done, xs, done_body, body);
+            match direct {
+                Some(_) => inner,
+                None => join_around(after_label, handle.binds, after, inner),
             }
-            .into();
-            if direct.is_some() {
-                return inner;
-            }
-            Tail::Join {
-                rec: false,
-                defs: vec![JoinDef {
-                    label: after_label,
-                    params: handle.binds,
-                    body: after,
-                }],
-                body: Box::new(inner),
-            }
-            .into()
         })
     }
 }
@@ -331,66 +251,19 @@ struct Clauses<'a> {
     size: usize,
 }
 
-impl Clauses<'_> {
-    fn block(&mut self, b: Block, f: &mut Func) -> Block {
-        conduit_ir::deep(|| {
-            let mut lets = Vec::with_capacity(b.lets.len());
-            let mut rest = b.lets.into_iter();
-            while let Some(l) = rest.next() {
-                let Op::Perform(e, i) = l.op else {
-                    lets.push(l);
-                    continue;
-                };
-                let after = self.block(
-                    Block {
-                        lets: rest.collect(),
-                        tail: b.tail,
-                    },
-                    f,
-                );
-                let copy = self.clause((e, i), l, after, f);
-                lets.extend(copy.lets);
-                return Block {
-                    lets,
-                    tail: copy.tail,
-                };
-            }
-            let tail = match b.tail {
-                Tail::Join { rec, defs, body } => Tail::Join {
-                    rec,
-                    defs: defs
-                        .into_iter()
-                        .map(|d| JoinDef {
-                            body: self.block(d.body, f),
-                            ..d
-                        })
-                        .collect(),
-                    body: Box::new(self.block(*body, f)),
-                },
-                Tail::Case {
-                    scrut,
-                    arms,
-                    default,
-                } => Tail::Case {
-                    scrut,
-                    arms: arms
-                        .into_iter()
-                        .map(|mut a| {
-                            a.body = self.block(a.body, f);
-                            a
-                        })
-                        .collect(),
-                    default: default.map(|d| Box::new(self.block(*d, f))),
-                },
-                t => t,
-            };
-            Block { lets, tail }
-        })
+impl Splice for Clauses<'_> {
+    type Found = (EffectId, u32);
+
+    fn find(&mut self, l: &Let) -> Option<(EffectId, u32)> {
+        match l.op {
+            Op::Perform(e, i) => Some((e, i)),
+            _ => None,
+        }
     }
 
     /// A copy of the clause for `e.i` for `perform`, with `rest` what
     /// follows it.
-    fn clause(
+    fn replace(
         &mut self,
         (e, i): (EffectId, u32),
         perform: Let,
@@ -408,17 +281,9 @@ impl Clauses<'_> {
                 Clause::Aborts(cf) => (cf, false),
             };
             self.size += cf.body.size();
-            let xs: Vec<Atom> = perform.binds.iter().map(|&v| Atom::Var(v)).collect();
             // A resuming clause gives what the `perform` gives, to the rest; an
             // aborting one what the `handle` gives.
-            let direct = match &rest.tail {
-                Tail::Jump { target, args, .. }
-                    if resumes && rest.lets.is_empty() && *args == xs =>
-                {
-                    Some(*target)
-                }
-                _ => None,
-            };
+            let direct = passes_on(&perform.binds, &rest).filter(|_| resumes);
             let ret = if resumes {
                 direct.unwrap_or_else(|| f.new_label())
             } else {
@@ -436,16 +301,7 @@ impl Clauses<'_> {
             if !resumes || direct.is_some() {
                 return copy;
             }
-            Tail::Join {
-                rec: false,
-                defs: vec![JoinDef {
-                    label: ret,
-                    params: perform.binds,
-                    body: rest,
-                }],
-                body: Box::new(copy),
-            }
-            .into()
+            join_around(ret, perform.binds, rest, copy)
         })
     }
 }

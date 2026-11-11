@@ -46,23 +46,27 @@ pub trait Pass {
     fn run(&self, p: &dyn Program, id: FuncId, f: &mut Func) -> bool;
 }
 
-/// The passes [`optimize_func`] runs, in order. Handlers their body can't
-/// use go first, since what's left of one applies a closure. Known
-/// closures go next,
-/// since the calls they make can then be inlined in the same round.
-/// Inlining is next, since the others only see one function, and a
-/// callee's body in its caller shows them more. Handlers run directly right
-/// after, since inlining is what puts a `perform` where its handler's body
-/// is the function itself. Scalar replacement turns
-/// objects that don't escape into refs, which promoting refs, next, turns
-/// into values. Promoting refs comes early, since a ref holding an
-/// array ties it to the ref's region, which keeps `copies` from freezing
-/// it, and since it turns what refs hold into values that `simplify` can
-/// see. Join points are inlined right before `simplify`, which picks the
-/// arm of a `case` on a value a jump gave. `simplify` leaves code behind for dead code to remove, and so does
-/// `cse`, which goes after it since folding makes more ops look alike. Dead code
-/// goes before `copies`, since a dead use of a value can keep it from
-/// freezing.
+/// The passes [`optimize_func`] runs, in order:
+///
+/// - Handlers their body can't use go first, since what's left of one
+///   applies a closure.
+/// - Known closures go next, since the calls they make can then be inlined
+///   in the same round.
+/// - Inlining is next, since the others only see one function, and a
+///   callee's body in its caller shows them more.
+/// - Handlers run directly right after, since inlining is what puts a
+///   `perform` where its handler's body is the function itself.
+/// - Scalar replacement turns objects that don't escape into refs, which
+///   promoting refs, next, turns into values. Promoting comes early, since
+///   a ref holding an array ties it to the ref's region, which keeps
+///   `copies` from freezing it, and since it turns what refs hold into
+///   values that `simplify` can see.
+/// - Join points are inlined right before `simplify`, which picks the arm
+///   of a `case` on a value a jump gave.
+/// - `simplify` leaves code behind for dead code to remove, and so does
+///   `cse`, which goes after it since folding makes more ops look alike.
+/// - Dead code goes before `copies`, since a dead use of a value can keep
+///   it from freezing.
 pub const PASSES: &[&dyn Pass] = &[
     &handlers::Handlers,
     &closures::KnownClosures,

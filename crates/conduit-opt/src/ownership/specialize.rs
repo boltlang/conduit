@@ -105,35 +105,7 @@ impl Specialize<'_> {
                     return Block { lets, tail };
                 }
             }
-            b.tail = match b.tail {
-                Tail::Case {
-                    scrut,
-                    arms,
-                    default,
-                } => Tail::Case {
-                    scrut,
-                    arms: arms
-                        .into_iter()
-                        .map(|mut arm| {
-                            arm.body = self.block(arm.body);
-                            arm
-                        })
-                        .collect(),
-                    default: default.map(|d| Box::new(self.block(*d))),
-                },
-                Tail::Join { rec, defs, body } => Tail::Join {
-                    rec,
-                    defs: defs
-                        .into_iter()
-                        .map(|mut def| {
-                            def.body = self.block(def.body);
-                            def
-                        })
-                        .collect(),
-                    body: Box::new(self.block(*body)),
-                },
-                tail => tail,
-            };
+            b.tail = b.tail.map_blocks(|b| self.block(b));
             b
         })
     }

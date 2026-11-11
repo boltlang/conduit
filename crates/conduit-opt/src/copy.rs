@@ -10,6 +10,80 @@ use conduit_ir::{
     Arm, Atom, Block, Func, JoinDef, Label, Let, Mutability, Op, Row, SourceId, Tail, Var,
 };
 
+/// Rewrites some `let`s of a block, each with the code that follows it:
+/// see [`splice`].
+pub(crate) trait Splice {
+    /// What a `let` to rewrite needs.
+    type Found;
+
+    /// What `l` needs, if it's a `let` to rewrite.
+    fn find(&mut self, l: &Let) -> Option<Self::Found>;
+
+    /// The code that replaces `l` and `rest`, what follows it in its block,
+    /// which is already rewritten.
+    fn replace(&mut self, found: Self::Found, l: Let, rest: Block, f: &mut Func) -> Block;
+}
+
+/// `b` with each `let` that `s` finds, and what follows it, replaced by
+/// what `s` makes of them. The `let`s are found in order, and what follows
+/// one is rewritten first.
+pub(crate) fn splice<S: Splice>(s: &mut S, b: Block, f: &mut Func) -> Block {
+    conduit_ir::deep(|| {
+        let mut lets = Vec::with_capacity(b.lets.len());
+        let mut rest = b.lets.into_iter();
+        while let Some(l) = rest.next() {
+            let Some(found) = s.find(&l) else {
+                lets.push(l);
+                continue;
+            };
+            let after = Block {
+                lets: rest.collect(),
+                tail: b.tail,
+            };
+            let after = splice(s, after, f);
+            let new = s.replace(found, l, after, f);
+            lets.extend(new.lets);
+            return Block {
+                lets,
+                tail: new.tail,
+            };
+        }
+        let tail = b.tail.map_blocks(|b| splice(s, b, f));
+        Block { lets, tail }
+    })
+}
+
+/// Where the results of a `let` that binds `binds` go, if `rest`, what
+/// follows the `let`, only passes them on: as after a tail call, the code
+/// that replaces the `let` can jump there itself.
+pub(crate) fn passes_on(binds: &[Var], rest: &Block) -> Option<Label> {
+    match &rest.tail {
+        Tail::Jump { target, args, .. }
+            if rest.lets.is_empty()
+                && args.len() == binds.len()
+                && args.iter().zip(binds).all(|(a, v)| *a == Atom::Var(*v)) =>
+        {
+            Some(*target)
+        }
+        _ => None,
+    }
+}
+
+/// `join label(params) = rest in body`: what follows code that jumps to
+/// `label` with its results.
+pub(crate) fn join_around(label: Label, params: Vec<Var>, rest: Block, body: Block) -> Block {
+    Tail::Join {
+        rec: false,
+        defs: vec![JoinDef {
+            label,
+            params,
+            body: rest,
+        }],
+        body: Box::new(body),
+    }
+    .into()
+}
+
 /// Whether some op in `b` is one that `is` holds for.
 pub(crate) fn has_op(b: &Block, is: &dyn Fn(&Op) -> bool) -> bool {
     b.blocks().any(|b| b.lets.iter().any(|l| is(&l.op)))

@@ -14,7 +14,7 @@
 
 use std::collections::HashMap;
 
-use conduit_ir::{Atom, Block, Func, FuncId, Mutability, Op, Program, Row, Tail, Ty, Var};
+use conduit_ir::{Atom, Block, Func, FuncId, Mutability, Op, Program, Row, Ty, Var};
 
 use crate::Pass;
 
@@ -70,9 +70,8 @@ impl Cx<'_> {
                     l.args.splice(..1, made.captures.iter().cloned());
                     self.changed = true;
                 }
-                let captures_cont = l.args.iter().any(|a| {
-                matches!(a, Atom::Var(v) if matches!(self.vars.get(v.0 as usize), Some(Ty::Cont(_))))
-            });
+                let is_cont = |v: Var| matches!(self.vars.get(v.0 as usize), Some(Ty::Cont(_)));
+                let captures_cont = l.args.iter().filter_map(Atom::var).any(is_cont);
                 if let (Op::Closure(g, margs, rows), [v]) = (&l.op, &l.binds[..])
                     && !captures_cont
                 {
@@ -85,22 +84,10 @@ impl Cx<'_> {
                     self.closures.insert(*v, made);
                 }
             }
-            match &mut b.tail {
-                Tail::Join { defs, body, .. } => {
-                    for d in defs {
-                        self.block(&mut d.body);
-                    }
-                    self.block(body);
-                }
-                Tail::Case { arms, default, .. } => {
-                    for a in arms {
-                        self.block(&mut a.body);
-                    }
-                    if let Some(d) = default {
-                        self.block(d);
-                    }
-                }
-                Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
+            // A closure's `let` comes before its uses, which are in this
+            // block or in the blocks it ends in.
+            for child in b.children_mut() {
+                self.block(child);
             }
         })
     }
