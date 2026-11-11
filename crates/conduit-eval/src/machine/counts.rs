@@ -65,7 +65,6 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
         }
         // An undropped object that the frames of a continuation that was
         // never resumed can reach was lost with it.
-        let mut in_frames = vec![false; n];
         let mut todo: Vec<ObjId> = Vec::new();
         for object in &self.heap {
             if let Object::Cont(Continuation {
@@ -82,14 +81,7 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                 }
             }
         }
-        while let Some(o) = todo.pop() {
-            let id = o.0 as usize;
-            if id >= n || in_frames[id] || !live(id) {
-                continue;
-            }
-            in_frames[id] = true;
-            todo.extend(self.heap[id].values().iter().filter_map(as_obj));
-        }
+        let in_frames = self.reach(todo);
         let (lost, undropped) = leaks
             .undropped
             .iter()
@@ -99,21 +91,11 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
         // What the roots reach is in use, and what an undropped or lost
         // object reaches is lost through it. What's left, if live, only
         // garbage holds, so cycles keep it alive.
-        let mut seen = vec![false; n];
-        todo = roots
-            .iter()
-            .chain(self.held_functions())
+        let mut todo: Vec<ObjId> = (roots.iter().chain(self.held_functions()))
             .filter_map(as_obj)
             .collect();
         todo.extend(leaks.undropped.iter().chain(&leaks.lost).map(|(o, _)| *o));
-        while let Some(o) = todo.pop() {
-            let id = o.0 as usize;
-            if id >= n || seen[id] || !live(id) {
-                continue;
-            }
-            seen[id] = true;
-            todo.extend(self.heap[id].values().iter().filter_map(as_obj));
-        }
+        let seen = self.reach(todo);
         leaks.cycles = (0..n)
             .filter(|&id| live(id) && !seen[id])
             .map(|id| ObjId(id as u32))
@@ -121,6 +103,21 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
         leaks.dangling.sort();
         leaks.dangling.dedup();
         leaks
+    }
+
+    /// Which live objects `from` reaches, by object: those in it and what
+    /// they hold, through live objects only.
+    fn reach(&self, mut from: Vec<ObjId>) -> Vec<bool> {
+        let mut seen = vec![false; self.heap.len()];
+        while let Some(o) = from.pop() {
+            let id = o.0 as usize;
+            if id >= seen.len() || seen[id] || !matches!(self.counts[id], Count::Live(_)) {
+                continue;
+            }
+            seen[id] = true;
+            from.extend(self.heap[id].values().iter().filter_map(as_obj));
+        }
+        seen
     }
 
     /// Adds `n` to the count of `value`'s object, if it has one.
@@ -134,22 +131,21 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
         if let Some(color) = self.colors.get_mut(id.0 as usize) {
             *color = Color::Black;
         }
-        match self.counts.get_mut(id.0 as usize) {
-            Some(count @ Count::Live(_)) => {
-                let Count::Live(c) = *count else {
-                    unreachable!()
-                };
-                // Past the most a count can be, it saturates: the object is
-                // never freed, as in Wasm, whose header has 28 bits for it.
+        let Some(count) = self.counts.get_mut(id.0 as usize) else {
+            return Err(unverified("dangling object"));
+        };
+        match *count {
+            // Past the most a count can be, it saturates: the object is
+            // never freed, as in Wasm, whose header has 28 bits for it.
+            Count::Live(c) => {
                 *count = match c.checked_add(n) {
                     Some(sum) if sum <= MAX_COUNT => Count::Live(sum),
                     _ => Count::Immortal,
                 };
                 Ok(())
             }
-            Some(Count::Immortal) => Ok(()),
-            Some(Count::Freed | Count::Reserved) => Err(freed("dup")),
-            None => Err(unverified("dangling object")),
+            Count::Immortal => Ok(()),
+            Count::Freed | Count::Reserved => Err(freed("dup")),
         }
     }
 
@@ -341,38 +337,24 @@ impl Leaks {
 
 impl std::fmt::Display for Leaks {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let objs = |list: &mut dyn Iterator<Item = String>| list.collect::<Vec<_>>().join(", ");
-        let mut parts = Vec::new();
-        if !self.undropped.is_empty() {
-            let list = objs(
-                &mut self
-                    .undropped
-                    .iter()
-                    .map(|(o, n)| format!("#{} (+{n})", o.0)),
-            );
-            parts.push(format!("undropped: {list}"));
-        }
-        if !self.overdropped.is_empty() {
-            let list = objs(
-                &mut self
-                    .overdropped
-                    .iter()
-                    .map(|(o, n)| format!("#{} (-{n})", o.0)),
-            );
-            parts.push(format!("dropped too often: {list}"));
-        }
-        if !self.dangling.is_empty() {
-            let list = objs(&mut self.dangling.iter().map(|o| format!("#{}", o.0)));
-            parts.push(format!("freed but referred to: {list}"));
-        }
-        if !self.lost.is_empty() {
-            let list = objs(&mut self.lost.iter().map(|(o, n)| format!("#{} (+{n})", o.0)));
-            parts.push(format!("lost with continuations: {list}"));
-        }
-        if !self.cycles.is_empty() {
-            let list = objs(&mut self.cycles.iter().map(|o| format!("#{}", o.0)));
-            parts.push(format!("kept alive by cycles: {list}"));
-        }
+        let counted = |list: &[(ObjId, u32)], sign: char| -> Vec<String> {
+            (list.iter())
+                .map(|(o, n)| format!("#{} ({sign}{n})", o.0))
+                .collect()
+        };
+        let plain =
+            |list: &[ObjId]| -> Vec<String> { list.iter().map(|o| format!("#{}", o.0)).collect() };
+        let sections = [
+            ("undropped", counted(&self.undropped, '+')),
+            ("dropped too often", counted(&self.overdropped, '-')),
+            ("freed but referred to", plain(&self.dangling)),
+            ("lost with continuations", counted(&self.lost, '+')),
+            ("kept alive by cycles", plain(&self.cycles)),
+        ];
+        let parts: Vec<String> = (sections.iter())
+            .filter(|(_, objs)| !objs.is_empty())
+            .map(|(what, objs)| format!("{what}: {}", objs.join(", ")))
+            .collect();
         if parts.is_empty() {
             write!(f, "no leaks")
         } else {

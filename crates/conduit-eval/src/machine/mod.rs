@@ -4,8 +4,8 @@ use std::rc::Rc;
 use conduit_ir::Link;
 use conduit_ir::types::subst_params;
 use conduit_ir::{
-    Atom, Block, ConstId, ConstValue, EffectId, Extern, Func, FuncId, HandlerId, JoinDef, Label,
-    Mutability, Op, Program, Row, Sig, SourceId, Tag, Tail, Ty, Var,
+    Atom, Block, ConstId, ConstValue, EffectId, Extern, ExternId, Func, FuncId, HandlerId, JoinDef,
+    Label, Mutability, Op, Program, Row, Sig, SourceId, Tag, Tail, Ty, Var,
 };
 
 use crate::error::{Error, ErrorKind, HostError, unverified};
@@ -238,14 +238,8 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
         }
         // The caller is the host, so host values cross as at an extern
         // call: `Value::Host(n)` in, an object in the machine, and back out.
-        let (params, results): (Vec<Ty>, Vec<Ty>) = match self.p.func(func) {
-            Some(f) => (
-                f.params.iter().map(|v| f.var_ty(*v).clone()).collect(),
-                f.results.clone(),
-            ),
-            None => (Vec::new(), Vec::new()),
-        };
-        self.run_from_host(func, margs, Vec::new(), args, &params, &results)
+        let sig = self.p.func(func).map(Func::sig).unwrap_or_default();
+        self.run_from_host(func, margs, Vec::new(), args, &sig.params, &sig.results)
     }
 
     /// Runs `func` for the host, with `captures` before `args`, which are
@@ -327,36 +321,17 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
             Some(Some(c)) => *c,
             _ => return Err(self.error(unverified(format!("no host function {k}")))),
         };
-        let found = obj(closure).and_then(|id| {
-            self.object_ref(id).map(|o| match o {
-                Object::Closure {
-                    func,
-                    margs,
-                    captures,
-                    ..
-                } => Some((*func, margs.clone(), captures.clone())),
-                _ => None,
-            })
-        });
-        let Ok(Some((func, margs, captures))) = found else {
-            return Err(self.error(unverified(
-                "a host function of something that isn't a closure",
-            )));
+        let (func, margs, captures) = self
+            .closure_parts(closure, "a host function")
+            .map_err(|kind| self.error(kind))?;
+        let Some(sig) = self.p.func(func).map(Func::sig) else {
+            return Err(self.error(unverified(format!("unknown function {func}"))));
         };
-        let (params, results): (Vec<Ty>, Vec<Ty>) = match self.p.func(func) {
-            Some(f) => (
-                f.params[captures.len()..]
-                    .iter()
-                    .map(|v| f.var_ty(*v).clone())
-                    .collect(),
-                f.results.clone(),
-            ),
-            None => return Err(self.error(unverified(format!("unknown function {func}")))),
-        };
+        let params = sig.params.get(captures.len()..).unwrap_or_default();
         // The host keeps the closure: the function owns its parameters, so
         // it gets references of its own to the captures, as `apply` gives.
         self.dup_all(&captures).map_err(|kind| self.error(kind))?;
-        self.run_from_host(func, margs, captures, args, &params, &results)
+        self.run_from_host(func, margs, captures, args, params, &sig.results)
     }
 
     /// Lets go of the closure of host function `k`, as the host does when
@@ -603,6 +578,62 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
             .ok_or_else(|| unverified("dangling object"))
     }
 
+    /// The function, mutability arguments and captures of closure `v`, for
+    /// `what`, which runs it.
+    fn closure_parts(&self, v: Value, what: &str) -> Step<(FuncId, Vec<Mutability>, Vec<Value>)> {
+        match self.object_ref(obj(v)?)? {
+            Object::Closure {
+                func,
+                margs,
+                captures,
+                ..
+            } => Ok((*func, margs.clone(), captures.clone())),
+            _ => Err(unverified(format!(
+                "{what} of something that isn't a closure"
+            ))),
+        }
+    }
+
+    /// Takes closure `v` to run it, for `what`: its function, mutability
+    /// arguments and captures, which the function owns, as its parameters.
+    /// As if the closure gave up its captures, which it keeps if it's
+    /// shared.
+    fn open_closure(
+        &mut self,
+        v: Value,
+        what: &str,
+    ) -> Step<(FuncId, Vec<Mutability>, Vec<Value>)> {
+        let parts = self.closure_parts(v, what)?;
+        self.dup_all(&parts.2)?;
+        self.drop_value(v)?;
+        Ok(parts)
+    }
+
+    /// The elements of array `v`, for `what`, which reads them.
+    fn array(&self, v: Value, what: &str) -> Step<&[Value]> {
+        match self.object_ref(obj(v)?)? {
+            Object::Array { elems, .. } => Ok(elems),
+            _ => Err(unverified(format!(
+                "{what} on something that isn't an array"
+            ))),
+        }
+    }
+
+    /// The elements of array `v`, for `what`, which writes them: an error
+    /// unless the array is `Mut`.
+    fn array_mut(&mut self, v: Value, what: &str) -> Step<&mut [Value]> {
+        match self.object_mut(obj(v)?)? {
+            Object::Array {
+                elems,
+                is_mut: true,
+            } => Ok(elems),
+            Object::Array { is_mut: false, .. } => Err(ErrorKind::WriteToImm),
+            _ => Err(unverified(format!(
+                "{what} on something that isn't an array"
+            ))),
+        }
+    }
+
     /// Fails if the object has been freed.
     fn live(&self, id: ObjId) -> Step<()> {
         match self.counts.get(id.0 as usize) {
@@ -762,49 +793,7 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                 let margs = self.concrete_all(margs)?;
                 return self.call_from(*f, margs, args, binds, next);
             }
-            Op::CallExtern(e) => {
-                let decl = self
-                    .p
-                    .extern_fn(*e)
-                    .ok_or_else(|| unverified(format!("unknown extern {e}")))?;
-                let Link::Emu { name } = &decl.link else {
-                    let shown = decl
-                        .debug_name
-                        .as_deref()
-                        .map_or(e.to_string(), str::to_string);
-                    return Err(ErrorKind::Host(format!(
-                        "{shown} has a {} link, for another target: the evaluator calls emu ones",
-                        decl.link.kind()
-                    )));
-                };
-                // A host value is the host's number, both ways, and a null
-                // is itself.
-                let mut args = args;
-                for (a, ty) in args.iter_mut().zip(&decl.sig.params) {
-                    *a = self.give_to_host(*a, ty)?;
-                }
-                let mut arrays = Arrays {
-                    heap: &mut self.heap,
-                };
-                let mut results = (self.host)
-                    .call(name, decl, &args, &mut arrays)
-                    .map_err(ErrorKind::from)?;
-                if results.len() != decl.sig.results.len() {
-                    return Err(ErrorKind::Host(format!(
-                        "{name} gave {} results instead of {}",
-                        results.len(),
-                        decl.sig.results.len()
-                    )));
-                }
-                for (r, ty) in results.iter_mut().zip(&decl.sig.results) {
-                    *r = self.take_from_host(*r, ty).map_err(|what| {
-                        ErrorKind::Host(format!(
-                            "{name} gave a {what} result where its extern has a {ty}"
-                        ))
-                    })?;
-                }
-                results
-            }
+            Op::CallExtern(e) => self.call_extern(*e, args)?,
             Op::Closure(f, margs, _) => {
                 let is_mut = self.binds_mut(binds)?;
                 let margs = self.concrete_all(margs)?;
@@ -819,20 +808,7 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                 let (closure, rest) = args
                     .split_first()
                     .ok_or_else(|| unverified("apply without a closure"))?;
-                let (func, margs, mut all) = match self.object_ref(obj(*closure)?)? {
-                    Object::Closure {
-                        func,
-                        margs,
-                        captures,
-                        ..
-                    } => (*func, margs.clone(), captures.clone()),
-                    _ => return Err(unverified("apply of something that isn't a closure")),
-                };
-                // It takes the closure, and the function owns its
-                // parameters, the captures among them: as if the closure
-                // gave up its captures, which it keeps if it's shared.
-                self.dup_all(&all)?;
-                self.drop_value(*closure)?;
+                let (func, margs, mut all) = self.open_closure(*closure, "apply")?;
                 all.extend_from_slice(rest);
                 return self.call_from(func, margs, all, binds, next);
             }
@@ -906,16 +882,8 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                 })]
             }
             Op::ArrayFill => {
-                let (Value::I32(len), value) = (arg(&args, 0)?, arg(&args, 1)?) else {
-                    return Err(unverified("array fill needs a length"));
-                };
+                let (len, value) = (length(arg(&args, 0)?)?, arg(&args, 1)?);
                 let is_mut = self.binds_mut(binds)?;
-                // Lengths are unsigned, as in Wasm, but an array is at most
-                // `i32::MAX` long, so that `ArrayLen` can give its length.
-                if len < 0 {
-                    return Err(out_of_bounds(len as u32 as usize, i32::MAX as usize));
-                }
-                let len = len as usize;
                 // It takes one reference to the value and holds `len`.
                 match len {
                     0 => self.drop_value(value)?,
@@ -927,38 +895,29 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                 })]
             }
             Op::ArrayAlloc => {
-                let Value::I32(len) = arg(&args, 0)? else {
-                    return Err(unverified("array alloc needs a length"));
-                };
-                if len < 0 {
-                    return Err(out_of_bounds(len as u32 as usize, i32::MAX as usize));
-                }
+                let len = length(arg(&args, 0)?)?;
                 vec![self.alloc(Object::Array {
-                    elems: vec![Value::Unset; len as usize],
+                    elems: vec![Value::Unset; len],
                     is_mut: true,
                 })]
             }
             Op::ArrayGet => {
                 let index = index(arg(&args, 1)?)?;
-                match self.object_ref(obj(arg(&args, 0)?)?)? {
-                    Object::Array { elems, .. } => {
-                        match *elems
-                            .get(index)
-                            .ok_or_else(|| out_of_bounds(index, elems.len()))?
-                        {
-                            Value::Unset => {
-                                return Err(ErrorKind::Undefined(format!(
-                                    "array get of element {index}, which isn't set"
-                                )));
-                            }
-                            value => vec![value],
-                        }
+                let elems = self.array(arg(&args, 0)?, "array get")?;
+                match *elems
+                    .get(index)
+                    .ok_or_else(|| out_of_bounds(index, elems.len()))?
+                {
+                    Value::Unset => {
+                        return Err(ErrorKind::Undefined(format!(
+                            "array get of element {index}, which isn't set"
+                        )));
                     }
-                    _ => return Err(unverified("array get on something that isn't an array")),
+                    value => vec![value],
                 }
             }
             Op::ArrayCopy => {
-                let (dst, src) = (obj(arg(&args, 0)?)?, obj(arg(&args, 2)?)?);
+                let (dst, src) = (arg(&args, 0)?, arg(&args, 2)?);
                 let (dst_start, src_start, count) = (
                     index(arg(&args, 1)?)?,
                     index(arg(&args, 3)?)?,
@@ -966,114 +925,77 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                 );
                 // The source's elements first, as through a temporary, so
                 // that the two can be the same array.
-                let elems = match self.object_ref(src)? {
-                    Object::Array { elems, .. } => {
-                        let end = src_start + count;
-                        elems
-                            .get(src_start..end)
-                            .ok_or_else(|| out_of_bounds(end, elems.len()))?
-                            .to_vec()
-                    }
-                    _ => return Err(unverified("array copy from something that isn't an array")),
-                };
-                match self.object_mut(dst)? {
-                    Object::Array { elems: to, is_mut } => {
-                        let end = dst_start + count;
-                        let len = to.len();
-                        let range = to
-                            .get_mut(dst_start..end)
-                            .ok_or_else(|| out_of_bounds(end, len))?;
-                        if !*is_mut {
-                            return Err(ErrorKind::WriteToImm);
-                        }
-                        let old = range.to_vec();
-                        range.copy_from_slice(&elems);
-                        // What it copies first, so that copying an
-                        // element over itself doesn't free it.
-                        self.dup_all(&elems)?;
-                        old.into_iter().try_for_each(|v| self.drop_value(v))?;
-                    }
-                    _ => return Err(unverified("array copy into something that isn't an array")),
-                }
+                let from = self.array(src, "array copy")?;
+                let end = src_start + count;
+                let elems = (from.get(src_start..end))
+                    .ok_or_else(|| out_of_bounds(end, from.len()))?
+                    .to_vec();
+                let to = self.array_mut(dst, "array copy")?;
+                let (end, len) = (dst_start + count, to.len());
+                let range = to
+                    .get_mut(dst_start..end)
+                    .ok_or_else(|| out_of_bounds(end, len))?;
+                let old = range.to_vec();
+                range.copy_from_slice(&elems);
+                // What it copies first, so that copying an element over
+                // itself doesn't free it.
+                self.dup_all(&elems)?;
+                old.into_iter().try_for_each(|v| self.drop_value(v))?;
                 vec![]
             }
             Op::ArraySet => {
                 let (index, value) = (index(arg(&args, 1)?)?, arg(&args, 2)?);
-                match self.object_mut(obj(arg(&args, 0)?)?)? {
-                    Object::Array { elems, is_mut } => {
-                        if !*is_mut {
-                            return Err(ErrorKind::WriteToImm);
-                        }
-                        let len = elems.len();
-                        let slot = elems
-                            .get_mut(index)
-                            .ok_or_else(|| out_of_bounds(index, len))?;
-                        let old = std::mem::replace(slot, value);
-                        self.drop_value(old)?;
-                    }
-                    _ => return Err(unverified("array set on something that isn't an array")),
-                }
+                let elems = self.array_mut(arg(&args, 0)?, "array set")?;
+                let len = elems.len();
+                let slot = elems
+                    .get_mut(index)
+                    .ok_or_else(|| out_of_bounds(index, len))?;
+                let old = std::mem::replace(slot, value);
+                self.drop_value(old)?;
                 vec![]
             }
             Op::ArrayLoad => {
                 let ty = self.bind_ty(binds)?;
                 let at = index(arg(&args, 1)?)?;
                 let size = scalar_size(&ty)?;
+                let elems = self.array(arg(&args, 0)?, "array load")?;
+                let end = at + size;
+                let from = elems
+                    .get(at..end)
+                    .ok_or_else(|| out_of_bounds(end, elems.len()))?;
                 let mut bytes = [0u8; 8];
-                match self.object_ref(obj(arg(&args, 0)?)?)? {
-                    Object::Array { elems, .. } => {
-                        let end = at + size;
-                        let from = elems
-                            .get(at..end)
-                            .ok_or_else(|| out_of_bounds(end, elems.len()))?;
-                        for (k, e) in from.iter().enumerate() {
-                            bytes[k] = match *e {
-                                Value::I8(b) => b as u8,
-                                Value::Unset => {
-                                    return Err(ErrorKind::Undefined(format!(
-                                        "array load of byte {}, which isn't set",
-                                        at + k
-                                    )));
-                                }
-                                _ => {
-                                    return Err(unverified("array load from bytes that aren't i8"));
-                                }
-                            };
+                for (k, e) in from.iter().enumerate() {
+                    bytes[k] = match *e {
+                        Value::I8(b) => b as u8,
+                        Value::Unset => {
+                            return Err(ErrorKind::Undefined(format!(
+                                "array load of byte {}, which isn't set",
+                                at + k
+                            )));
                         }
-                    }
-                    _ => return Err(unverified("array load on something that isn't an array")),
+                        _ => return Err(unverified("array load from bytes that aren't i8")),
+                    };
                 }
                 vec![from_le_bytes(&ty, bytes)?]
             }
             Op::ArrayStore => {
                 let (at, value) = (index(arg(&args, 1)?)?, arg(&args, 2)?);
                 let bytes = to_le_bytes(value)?;
-                match self.object_mut(obj(arg(&args, 0)?)?)? {
-                    Object::Array { elems, is_mut } => {
-                        if !*is_mut {
-                            return Err(ErrorKind::WriteToImm);
-                        }
-                        let (end, len) = (at + bytes.len(), elems.len());
-                        let to = elems
-                            .get_mut(at..end)
-                            .ok_or_else(|| out_of_bounds(end, len))?;
-                        for (e, &b) in to.iter_mut().zip(&bytes) {
-                            *e = Value::I8(b as i8);
-                        }
-                    }
-                    _ => return Err(unverified("array store on something that isn't an array")),
+                let elems = self.array_mut(arg(&args, 0)?, "array store")?;
+                let (end, len) = (at + bytes.len(), elems.len());
+                let to = elems
+                    .get_mut(at..end)
+                    .ok_or_else(|| out_of_bounds(end, len))?;
+                for (e, &b) in to.iter_mut().zip(&bytes) {
+                    *e = Value::I8(b as i8);
                 }
                 vec![]
             }
-            Op::ArrayLen => match self.object_ref(obj(arg(&args, 0)?)?)? {
-                Object::Array { elems, .. } => vec![Value::I32(elems.len() as i32)],
-                _ => return Err(unverified("array len on something that isn't an array")),
-            },
+            Op::ArrayLen => vec![Value::I32(
+                self.array(arg(&args, 0)?, "array len")?.len() as i32
+            )],
             Op::ArrayClone => {
-                let elems = match self.object_ref(obj(arg(&args, 0)?)?)? {
-                    Object::Array { elems, .. } => elems.clone(),
-                    _ => return Err(unverified("array clone of something that isn't an array")),
-                };
+                let elems = self.array(arg(&args, 0)?, "array clone")?.to_vec();
                 let is_mut = self.binds_mut(binds)?;
                 // The array is borrowed, and the new one shares its elements.
                 self.dup_all(&elems)?;
@@ -1200,6 +1122,49 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
         Ok(())
     }
 
+    /// Calls the host's function for extern `e`. A host value is the
+    /// host's number, both ways, and a null is itself.
+    fn call_extern(&mut self, e: ExternId, mut args: Vec<Value>) -> Step<Vec<Value>> {
+        let decl = self
+            .p
+            .extern_fn(e)
+            .ok_or_else(|| unverified(format!("unknown extern {e}")))?;
+        let Link::Emu { name } = &decl.link else {
+            let shown = decl
+                .debug_name
+                .as_deref()
+                .map_or(e.to_string(), str::to_string);
+            return Err(ErrorKind::Host(format!(
+                "{shown} has a {} link, for another target: the evaluator calls emu ones",
+                decl.link.kind()
+            )));
+        };
+        for (a, ty) in args.iter_mut().zip(&decl.sig.params) {
+            *a = self.give_to_host(*a, ty)?;
+        }
+        let mut arrays = Arrays {
+            heap: &mut self.heap,
+        };
+        let mut results = (self.host)
+            .call(name, decl, &args, &mut arrays)
+            .map_err(ErrorKind::from)?;
+        if results.len() != decl.sig.results.len() {
+            return Err(ErrorKind::Host(format!(
+                "{name} gave {} results instead of {}",
+                results.len(),
+                decl.sig.results.len()
+            )));
+        }
+        for (r, ty) in results.iter_mut().zip(&decl.sig.results) {
+            *r = self.take_from_host(*r, ty).map_err(|what| {
+                ErrorKind::Host(format!(
+                    "{name} gave a {what} result where its extern has a {ty}"
+                ))
+            })?;
+        }
+        Ok(results)
+    }
+
     fn handle(
         &mut self,
         handler: HandlerId,
@@ -1210,18 +1175,7 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
         let closure = args
             .pop()
             .ok_or_else(|| unverified("handle without a body"))?;
-        let (func, margs, captures) = match self.object_ref(obj(closure)?)? {
-            Object::Closure {
-                func,
-                margs,
-                captures,
-                ..
-            } => (*func, margs.clone(), captures.clone()),
-            _ => return Err(unverified("the body of a handle isn't a closure")),
-        };
-        // As for `apply`.
-        self.dup_all(&captures)?;
-        self.drop_value(closure)?;
+        let (func, margs, captures) = self.open_closure(closure, "handle")?;
         self.code()?.waiting = Some((binds, next));
         self.stack.push(Frame::Handler { handler, env: args });
         self.enter(func, captures, margs)
@@ -1366,6 +1320,17 @@ fn obj(value: Value) -> Step<ObjId> {
         Value::Obj(id) => Ok(id),
         Value::Unset => Err(undefined_use()),
         _ => Err(unverified("a scalar where an object is expected")),
+    }
+}
+
+/// The length of a new array. Lengths are unsigned, as in Wasm, but an
+/// array is at most `i32::MAX` long, so that `ArrayLen` can give its
+/// length.
+fn length(value: Value) -> Step<usize> {
+    match value {
+        Value::I32(len) if len < 0 => Err(out_of_bounds(len as u32 as usize, i32::MAX as usize)),
+        Value::I32(len) => Ok(len as usize),
+        _ => Err(unverified("a length that isn't an i32")),
     }
 }
 
