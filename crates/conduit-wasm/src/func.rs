@@ -133,15 +133,8 @@ pub(crate) fn lower_func<'m>(cx: &mut Cx<'m>, f: &'m Func) -> Result<Body, Strin
     // A function with objects on the shadow stack pops them when it
     // returns, or makes a tail call: it saves the pointer and limit, and
     // puts them back before each.
-    let stack = fcx.cx.stack.filter(|_| {
-        (f.body.blocks()).any(|b| {
-            (b.lets.iter()).any(|l| {
-                fcx.cx
-                    .stack_objects
-                    .contains(&(l as *const conduit_ir::Let))
-            })
-        })
-    });
+    let on_stack = |l: &conduit_ir::Let| fcx.cx.stack_objects.contains(&(l as *const _));
+    let stack = fcx.cx.stack.filter(|_| f.body.all_lets().any(on_stack));
     let frame = stack.map(|stack| {
         let (sp, limit) = (fcx.new_local(ValType::I32), fcx.new_local(ValType::I32));
         fcx.code.extend(shadow::save(stack, sp, limit));
@@ -249,9 +242,8 @@ pub(crate) fn lower_wrapper(
         code.push(I::Call(idx));
         let results: Vec<ValType> = plain.results.iter().map(val).collect();
         let first = 1 + params;
-        for (j, &ty) in results.iter().enumerate().rev() {
-            let _ = ty;
-            code.push(I::LocalSet(first + j as u32));
+        for j in (0..results.len() as u32).rev() {
+            code.push(I::LocalSet(first + j));
         }
         let outs = &fields[2 + n_ops + decl.env.len()..];
         for (j, &(at, s)) in outs.iter().enumerate() {
@@ -664,11 +656,7 @@ impl<'m> FuncCx<'_, 'm> {
                 Op::Call(f, ..) => {
                     let idx = self.cx.func_index(*f)?;
                     self.atoms(args);
-                    self.emit(if tail {
-                        I::ReturnCall(idx)
-                    } else {
-                        I::Call(idx)
-                    });
+                    self.call(idx, tail);
                     return Ok(self.bind(binds, tail));
                 }
                 Op::CallExtern(e) => {
@@ -689,47 +677,29 @@ impl<'m> FuncCx<'_, 'm> {
                         return Ok(self.bind(binds, false));
                     }
                     self.atoms(args);
-                    self.emit(if tail {
-                        I::ReturnCall(idx)
-                    } else {
-                        I::Call(idx)
-                    });
+                    self.call(idx, tail);
                     return Ok(self.bind(binds, tail));
                 }
                 Op::Closure(f, ..) => {
                     let slot = self.cx.entry(*f, args.len());
-                    let tys: Vec<Ty> = args.iter().map(|a| self.atom_ty(a)).collect();
-                    let (offsets, size) = layout(&tys);
-                    let p = self.alloc_const(size);
-                    self.emit(I::LocalGet(p));
-                    self.emit(I::I32Const(slot as i32));
-                    self.emit(store(Storage::I32, 4));
-                    self.store_all(p, &offsets, args);
+                    let p = self.new_closure(slot, args);
                     self.emit(I::LocalGet(p));
                 }
-                Op::Apply => {
+                // A continuation is a closure too: resuming it calls it.
+                Op::Apply | Op::Resume => {
+                    let what = if *op == Op::Apply { "apply" } else { "resume" };
                     let Some((c, rest)) = args.split_first() else {
-                        return Err("apply needs a closure".into());
+                        return Err(format!("{what} without a closure"));
                     };
-                    let Ty::Fn(sig, _) = self.atom_ty(c) else {
-                        return Err("apply of a value that isn't a closure".into());
+                    let (Ty::Fn(sig, _) | Ty::Cont(sig)) = self.atom_ty(c) else {
+                        return Err(format!("{what} of something that isn't a closure"));
                     };
                     let ty = self.cx.entry_sig(&sig);
                     self.atom(c);
                     self.atoms(rest);
                     self.atom(c);
                     self.emit(load(Storage::I32, 4));
-                    self.emit(if tail {
-                        I::ReturnCallIndirect {
-                            type_index: ty,
-                            table_index: 0,
-                        }
-                    } else {
-                        I::CallIndirect {
-                            type_index: ty,
-                            table_index: 0,
-                        }
-                    });
+                    self.call_indirect(ty, tail);
                     return Ok(self.bind(binds, tail));
                 }
                 // The object's own memory, unless it's buffered, which is the
@@ -801,20 +771,7 @@ impl<'m> FuncCx<'_, 'm> {
                 Op::Set(c, i) => {
                     let (at, s) = self.field(*c, *i)?;
                     let field = self.cx.fields(*c)?[*i as usize].clone();
-                    let old = self.counted(&field).map(|k| {
-                        let old = self.new_local(ValType::I32);
-                        self.atom(&args[0]);
-                        self.emit(load(s, at));
-                        self.emit(I::LocalSet(old));
-                        (old, k)
-                    });
-                    self.atom(&args[0]);
-                    self.atom(&args[1]);
-                    self.emit(store(s, at));
-                    // It drops the value it replaces.
-                    if let Some((old, k)) = old {
-                        self.drop_local(old, &k, is_imm(&field));
-                    }
+                    self.replace(&args[0], at, s, &field, &args[1]);
                 }
                 Op::Const(id) => match self.cx.constant(*id)? {
                     Ok(addr) => self.emit(I::I32Const(addr as i32)),
@@ -1096,20 +1053,7 @@ impl<'m> FuncCx<'_, 'm> {
                     let Ty::Ref(inner) = self.atom_ty(&args[0]) else {
                         return Err("ref set of something that isn't a ref".into());
                     };
-                    let s = Storage::of(&inner);
-                    let old = self.counted(&inner).map(|k| {
-                        let old = self.new_local(ValType::I32);
-                        self.atom(&args[0]);
-                        self.emit(load(s, 8));
-                        self.emit(I::LocalSet(old));
-                        (old, k)
-                    });
-                    self.atom(&args[0]);
-                    self.atom(&args[1]);
-                    self.emit(store(s, 8));
-                    if let Some((old, k)) = old {
-                        self.drop_local(old, &k, is_imm(&inner));
-                    }
+                    self.replace(&args[0], 8, Storage::of(&inner), &inner, &args[1]);
                 }
                 // When counting, everything goes in a box, which holds the kind
                 // of what it holds, plus 1, or 0 for a scalar, so that dropping
@@ -1153,32 +1097,6 @@ impl<'m> FuncCx<'_, 'm> {
                     return Ok(self.bind(binds, tail));
                 }
                 Op::Perform(e, i) => self.perform(*e, *i, args)?,
-                // A continuation is a closure: resuming it calls it.
-                Op::Resume => {
-                    let Some((k, rest)) = args.split_first() else {
-                        return Err("resume without a continuation".into());
-                    };
-                    let Ty::Cont(sig) = self.atom_ty(k) else {
-                        return Err("resume of something that isn't a continuation".into());
-                    };
-                    let ty = self.cx.entry_sig(&sig);
-                    self.atom(k);
-                    self.atoms(rest);
-                    self.atom(k);
-                    self.emit(load(Storage::I32, 4));
-                    self.emit(if tail {
-                        I::ReturnCallIndirect {
-                            type_index: ty,
-                            table_index: 0,
-                        }
-                    } else {
-                        I::CallIndirect {
-                            type_index: ty,
-                            table_index: 0,
-                        }
-                    });
-                    return Ok(self.bind(binds, tail));
-                }
                 // A continuation's: throws a closure that performs the
                 // operation into it.
                 Op::Discontinue(e, i)
@@ -1192,30 +1110,14 @@ impl<'m> FuncCx<'_, 'm> {
                     };
                     let thunk = self.cx.thunk(*e, *i)?;
                     let slot = self.cx.entry(thunk, rest.len());
-                    let tys: Vec<Ty> = rest.iter().map(|a| self.atom_ty(a)).collect();
-                    let (offsets, size) = layout(&tys);
-                    let t = self.alloc_const(size);
-                    self.emit(I::LocalGet(t));
-                    self.emit(I::I32Const(slot as i32));
-                    self.emit(store(Storage::I32, 4));
-                    self.store_all(t, &offsets, rest);
+                    let t = self.new_closure(slot, rest);
                     let results = sig.results.iter().map(val).collect();
                     let ty = self.cx.disc_sig(results);
                     self.atom(k);
                     self.emit(I::LocalGet(t));
                     self.atom(k);
                     self.emit(load(Storage::I32, 8));
-                    self.emit(if tail {
-                        I::ReturnCallIndirect {
-                            type_index: ty,
-                            table_index: 0,
-                        }
-                    } else {
-                        I::CallIndirect {
-                            type_index: ty,
-                            table_index: 0,
-                        }
-                    });
+                    self.call_indirect(ty, tail);
                     return Ok(self.bind(binds, tail));
                 }
                 // In a tail-resumptive clause, without its continuation: the
@@ -1229,6 +1131,63 @@ impl<'m> FuncCx<'_, 'm> {
             }
             Ok(self.bind(binds, false))
         })
+    }
+
+    /// Calls function `idx`, as a tail call if `tail`.
+    fn call(&mut self, idx: u32, tail: bool) {
+        self.emit(if tail {
+            I::ReturnCall(idx)
+        } else {
+            I::Call(idx)
+        });
+    }
+
+    /// Calls the function at the table slot on the stack, of type `ty`, as
+    /// a tail call if `tail`.
+    fn call_indirect(&mut self, ty: u32, tail: bool) {
+        let (type_index, table_index) = (ty, 0);
+        self.emit(if tail {
+            I::ReturnCallIndirect {
+                type_index,
+                table_index,
+            }
+        } else {
+            I::CallIndirect {
+                type_index,
+                table_index,
+            }
+        });
+    }
+
+    /// A closure whose wrapper is at table slot `slot`, capturing
+    /// `captures`, in a new local.
+    fn new_closure(&mut self, slot: u32, captures: &[Atom]) -> u32 {
+        let tys: Vec<Ty> = captures.iter().map(|a| self.atom_ty(a)).collect();
+        let (offsets, size) = layout(&tys);
+        let p = self.alloc_const(size);
+        self.emit(I::LocalGet(p));
+        self.emit(I::I32Const(slot as i32));
+        self.emit(store(Storage::I32, 4));
+        self.store_all(p, &offsets, captures);
+        p
+    }
+
+    /// Stores `value`, of type `ty`, at `at` in `obj`, as `s`, dropping the
+    /// value it replaces if that's counted.
+    fn replace(&mut self, obj: &Atom, at: u32, s: Storage, ty: &Ty, value: &Atom) {
+        let old = self.counted(ty).map(|k| {
+            let old = self.new_local(ValType::I32);
+            self.atom(obj);
+            self.emit(load(s, at));
+            self.emit(I::LocalSet(old));
+            (old, k)
+        });
+        self.atom(obj);
+        self.atom(value);
+        self.emit(store(s, at));
+        if let Some((old, k)) = old {
+            self.drop_local(old, &k, is_imm(ty));
+        }
     }
 
     /// Gives a handler's frame back when counting, once its `handle` is
@@ -1250,10 +1209,7 @@ impl<'m> FuncCx<'_, 'm> {
         self.atom(body);
         self.atom(body);
         self.emit(load(Storage::I32, 4));
-        self.emit(I::CallIndirect {
-            type_index: ty,
-            table_index: 0,
-        });
+        self.call_indirect(ty, false);
         Ok(())
     }
 
@@ -1297,12 +1253,7 @@ impl<'m> FuncCx<'_, 'm> {
             self.emit(I::LocalGet(frame));
             self.atoms(env);
             self.atom(&body[0]);
-            self.emit(if tail {
-                I::ReturnCall(start)
-            } else {
-                I::Call(start)
-            });
-            let _ = results;
+            self.call(start, tail);
             return Ok(tail);
         }
         let aborting = self.cx.is_aborting(h);
@@ -1367,11 +1318,7 @@ impl<'m> FuncCx<'_, 'm> {
             for &r in &results {
                 self.emit(I::LocalGet(r));
             }
-            self.emit(if tail {
-                I::ReturnCall(ret)
-            } else {
-                I::Call(ret)
-            });
+            self.call(ret, tail);
             return Ok(tail);
         }
 
@@ -1389,9 +1336,7 @@ impl<'m> FuncCx<'_, 'm> {
         // unwinds don't pop.
         let stack = self.cx.stack.map(|stack| {
             let (sp, limit) = (self.new_local(ValType::I32), self.new_local(ValType::I32));
-            for i in shadow::save(stack, sp, limit) {
-                self.emit(i);
-            }
+            self.code.extend(shadow::save(stack, sp, limit));
             (stack, sp, limit)
         });
         self.open(I::Block(BlockType::Empty));
@@ -1433,9 +1378,7 @@ impl<'m> FuncCx<'_, 'm> {
         self.emit(I::Throw(ABORT));
         self.close();
         if let Some((stack, sp, limit)) = stack {
-            for i in shadow::restore(stack, sp, limit) {
-                self.emit(i);
-            }
+            self.code.extend(shadow::restore(stack, sp, limit));
         }
         self.emit(I::LocalGet(saved));
         self.emit(I::GlobalSet(HANDLERS));
@@ -1553,10 +1496,7 @@ impl<'m> FuncCx<'_, 'm> {
         self.emit(I::LocalGet(found));
         self.atoms(args);
         self.load_slot(found, slot);
-        self.emit(I::CallIndirect {
-            type_index: clause,
-            table_index: 0,
-        });
+        self.call_indirect(clause, false);
         self.emit(I::LocalGet(saved));
         self.emit(I::GlobalSet(HANDLERS));
         if let Some(old) = site {
@@ -1621,10 +1561,7 @@ impl<'m> FuncCx<'_, 'm> {
                 self.emit(I::LocalGet(t));
                 self.emit(I::LocalGet(t));
                 self.emit(load(Storage::I32, 4));
-                self.emit(I::CallIndirect {
-                    type_index: entry,
-                    table_index: 0,
-                });
+                self.call_indirect(entry, false);
                 for &r in results.iter().rev() {
                     self.emit(I::LocalSet(r));
                 }
@@ -1700,12 +1637,9 @@ impl<'m> FuncCx<'_, 'm> {
                 self.emit(I::I32Add);
             }
             self.emit(I::LocalSet(size));
-            for i in shadow::save(stack, old, old_limit) {
-                self.emit(i);
-            }
-            for i in shadow::push(stack, &[I::LocalGet(size)], at) {
-                self.emit(i);
-            }
+            self.code.extend(shadow::save(stack, old, old_limit));
+            self.code
+                .extend(shadow::push(stack, &[I::LocalGet(size)], at));
             scratch = Some((stack, old, old_limit, at));
         }
         let mut iovecs = Vec::new();
@@ -1807,9 +1741,7 @@ impl<'m> FuncCx<'_, 'm> {
                 self.emit(I::LocalGet(at));
                 self.emit(load(Storage::of(ty), 8 * k as u32));
             }
-            for i in shadow::restore(stack, old, old_limit) {
-                self.emit(i);
-            }
+            self.code.extend(shadow::restore(stack, old, old_limit));
         }
         Ok(())
     }
@@ -1923,9 +1855,7 @@ impl<'m> FuncCx<'_, 'm> {
         let Some(stack) = self.cx.stack.filter(|_| std::mem::take(&mut self.on_stack)) else {
             return false;
         };
-        for i in shadow::push(stack, size, p) {
-            self.emit(i);
-        }
+        self.code.extend(shadow::push(stack, size, p));
         if self.cx.rt.is_some() {
             self.emit(I::LocalGet(p));
             self.emit(I::I32Const(1 | 0x4000_0000));
