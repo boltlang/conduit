@@ -303,6 +303,8 @@ pub struct Function {
     /// Each parameter's type and name.
     pub params: Vec<(Type, String)>,
     pub blocks: Vec<Block>,
+    /// Its attributes, like `cold`.
+    pub attrs: Vec<&'static str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -418,6 +420,7 @@ impl FnBuilder {
                 ret,
                 params,
                 blocks: Vec::new(),
+                attrs: Vec::new(),
             },
             allocas: Vec::new(),
             current: Some((Label("entry".into()), Vec::new())),
@@ -436,6 +439,11 @@ impl FnBuilder {
     }
 
     /// The function, once its last block is terminated.
+    /// Gives the function an attribute, like `cold`.
+    pub fn attr(&mut self, attr: &'static str) {
+        self.func.attrs.push(attr);
+    }
+
     pub fn finish(mut self) -> Function {
         assert!(
             self.current.is_none(),
@@ -1030,7 +1038,11 @@ impl Display for Function {
             }
             write!(f, "{t} %{name}")?;
         }
-        writeln!(f, ") {{")?;
+        f.write_str(")")?;
+        for a in &self.attrs {
+            write!(f, " {a}")?;
+        }
+        writeln!(f, " {{")?;
         for b in &self.blocks {
             write!(f, "{b}")?;
         }

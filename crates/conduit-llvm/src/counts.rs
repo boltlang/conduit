@@ -40,6 +40,9 @@ use crate::{call_void, count_loop, ctor_fields, elem_offset, layout};
 
 /// The header's buffered bit, and its color bits, all set for purple.
 const BUFFERED: i32 = 0x4000_0000;
+/// The count and the immortal bit, without the collector's: 1 only for an
+/// object whose count is 1.
+const COUNT_AND_IMMORTAL: i32 = 0x8fff_ffff_u32 as i32;
 const PURPLE: i32 = 0x3000_0000;
 
 /// A kind of object that's dropped the same way.
@@ -86,6 +89,13 @@ impl Kind {
 
     fn drop_imm_name(&self) -> String {
         format!("conduit_drop_imm.{}", self.name())
+    }
+
+    /// The function that frees an object of this kind whose count is 1,
+    /// and drops what it holds: the slow path of its drop.
+    fn freeing_name(&self, imm: bool) -> String {
+        let imm = if imm { "_imm" } else { "" };
+        format!("conduit_freeing{imm}.{}", self.name())
     }
 
     fn visit_name(&self) -> String {
@@ -687,8 +697,10 @@ pub(crate) fn drops(m: &Module, kinds: &BTreeSet<Kind>, cycles: bool) -> Result<
     }
     let mut out = Vec::new();
     for k in &all {
+        out.push(check_fn(k, cycles, false).into());
         out.push(drop_fn(m, k, cycles, false)?.into());
         if cycles {
+            out.push(check_fn(k, cycles, true).into());
             out.push(drop_fn(m, k, cycles, true)?.into());
             out.push(visit_fn(m, k)?.into());
         }
@@ -779,32 +791,70 @@ fn drop_all(b: &mut FnBuilder, held: &[(Value, Kind)], imm: bool) {
 }
 
 /// The drop of kind `k`, or with `imm`, its drop for `imm` objects, which
-/// never buffers, and drops what it holds the same way.
-fn drop_fn(m: &Module, k: &Kind, cycles: bool, imm: bool) -> Result<Function, String> {
+/// never buffers: one count less, unless it's null or immortal, and if
+/// that was the last, a call of [`drop_fn`] to free it. It's small, so
+/// LLVM inlines it where it's called, and a drop of what's shared is a
+/// decrement there, as is a `dup` of `conduit_dup`. With cycles, an object
+/// that isn't `imm` and is still shared may be the root of a cycle, which
+/// `conduit_possible_root` buffers.
+fn check_fn(k: &Kind, cycles: bool, imm: bool) -> Function {
     let name = if imm {
         k.drop_imm_name()
     } else {
         k.drop_name()
     };
+    let params = vec![(Type::Ptr, "p".into())];
+    let mut b = FnBuilder::new(CallConv::Tail, Type::Void, name, params);
+    b.attr("alwaysinline");
+    let p = b.param(0);
+    let (some, shared, dec, last, done) = (
+        b.new_block(),
+        b.new_block(),
+        b.new_block(),
+        b.new_block(),
+        b.new_block(),
+    );
+    let null = b.icmp(IntPred::Eq, Type::Ptr, &p, Value::Null);
+    b.cond_br(null, &done, &some);
+    b.start(&some);
+    let h = b.load(Type::I32, &p);
+    // The count, with the immortal bit, but not the collector's.
+    let c = b.bin(BinOp::And, Type::I32, &h, COUNT_AND_IMMORTAL);
+    let one = b.icmp(IntPred::Eq, Type::I32, c, 1);
+    b.cond_br(one, &last, &shared);
+    b.start(&shared);
+    let counted = b.icmp(IntPred::Sgt, Type::I32, &h, 0);
+    b.cond_br(counted, &dec, &done);
+    b.start(&dec);
+    let h1 = b.bin(BinOp::Sub, Type::I32, h, 1);
+    if cycles && !imm {
+        let args = vec![ptr(&p), ptr(k.visit_fn()), Type::I32.val(h1)];
+        call_void(&mut b, global("conduit_possible_root"), args);
+    } else {
+        b.store(Type::I32, h1, &p);
+    }
+    b.br(&done);
+    b.start(&last);
+    let freeing = global(&k.freeing_name(imm));
+    b.return_call(Call::tailcc(Type::Void, freeing, vec![ptr(&p)]).tail());
+    b.start(&done);
+    b.ret_void();
+    b.finish()
+}
+
+/// Frees an object of kind `k` whose count is 1, and drops what it held:
+/// the slow path of its drop (see [`check_fn`]). Not inlined, so that
+/// where it's called stays small.
+fn drop_fn(m: &Module, k: &Kind, cycles: bool, imm: bool) -> Result<Function, String> {
     let mut b = FnBuilder::new(
         CallConv::Tail,
         Type::Void,
-        name,
+        k.freeing_name(imm),
         vec![(Type::Ptr, "p".into())],
     );
+    b.attr("cold");
+    b.attr("noinline");
     let p = b.param(0);
-    let last = if cycles && !imm {
-        let args = vec![ptr(&p), ptr(k.visit_fn())];
-        Call::tailcc(Type::I1, global("conduit_last_buf"), args)
-    } else {
-        Call::tailcc(Type::I1, global("conduit_last"), vec![ptr(&p)])
-    };
-    let last = b.call_value(last);
-    let (free, done) = (b.new_block(), b.new_block());
-    b.cond_br(last, &free, &done);
-    b.start(&done);
-    b.ret_void();
-    b.start(&free);
     let drop_of = |e: &Kind| if imm { e.drop_imm_fn() } else { e.drop_fn() };
     let conduit_free = || global("conduit_free");
     match k {

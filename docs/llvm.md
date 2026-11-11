@@ -88,10 +88,15 @@ explicit, objects are counted and freed (`src/counts.rs`):
   buffered in bit 30, and in bit 31 whether it's immortal, as a constant
   is. A count that would pass `0x0fff_ffff` saturates, as in the Wasm
   backend and the evaluator.
-- `drop` goes through a function for each kind of object, which, at 0,
-  frees it and drops what it held, tail-calling the drop of its last field,
-  so that dropping a list is a loop. A closure's and an `any`'s drop go
-  through the functions they hold.
+- `drop` goes through a function for each kind of object,
+  `conduit_drop.<kind>`, which only checks: it takes one from the count,
+  unless the object is null or immortal, and with cycles, buffers what's
+  still shared and isn't `imm`. It's `alwaysinline`, so a `drop` of what's
+  shared is a decrement where it is, as a `dup` is. Only for the last
+  reference does it call `conduit_freeing.<kind>`, `cold` and
+  `noinline`, which frees the object and drops what it held, tail-calling
+  the drop of its last field, so that dropping a list is a loop. A
+  closure's and an `any`'s drop go through the functions they hold.
 - `is_unique`, `free`, `decref`, `drop_reuse`, `reuse_token` and `reuse`
   work as in the evaluator, so reuse builds in place. `set`, `array_set`
   and `ref_set` drop what they replace, and `array_fill`, `array_copy` and
