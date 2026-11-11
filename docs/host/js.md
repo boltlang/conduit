@@ -59,10 +59,31 @@ What it exports:
 - with `Options::counts`: `conduit_live`, a global with the number of
   objects allocated and not freed, and with `Options::cycles` too,
   `conduit_collect()`, which collects the cycles buffered so far;
-- with `host_function`: `conduit_release(closure)`.
+- with `host_function`: `conduit_release(closure)`;
+- with handlers or a shadow stack: `conduit_reset()`, which the host
+  calls after an error (see below).
 
 An export starts with no handlers: an effect operation it doesn't handle
 itself traps (see "Exports start with no handlers" in `ir.md`).
+
+A JavaScript exception that unwinds through Conduit code, from an extern
+or a callback, leaves the module as it was for whoever called it, so a
+host can catch it, even in the middle of a call into the module, and go
+on. A trap can't be caught in Wasm, so after one the host calls
+`conduit_reset()`, at a point where no call into the module is still
+running, like its event loop; it's safe to call after any error there:
+
+```js
+try {
+  exports.on_click(event);
+} catch (e) {
+  exports.conduit_reset?.();
+  reportError(e);
+}
+```
+
+What the unwound code held leaks. See
+[`internals/wasm-unwinding.md`](../internals/wasm-unwinding.md).
 
 ## Host values
 

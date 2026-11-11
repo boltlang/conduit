@@ -11,6 +11,7 @@
   (global (;2;) (mut i32) i32.const 0)
   (export "main" (func $main_export))
   (export "memory" (memory 0))
+  (export "conduit_reset" (func 8))
   (elem (;0;) (table 0) (i32.const 0) func 5 6)
   (func $main (;0;) (type 0) (result i32)
     (local i32 i32 i32 i32 i32 i32 i32)
@@ -231,17 +232,37 @@
     return_call $produce
   )
   (func $main_export (;7;) (type 0) (result i32)
-    (local i32 i32)
+    (local i32 i32 i32)
     global.get 1
     local.set 0
     global.get 2
     local.set 1
     i32.const 0
     global.set 1
-    call $main
+    block ;; label = @1
+      block (result exnref) ;; label = @2
+        try_table (catch_all_ref 0 (;@2;)) ;; label = @3
+          call $main
+          local.set 2
+        end
+        br 1 (;@1;)
+      end
+      local.get 0
+      global.set 1
+      local.get 1
+      global.set 2
+      throw_ref
+    end
+    local.get 2
     local.get 0
     global.set 1
     local.get 1
+    global.set 2
+  )
+  (func (;8;) (type 3)
+    i32.const 0
+    global.set 1
+    i32.const 0
     global.set 2
   )
 )

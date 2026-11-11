@@ -6,6 +6,7 @@
   (type (;4;) (func (param i32 i32 i32) (result i32)))
   (type (;5;) (func (result i32)))
   (type (;6;) (func (param i32)))
+  (type (;7;) (func))
   (table (;0;) 19 19 funcref)
   (memory (;0;) 1)
   (tag (;0;) (type 6) (param i32))
@@ -17,6 +18,7 @@
   (export "log_then_fail" (func $log_then_fail_export))
   (export "nested" (func $nested_export))
   (export "memory" (memory 0))
+  (export "conduit_reset" (func 50))
   (elem (;0;) (table 0) (i32.const 0) func 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45)
   (func $get (;0;) (type 0) (param i32 i32) (result i32)
     (local i32 i32 i32 i32 i32 i32 i32)
@@ -1591,59 +1593,121 @@
     return_call $get_then_log
   )
   (func $issue_export (;46;) (type 5) (result i32)
-    (local i32 i32)
+    (local i32 i32 i32)
     global.get 1
     local.set 0
     global.get 2
     local.set 1
     i32.const 0
     global.set 1
-    call $issue
+    block ;; label = @1
+      block (result exnref) ;; label = @2
+        try_table (catch_all_ref 0 (;@2;)) ;; label = @3
+          call $issue
+          local.set 2
+        end
+        br 1 (;@1;)
+      end
+      local.get 0
+      global.set 1
+      local.get 1
+      global.set 2
+      throw_ref
+    end
+    local.get 2
     local.get 0
     global.set 1
     local.get 1
     global.set 2
   )
   (func $log_reads_outer_export (;47;) (type 5) (result i32)
-    (local i32 i32)
+    (local i32 i32 i32)
     global.get 1
     local.set 0
     global.get 2
     local.set 1
     i32.const 0
     global.set 1
-    call $log_reads_outer
+    block ;; label = @1
+      block (result exnref) ;; label = @2
+        try_table (catch_all_ref 0 (;@2;)) ;; label = @3
+          call $log_reads_outer
+          local.set 2
+        end
+        br 1 (;@1;)
+      end
+      local.get 0
+      global.set 1
+      local.get 1
+      global.set 2
+      throw_ref
+    end
+    local.get 2
     local.get 0
     global.set 1
     local.get 1
     global.set 2
   )
   (func $log_then_fail_export (;48;) (type 5) (result i32)
-    (local i32 i32)
+    (local i32 i32 i32)
     global.get 1
     local.set 0
     global.get 2
     local.set 1
     i32.const 0
     global.set 1
-    call $log_then_fail
+    block ;; label = @1
+      block (result exnref) ;; label = @2
+        try_table (catch_all_ref 0 (;@2;)) ;; label = @3
+          call $log_then_fail
+          local.set 2
+        end
+        br 1 (;@1;)
+      end
+      local.get 0
+      global.set 1
+      local.get 1
+      global.set 2
+      throw_ref
+    end
+    local.get 2
     local.get 0
     global.set 1
     local.get 1
     global.set 2
   )
   (func $nested_export (;49;) (type 5) (result i32)
-    (local i32 i32)
+    (local i32 i32 i32)
     global.get 1
     local.set 0
     global.get 2
     local.set 1
     i32.const 0
     global.set 1
-    call $nested
+    block ;; label = @1
+      block (result exnref) ;; label = @2
+        try_table (catch_all_ref 0 (;@2;)) ;; label = @3
+          call $nested
+          local.set 2
+        end
+        br 1 (;@1;)
+      end
+      local.get 0
+      global.set 1
+      local.get 1
+      global.set 2
+      throw_ref
+    end
+    local.get 2
     local.get 0
     global.set 1
     local.get 1
+    global.set 2
+  )
+  (func (;50;) (type 7)
+    i32.const 0
+    global.set 1
+    i32.const 0
     global.set 2
   )
 )

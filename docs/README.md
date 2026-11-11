@@ -13,6 +13,13 @@
 | [host/js.md](host/js.md) | Running in browsers and Node.js: what the engine needs, host values, strings, callbacks, garbage collection | embedders and runtime authors |
 | [evaluator.md](evaluator.md) | `conduit-eval`, which runs IR directly, for tests | frontend and pass authors |
 
+How parts of Conduit work inside, for those who change them, is in
+[`internals/`](internals/):
+
+| Document | What's in it |
+|---|---|
+| [internals/wasm-unwinding.md](internals/wasm-unwinding.md) | How the Wasm backend keeps a module's state right when an exception or a trap unwinds through it |
+
 The test programs, which show most features at work, are described in
 [`tests/programs/README.md`](../tests/programs/README.md).
 

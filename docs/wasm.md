@@ -191,6 +191,12 @@ three ops.
   imports `conduit.function` from the runtime, has a trampoline for each
   signature of closure, and exports `conduit_release`. All of it is in
   [`host/js.md`](host/js.md).
+- **Exceptions and traps** that unwind through the module, like a
+  JavaScript one from an extern, leave its handler stack and shadow stack
+  as each of the host's entry points found them: an export's wrapper or a
+  trampoline catches everything, puts them back, and rethrows. After a
+  trap, which nothing catches, the host calls `conduit_reset()`. See
+  [`internals/wasm-unwinding.md`](internals/wasm-unwinding.md).
 - With `Options::cycles` too, cycles are collected by trial deletion.
   The header's count is then 28 bits, with the collector's color and a
   "buffered" bit above it, and the sign bit for immortal. A `drop` that

@@ -1336,19 +1336,33 @@ impl<'m> FuncCx<'_, 'm> {
             self.code.extend(shadow::save(stack, sp, limit));
             (stack, sp, limit)
         });
+        // When counting, an exception that isn't an abort, like the host's,
+        // gives the frame back on its way out too, as for a handler that
+        // doesn't abort.
+        let foreign = self.cx.rt.is_some();
         self.open(I::Block(BlockType::Empty));
+        if foreign {
+            self.open(I::Block(BlockType::Result(ValType::Ref(
+                wasm_encoder::RefType::EXNREF,
+            ))));
+        }
         self.open(I::Block(BlockType::Result(ValType::I32)));
         // A catch's label is counted from outside the `try_table`.
-        let catches = vec![wasm_encoder::Catch::One {
+        let mut catches = vec![wasm_encoder::Catch::One {
             tag: ABORT,
             label: 0,
         }];
+        if foreign {
+            catches.push(wasm_encoder::Catch::AllRef { label: 1 });
+        }
         self.open(I::TryTable(BlockType::Empty, Cow::Owned(catches)));
         self.apply_body(&body[0])?;
         for &r in results.iter().rev() {
             self.emit(I::LocalSet(r));
         }
         self.close();
+        // Out to the outermost block, past the foreign exception's.
+        let out = 1 + u32::from(foreign);
         // The body returned: run the return clause outside the handler,
         // done with the frame, since the clause can abort to a handler
         // further out.
@@ -1363,7 +1377,7 @@ impl<'m> FuncCx<'_, 'm> {
         for &o in outs.iter().rev() {
             self.emit(I::LocalSet(o));
         }
-        self.emit(I::Br(1));
+        self.emit(I::Br(out));
         self.close();
         // A clause aborted: to this handler, or else to one further out.
         self.emit(I::LocalTee(thrown));
@@ -1390,6 +1404,13 @@ impl<'m> FuncCx<'_, 'm> {
             self.emit(I::LocalSet(o));
         }
         self.release_frame(frame, size);
+        if foreign {
+            self.emit(I::Br(1));
+            self.close();
+            // A foreign exception: the frame goes back, and it goes on.
+            self.release_frame(frame, size);
+            self.emit(I::ThrowRef);
+        }
         self.close();
         for &o in &outs {
             self.emit(I::LocalGet(o));

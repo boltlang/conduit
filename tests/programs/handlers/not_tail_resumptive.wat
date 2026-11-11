@@ -8,6 +8,7 @@
   (type (;6;) (func (param i32 i32 i32 i32 i32) (result i32)))
   (type (;7;) (func (param i32)))
   (type (;8;) (func (param i32 i32)))
+  (type (;9;) (func))
   (table (;0;) 10 10 funcref)
   (memory (;0;) 2)
   (global (;0;) (mut i32) i32.const 65592)
@@ -16,8 +17,9 @@
   (global (;3;) (mut i32) i32.const 65592)
   (global (;4;) (mut i32) i32.const 56)
   (global (;5;) (mut i32) i32.const 0)
-  (export "main" (func $main))
+  (export "main" (func $main_export))
   (export "memory" (memory 0))
+  (export "conduit_reset" (func 32))
   (elem (;0;) (table 0) (i32.const 0) func 21 22 23 24 25 26 27 28 29 30)
   (func $ask (;0;) (type 0) (param i32) (result i32)
     (local i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32)
@@ -1324,6 +1326,54 @@
     i32.load offset=8
     local.get 1
     return_call $doubler_start
+  )
+  (func $main_export (;31;) (type 1) (result i32)
+    (local i32 i32 i32)
+    global.get 3
+    local.set 0
+    global.get 4
+    local.set 1
+    block ;; label = @1
+      block (result exnref) ;; label = @2
+        try_table (catch_all_ref 0 (;@2;)) ;; label = @3
+          call $main
+          local.set 2
+        end
+        br 1 (;@1;)
+      end
+      global.get 4
+      local.get 1
+      i32.ne
+      if ;; label = @2
+        global.get 4
+        local.get 1
+        call 20
+        local.get 1
+        global.set 4
+      end
+      local.get 0
+      global.set 3
+      throw_ref
+    end
+    local.get 2
+  )
+  (func (;32;) (type 9)
+    i32.const 0
+    global.set 1
+    i32.const 0
+    global.set 2
+    global.get 4
+    i32.const 56
+    i32.ne
+    if ;; label = @1
+      global.get 4
+      i32.const 56
+      call 20
+    end
+    i32.const 65592
+    global.set 3
+    i32.const 56
+    global.set 4
   )
   (data (;0;) (i32.const 16) "\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\02\00\00\00\ff\ff\ff\ff\00\00\00\00")
 )

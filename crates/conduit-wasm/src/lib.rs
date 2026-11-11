@@ -354,6 +354,30 @@ fn host_entry(
             I::GlobalSet(HANDLERS),
         ]);
     }
+    let stack = cx
+        .stack
+        .map(|stack| (stack, local(ValType::I32), local(ValType::I32)));
+    if let Some((stack, sp, limit)) = stack {
+        code.extend(shadow::save(stack, sp, limit));
+    }
+    // What the caller had. A call that returns leaves the shadow stack as
+    // it found it, but one that an exception unwinds may not: see
+    // `docs/internals/wasm-unwinding.md`.
+    let restore = |unwound: bool| {
+        let mut code = Vec::new();
+        if let Some((handlers, site)) = saved {
+            code.extend([
+                I::LocalGet(handlers),
+                I::GlobalSet(HANDLERS),
+                I::LocalGet(site),
+                I::GlobalSet(SITE),
+            ]);
+        }
+        if let Some((stack, sp, limit)) = stack.filter(|_| unwound) {
+            code.extend(shadow::restore(stack, sp, limit));
+        }
+        code
+    };
     // The arguments, host ones in boxes. A null is the address 0.
     let mut args = Vec::with_capacity(params.len());
     for (i, t) in params.iter().enumerate() {
@@ -381,15 +405,28 @@ fn host_entry(
         }
         args.push(p);
     }
-    code.extend(call(&args));
-    if let Some((handlers, site)) = saved {
+    if saved.is_none() && stack.is_none() {
+        code.extend(call(&args));
+    } else {
+        // The call, which puts things back as they were however it ends:
+        // an exception that unwinds through it, like the host's, is
+        // caught, and goes on once they're back.
+        let held: Vec<u32> = results.iter().map(|t| local(val(t))).collect();
+        let exn = ValType::Ref(RefType::EXNREF);
+        let catches = vec![wasm_encoder::Catch::AllRef { label: 0 }];
         code.extend([
-            I::LocalGet(handlers),
-            I::GlobalSet(HANDLERS),
-            I::LocalGet(site),
-            I::GlobalSet(SITE),
+            I::Block(wasm_encoder::BlockType::Empty),
+            I::Block(wasm_encoder::BlockType::Result(exn)),
+            I::TryTable(wasm_encoder::BlockType::Empty, catches.into()),
         ]);
+        code.extend(call(&args));
+        code.extend(held.iter().rev().map(|&l| I::LocalSet(l)));
+        code.extend([I::End, I::Br(1), I::End]);
+        code.extend(restore(true));
+        code.extend([I::ThrowRef, I::End]);
+        code.extend(held.iter().map(|&l| I::LocalGet(l)));
     }
+    code.extend(restore(false));
     // The results, host ones as their `externref`s, whose boxes are
     // dropped.
     if results.iter().any(Ty::is_host) {
@@ -868,6 +905,11 @@ pub fn emit_module_with(m: &Module, options: &Options) -> Result<Vec<u8>, Error>
     let first = cx.alloc - m.funcs.len() as u32;
     let (export_wrappers, export_index) =
         lower_export_wrappers(&mut cx, &exports, first + before_wrappers as u32)?;
+    // `conduit_reset`, after every other function.
+    let reset = has_state(&cx).then(|| {
+        let index = first + (before_wrappers + export_wrappers.len()) as u32;
+        (index, lower_reset(&mut cx))
+    });
 
     let mut functions = FunctionSection::new();
     let mut code = CodeSection::new();
@@ -878,7 +920,8 @@ pub fn emit_module_with(m: &Module, options: &Options) -> Result<Vec<u8>, Error>
         .chain(switched.iter().map(|(ty, b)| (*ty, b)))
         .chain(entries.iter().map(|(ty, b)| (*ty, b)))
         .chain(closure_frees.iter().map(|(ty, b)| (*ty, b)))
-        .chain(export_wrappers.iter().map(|(ty, b)| (*ty, b)));
+        .chain(export_wrappers.iter().map(|(ty, b)| (*ty, b)))
+        .chain(reset.iter().map(|(_, (ty, b))| (*ty, b)));
     for (ty, body) in bodies {
         functions.function(ty);
         let mut f = Function::new_with_locals_types(body.locals.iter().copied());
@@ -926,7 +969,8 @@ pub fn emit_module_with(m: &Module, options: &Options) -> Result<Vec<u8>, Error>
         module.section(&tags);
     }
     module.section(&global_section(&cx, heap_base));
-    module.section(&export_section(&cx, &exports, &export_index)?);
+    let reset_index = reset.as_ref().map(|(index, _)| *index);
+    module.section(&export_section(&cx, &exports, &export_index, reset_index)?);
     let elements = element_section(&cx);
     if !elements.is_empty() {
         module.section(&elements);
@@ -1477,9 +1521,10 @@ fn lower_runtime(cx: &mut Cx<'_>) -> Result<(Vec<Lowered>, Vec<Lowered>), Error>
 
 /// The wrappers of exports, the first at index `next`, with the index of
 /// each. With handler frames in memory, each export runs under a wrapper
-/// that empties the handler stack and puts it back after. An export that
-/// takes or gives host values runs under one too, which converts them (see
-/// `host_entry`).
+/// that empties the handler stack and puts it back after, and with a
+/// shadow stack, under one that puts its pointer back, however the export
+/// ends. An export that takes or gives host values runs under one too,
+/// which converts them (see `host_entry`).
 fn lower_export_wrappers(
     cx: &mut Cx<'_>,
     exports: &[(FuncId, &str)],
@@ -1495,7 +1540,7 @@ fn lower_export_wrappers(
         let Some(func) = m.funcs.get(&f) else {
             continue;
         };
-        if m.handlers.is_empty() && !takes_or_gives_host(m, f) {
+        if m.handlers.is_empty() && cx.stack.is_none() && !takes_or_gives_host(m, f) {
             continue;
         }
         let err = Error::at(Item::Func(f));
@@ -1512,6 +1557,58 @@ fn lower_export_wrappers(
         next += 1;
     }
     Ok((wrappers, index))
+}
+
+/// Whether the module has state that code unwinding through it can leave
+/// behind: the handler stack, or the shadow stack.
+fn has_state(cx: &Cx<'_>) -> bool {
+    !cx.m.handlers.is_empty() || cx.stack.is_some()
+}
+
+/// `conduit_reset()`, which puts the handler stack and the shadow stack
+/// back as they are when the module starts, and gives back the shadow
+/// stack's segments chained since. The host calls it when nothing of the
+/// module's is running, after a trap, which no Wasm code can catch, ended
+/// a call: see `docs/internals/wasm-unwinding.md`.
+fn lower_reset(cx: &mut Cx<'_>) -> Lowered {
+    let ty = cx.sig(FnSig::new([], []));
+    let mut code = vec![
+        I::I32Const(0),
+        I::GlobalSet(HANDLERS),
+        I::I32Const(0),
+        I::GlobalSet(SITE),
+    ];
+    if let Some(stack) = cx.stack {
+        // The segments chained on the main stack lead back to it. With
+        // continuations, the stack may be a continuation's, whose segments
+        // are lost.
+        if !stack.continuations {
+            code.extend([
+                I::GlobalGet(stack.limit),
+                I::I32Const(stack.base as i32),
+                I::I32Ne,
+                I::If(wasm_encoder::BlockType::Empty),
+                I::GlobalGet(stack.limit),
+                I::I32Const(stack.base as i32),
+                I::Call(stack.release),
+                I::End,
+            ]);
+        }
+        code.extend([
+            I::I32Const(stack.top as i32),
+            I::GlobalSet(stack.sp),
+            I::I32Const(stack.base as i32),
+            I::GlobalSet(stack.limit),
+        ]);
+    }
+    code.push(I::End);
+    (
+        ty,
+        func::Body {
+            locals: Vec::new(),
+            code,
+        },
+    )
 }
 
 /// Every type, in the order they were made.
@@ -1631,6 +1728,7 @@ fn export_section(
     cx: &Cx<'_>,
     exports: &[(FuncId, &str)],
     wrappers: &BTreeMap<FuncId, u32>,
+    reset: Option<u32>,
 ) -> Result<ExportSection, Error> {
     let mut section = ExportSection::new();
     for &(f, name) in exports {
@@ -1641,6 +1739,9 @@ fn export_section(
         section.export(name, ExportKind::Func, idx);
     }
     section.export("memory", ExportKind::Memory, 0);
+    if let Some(reset) = reset {
+        section.export("conduit_reset", ExportKind::Func, reset);
+    }
     if let Some(cb) = &cx.callbacks {
         section.export("conduit_release", ExportKind::Func, cb.release());
     }
