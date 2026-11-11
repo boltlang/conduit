@@ -106,19 +106,19 @@ struct Runtime {
 
 impl Runtime {
     fn ev_ty(&self) -> Ty {
-        Ty::Data(self.ev_d, Mutability::Mut, Vec::new(), Vec::new())
+        Ty::data(self.ev_d, Mutability::Mut)
     }
 
     fn yield_ty(&self) -> Ty {
-        Ty::Data(self.yield_d, Mutability::Mut, Vec::new(), Vec::new())
+        Ty::data(self.yield_d, Mutability::Mut)
     }
 
     fn hs_ty(&self) -> Ty {
-        Ty::Data(self.hs_d, Mutability::Mut, Vec::new(), Vec::new())
+        Ty::data(self.hs_d, Mutability::Mut)
     }
 
     fn node_ty(&self) -> Ty {
-        Ty::Data(self.node_d, Mutability::Mut, Vec::new(), Vec::new())
+        Ty::data(self.node_d, Mutability::Mut)
     }
 
     fn node(&self) -> CtorId {
@@ -240,10 +240,6 @@ fn forget(f: &Func, lets: &mut Vec<Let>, vars: &[Var]) {
             let0(lets, Op::Forget, vec![v(x)]);
         }
     }
-}
-
-fn new_func(params: Vec<Ty>, results: Vec<Ty>) -> Func {
-    Func::new(params, results)
 }
 
 fn let1(f: &mut Func, lets: &mut Vec<Let>, ty: Ty, op: Op, args: Vec<Atom>) -> Var {
@@ -454,7 +450,7 @@ impl Lower {
         self.out.data.insert(rt.ev_d, ev_decl);
         self.out.data.insert(rt.hs_d, hs_decl);
         self.out.data.insert(rt.node_d, node_decl);
-        let mut never = new_func(vec![any(), rt.ev_ty()], vec![any()]);
+        let mut never = Func::new(vec![any(), rt.ev_ty()], vec![any()]);
         never.debug.name = Some("no_cont".into());
         never.body = Tail::Unreachable.into();
         self.out.funcs.insert(rt.never, never);
@@ -587,22 +583,20 @@ impl Lower {
         // time.
         let mut discontinued: Vec<(EffectId, u32, Vec<Ty>)> = Vec::new();
         for f in self.src.funcs.values() {
-            for b in f.body.blocks() {
-                for l in &b.lets {
-                    if let (Op::Discontinue(e, i), Some(Atom::Var(k))) = (&l.op, l.args.first())
-                        && let Some(Ty::Cont(sig)) = f.vars.get(k.0 as usize)
-                    {
-                        let key = (*e, *i, sig.params.clone());
-                        if !discontinued.contains(&key) {
-                            discontinued.push(key);
-                        }
+            for l in f.body.all_lets() {
+                if let (Op::Discontinue(e, i), Some(Atom::Var(k))) = (&l.op, l.args.first())
+                    && let Some(Ty::Cont(sig)) = f.vars.get(k.0 as usize)
+                {
+                    let key = (*e, *i, sig.params.clone());
+                    if !discontinued.contains(&key) {
+                        discontinued.push(key);
                     }
                 }
             }
         }
         for (e, i, takes) in discontinued {
             let op = &self.src.effects[&e].ops[i as usize];
-            let mut f = new_func(op.params.clone(), takes.clone());
+            let mut f = Func::new(op.params.clone(), takes.clone());
             f.row = Row::one(e);
             // What the operation gives fits what the continuation takes.
             let rs: Vec<Var> = op.results.iter().map(|t| f.new_var(t.clone())).collect();
@@ -696,10 +690,7 @@ impl Lower {
     /// Whether the `i`th `let` of `b` is a site: one that may yield and
     /// isn't a tail call.
     fn is_site(&self, b: &Block, i: usize, vars: &[Ty]) -> bool {
-        conduit_ir::deep(|| {
-            let l = &b.lets[i];
-            self.may_yield(l, vars) && !is_tail(b, i)
-        })
+        self.may_yield(&b.lets[i], vars) && !is_tail(b, i)
     }
 }
 
@@ -867,15 +858,11 @@ impl Lower {
                     self.scope_at_sites(body, scope, vars, lifted, defs);
                     scope.truncate(n);
                 }
-                Tail::Case { arms, default, .. } => {
-                    for a in arms {
-                        self.scope_at_sites(&a.body, scope, vars, lifted, defs);
-                    }
-                    if let Some(d) = default {
-                        self.scope_at_sites(d, scope, vars, lifted, defs);
+                Tail::Case { .. } | Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {
+                    for c in b.children() {
+                        self.scope_at_sites(c, scope, vars, lifted, defs);
                     }
                 }
-                Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
             }
         })
     }
@@ -937,23 +924,9 @@ fn rewrite_jumps(b: Block, table: &BTreeMap<Label, Lifted>, into: &mut Func, ori
                     body: Box::new(body),
                 }
             }
-            Tail::Case {
-                scrut,
-                arms,
-                default,
-            } => Tail::Case {
-                scrut,
-                arms: arms
-                    .into_iter()
-                    .map(|a| Arm {
-                        tag: a.tag,
-                        body: rewrite_jumps(a.body, table, into, orig),
-                    })
-                    .collect(),
-                default: default.map(|d| Box::new(rewrite_jumps(*d, table, into, orig))),
-            },
-            Tail::Unreachable => Tail::Unreachable,
-            Tail::Trap => Tail::Trap,
+            t @ (Tail::Case { .. } | Tail::Unreachable | Tail::Trap) => {
+                t.map_blocks(|b| rewrite_jumps(b, table, into, orig))
+            }
         };
         block(lets, tail)
     })
@@ -1006,7 +979,7 @@ impl Lower {
     fn ev_func(&self, params: Vec<Ty>, results: Vec<Ty>, name: &str) -> (Func, Var) {
         let mut all = params;
         all.push(self.rt.ev_ty());
-        let mut f = new_func(all, results);
+        let mut f = Func::new(all, results);
         f.debug.name = Some(name.into());
         let ev = *f.params.last().unwrap();
         (f, ev)
@@ -1072,13 +1045,7 @@ impl Lower {
             _ => {
                 let d = self.tuple(tys, f.mut_params.count);
                 let t = Ty::Data(d, Mutability::Mut, same_margs(f), Vec::new());
-                let tup = let1(
-                    f,
-                    lets,
-                    t,
-                    Op::Unbox(Ty::Data(d, Mutability::Mut, same_margs(f), Vec::new())),
-                    vec![x],
-                );
+                let tup = let1(f, lets, t.clone(), Op::Unbox(t), vec![x]);
                 for (i, b) in binds.into_iter().enumerate() {
                     lets.push(Let {
                         binds: vec![b],
@@ -1091,15 +1058,15 @@ impl Lower {
         }
     }
 
+    /// The shared state of evidence `ev`: its `Yield`.
+    fn yield_state(&self, f: &mut Func, lets: &mut Vec<Let>, ev: Atom) -> Var {
+        let ev_c = Runtime::ctor(self.rt.ev_d, 0);
+        let1(f, lets, self.rt.yield_ty(), Op::Get(ev_c, 0), vec![ev])
+    }
+
     /// Whether the code is yielding: an `i32`.
     fn yielding(&self, f: &mut Func, lets: &mut Vec<Let>, ev: Atom) -> Var {
-        let st = let1(
-            f,
-            lets,
-            self.rt.yield_ty(),
-            Op::Get(Runtime::ctor(self.rt.ev_d, 0), 0),
-            vec![ev],
-        );
+        let st = self.yield_state(f, lets, ev);
         let mk = let1(
             f,
             lets,
@@ -1113,13 +1080,7 @@ impl Lower {
     /// Adds `piece` to the continuation being built.
     fn extend(&self, f: &mut Func, lets: &mut Vec<Let>, ev: Atom, piece: Atom) {
         let yc = Runtime::ctor(self.rt.yield_d, 0);
-        let st = let1(
-            f,
-            lets,
-            self.rt.yield_ty(),
-            Op::Get(Runtime::ctor(self.rt.ev_d, 0), 0),
-            vec![ev],
-        );
+        let st = self.yield_state(f, lets, ev);
         let cur = let1(f, lets, self.rt.piece_ty(), Op::Get(yc, 3), vec![v(st)]);
         let c = let1(
             f,
@@ -1152,10 +1113,7 @@ impl Lower {
 
     /// `ret` with an undefined `ro any`.
     fn ret_undefined_any(&self, f: &mut Func, lets: &mut Vec<Let>) -> Tail {
-        conduit_ir::deep(|| {
-            let u = self.undefineds(f, lets, &[any()]);
-            ret(u)
-        })
+        ret(self.undefineds(f, lets, &[any()]))
     }
 
     /// The runtime's own functions.
@@ -1165,7 +1123,7 @@ impl Lower {
 
         // lookup(ev, effect) -> (node, start)
         let node_c = self.rt.node();
-        let mut f = new_func(
+        let mut f = Func::new(
             vec![self.rt.ev_ty(), Ty::I32],
             vec![self.rt.node_ty(), Ty::I32],
         );
@@ -1281,7 +1239,7 @@ impl Lower {
 
         // compose(prev, next, x, ev) -> any
         let piece = self.rt.piece_ty();
-        let mut f = new_func(
+        let mut f = Func::new(
             vec![piece.clone(), piece.clone(), any(), self.rt.ev_ty()],
             vec![any()],
         );
@@ -1315,7 +1273,7 @@ impl Lower {
         self.out.funcs.insert(self.rt.compose, f);
 
         // start_resume(cont, x, ev) -> any
-        let mut f = new_func(vec![piece, any(), self.rt.ev_ty()], vec![any()]);
+        let mut f = Func::new(vec![piece, any(), self.rt.ev_ty()], vec![any()]);
         f.debug.name = Some("start_resume".into());
         let [cont, x, ev] = [f.params[0], f.params[1], f.params[2]];
         let mut lets = Vec::new();
@@ -1356,7 +1314,7 @@ impl Lower {
         let id = self.fresh_func();
         let results = self.tys(&self.src.effects[&e].ops[i as usize].results);
         let piece = self.rt.piece_ty();
-        let mut f = new_func(
+        let mut f = Func::new(
             vec![piece, self.rt.ev_ty(), any(), self.rt.ev_ty()],
             vec![any()],
         );
@@ -1485,7 +1443,7 @@ impl Lower {
             Box::new(Sig::new(vec![ev_ty.clone()], body_results.clone())),
             Mutability::ReadOnly,
         );
-        let mut f = new_func(vec![body_ty, ev_ty.clone()], vec![any()]);
+        let mut f = Func::new(vec![body_ty, ev_ty.clone()], vec![any()]);
         f.debug.name = Some(format!("{name}_start").into());
         let [b, ev] = [f.params[0], f.params[1]];
         let mut lets = Vec::new();
@@ -1510,7 +1468,7 @@ impl Lower {
         params.extend(env_tys.iter().cloned());
         params.push(self.rt.node_ty());
         params.push(self.rt.start_ty());
-        let mut f = new_func(params, results.clone());
+        let mut f = Func::new(params, results.clone());
         f.debug.name = Some(format!("{name}_drive").into());
         let ev_outer = f.params[0];
         let env: Vec<Var> = f.params[1..1 + n_env].to_vec();
@@ -1518,13 +1476,7 @@ impl Lower {
         let start = f.params[2 + n_env];
         let mut lets = Vec::new();
         let0(&mut lets, Op::Set(hs_c, 4), vec![v(node), v(ev_outer)]);
-        let st = let1(
-            &mut f,
-            &mut lets,
-            self.rt.yield_ty(),
-            Op::Get(ev_c, 0),
-            vec![v(ev_outer)],
-        );
+        let st = self.yield_state(&mut f, &mut lets, v(ev_outer));
         let hs = let1(
             &mut f,
             &mut lets,
@@ -1667,7 +1619,7 @@ impl Lower {
         // reprompt(env.., node, inner, x, ev) -> any
         let mut params = env_tys.clone();
         params.extend([self.rt.node_ty(), self.rt.piece_ty(), any(), ev_ty.clone()]);
-        let mut f = new_func(params, vec![any()]);
+        let mut f = Func::new(params, vec![any()]);
         f.debug.name = Some(format!("{name}_reprompt").into());
         let env: Vec<Var> = f.params[..n_env].to_vec();
         let [node, inner, x, ev] = [
@@ -1712,7 +1664,7 @@ impl Lower {
             any(),
             ev_ty.clone(),
         ]);
-        let mut f = new_func(params, results.clone());
+        let mut f = Func::new(params, results.clone());
         f.debug.name = Some(format!("{name}_k").into());
         let env: Vec<Var> = f.params[..n_env].to_vec();
         let [node, cont, used, x, ev] = [
@@ -1858,7 +1810,7 @@ impl Lower {
     fn entry_wrapper(&self, src: &Func, internal: FuncId) -> Func {
         let params = self.tys(&src.sig().params);
         let results = self.tys(&src.results);
-        let mut f = new_func(params, results.clone());
+        let mut f = Func::new(params, results.clone());
         f.mut_params = src.mut_params.clone();
         f.debug.name = src.debug.name.clone();
         let mut lets = Vec::new();
@@ -1935,7 +1887,7 @@ impl Lower {
         let closure = self.ty(&Ty::Fn(Box::new(sig.clone()), Mutability::ReadOnly));
         let mut all = vec![closure];
         all.extend(params);
-        let mut f = new_func(all, results.clone());
+        let mut f = Func::new(all, results.clone());
         f.debug.name = Some("host_adapter".into());
         let mut lets = Vec::new();
         let (ev, st) = self.fresh_ev(&mut f, &mut lets);
@@ -2219,13 +2171,7 @@ impl Lower {
             // Otherwise yield to it.
             let mut slow = Vec::new();
             let yc = Runtime::ctor(self.rt.yield_d, 0);
-            let st = let1(
-                &mut o.f,
-                &mut slow,
-                self.rt.yield_ty(),
-                Op::Get(Runtime::ctor(self.rt.ev_d, 0), 0),
-                vec![v(ev)],
-            );
+            let st = self.yield_state(&mut o.f, &mut slow, v(ev));
             let mk = let1(
                 &mut o.f,
                 &mut slow,
@@ -2485,13 +2431,7 @@ impl Lower {
         let ev = o.ev.expect("a handle has evidence");
         let (env, body) = l.args.split_at(l.args.len() - 1);
         let yc = Runtime::ctor(self.rt.yield_d, 0);
-        let st = let1(
-            &mut o.f,
-            lets,
-            self.rt.yield_ty(),
-            Op::Get(Runtime::ctor(self.rt.ev_d, 0), 0),
-            vec![v(ev)],
-        );
+        let st = self.yield_state(&mut o.f, lets, v(ev));
         let mk = let1(&mut o.f, lets, Ty::I32, Op::Get(yc, 4), vec![v(st)]);
         let next = let1(
             &mut o.f,
