@@ -1,0 +1,55 @@
+// What a deep `ro` view still doesn't allow (#57): an object that can be
+// written holds what its type says, so what's in it can't be seen as
+// anything else; a closure can't be used as one taking less than it
+// takes; and a data type's argument can only change where its fields are
+// read.
+
+data W {
+  (i32)
+}
+
+// The parameter is in an array that can be written.
+data Q['m1] {
+  (mut ['m1 [i32]])
+}
+
+fn fn1(%xs: mut [ro [i32]]) -> () {
+  jump ret()
+}
+
+fn fn2(%xs: mut [mut [i32]]) -> () {
+  let = call fn1(%xs)
+  jump ret()
+}
+
+fn fn3(%f: imm fn(ro W) -> (i32)) -> () {
+  jump ret()
+}
+
+fn fn4(%f: imm fn(imm W) -> (i32)) -> () {
+  let = call fn3(%f)
+  jump ret()
+}
+
+fn fn5(%r: ref ro [i32]) -> () {
+  jump ret()
+}
+
+fn fn6(%r: ref mut [i32]) -> () {
+  let = call fn5(%r)
+  jump ret()
+}
+
+fn fn7(%q: ro Q[ro]) -> () {
+  jump ret()
+}
+
+fn fn8(%q: mut Q[mut]) -> () {
+  let = call fn7(%q)
+  jump ret()
+}
+
+//# verify-error: fn2: call of fn1: value 0 has type mut [mut [i32]], but should have mut [ro [i32]]
+//# verify-error: fn4: call of fn3: value 0 has type imm fn(imm data0) -> (i32), but should have imm fn(ro data0) -> (i32)
+//# verify-error: fn6: call of fn5: value 0 has type ref mut [i32], but should have ref ro [i32]
+//# verify-error: fn8: call of fn7: value 0 has type mut data1[mut], but should have ro data1[ro]

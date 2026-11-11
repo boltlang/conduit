@@ -491,7 +491,11 @@ The other two mutabilities:
 
 - **`ReadOnly`** is a view that accepts both: an `Imm` or a `Mut` value can
   be passed where a `ReadOnly` one is expected. It can't be written, but
-  unlike `Imm` it doesn't promise that nothing else changes it.
+  unlike `Imm` it doesn't promise that nothing else changes it. The view
+  can be deep: since nothing is written through it, what it holds can be
+  seen as `ReadOnly` too, so a `Mut` array of `Mut` arrays fits
+  `ReadOnly` arrays of `ReadOnly` ones (see "Subtyping" in
+  [verify.md](verify.md)).
 - **`Inherit`** means "the mutability of the object holding this": in a
   `CtorDecl`'s field types, of the data object, and in the element type
   of an array, anywhere, of the array. A `Get` on a `Data(D, m)` gives a
@@ -507,7 +511,8 @@ The other two mutabilities:
 
   Seen as `ReadOnly`, an `Array(Data(E, Inherit), Mut)` holds `ReadOnly`
   elements, so the view is deep. An `Array(Data(E, Mut), Mut)` seen as
-  `ReadOnly` still holds `Mut` ones.
+  `ReadOnly` still holds `Mut` ones, unless it's seen as an
+  `Array(Data(E, ReadOnly), ReadOnly)`, which it fits too.
 
 - **`Param(i)`**, a mutability parameter, is chosen by each data type of
   the declaration. `data D['m1] { ('m1 [i32]) }` is used as `mut D[imm]`
@@ -523,8 +528,11 @@ An object of mutability `m` holds only what is **at most** `m` all the
 way down, in the order `Imm ⊑ ReadOnly ⊑ Mut`. So an `Imm` one holds no
 `Ref`, `Cont` or anything `Mut` or `ReadOnly`, and a `Mut` one holds
 anything. Only `Mut` objects can be written. `Imm` and `Mut` are
-subtypes of `ReadOnly`, and nothing else converts between mutabilities: a
-value of another mutability is a new value (see below). The verifier
+subtypes of `ReadOnly`, all the way down under a `ReadOnly` view, and a
+closure that gives `Imm` or `Mut` values fits one that gives `ReadOnly`
+ones, as one that takes `ReadOnly` fits one that takes either. Nothing
+else converts between mutabilities: a value of another mutability is a
+new value (see below). The verifier
 checks all of this: see "Mutability" in [verify.md](verify.md).
 
 ### Mutability parameters on functions

@@ -1033,7 +1033,9 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                 })]
             }
             Op::Unbox(ty) => match self.object_ref(obj(arg(&args, 0)?)?)? {
-                Object::Any { ty: boxed, value } if boxed.is_subtype(&self.concrete_ty(ty)?) => {
+                Object::Any { ty: boxed, value }
+                    if conduit_ir::types::is_subtype(self.p, boxed, &self.concrete_ty(ty)?) =>
+                {
                     vec![*value]
                 }
                 Object::Any { ty: boxed, .. } => {

@@ -186,13 +186,32 @@ for `mut` objects too.
 
 ## Subtyping
 
-A value fits where a type is expected when its type is a subtype of it.
-That's about an object's own mutability, `imm` and `mut` both fit `ro`,
-about rows (see "Effect types"), and about host values: a `host` fits
-where a `nullable host` is expected. Nothing else differs. A data type's arguments must be equal, as
-must an array's element type and a closure's signature. A `mut` object's
-fields can be written, so a covariant argument would let code store a `mut`
-value where another alias expects `imm`.
+A value fits where a type is expected when its type is a subtype of it
+(`conduit_ir::types::is_subtype`):
+
+- **An object's own mutability:** `imm` and `mut` both fit `ro`.
+- **What a `ro` view holds:** nothing is written through one, so what it
+  holds can be seen as `ro` too (#57). Where the expected type is `ro`,
+  an array's elements need only fit, with `inherit` the array's
+  mutability on each side, so `mut [mut [i32]]` fits `ro [ro [i32]]`;
+  and a data type's arguments can differ if each field, with them in
+  place of the parameters and `ro` in place of `inherit`, fits, so a
+  `mut D[mut]` fits `ro D[ro]` when `D`'s parameter is only in what its
+  fields' views can see as `ro`. A data type already being compared is
+  assumed to fit, so recursive types terminate.
+- **Closures and continuations:** one fits another that takes what fits
+  its parameters and gives what its results fit, with a row that's in
+  the other's (see "Effect types"). So one that gives `imm W` fits one
+  that gives `ro W`, and one that takes `ro W` fits one that takes
+  `imm W`.
+- **Host values:** a `host` fits where a `nullable host` is expected.
+
+Nothing else differs. Under a `mut` object, elements and arguments must
+be equal: its fields can be written, so a covariant one would let code
+store a `mut` value where another alias expects `imm`. Under an `imm`
+one, they must be equal too, since an `imm` object holds only `imm`
+values. A ref can always be written, so what it holds must be equal, and
+so must a data type's rows.
 
 Subtyping applies to the arguments of `call`, `call_extern`, `apply`,
 `perform`, `resume`, `jump` and `handle`, to fields and elements stored by

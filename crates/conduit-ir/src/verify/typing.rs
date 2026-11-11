@@ -4,7 +4,7 @@
 use super::{Allowed, Checked, fits, instantiate, object_mutability, prim_results, row_ok, ty_ok};
 use crate::text::print::op_name;
 use crate::ty::list;
-use crate::types::{at_most, elem_ty, inherit, resolve, subst_rows, subst_sig_rows};
+use crate::types::{at_most, elem_ty, inherit, is_subtype, resolve, subst_rows, subst_sig_rows};
 use crate::*;
 
 /// The types an op gives. For ops whose result type the IR doesn't
@@ -26,14 +26,14 @@ pub(crate) fn op_results<P: Program + ?Sized>(
         Op::Prim(prim) => prim_results(prim, tys),
         Op::Call(f, margs, rows) => {
             let sig = instantiate(p, mp, effects, "call", *f, margs, rows)?;
-            fits(tys, &sig.params).map_err(|m| format!("call of {f}: {m}"))?;
+            fits(p, tys, &sig.params).map_err(|m| format!("call of {f}: {m}"))?;
             Ok(sig.results)
         }
         Op::CallExtern(e) => {
             let ext = p
                 .extern_fn(*e)
                 .ok_or_else(|| format!("unknown extern {e}"))?;
-            fits(tys, &ext.sig.params).map_err(|m| format!("call of {e}: {m}"))?;
+            fits(p, tys, &ext.sig.params).map_err(|m| format!("call of {e}: {m}"))?;
             Ok(ext.sig.results.clone())
         }
         Op::Closure(f, margs, rows) => {
@@ -51,7 +51,7 @@ pub(crate) fn op_results<P: Program + ?Sized>(
                     "{f} has type {sig}, which doesn't end with {fn_sig}"
                 ));
             };
-            fits(tys, &sig.params[..n]).map_err(|m| format!("captures of {f}: {m}"))?;
+            fits(p, tys, &sig.params[..n]).map_err(|m| format!("captures of {f}: {m}"))?;
             if !sig.row.is_in(&fn_sig.row) {
                 return Err(format!(
                     "{f} does {}, which isn't in the row of fn{fn_sig}",
@@ -67,7 +67,7 @@ pub(crate) fn op_results<P: Program + ?Sized>(
             let Some((Ty::Fn(sig, _), rest)) = tys.split_first() else {
                 return Err("apply needs a closure as its first argument".into());
             };
-            fits(rest, &sig.params).map_err(|m| format!("apply: {m}"))?;
+            fits(p, rest, &sig.params).map_err(|m| format!("apply: {m}"))?;
             Ok(sig.results.clone())
         }
         Op::New(c) => {
@@ -94,7 +94,7 @@ pub(crate) fn op_results<P: Program + ?Sized>(
                         article(*m)
                     ));
                 }
-                if !ty.is_subtype(&field) {
+                if !is_subtype(p, ty, &field) {
                     return Err(format!(
                         "field {i} of {c} has type {field}, but gets a {ty}"
                     ));
@@ -134,7 +134,7 @@ pub(crate) fn op_results<P: Program + ?Sized>(
             }
             field_access(p, known, c, *d, &args[0])?;
             let field = field(p, *c, *i, Mutability::Mut, margs, rows)?;
-            if !value.is_subtype(&field) {
+            if !is_subtype(p, value, &field) {
                 return Err(format!(
                     "field {i} of {c} has type {field}, but gets a {value}"
                 ));
@@ -144,7 +144,7 @@ pub(crate) fn op_results<P: Program + ?Sized>(
         Op::ArrayNew => {
             let elem = new_array(p, mp, out)?;
             for ty in tys {
-                if !ty.is_subtype(&elem) {
+                if !is_subtype(p, ty, &elem) {
                     return Err(format!("array of {elem} gets an element of type {ty}"));
                 }
             }
@@ -155,7 +155,7 @@ pub(crate) fn op_results<P: Program + ?Sized>(
             let [Ty::I32, ty] = tys else {
                 return Err("array fill needs an i32 length and a value".into());
             };
-            if !ty.is_subtype(&elem) {
+            if !is_subtype(p, ty, &elem) {
                 return Err(format!("array of {elem} gets an element of type {ty}"));
             }
             Ok(out.to_vec())
@@ -182,7 +182,7 @@ pub(crate) fn op_results<P: Program + ?Sized>(
                 Ty::I32,
             ] => {
                 let (have, want) = (elem_ty(src).unwrap(), elem_ty(dst).unwrap());
-                if have.is_subtype(&want) {
+                if is_subtype(p, &have, &want) {
                     Ok(vec![])
                 } else {
                     Err(format!(
@@ -210,7 +210,7 @@ pub(crate) fn op_results<P: Program + ?Sized>(
         Op::ArraySet => match tys {
             [array @ Ty::Array(_, Mutability::Mut), Ty::I32, ty] => {
                 let elem = elem_ty(array).unwrap();
-                if ty.is_subtype(&elem) {
+                if is_subtype(p, ty, &elem) {
                     Ok(vec![])
                 } else {
                     Err(format!("array of {elem} gets an element of type {ty}"))
@@ -249,7 +249,7 @@ pub(crate) fn op_results<P: Program + ?Sized>(
             _ => Err("array len needs an array".into()),
         },
         Op::RefNew => match (tys, out) {
-            ([ty], [Ty::Ref(inner)]) if ty.is_subtype(inner) => Ok(out.to_vec()),
+            ([ty], [Ty::Ref(inner)]) if is_subtype(p, ty, inner) => Ok(out.to_vec()),
             ([ty], [Ty::Ref(inner)]) => Err(format!("ref of {inner} gets a {ty}")),
             _ => Err("ref new needs one value and binds one ref".into()),
         },
@@ -258,7 +258,7 @@ pub(crate) fn op_results<P: Program + ?Sized>(
             _ => Err("ref get needs a ref".into()),
         },
         Op::RefSet => match tys {
-            [Ty::Ref(inner), ty] if ty.is_subtype(inner) => Ok(vec![]),
+            [Ty::Ref(inner), ty] if is_subtype(p, ty, inner) => Ok(vec![]),
             [Ty::Ref(inner), ty] => Err(format!("ref of {inner} gets a {ty}")),
             _ => Err("ref set needs a ref and a value".into()),
         },
@@ -266,7 +266,7 @@ pub(crate) fn op_results<P: Program + ?Sized>(
         Op::Box(ty) => {
             ty_ok(p, ty, Allowed::func(mp.count, effects))?;
             match tys {
-                [arg] if arg.is_subtype(ty) => {}
+                [arg] if is_subtype(p, arg, ty) => {}
                 [arg] => return Err(format!("box of {ty} gets a {arg}")),
                 _ => return Err("box needs one value".into()),
             }
@@ -373,7 +373,7 @@ pub(crate) fn op_results<P: Program + ?Sized>(
             let Some((Ty::Fn(body, _), env)) = tys.split_last() else {
                 return Err(format!("handle {h} needs its environment, then a closure"));
             };
-            fits(env, &env_tys).map_err(|m| format!("environment of {h}: {m}"))?;
+            fits(p, env, &env_tys).map_err(|m| format!("environment of {h}: {m}"))?;
             let returns = ret.params.get(n..).unwrap_or_default();
             if !body.params.is_empty() || body.results != returns {
                 return Err(format!(
@@ -398,14 +398,14 @@ pub(crate) fn op_results<P: Program + ?Sized>(
                 .ops
                 .get(*i as usize)
                 .ok_or_else(|| format!("{e} has no operation {i}"))?;
-            fits(tys, &sig.params).map_err(|m| format!("perform {e}.{i}: {m}"))?;
+            fits(p, tys, &sig.params).map_err(|m| format!("perform {e}.{i}: {m}"))?;
             Ok(sig.results.clone())
         }
         Op::Resume => {
             let Some((Ty::Cont(sig), rest)) = tys.split_first() else {
                 return Err("resume needs a continuation as its first argument".into());
             };
-            fits(rest, &sig.params).map_err(|m| format!("resume: {m}"))?;
+            fits(p, rest, &sig.params).map_err(|m| format!("resume: {m}"))?;
             Ok(sig.results.clone())
         }
         Op::Discontinue(e, i) => {
@@ -418,9 +418,9 @@ pub(crate) fn op_results<P: Program + ?Sized>(
                 .get(*i as usize)
                 .ok_or_else(|| format!("{e} has no operation {i}"))?;
             let at = format!("discontinue {e}.{i}");
-            fits(rest, &op.params).map_err(|m| format!("{at}: {m}"))?;
+            fits(p, rest, &op.params).map_err(|m| format!("{at}: {m}"))?;
             // What the operation gives is what the captured `perform` gives.
-            fits(&op.results, &k.params)
+            fits(p, &op.results, &k.params)
                 .map_err(|m| format!("{at}: its results don't fit the continuation: {m}"))?;
             Ok(k.results.clone())
         }
@@ -486,7 +486,7 @@ fn array_clone<P: Program + ?Sized>(
         return Err("array freeze must bind one imm array".into());
     }
     let elem = new_array(p, mp, out)?;
-    if !have.is_subtype(&elem) {
+    if !is_subtype(p, &have, &elem) {
         return Err(format!(
             "{what} of a {from} can't give a {}: its elements are {have}",
             out[0]

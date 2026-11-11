@@ -411,7 +411,7 @@ fn const_value_ok<P: Program + ?Sized>(p: &P, value: &ConstValue, ty: &Ty) -> Re
             let decl = p
                 .constant(*id)
                 .ok_or_else(|| format!("unknown constant {id}"))?;
-            if decl.ty.is_subtype(ty) {
+            if is_subtype(p, &decl.ty, ty) {
                 Ok(())
             } else {
                 Err(format!("{id} is a {}, not a {ty}", decl.ty))
@@ -944,7 +944,7 @@ impl<P: Program + ?Sized> Cx<'_, P> {
             return self.err(format!("jump to {target}, which isn't in scope"));
         };
         let Some(tys) = self.atoms(args) else { return };
-        if let Err(message) = fits(&tys, &params) {
+        if let Err(message) = fits(self.p, &tys, &params) {
             self.err(format!("jump to {target}: {message}"));
         }
     }
@@ -1038,7 +1038,7 @@ impl<P: Program + ?Sized> Cx<'_, P> {
             )),
             Ok(results) => {
                 for ((r, o), b) in results.iter().zip(&out).zip(binds) {
-                    if !r.is_subtype(o) {
+                    if !is_subtype(self.p, r, o) {
                         self.err(format!("the op gives a {r}, but {b} has type {o}"));
                     }
                 }
@@ -1148,7 +1148,7 @@ pub(crate) fn instantiate<P: Program + ?Sized>(
 }
 
 /// Checks that values of types `tys` can be passed where `expected` are.
-pub(crate) fn fits(tys: &[Ty], expected: &[Ty]) -> Checked<()> {
+pub(crate) fn fits<P: Program + ?Sized>(p: &P, tys: &[Ty], expected: &[Ty]) -> Checked<()> {
     if tys.len() != expected.len() {
         return Err(format!(
             "expected {} values, but got {}",
@@ -1157,7 +1157,7 @@ pub(crate) fn fits(tys: &[Ty], expected: &[Ty]) -> Checked<()> {
         ));
     }
     for (i, (ty, e)) in tys.iter().zip(expected).enumerate() {
-        if !ty.is_subtype(e) {
+        if !is_subtype(p, ty, e) {
             return Err(format!("value {i} has type {ty}, but should have {e}"));
         }
     }

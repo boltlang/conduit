@@ -1,0 +1,81 @@
+// A `ro` view is deep, as Bolt's checker has it (#57): nothing is
+// written through one, so what it holds can be seen as `ro` too. And a
+// closure that gives an `imm` or `mut` value can be used as one giving a
+// `ro` one, as one taking `ro` can be used as one taking `imm` or `mut`.
+
+data W {
+  (i32)
+}
+
+// A pair whose array has the mutability its type gives.
+data P['m1] {
+  ('m1 [i32], i32)
+}
+
+// `mut [mut [i32]]` seen as `ro [ro [i32]]`.
+fn first(%xs: ro [ro [i32]]) -> (ro [i32]) {
+  let %x: ro [i32] = array_get(%xs, 0i32)
+  jump ret(%x)
+}
+
+fn nested(%n: i32) -> (i32) {
+  let %inner: mut [i32] = array_new(%n, 2i32)
+  let %outer: mut [mut [i32]] = array_new(%inner)
+  let %x: ro [i32] = call first(%outer)
+  let %y: i32 = array_get(%x, 1i32)
+  let %r: i32 = add(%y, %n)
+  jump ret(%r)
+}
+
+// A closure giving an `imm W` used as one giving a `ro W`.
+fn w(%x: i32) -> (imm W) {
+  let %r: imm W = new W.0(%x)
+  jump ret(%r)
+}
+
+fn mk(%f: imm fn(i32) -> (ro W)) -> (ro W) {
+  let %r: ro W = apply(%f, 1i32)
+  jump ret(%r)
+}
+
+// A closure taking a `ro W` used as one taking an `imm W`.
+fn read(%v: ro W) -> (i32) {
+  let %x: i32 = get W.0.0(%v)
+  jump ret(%x)
+}
+
+fn give(%f: imm fn(imm W) -> (i32), %x: i32) -> (i32) {
+  let %v: imm W = new W.0(%x)
+  let %r: i32 = apply(%f, %v)
+  jump ret(%r)
+}
+
+fn closures(%x: i32) -> (i32) {
+  let %f: imm fn(i32) -> (imm W) = closure w()
+  let %v: ro W = call mk(%f)
+  let %a: i32 = get W.0.0(%v)
+  let %g: imm fn(ro W) -> (i32) = closure read()
+  let %b: i32 = call give(%g, %x)
+  let %r: i32 = add(%a, %b)
+  jump ret(%r)
+}
+
+// A `mut P[mut]` seen as `ro P[ro]`: its array is only read through it.
+fn sum_pair(%p: ro P[ro]) -> (i32) {
+  let %a: ro [i32] = get P.0.0(%p)
+  let %x: i32 = array_get(%a, 0i32)
+  let %y: i32 = get P.0.1(%p)
+  let %r: i32 = add(%x, %y)
+  jump ret(%r)
+}
+
+fn pairs(%x: i32) -> (i32) {
+  let %a: mut [i32] = array_new(%x)
+  let %p: mut P[mut] = new P.0(%a, 10i32)
+  let %r: i32 = call sum_pair(%p)
+  jump ret(%r)
+}
+
+//# run nested(3i32) == 5i32
+//# run closures(4i32) == 5i32
+//# run pairs(5i32) == 15i32

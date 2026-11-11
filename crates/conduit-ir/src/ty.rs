@@ -96,26 +96,6 @@ impl Ty {
         }
     }
 
-    /// Whether a value of this type can be used where `other` is expected.
-    /// Only three things can differ: an object's own mutability (`Imm` and
-    /// `Mut` both fit `ReadOnly`), the row of a closure or continuation (a
-    /// smaller one fits a bigger one), and a `Host` fits a `NullableHost`.
-    /// Everything else must be equal: a data type's arguments and rows, and
-    /// the types inside a closure or continuation type.
-    pub fn is_subtype(&self, other: &Ty) -> bool {
-        match (self, other) {
-            (Ty::Data(d1, m1, a1, r1), Ty::Data(d2, m2, a2, r2)) => {
-                d1 == d2 && a1 == a2 && r1 == r2 && m1.is_sub(*m2)
-            }
-            (Ty::Array(e1, m1), Ty::Array(e2, m2)) => e1 == e2 && m1.is_sub(*m2),
-            (Ty::Fn(s1, m1), Ty::Fn(s2, m2)) => s1.is_sub(s2) && m1.is_sub(*m2),
-            (Ty::Cont(s1), Ty::Cont(s2)) => s1.is_sub(s2),
-            (Ty::Any(m1), Ty::Any(m2)) => m1.is_sub(*m2),
-            (Ty::Host, Ty::NullableHost) => true,
-            _ => self == other,
-        }
-    }
-
     /// This type with mutability `m`, or the same type if it has no
     /// mutability of its own (scalars, `Cont`, `Ref`, `Host`).
     pub fn with_mutability(&self, m: Mutability) -> Ty {
@@ -197,13 +177,6 @@ impl Sig {
             results,
             row: Row::NOTHING,
         }
-    }
-
-    /// Whether a closure or continuation of this signature can be used
-    /// where one of `other` is expected: the same types, and a row that's
-    /// in `other`'s.
-    pub fn is_sub(&self, other: &Sig) -> bool {
-        self.params == other.params && self.results == other.results && self.row.is_in(&other.row)
     }
 }
 

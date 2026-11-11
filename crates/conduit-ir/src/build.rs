@@ -594,7 +594,10 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
             None => results,
             Some(out) => {
                 let fits = results.len() == out.len()
-                    && results.iter().zip(&out).all(|(r, o)| r.is_subtype(o));
+                    && results
+                        .iter()
+                        .zip(&out)
+                        .all(|(r, o)| crate::types::is_subtype(&self.scope(), r, o));
                 if !fits {
                     self.error(format!(
                         "the op gives ({}), which doesn't fit ({})",
@@ -1088,7 +1091,7 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
         let params = self.label_params.get(target.0 as usize).cloned().flatten();
         match (params, self.atom_tys(&args)) {
             (Some(params), Some(tys)) => {
-                if let Err(message) = fits(&tys, &params) {
+                if let Err(message) = fits(&self.scope(), &tys, &params) {
                     self.error(format!("jump to {target}: {message}"));
                 }
             }
