@@ -291,17 +291,6 @@ pub fn lit(l: &Lit) -> Value {
     }
 }
 
-fn lit_ty(l: &Lit) -> Ty {
-    match l {
-        Lit::I8(_) => Ty::I8,
-        Lit::I16(_) => Ty::I16,
-        Lit::I32(_) => Ty::I32,
-        Lit::I64(_) => Ty::I64,
-        Lit::F32(_) => Ty::F32,
-        Lit::F64(_) => Ty::F64,
-    }
-}
-
 /// How many bytes a value of type `t` takes in an object: a scalar's size,
 /// or 8 for an object's address.
 fn size(t: &Ty) -> u64 {
@@ -814,10 +803,7 @@ impl<'m> Lower<'m> {
     }
 
     fn atom_ty(&self, a: &Atom) -> Ty {
-        match a {
-            Atom::Var(v) => self.f.var_ty(*v).clone(),
-            Atom::Lit(l) => lit_ty(l),
-        }
+        self.f.atom_ty(a)
     }
 
     /// An atom's value, loaded if it's a variable.
@@ -1205,8 +1191,7 @@ impl<'m> Lower<'m> {
             }
             Op::IsUnique => {
                 let x = self.value(&args[0])?;
-                let is = Value::global("conduit_is_unique");
-                let r = (self.b).call_value(Call::tailcc(Type::I32, is, vec![Type::Ptr.val(x)]));
+                let r = self.call_on(Type::I32, "conduit_is_unique", &x);
                 self.bind(binds, r)?;
             }
             Op::Free => {
@@ -1240,26 +1225,20 @@ impl<'m> Lower<'m> {
                 };
                 let k = Kind::Data(d);
                 let x = self.value(&args[0])?;
-                let call = if self.cycles && !counts::is_imm(&t) {
+                let last = if self.cycles && !counts::is_imm(&t) {
                     let args = vec![Type::Ptr.val(&x), Type::Ptr.val(k.visit_fn())];
-                    Call::tailcc(Type::I1, Value::global("conduit_last_buf"), args)
+                    let last_buf = Value::global("conduit_last_buf");
+                    self.b.call_value(Call::tailcc(Type::I1, last_buf, args))
                 } else {
-                    Call::tailcc(
-                        Type::I1,
-                        Value::global("conduit_last"),
-                        vec![Type::Ptr.val(&x)],
-                    )
+                    self.call_on(Type::I1, "conduit_last", &x)
                 };
-                let last = self.b.call_value(call);
                 self.kinds.insert(k);
                 let slot = self.b.alloca(Type::Ptr);
                 self.b.store(Type::Ptr, Value::Null, &slot);
                 let (free, done) = (self.b.new_block(), self.b.new_block());
                 self.b.cond_br(last, &free, &done);
                 self.b.start(&free);
-                let take = Value::global("conduit_take");
-                let taken =
-                    (self.b).call_value(Call::tailcc(Type::Ptr, take, vec![Type::Ptr.val(&x)]));
+                let taken = self.call_on(Type::Ptr, "conduit_take", &x);
                 self.b.store(Type::Ptr, taken, &slot);
                 call_void(&mut self.b, counts::children_fn(d), vec![Type::Ptr.val(&x)]);
                 self.b.br(&done);
@@ -1269,9 +1248,7 @@ impl<'m> Lower<'m> {
             }
             Op::ReuseToken => {
                 let x = self.value(&args[0])?;
-                let take = Value::global("conduit_take");
-                let token =
-                    (self.b).call_value(Call::tailcc(Type::Ptr, take, vec![Type::Ptr.val(x)]));
+                let token = self.call_on(Type::Ptr, "conduit_take", &x);
                 self.bind(binds, token)?;
             }
             // A null host value is a null box.
@@ -1292,6 +1269,13 @@ impl<'m> Lower<'m> {
             other => return Err(format!("{other:?} isn't supported yet")),
         }
         Ok(())
+    }
+
+    /// What the runtime's function `name` gives, of type `ret`, on the
+    /// object `x`.
+    fn call_on(&mut self, ret: Type, name: &str, x: &Value) -> Value {
+        let call = Call::tailcc(ret, Value::global(name), vec![Type::Ptr.val(x)]);
+        self.b.call_value(call)
     }
 
     /// The drop of a value of type `t`, of kind `k`: with cycles, one that

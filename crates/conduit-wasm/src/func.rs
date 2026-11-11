@@ -367,10 +367,7 @@ impl<'m> FuncCx<'_, 'm> {
     }
 
     fn atom_ty(&self, a: &Atom) -> Ty {
-        match a {
-            Atom::Var(v) => self.var_ty(*v).clone(),
-            Atom::Lit(l) => l.ty(),
-        }
+        self.f.atom_ty(a)
     }
 
     fn atom(&mut self, a: &Atom) {
