@@ -118,6 +118,8 @@ cargo run --release -p conduit-bench -- --backend wasm,wasm-switch,native
 `effects_state`, `effects_generator` and `effects_exceptions` measure
 handlers: tail-resumptive clauses, clauses that keep their continuation,
 and aborting ones, each kept from being optimized away.
+`effects_rare_exceptions` aborts once every 1024 rounds instead of every
+8th, for what a `handle` costs when nothing aborts to it.
 
 ## Host functions
 

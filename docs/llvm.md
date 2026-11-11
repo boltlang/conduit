@@ -192,15 +192,16 @@ JavaScript.
 
 Handlers whose clauses are all tail-resumptive or aborting (see
 `conduit_ir::clause`) are lowered without capturing a continuation, as
-in the Wasm backend, but with `_setjmp` and `_longjmp` for aborts instead
-of exceptions (see `crates/conduit-llvm/src/handlers.rs`):
+in the Wasm backend, with LLVM's exception handling for aborts where Wasm
+has its own (see `crates/conduit-llvm/src/handlers.rs`):
 
 - `@conduit_handlers` holds a stack of handler frames. A frame is an
   `alloca` in the function that runs the `handle`: its handler's number,
   the next frame, the handler's environment, then, for a handler with an
-  aborting clause, its results and a 512-byte buffer for `_setjmp`.
+  aborting clause, its results and an `_Unwind_Exception`.
 - `handle` pushes a frame, applies the body, pops it, and calls the
-  return clause.
+  return clause. For a handler with an aborting clause, the body is an
+  `invoke`, whose landing pad only runs when a clause aborts.
 - `perform` walks the stack to the nearest frame of a handler with a
   clause for it, trapping if there's none, and calls that clause's
   wrapper, `conduit_clause.<handler>.<slot>`, directly, under the frames
@@ -209,8 +210,13 @@ of exceptions (see `crates/conduit-llvm/src/handlers.rs`):
   its own for the clause when counting, and calls the clause as a plain
   function.
 - An aborting clause's wrapper stores the clause's results in the frame
-  and `_longjmp`s to it, so the `handle`'s `_setjmp` returns again, and
-  the `handle` gives the frame's results.
+  and unwinds with the frame's exception, by `_Unwind_ForcedUnwind`. Each
+  `handle` it reaches checks whether the exception is its own frame's,
+  and goes on unwinding (`resume`) if not; the one it is gives the
+  frame's results. A forced unwind runs landing pads without searching
+  for a handler first, so C's personality, `__gcc_personality_v0`, runs
+  them, and Conduit needs none of its own. Both come with libgcc_s or
+  libunwind, which C programs link on Linux and macOS.
 - A tail-resumptive clause that discontinues performs under the handlers
   of the `perform` it handles, which `@conduit_site` holds.
 - An export, or a trampoline of `host_function`, runs with no handlers,
@@ -218,10 +224,18 @@ of exceptions (see `crates/conduit-llvm/src/handlers.rs`):
 
 An abort doesn't drop what the frames it skips own, nor the handlers'
 environments, though the IR says dropping the continuation does: they
-leak, as they do in the evaluator and Wasm (#56). Running cleanups as an
-abort passes needs #55. A `handle`
-of a handler with an aborting clause costs a `_setjmp`, even when nothing
-aborts: #55 is about LLVM's own exception handling, which wouldn't.
+leak, as they do in the evaluator and Wasm (#56); the unwinding could
+run cleanups for them, with landing pads at the calls that may abort.
+
+A `handle` that nothing aborts to costs no more than one of a handler
+that doesn't abort, and an abort costs an unwinding, which reads the
+unwind tables of each frame it passes: about 0.25µs in
+`bench/effects_exceptions`, a few frames down. Against `_setjmp` and
+`_longjmp`, which this replaced (#55) and which cost on every `handle`,
+`bench/effects_rare_exceptions`, which aborts once every 1024 rounds,
+went from 571µs to 431µs (`+specialized`, 100000 rounds), and
+`bench/effects_exceptions`, which aborts every 8th round, from 634µs to
+3.80ms.
 
 Not yet:
 

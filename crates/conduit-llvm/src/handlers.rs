@@ -7,9 +7,12 @@
 //!   `alloca` in the function that runs the `handle`, which is live as
 //!   long as the body runs: its handler's number at 0, the next frame at
 //!   8, then the handler's environment, then, for a handler with an
-//!   aborting clause, its results and a buffer for `_setjmp`.
+//!   aborting clause, its results and an exception for the unwinder, an
+//!   `_Unwind_Exception`.
 //! - `handle` pushes a frame, applies the body, pops the frame, and calls
-//!   the return clause with the environment and the body's results.
+//!   the return clause with the environment and the body's results. For
+//!   a handler with an aborting clause, it `invoke`s the body, with a
+//!   landing pad that runs only when a clause aborts.
 //! - `perform` walks the stack to the nearest frame of a handler with a
 //!   clause for its operation, trapping if there's none, and calls that
 //!   clause's wrapper, `conduit_clause.<handler>.<slot>`, with the frame
@@ -19,10 +22,15 @@
 //!   reference to each for the clause when counting, and calls the clause
 //!   as a plain function, without its continuation.
 //! - An aborting clause's wrapper stores what the clause gives in the
-//!   frame and `_longjmp`s to the buffer, so that the `handle`'s
-//!   `_setjmp` returns again, and the `handle` gives the frame's results.
-//!   `_setjmp` and `_longjmp` don't save or restore the signal mask, which
-//!   Conduit code never changes.
+//!   frame and unwinds to its `handle` with the frame's exception, by
+//!   `_Unwind_ForcedUnwind`, from libgcc_s or libunwind, which C programs
+//!   on Linux and macOS link. A forced unwind runs only the landing pads,
+//!   with no search for a handler first, so `__gcc_personality_v0`, C's
+//!   personality, from the same library, does: Conduit needs no
+//!   personality of its own. Each `handle` the unwinding reaches checks
+//!   whether the exception is its frame's, and goes on unwinding if not;
+//!   the one it is gives the frame's results. A `handle` nothing aborts
+//!   to costs nothing more than one of a handler that doesn't abort.
 //! - A tail-resumptive clause that discontinues sets the stack to that of
 //!   the `perform` it handles, which `@conduit_site` holds while a clause
 //!   runs, and performs.
@@ -37,13 +45,25 @@ use std::collections::BTreeSet;
 use conduit_ir::{EffectId, FuncId, HandlerId, Module, Ty};
 
 use crate::counts::Kind;
-use crate::ir::{Call, CallConv, Declare, FnBuilder, Function, Item, Type, Value};
+use crate::ir::{BinOp, Call, CallConv, Declare, FnBuilder, Function, IntPred, Item, Type, Value};
 use crate::{call_void, layout, ret_ty, symbol, ty};
 
-/// The bytes a frame keeps for `_setjmp`'s `jmp_buf`, 8-aligned: more
-/// than it takes on the platforms the backend targets, 200 bytes on
-/// x86-64 Linux, 312 on AArch64 Linux, and less on macOS.
-const JMP_BUF: u64 = 512;
+/// The bytes of an `_Unwind_Exception`, which is 16-aligned, on x86-64
+/// and AArch64: its class, its cleanup function and two words the
+/// unwinder keeps.
+const EXCEPTION: u64 = 32;
+
+/// The class of Conduit's exceptions, which the unwinder only keeps:
+/// "CONDUIT\0".
+const CLASS: i64 = 0x434f_4e44_5549_5400;
+
+/// The function `_Unwind_ForcedUnwind` calls at each frame, which goes
+/// on, and traps if it reaches the end of the stack, which can't happen:
+/// a clause only aborts to a `handle` that's running.
+const STOP: &str = "conduit_stop";
+
+/// C's personality, which runs cleanup landing pads.
+pub(crate) const PERSONALITY: &str = "__gcc_personality_v0";
 
 /// The stack of handler frames.
 pub(crate) const HANDLERS: &str = "conduit_handlers";
@@ -65,9 +85,10 @@ pub(crate) struct Handlers {
 /// Where a frame of a handler keeps what it holds, in bytes.
 pub(crate) struct Frame {
     pub env: Vec<u64>,
-    /// The results an aborting clause leaves, and `_setjmp`'s buffer.
+    /// The results an aborting clause leaves, and the exception it
+    /// unwinds with, 16-aligned.
     pub results: Vec<u64>,
-    pub jmp: Option<u64>,
+    pub exception: Option<u64>,
     /// Its size in 8-byte words.
     pub words: u64,
 }
@@ -118,12 +139,12 @@ impl Handlers {
         let (offsets, size) = layout(&tys);
         let env = offsets[1..1 + decl.env.len()].to_vec();
         let results = offsets[1 + decl.env.len()..].to_vec();
-        let jmp = aborting.then_some(size);
-        let bytes = size + if aborting { JMP_BUF } else { 0 };
+        let exception = aborting.then_some(size.next_multiple_of(16));
+        let bytes = exception.map_or(size, |at| at + EXCEPTION);
         Ok(Frame {
             env,
             results,
-            jmp,
+            exception,
             words: bytes / 8,
         })
     }
@@ -147,19 +168,21 @@ impl Handlers {
         }
         if !self.aborting.is_empty() {
             out.push(
-                Declare {
-                    attrs: vec!["returns_twice"],
-                    ..Declare::new(Type::I32, "_setjmp", vec![Type::Ptr])
-                }
+                Declare::new(
+                    Type::I32,
+                    "_Unwind_ForcedUnwind",
+                    vec![Type::Ptr, Type::Ptr, Type::Ptr],
+                )
                 .into(),
             );
             out.push(
                 Declare {
-                    attrs: vec!["noreturn"],
-                    ..Declare::new(Type::Void, "_longjmp", vec![Type::Ptr, Type::I32])
+                    variadic: true,
+                    ..Declare::new(Type::I32, PERSONALITY, vec![])
                 }
                 .into(),
             );
+            out.push(stop_fn().into());
         }
         for (&h, decl) in &m.handlers {
             for slot in 0..decl.len() {
@@ -208,7 +231,7 @@ impl Handlers {
         for (j, t) in op.params.iter().enumerate() {
             args.push(ty(t)?.val(b.param(1 + j)));
         }
-        let Some(jmp) = frame.jmp.filter(|_| self.aborts.contains(&clause)) else {
+        let Some(exn) = frame.exception.filter(|_| self.aborts.contains(&clause)) else {
             b.return_call(Call::tailcc(ret, symbol(clause), args).tail());
             return Ok(b.finish());
         };
@@ -223,12 +246,54 @@ impl Handlers {
             };
             b.store_at(ty(t)?, v, &fr, at);
         }
-        let buf = b.offset(&fr, jmp);
-        let args = vec![Type::Ptr.val(buf), Type::I32.val(1)];
-        b.call(Call::c(Type::Void, Value::global("_longjmp"), args));
+        let exn = b.offset(&fr, exn);
+        b.store(Type::I64, Value::Int(CLASS), &exn);
+        // No cleanup function: nothing frees the exception, which is in
+        // the frame.
+        b.store_at(Type::Ptr, Value::Null, &exn, 8);
+        let args = vec![
+            Type::Ptr.val(exn),
+            Type::Ptr.val(Value::global(STOP)),
+            Type::Ptr.val(Value::Null),
+        ];
+        // It only comes back if it fails.
+        b.call(Call::c(
+            Type::I32,
+            Value::global("_Unwind_ForcedUnwind"),
+            args,
+        ));
+        b.call(Call::c(Type::Void, Value::global("llvm.trap"), vec![]));
         b.unreachable();
         Ok(b.finish())
     }
+}
+
+/// [`STOP`]: `_URC_NO_REASON`, 0, to go on, unless the actions have
+/// `_UA_END_OF_STACK`, 16.
+fn stop_fn() -> Function {
+    let params = [
+        Type::I32,
+        Type::I32,
+        Type::I64,
+        Type::Ptr,
+        Type::Ptr,
+        Type::Ptr,
+    ];
+    let params = (params.into_iter().enumerate())
+        .map(|(i, t)| (t, format!("p{i}")))
+        .collect();
+    let mut b = FnBuilder::new(CallConv::C, Type::I32, STOP, params);
+    let actions = b.param(1);
+    let end = b.bin(BinOp::And, Type::I32, actions, 16);
+    let end = b.icmp(IntPred::Ne, Type::I32, end, 0);
+    let (trap, go) = (b.new_block(), b.new_block());
+    b.cond_br(end, &trap, &go);
+    b.start(&trap);
+    b.call(Call::c(Type::Void, Value::global("llvm.trap"), vec![]));
+    b.unreachable();
+    b.start(&go);
+    b.ret(Some(Type::I32.val(0)));
+    b.finish()
 }
 
 /// The wrapper of clause `slot` of `h`.

@@ -1,8 +1,8 @@
 // Exceptions: a loop that installs a handler each round and calls a
 // function that recurses a few frames, then raises, every eighth round.
 // The clause never resumes, so it's aborting: the Wasm backend lowers it
-// with Wasm's exceptions, and native code with `_setjmp` and `_longjmp`. The raise
-// is a few calls down, so the handler can't be run directly.
+// with Wasm's exceptions, and native code with LLVM's. The raise is a few
+// calls down, so the handler can't be run directly.
 
 effect Raise {
   () -> (i32)

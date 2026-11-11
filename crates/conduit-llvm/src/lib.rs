@@ -1086,9 +1086,9 @@ impl<'m> Lower<'m> {
 
     /// `handle h(env.., body)`: pushes a frame of `h`, applies the body,
     /// pops the frame and calls the return clause with the environment
-    /// and the body's results. If `h` has an aborting clause, the frame
-    /// has a buffer for `_setjmp`, which returns again when a clause
-    /// aborts to it, and the results are then the frame's. See `handlers`.
+    /// and the body's results. If `h` has an aborting clause, the body is
+    /// `invoke`d, and a clause that aborts to the frame unwinds to its
+    /// landing pad, which gives the frame's results. See `handlers`.
     fn handle(
         &mut self,
         h: conduit_ir::HandlerId,
@@ -1100,7 +1100,10 @@ impl<'m> Lower<'m> {
         let frame = self.handlers.frame(m, h)?;
         let (env, body) = args.split_at(args.len() - 1);
         let stack = handlers::handlers_global();
-        let at = self.b.alloca(Type::Array(frame.words, Box::new(Type::I64)));
+        // 16-aligned, for the exception in it.
+        let at = self
+            .b
+            .aligned_alloca(Type::Array(frame.words, Box::new(Type::I64)), 16);
         let saved = self.b.load(Type::Ptr, &stack);
         self.b.store(Type::I32, Value::Int(h.0 as i64), &at);
         self.b.store_at(Type::Ptr, &saved, &at, 8);
@@ -1110,32 +1113,23 @@ impl<'m> Lower<'m> {
             self.b.store_at(t, v, &at, o);
         }
         self.b.store(Type::Ptr, &at, &stack);
-        let aborted = match frame.jmp {
-            Some(jmp) => {
-                // A clause that discontinued may have changed the site.
-                let site = (self.handlers.discontinues())
-                    .then(|| self.b.load(Type::Ptr, handlers::site_global()));
-                let buf = self.b.offset(&at, jmp);
-                let call = Call::c(
-                    Type::I32,
-                    Value::global("_setjmp"),
-                    vec![Type::Ptr.val(buf)],
-                );
-                let r = self.b.call_value(call);
-                let (run, aborted) = (self.b.new_block(), self.b.new_block());
-                let first = self.b.icmp(IntPred::Eq, Type::I32, r, 0);
-                self.b.cond_br(first, &run, &aborted);
-                self.b.start(&run);
-                Some((aborted, site))
-            }
-            None => None,
-        };
+        let aborted = frame.exception.map(|exn| {
+            self.b.personality(Value::global(handlers::PERSONALITY));
+            // A clause that discontinued may have changed the site.
+            let site = (self.handlers.discontinues())
+                .then(|| self.b.load(Type::Ptr, handlers::site_global()));
+            (self.b.new_block(), exn, site)
+        });
         let Ty::Fn(sig, _) = self.atom_ty(&body[0]) else {
             return Err(format!("the body of handle {h} isn't a closure"));
         };
         let gives = ret_ty(&sig.results)?;
         let (fp, all) = self.apply_args(body)?;
-        let r = self.b.call(Call::tailcc(gives.clone(), fp, all));
+        let call = Call::tailcc(gives.clone(), fp, all);
+        let r = match &aborted {
+            Some((pad, ..)) => self.b.invoke(call, pad),
+            None => self.b.call(call),
+        };
         self.b.store(Type::Ptr, &saved, &stack);
         let ret_f =
             (m.funcs.get(&decl.ret)).ok_or_else(|| format!("unknown clause {}", decl.ret))?;
@@ -1151,13 +1145,22 @@ impl<'m> Lower<'m> {
         }
         let ret = ret_ty(&ret_f.results)?;
         self.bind_results(Call::tailcc(ret, symbol(decl.ret), rargs), binds)?;
-        let Some((aborted, site)) = aborted else {
+        let Some((pad, exn, site)) = aborted else {
             return Ok(());
         };
-        let done = self.b.new_block();
+        let (done, mine, other) = (self.b.new_block(), self.b.new_block(), self.b.new_block());
         self.b.br(&done);
-        // A clause aborted to this frame, and left the results in it.
-        self.b.start(&aborted);
+        // A clause aborted, to this frame if the exception is its own.
+        self.b.start(&pad);
+        let landed = self.b.landing_pad();
+        let thrown = self.b.extract_value(ir::landing_pad_ty(), &landed, 0);
+        let own = self.b.offset(&at, exn);
+        let is_mine = self.b.icmp(IntPred::Eq, Type::Ptr, thrown, own);
+        self.b.cond_br(is_mine, &mine, &other);
+        self.b.start(&other);
+        self.b.resume(landed);
+        // It left the results in the frame.
+        self.b.start(&mine);
         self.b.store(Type::Ptr, &saved, &stack);
         if let Some(site) = site {
             self.b.store(Type::Ptr, site, handlers::site_global());

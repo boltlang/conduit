@@ -1,0 +1,62 @@
+// Rare exceptions: `effects_exceptions`, but raising once every 1024
+// rounds, as code that installs a handler for errors mostly does. What
+// counts is what a `handle` costs when nothing aborts to it: the Wasm
+// backend lowers it with Wasm's exceptions, and native code with LLVM's,
+// which cost little until something throws.
+
+effect Raise {
+  () -> (i32)
+}
+
+handler catch for Raise env() ops(caught) ret pass
+
+fn caught(%k: cont(i32) -> (i32)) -> (i32) {
+  jump ret(-1i32)
+}
+
+fn pass(%r: i32) -> (i32) {
+  jump ret(%r)
+}
+
+// i + d, after d calls, unless i is a multiple of 1024, which raises.
+fn dig(%i: i32, %d: i32) -> (i32) does Raise {
+  case %d {
+    0 =>
+      let %m: i32 = rem.u(%i, 1024i32)
+      case %m {
+        0 =>
+          let %x: i32 = perform Raise.0()
+          jump ret(%x)
+        _ => jump ret(%i)
+      }
+    _ =>
+      let %d1: i32 = sub(%d, 1i32)
+      let %r: i32 = call dig(%i, %d1)
+      let %r1: i32 = add(%r, 1i32)
+      jump ret(%r1)
+  }
+}
+
+fn try_one(%i: i32) -> (i32) {
+  let %body: imm fn() -> (i32) does Raise = closure dig(%i, 4i32)
+  let %r: i32 = handle catch(%body)
+  jump ret(%r)
+}
+
+fn sum_tries(%n: i32) -> (i32) {
+  join rec next(%i: i32, %acc: i32) =
+    let %more: i32 = lt.s(%i, %n)
+    case %more {
+      0 => jump ret(%acc)
+      _ =>
+        let %r: i32 = call try_one(%i)
+        let %acc1: i32 = add(%acc, %r)
+        let %i1: i32 = add(%i, 1i32)
+        jump next(%i1, %acc1)
+    }
+  in jump next(0i32, 0i32)
+}
+
+//# run sum_tries(10i32) == 80i32
+//# run sum_tries(100000i32) == 700515142i32
+//# bench

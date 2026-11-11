@@ -194,9 +194,12 @@ impl Call {
 /// local it defines.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Inst {
+    /// With `align`, the alignment in bytes the slot has; without, the
+    /// type's own.
     Alloca {
         dest: String,
         ty: Type,
+        align: Option<u32>,
     },
     /// With `align`, the alignment in bytes the address is known to have;
     /// without, the type's own.
@@ -269,11 +272,31 @@ pub enum Inst {
         elem: Typed,
         index: u32,
     },
+    /// The first instruction of a block an `invoke` unwinds to, as a
+    /// cleanup: a `{ ptr, i32 }` of the exception and its selector.
+    LandingPad {
+        dest: String,
+    },
+}
+
+/// What a landing pad gives.
+pub fn landing_pad_ty() -> Type {
+    Type::Struct(vec![Type::Ptr, Type::I32])
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Terminator {
     Ret(Option<Typed>),
+    /// A call that goes on at `normal`, or, if it unwinds, at `unwind`,
+    /// which starts with a landing pad.
+    Invoke {
+        dest: Option<String>,
+        call: Call,
+        normal: Label,
+        unwind: Label,
+    },
+    /// Goes on unwinding with what a landing pad gave.
+    Resume(Value),
     Br(Label),
     CondBr {
         cond: Value,
@@ -305,6 +328,8 @@ pub struct Function {
     pub blocks: Vec<Block>,
     /// Its attributes, like `cold`.
     pub attrs: Vec<&'static str>,
+    /// Its personality function, if it has landing pads.
+    pub personality: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -421,6 +446,7 @@ impl FnBuilder {
                 params,
                 blocks: Vec::new(),
                 attrs: Vec::new(),
+                personality: None,
             },
             allocas: Vec::new(),
             current: Some((Label("entry".into()), Vec::new())),
@@ -442,6 +468,11 @@ impl FnBuilder {
     /// Gives the function an attribute, like `cold`.
     pub fn attr(&mut self, attr: &'static str) {
         self.func.attrs.push(attr);
+    }
+
+    /// Gives the function a personality, which its landing pads need.
+    pub fn personality(&mut self, f: impl Into<Value>) {
+        self.func.personality = Some(f.into());
     }
 
     pub fn finish(mut self) -> Function {
@@ -510,6 +541,19 @@ impl FnBuilder {
         self.allocas.push(Inst::Alloca {
             dest: dest.clone(),
             ty,
+            align: None,
+        });
+        Value::Local(dest)
+    }
+
+    /// A slot for a value of type `ty` aligned to `align` bytes, in the
+    /// entry block.
+    pub fn aligned_alloca(&mut self, ty: Type, align: u32) -> Value {
+        let dest = self.temp();
+        self.allocas.push(Inst::Alloca {
+            dest: dest.clone(),
+            ty,
+            align: Some(align),
         });
         Value::Local(dest)
     }
@@ -679,6 +723,32 @@ impl FnBuilder {
                 call,
             }))
         }
+    }
+
+    /// Invokes `call`, which goes on in a new block, the current one
+    /// after, or unwinds to `unwind`, and gives what the call gives,
+    /// unless it gives `void`.
+    pub fn invoke(&mut self, call: Call, unwind: &Label) -> Option<Value> {
+        let dest = (call.ret != Type::Void).then(|| self.temp());
+        let normal = self.new_block();
+        self.terminate(Terminator::Invoke {
+            dest: dest.clone(),
+            call,
+            normal: normal.clone(),
+            unwind: unwind.clone(),
+        });
+        self.start(&normal);
+        dest.map(Value::Local)
+    }
+
+    /// A cleanup landing pad, the first instruction of a block an
+    /// `invoke` unwinds to.
+    pub fn landing_pad(&mut self) -> Value {
+        self.def(|dest| Inst::LandingPad { dest })
+    }
+
+    pub fn resume(&mut self, landed: impl Into<Value>) {
+        self.terminate(Terminator::Resume(landed.into()));
     }
 
     /// A call that gives a value, and the value.
@@ -917,7 +987,10 @@ impl Display for Call {
 impl Display for Inst {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
-            Inst::Alloca { dest, ty } => write!(f, "%{dest} = alloca {ty}"),
+            Inst::Alloca { dest, ty, align } => {
+                write!(f, "%{dest} = alloca {ty}")?;
+                align.map_or(Ok(()), |a| write!(f, ", align {a}"))
+            }
             Inst::Load {
                 dest,
                 ty,
@@ -990,6 +1063,9 @@ impl Display for Inst {
                 elem,
                 index,
             } => write!(f, "%{dest} = insertvalue {agg}, {elem}, {index}"),
+            Inst::LandingPad { dest } => {
+                write!(f, "%{dest} = landingpad {} cleanup", landing_pad_ty())
+            }
         }
     }
 }
@@ -999,6 +1075,22 @@ impl Display for Terminator {
         match self {
             Terminator::Ret(None) => f.write_str("ret void"),
             Terminator::Ret(Some(v)) => write!(f, "ret {v}"),
+            Terminator::Invoke {
+                dest,
+                call,
+                normal,
+                unwind,
+            } => {
+                if let Some(dest) = dest {
+                    write!(f, "%{dest} = ")?;
+                }
+                // A call, but `invoke`, and never `tail`.
+                let call = call.to_string();
+                let call = call.strip_prefix("tail ").unwrap_or(&call);
+                let rest = call.strip_prefix("call").expect("a call");
+                write!(f, "invoke{rest} to {normal} unwind {unwind}")
+            }
+            Terminator::Resume(v) => write!(f, "resume {} {v}", landing_pad_ty()),
             Terminator::Br(to) => write!(f, "br {to}"),
             Terminator::CondBr { cond, then, other } => {
                 write!(f, "br i1 {cond}, {then}, {other}")
@@ -1041,6 +1133,9 @@ impl Display for Function {
         f.write_str(")")?;
         for a in &self.attrs {
             write!(f, " {a}")?;
+        }
+        if let Some(p) = &self.personality {
+            write!(f, " personality ptr {p}")?;
         }
         writeln!(f, " {{")?;
         for b in &self.blocks {
