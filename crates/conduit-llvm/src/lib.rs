@@ -3,9 +3,10 @@
 //! An experiment, and a first step towards a native backend: it handles
 //! functions, calls, join points, `case`, the integer and float ops,
 //! objects (data, arrays, refs, `any`, closures), constants, host values
-//! and functions, and freeing by reference counting, and says what it
-//! doesn't handle yet: handlers, which lowering effects removes first.
-//! See `docs/llvm.md`.
+//! and functions, freeing by reference counting, and handlers whose
+//! clauses are tail-resumptive or aborting (see `handlers`), and says what
+//! it doesn't handle yet: other handlers, which lowering effects removes
+//! first. See `docs/llvm.md`.
 //!
 //! The lowering builds an [`ir::Module`], which printing makes text.
 //!
@@ -36,6 +37,7 @@
 //!   accesses out of bounds trap.
 
 mod counts;
+mod handlers;
 mod heap;
 pub mod ir;
 pub mod native;
@@ -404,12 +406,8 @@ pub fn emit_module_with(m: &Module, options: &Options) -> Result<String, Error> 
 /// `#[link(c, symbol = "..")]`.
 pub fn lower_module_with(m: &Module, options: &Options) -> Result<ir::Module, Error> {
     let err = |func: Option<FuncId>, message: String| Error { func, message };
-    if !m.handlers.is_empty() {
-        return Err(err(
-            None,
-            "handlers aren't supported yet: lower effects first".into(),
-        ));
-    }
+    let (m, hs) = handlers::plain_clauses(m).map_err(|message| err(None, message))?;
+    let m = &*m;
     let mut out = ir::Module::default();
     out.push(Item::Comment(
         "Lowered from Conduit IR by conduit-llvm.".into(),
@@ -495,9 +493,11 @@ pub fn lower_module_with(m: &Module, options: &Options) -> Result<ir::Module, Er
             vec![Type::Ptr, Type::Ptr],
         ));
     }
+    out.items
+        .extend((hs.items(m, options.counts)).map_err(|message| err(None, message))?);
     let mut kinds = BTreeSet::new();
     for (&id, f) in &m.funcs {
-        let lowered = Lower::new(m, id, f, options, &callbacks).and_then(Lower::func);
+        let lowered = Lower::new(m, id, f, options, &callbacks, &hs).and_then(Lower::func);
         let (func, fn_entries, fn_kinds) = lowered.map_err(|message| err(Some(id), message))?;
         out.push(func);
         entries.extend(fn_entries);
@@ -523,7 +523,7 @@ pub fn lower_module_with(m: &Module, options: &Options) -> Result<ir::Module, Er
     // What the host calls the closures of `host_function` through, and
     // lets go of them with.
     for (k, (params, results)) in callbacks.iter().enumerate() {
-        let tramp = trampoline(k, params, results, options.counts);
+        let tramp = trampoline(k, params, results, options.counts, !m.effects.is_empty());
         out.push(tramp.map_err(|message| err(None, message))?);
     }
     if !callbacks.is_empty() {
@@ -553,16 +553,30 @@ pub fn lower_module_with(m: &Module, options: &Options) -> Result<ir::Module, Er
             continue;
         };
         let f = &m.funcs[&id];
-        let wrapper = export_fn(f, id, symbol, options.counts);
+        let wrapper = export_fn(f, id, symbol, options.counts, !m.effects.is_empty());
         out.push(wrapper.map_err(|message| err(Some(id), message))?);
     }
     Ok(out)
 }
 
 /// The C function `symbol` that calls function `id`, `f`, as an export.
-fn export_fn(f: &Func, id: FuncId, symbol: &str, counts: bool) -> Result<ir::Function, String> {
+fn export_fn(
+    f: &Func,
+    id: FuncId,
+    symbol: &str,
+    counts: bool,
+    handlers: bool,
+) -> Result<ir::Function, String> {
     let call = |_: &mut FnBuilder, ret: Type, args| Call::tailcc(ret, self::symbol(id), args);
-    c_entry(symbol, 0, &f.sig().params, &f.results, counts, call)
+    c_entry(
+        symbol,
+        0,
+        &f.sig().params,
+        &f.results,
+        counts,
+        handlers,
+        call,
+    )
 }
 
 /// What `host_function` gives the host for a closure that takes `params`
@@ -575,6 +589,7 @@ fn trampoline(
     params: &[Ty],
     results: &[Ty],
     counts: bool,
+    handlers: bool,
 ) -> Result<ir::Function, String> {
     let call = |b: &mut FnBuilder, ret: Type, args: Vec<Typed>| {
         let c = args[0].1.clone();
@@ -584,7 +599,15 @@ fn trampoline(
         let entry = b.load_at(Type::Ptr, &c, 8);
         Call::tailcc(ret, entry, args)
     };
-    c_entry(&trampoline_name(k), 1, params, results, counts, call)
+    c_entry(
+        &trampoline_name(k),
+        1,
+        params,
+        results,
+        counts,
+        handlers,
+        call,
+    )
 }
 
 /// The `k`th trampoline of `host_function`.
@@ -612,13 +635,15 @@ fn release_fn(counts: bool) -> ir::Function {
 /// [`host_pair`], whose reference the caller gives Conduit, and goes in a
 /// box; one going out is retained for the caller, and its box dropped.
 /// `call` makes the call, of what returns `Type`, with the arguments as
-/// Conduit has them.
+/// Conduit has them. With `handlers`, it saves the handler stack, runs
+/// with none, and puts it back.
 fn c_entry(
     name: &str,
     lead: usize,
     tys: &[Ty],
     results: &[Ty],
     counts: bool,
+    handlers: bool,
     call: impl FnOnce(&mut FnBuilder, Type, Vec<Typed>) -> Call,
 ) -> Result<ir::Function, String> {
     let mut params: Vec<(Type, String)> = (0..lead).map(|i| (Type::Ptr, format!("c{i}"))).collect();
@@ -650,18 +675,30 @@ fn c_entry(
             k += 1;
         }
     }
+    // It runs with no handlers, the host's caller's being out of reach,
+    // and puts theirs back after.
+    let stack = handlers::handlers_global();
+    let saved = handlers.then(|| {
+        let saved = b.load(Type::Ptr, &stack);
+        b.store(Type::Ptr, Value::Null, &stack);
+        saved
+    });
     let call = call(&mut b, inner.clone(), args);
-    if results.len() <= 1 && !results.iter().any(Ty::is_host) {
+    if saved.is_none() && results.len() <= 1 && !results.iter().any(Ty::is_host) {
         b.return_call(call);
         return Ok(b.finish());
     }
-    let r = b.call_value(call);
+    let r = b.call(call);
+    if let Some(saved) = saved {
+        b.store(Type::Ptr, saved, &stack);
+    }
     let mut gave = Vec::with_capacity(results.len());
     for (i, t) in results.iter().enumerate() {
+        let r = r.clone().expect("a call with results");
         let v = if results.len() == 1 {
-            r.clone()
+            r
         } else {
-            b.extract_value(inner.clone(), &r, i as u32)
+            b.extract_value(inner.clone(), r, i as u32)
         };
         gave.push(if t.is_host() {
             host_give(&mut b, counts, v, *t == Ty::NullableHost)
@@ -885,6 +922,7 @@ struct Lower<'m> {
     /// The signatures of closures given to `host_function`, by the number
     /// of their trampoline: see [`callback_sigs`].
     callbacks: &'m [(Vec<Ty>, Vec<Ty>)],
+    handlers: &'m handlers::Handlers,
     /// Whether to count, and the kinds of what it drops.
     counts: bool,
     cycles: bool,
@@ -898,6 +936,7 @@ impl<'m> Lower<'m> {
         f: &'m Func,
         options: &Options,
         callbacks: &'m [(Vec<Ty>, Vec<Ty>)],
+        handlers: &'m handlers::Handlers,
     ) -> Result<Lower<'m>, String> {
         let params = (f.params.iter())
             .map(|v| Ok((ty(f.var_ty(*v))?, format!("a{}", v.0))))
@@ -924,6 +963,7 @@ impl<'m> Lower<'m> {
             vars,
             entries: BTreeSet::new(),
             callbacks,
+            handlers,
             counts: options.counts,
             cycles: options.counts && options.cycles,
             kinds: BTreeSet::new(),
@@ -1044,6 +1084,155 @@ impl<'m> Lower<'m> {
         }
     }
 
+    /// `handle h(env.., body)`: pushes a frame of `h`, applies the body,
+    /// pops the frame and calls the return clause with the environment
+    /// and the body's results. If `h` has an aborting clause, the frame
+    /// has a buffer for `_setjmp`, which returns again when a clause
+    /// aborts to it, and the results are then the frame's. See `handlers`.
+    fn handle(
+        &mut self,
+        h: conduit_ir::HandlerId,
+        args: &[Atom],
+        binds: &[Var],
+    ) -> Result<(), String> {
+        let m = self.m;
+        let decl = &m.handlers[&h];
+        let frame = self.handlers.frame(m, h)?;
+        let (env, body) = args.split_at(args.len() - 1);
+        let stack = handlers::handlers_global();
+        let at = self.b.alloca(Type::Array(frame.words, Box::new(Type::I64)));
+        let saved = self.b.load(Type::Ptr, &stack);
+        self.b.store(Type::I32, Value::Int(h.0 as i64), &at);
+        self.b.store_at(Type::Ptr, &saved, &at, 8);
+        for (a, &o) in env.iter().zip(&frame.env) {
+            let t = ty(&self.atom_ty(a))?;
+            let v = self.value(a)?;
+            self.b.store_at(t, v, &at, o);
+        }
+        self.b.store(Type::Ptr, &at, &stack);
+        let aborted = match frame.jmp {
+            Some(jmp) => {
+                // A clause that discontinued may have changed the site.
+                let site = (self.handlers.discontinues())
+                    .then(|| self.b.load(Type::Ptr, handlers::site_global()));
+                let buf = self.b.offset(&at, jmp);
+                let call = Call::c(
+                    Type::I32,
+                    Value::global("_setjmp"),
+                    vec![Type::Ptr.val(buf)],
+                );
+                let r = self.b.call_value(call);
+                let (run, aborted) = (self.b.new_block(), self.b.new_block());
+                let first = self.b.icmp(IntPred::Eq, Type::I32, r, 0);
+                self.b.cond_br(first, &run, &aborted);
+                self.b.start(&run);
+                Some((aborted, site))
+            }
+            None => None,
+        };
+        let Ty::Fn(sig, _) = self.atom_ty(&body[0]) else {
+            return Err(format!("the body of handle {h} isn't a closure"));
+        };
+        let gives = ret_ty(&sig.results)?;
+        let (fp, all) = self.apply_args(body)?;
+        let r = self.b.call(Call::tailcc(gives.clone(), fp, all));
+        self.b.store(Type::Ptr, &saved, &stack);
+        let ret_f =
+            (m.funcs.get(&decl.ret)).ok_or_else(|| format!("unknown clause {}", decl.ret))?;
+        let mut rargs = self.args(env)?;
+        for (j, t) in sig.results.iter().enumerate() {
+            let r = r.clone().expect("a call with results");
+            let v = if sig.results.len() == 1 {
+                r
+            } else {
+                self.b.extract_value(gives.clone(), r, j as u32)
+            };
+            rargs.push(ty(t)?.val(v));
+        }
+        let ret = ret_ty(&ret_f.results)?;
+        self.bind_results(Call::tailcc(ret, symbol(decl.ret), rargs), binds)?;
+        let Some((aborted, site)) = aborted else {
+            return Ok(());
+        };
+        let done = self.b.new_block();
+        self.b.br(&done);
+        // A clause aborted to this frame, and left the results in it.
+        self.b.start(&aborted);
+        self.b.store(Type::Ptr, &saved, &stack);
+        if let Some(site) = site {
+            self.b.store(Type::Ptr, site, handlers::site_global());
+        }
+        for (&v, &o) in binds.iter().zip(&frame.results) {
+            let t = ty(self.f.var_ty(v))?;
+            let x = self.b.load_at(t, &at, o);
+            self.store(v, x)?;
+        }
+        self.b.br(&done);
+        self.b.start(&done);
+        Ok(())
+    }
+
+    /// `perform e.i(args)`: finds the nearest frame of a handler with a
+    /// clause for it, trapping if there's none, and calls the clause's
+    /// wrapper with the frames below it as the handlers, then puts them
+    /// back. See `handlers`.
+    fn perform(
+        &mut self,
+        e: conduit_ir::EffectId,
+        i: u32,
+        args: &[Atom],
+        binds: &[Var],
+    ) -> Result<(), String> {
+        let m = self.m;
+        let op = &m.effects[&e].ops[i as usize];
+        let ret = ret_ty(&op.results)?;
+        let args = self.args(args)?;
+        let stack = handlers::handlers_global();
+        let saved = self.b.load(Type::Ptr, &stack);
+        let at = self.b.alloca(Type::Ptr);
+        self.b.store(Type::Ptr, &saved, &at);
+        let (look, next, done) = (self.b.new_block(), self.b.new_block(), self.b.new_block());
+        self.b.br(&look);
+        self.b.start(&look);
+        let found = self.b.load(Type::Ptr, &at);
+        // No frame left: nothing handles it.
+        let none = self.b.icmp(IntPred::Eq, Type::Ptr, &found, Value::Null);
+        self.trap_if(none);
+        let number = self.b.load(Type::I32, &found);
+        let hs = handlers::handlers_of(m, e, i);
+        let blocks: Vec<ir::Label> = hs.iter().map(|_| self.b.new_block()).collect();
+        let cases = (hs.iter().zip(&blocks))
+            .map(|((h, _), l)| (h.0 as i64, l.clone()))
+            .collect();
+        self.b.switch(Type::I32.val(number), &next, cases);
+        self.b.start(&next);
+        let below = self.b.load_at(Type::Ptr, &found, 8);
+        self.b.store(Type::Ptr, below, &at);
+        self.b.br(&look);
+        for (&(h, slot), block) in hs.iter().zip(&blocks) {
+            self.b.start(block);
+            let below = self.b.load_at(Type::Ptr, &found, 8);
+            self.b.store(Type::Ptr, below, &stack);
+            // The clause can discontinue under this `perform`'s handlers.
+            let site = (self.handlers.discontinues()).then(|| {
+                let old = self.b.load(Type::Ptr, handlers::site_global());
+                self.b.store(Type::Ptr, &saved, handlers::site_global());
+                old
+            });
+            let mut all = vec![Type::Ptr.val(&found)];
+            all.extend(args.iter().cloned());
+            let wrapper = Value::global(handlers::wrapper_name(h, slot));
+            self.bind_results(Call::tailcc(ret.clone(), wrapper, all), binds)?;
+            self.b.store(Type::Ptr, &saved, &stack);
+            if let Some(old) = site {
+                self.b.store(Type::Ptr, old, handlers::site_global());
+            }
+            self.b.br(&done);
+        }
+        self.b.start(&done);
+        Ok(())
+    }
+
     /// The type of the array `a`'s elements.
     fn elem(&self, a: &Ty) -> Result<Ty, String> {
         match a {
@@ -1096,6 +1285,16 @@ impl<'m> Lower<'m> {
                 self.bind_results(Call::tailcc(ret, symbol(*g), args), binds)?;
             }
             Op::CallExtern(e) => self.call_extern(*e, args, binds)?,
+            Op::Handle(h, _) => self.handle(*h, args, binds)?,
+            Op::Perform(e, i) => self.perform(*e, *i, args, binds)?,
+            // In a tail-resumptive clause, without its continuation: the
+            // `perform` it handles performs this instead, under its
+            // handlers.
+            Op::Discontinue(e, i) => {
+                let site = self.b.load(Type::Ptr, handlers::site_global());
+                self.b.store(Type::Ptr, site, handlers::handlers_global());
+                self.perform(*e, *i, args, binds)?;
+            }
             Op::Closure(f, ..) => {
                 let tys: Vec<Ty> = args.iter().map(|a| self.atom_ty(a)).collect();
                 let (offsets, total) = closure_layout(&tys);

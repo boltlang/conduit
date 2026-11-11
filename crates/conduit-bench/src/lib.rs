@@ -27,8 +27,8 @@ pub enum Backend {
     /// Wasm, in Wasmtime, with handlers that need it lowered with stack
     /// switching instead. Only for a program that has such handlers.
     WasmSwitch,
-    /// Native code, from the LLVM backend, compiled with `clang`, which
-    /// lowers every handler by evidence passing.
+    /// Native code, from the LLVM backend, compiled with `clang`, with
+    /// handlers that need it lowered by evidence passing, as for Wasm.
     Native,
 }
 
@@ -50,22 +50,18 @@ impl Backend {
     }
 }
 
-/// A program's module as `backend` starts from: [`prepare`]d for Wasm;
-/// optimized, with its handlers kept, for Wasm with stack switching; and
-/// with its effects lowered, however direct its handlers, for native code,
-/// which has no handlers of its own.
+/// A program's module as `backend` starts from: [`prepare`]d for Wasm
+/// and native code, which lower tail-resumptive and aborting handlers
+/// themselves; and optimized, with its handlers kept, for Wasm with stack
+/// switching.
 pub fn prepare_for(mut m: Module, backend: Backend) -> Result<Module, String> {
     match backend {
-        Backend::Wasm => return prepare(m),
-        Backend::WasmSwitch => {}
-        Backend::Native => {
-            if !m.handlers.is_empty() || !m.effects.is_empty() {
-                conduit_effects::lower_effects(&mut m)?;
-            }
+        Backend::Wasm | Backend::Native => prepare(m),
+        Backend::WasmSwitch => {
+            conduit_opt::optimize_module(&mut m);
+            Ok(m)
         }
     }
-    conduit_opt::optimize_module(&mut m);
-    Ok(m)
 }
 
 /// A way of compiling a module's memory management, after the optimizer:

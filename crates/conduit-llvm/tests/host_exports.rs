@@ -203,6 +203,96 @@ fn host_functions() {
     run("host_functions", CALLBACKS, CALLBACKS_MAIN);
 }
 
+/// An export that the host calls from inside an extern, while a handler
+/// of another export is active: it aborts to its own handler, and the
+/// handler outside it still answers once it's back, every time.
+#[test]
+fn handlers_through_the_host() {
+    run("handlers_through_the_host", HANDLERS, HANDLERS_MAIN);
+}
+
+const HANDLERS: &str = r#"
+effect Fail {
+  () -> ()
+}
+
+effect Ask {
+  () -> (i32)
+}
+
+handler caught for Fail env() ops(fail) ret done
+handler answer for Ask env() ops(ask) ret done
+
+fn fail(%k: cont() -> (i32)) -> (i32) {
+  jump ret(-1i32)
+}
+
+fn ask(%k: cont(i32) -> (i32)) -> (i32) {
+  let %r: i32 = resume(%k, 10i32)
+  jump ret(%r)
+}
+
+fn done(%r: i32) -> (i32) {
+  jump ret(%r)
+}
+
+#[link(c, symbol = "call_inner")]
+extern call_inner(i32) -> (i32)
+
+fn inner_body() -> (i32) does Fail {
+  let = perform Fail.0()
+  jump ret(0i32)
+}
+
+#[export(c, symbol = "inner")]
+fn inner(%n: i32) -> (i32) {
+  let %b: imm fn() -> (i32) does Fail = closure inner_body()
+  let %r: i32 = handle caught(%b)
+  let %s: i32 = add(%r, %n)
+  jump ret(%s)
+}
+
+fn outer_body(%n: i32) -> (i32) does Ask {
+  let %a: i32 = call_extern call_inner(%n)
+  let %b: i32 = perform Ask.0()
+  let %s: i32 = add(%a, %b)
+  jump ret(%s)
+}
+
+#[export(c, symbol = "outer")]
+fn outer(%n: i32) -> (i32) {
+  let %b: imm fn() -> (i32) does Ask = closure outer_body(%n)
+  let %r: i32 = handle answer(%b)
+  jump ret(%r)
+}
+"#;
+
+const HANDLERS_MAIN: &str = r#"
+#include <stdint.h>
+#include <stdio.h>
+
+extern int64_t conduit_live;
+int32_t inner(int32_t n);
+int32_t outer(int32_t n);
+
+int32_t call_inner(int32_t n) { return inner(n); }
+
+int main(void) {
+  for (int i = 0; i < 100000; i++) {
+    int32_t r = outer(5);
+    if (r != 14) {
+      printf("outer(5) gave %d, not 14\n", r);
+      return 1;
+    }
+  }
+  if (conduit_live != 0) {
+    printf("%lld objects left live\n", (long long)conduit_live);
+    return 1;
+  }
+  return 0;
+}
+"#;
+
 /// Compiles `module`, with counts, and `main`, a C program, together, and
 /// runs it, which must succeed. Does nothing but say so if `clang` isn't
 /// installed.

@@ -1,7 +1,7 @@
 // A state handler, whose clauses are tail-resumptive, around a recursive
 // function that gets and puts the state each round: the cost of a
-// `perform` that's a call of its clause, through the Wasm backend's
-// handler frames, or evidence passing natively. The function calls
+// `perform` that's a call of its clause, through the handler frames of
+// the Wasm backend and of native code. The function calls
 // itself, so the handler can't be run directly, and each `perform` stays.
 
 effect State {

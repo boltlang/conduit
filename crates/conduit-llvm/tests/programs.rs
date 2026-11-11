@@ -1,14 +1,17 @@
 //! Compiles each test program that only uses what conduit-llvm handles,
 //! with `clang`, and runs its `run` checks as a native program: as written
-//! and after the optimizer, or, for a program with handlers, after lowering
-//! its effects, and then after the optimizer. `conduit_llvm::native`'s
+//! and after the optimizer, or, for a program with handlers that aren't all
+//! tail-resumptive or aborting, after lowering its effects, and then after
+//! the optimizer. `conduit_llvm::native`'s
 //! `main` picks the check by its number, calls the function, and prints
 //! the bits of each result. A trap is a signal. Skipped, with a note, when
 //! `clang` isn't installed.
 //!
 //! Each is also run with counts, and then with cycles collected too: each
 //! run must then leave as many objects live as the evaluator's run does,
-//! counting the same way, with cycles collected at the end when they are.
+//! counting the same way, with cycles collected at the end when they are,
+//! not counting its continuations, which native code doesn't make for the
+//! handlers it lowers itself.
 
 use std::os::unix::process::ExitStatusExt;
 use std::path::PathBuf;
@@ -30,10 +33,10 @@ fn applies(p: &Program) -> bool {
             .is_ok_and(|m| conduit_llvm::emit_module(&without_handlers(m)).is_ok())
 }
 
-/// The module, with its effects lowered if it has handlers, which this
-/// backend leaves to evidence passing.
+/// The module, with its effects lowered if it has handlers that need
+/// evidence passing, which this backend leaves to it.
 fn without_handlers(mut m: Module) -> Module {
-    if !m.handlers.is_empty() || !m.effects.is_empty() {
+    if !conduit_ir::clause::direct_handlers(&m) {
         // A module it can't lower is reported by the effects' own tests.
         let _ = conduit_effects::lower_effects(&mut m);
     }
@@ -185,7 +188,10 @@ fn evaluator_live(m: &Module, run: &Run<'_>, cycles: bool) -> Result<(i64, i64),
         machine.collect_cycles();
     }
     let live: Vec<_> = (machine.objects())
-        .filter(|(id, _)| matches!(machine.count(*id), Some(conduit_eval::Count::Live(_))))
+        .filter(|(id, o)| {
+            matches!(machine.count(*id), Some(conduit_eval::Count::Live(_)))
+                && !matches!(o, conduit_eval::Object::Cont(_))
+        })
         .collect();
     let hosts = (live.iter())
         .filter(|(_, o)| matches!(o, conduit_eval::Object::Host(_)))

@@ -5,8 +5,9 @@ compile, with no LLVM library to link: a first step towards a native
 backend, to find the shape of the lowering before moving to the LLVM API
 (inkwell, for LLVM 23). The lowering builds a small model of LLVM IR, in
 `conduit_llvm::ir`, which printing makes text. It handles everything but
-handlers, which lowering effects removes first, and says so for what it
-doesn't handle. With `Options::counts`, memory is
+handlers that capture their continuations, which lowering effects
+removes first, and says so for what it doesn't handle. With
+`Options::counts`, memory is
 freed by reference counting, and with `Options::cycles`, cycles are
 collected too.
 
@@ -187,11 +188,46 @@ gets an adapter's closure, as in Wasm. A cycle through Conduit and the
 host, like a callback that captures what holds it, leaks, as it does in
 JavaScript.
 
+## Handlers
+
+Handlers whose clauses are all tail-resumptive or aborting (see
+`conduit_ir::clause`) are lowered without capturing a continuation, as
+in the Wasm backend, but with `_setjmp` and `_longjmp` for aborts instead
+of exceptions (see `crates/conduit-llvm/src/handlers.rs`):
+
+- `@conduit_handlers` holds a stack of handler frames. A frame is an
+  `alloca` in the function that runs the `handle`: its handler's number,
+  the next frame, the handler's environment, then, for a handler with an
+  aborting clause, its results and a 512-byte buffer for `_setjmp`.
+- `handle` pushes a frame, applies the body, pops it, and calls the
+  return clause.
+- `perform` walks the stack to the nearest frame of a handler with a
+  clause for it, trapping if there's none, and calls that clause's
+  wrapper, `conduit_clause.<handler>.<slot>`, directly, under the frames
+  below, so that what the clause performs goes to the handlers outside.
+  The wrapper reads the environment out of the frame, with a reference of
+  its own for the clause when counting, and calls the clause as a plain
+  function.
+- An aborting clause's wrapper stores the clause's results in the frame
+  and `_longjmp`s to it, so the `handle`'s `_setjmp` returns again, and
+  the `handle` gives the frame's results.
+- A tail-resumptive clause that discontinues performs under the handlers
+  of the `perform` it handles, which `@conduit_site` holds.
+- An export, or a trampoline of `host_function`, runs with no handlers,
+  and puts its caller's back when it returns.
+
+As with Wasm's exceptions, an abort doesn't drop what the frames it skips
+own, nor the handler's environment, which leak; the evaluator, which
+drops the continuation, doesn't free what that held either. A `handle`
+of a handler with an aborting clause costs a `_setjmp`, even when nothing
+aborts: #55 is about LLVM's own exception handling, which wouldn't.
+
 Not yet:
 
-- **Handlers:** lower effects first. Evidence passing gives ordinary
-  data, closures and `any`s, which this backend handles, so the rest of
-  the pipeline is the same as for Wasm without stack switching.
+- **Other handlers:** lower effects first. Evidence passing gives
+  ordinary data, closures and `any`s, which this backend handles, so the
+  rest of the pipeline is the same as for Wasm without stack switching.
+  Native stack switching is #46.
 
 ## How
 
@@ -211,7 +247,7 @@ Not yet:
 lower with `clang -O2`, built for C (see "Host functions" in
 [tests/programs/README.md](../tests/programs/README.md)) and linked with
 the test host in `tests/programs/host/c.c`, as written and after the optimizer, after lowering
-its effects when it has any, each without counts, with them, and with
+its effects when its handlers need it, each without counts, with them, and with
 cycles collected too, and runs
 its
 `run` checks: a `main` of its own takes the check's number, calls the
@@ -220,7 +256,9 @@ function, and prints the bits of each result. A trap is a signal. Without
 
 With counts, each run must also leave as many objects live as the
 evaluator does, counting the same way: with cycles collected at the end,
-when they are, on the program built for the evaluator, and the C host
+when they are, on the program built for the evaluator, not counting its
+continuations, which native code doesn't make for the handlers it lowers
+itself, and the C host
 must hold as many host values as the evaluator has boxes of them. 123
 of the 148 test programs run this way: all that have `run` checks.
 `tests/host_exports.rs` calls exports that take and give host values from

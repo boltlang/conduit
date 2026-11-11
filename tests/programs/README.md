@@ -109,8 +109,8 @@ cargo run --release -p conduit-bench -- --backend wasm,wasm-switch,native
   need it lowered by evidence passing.
 - `wasm-switch`: Wasm with stack switching for those handlers, for a
   program that has some. Wasmtime runs it only on x86-64 Linux and macOS.
-- `native`: the LLVM backend, compiled with `clang`, which lowers every
-  handler by evidence passing. It has no fuel. Each timed call runs in a
+- `native`: the LLVM backend, compiled with `clang`, with handlers that
+  need it lowered by evidence passing, as for `wasm`. It has no fuel. Each timed call runs in a
   forked process, after a call that warms it up, pinned to one core on
   Linux (see `conduit_llvm::native::TIMER`). Without `clang`, it's
   skipped.
