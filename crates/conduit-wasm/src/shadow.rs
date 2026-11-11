@@ -9,14 +9,8 @@ use crate::{Cx, FnSig, HEADER, ShadowStack, Storage};
 
 /// The bodies of `grow` and `release`, in that order, with their types.
 pub(crate) fn bodies(cx: &mut Cx<'_>, stack: ShadowStack) -> Vec<(u32, Body)> {
-    let one = cx.sig(FnSig {
-        params: vec![ValType::I32],
-        results: Vec::new(),
-    });
-    let two = cx.sig(FnSig {
-        params: vec![ValType::I32, ValType::I32],
-        results: Vec::new(),
-    });
+    let one = cx.sig(FnSig::new([ValType::I32], []));
+    let two = cx.sig(FnSig::new([ValType::I32, ValType::I32], []));
     vec![(one, grow(cx, stack)), (two, release(stack))]
 }
 

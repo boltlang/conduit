@@ -91,19 +91,13 @@ impl Cx<'_> {
     pub fn op_cont(&mut self, h: HandlerId, i: u32) -> Result<u32, String> {
         let decl = &self.m.handlers[&h];
         let op = crate::op_at(self.m, decl, i);
-        let sig = FnSig {
-            params: op.results.iter().map(val).collect(),
-            results: self.body_results(h)?,
-        };
+        let sig = FnSig::new(op.results.iter().map(val), self.body_results(h)?);
         Ok(self.cont(sig))
     }
 
     /// The continuation of `h`'s trampoline, which runs a body's closure.
     pub fn start_cont(&mut self, h: HandlerId) -> Result<u32, String> {
-        let sig = FnSig {
-            params: vec![ValType::I32],
-            results: self.body_results(h)?,
-        };
+        let sig = FnSig::new([ValType::I32], self.body_results(h)?);
         Ok(self.cont(sig))
     }
 
@@ -232,10 +226,7 @@ impl Cx<'_> {
     /// The type of the function that discontinues a continuation that
     /// gives `results`: `(k, thunk) -> results`.
     pub fn disc_sig(&mut self, results: Vec<ValType>) -> u32 {
-        self.sig(FnSig {
-            params: vec![ValType::I32, ValType::I32],
-            results,
-        })
+        self.sig(FnSig::new([ValType::I32, ValType::I32], results))
     }
 }
 
@@ -243,10 +234,7 @@ impl Cx<'_> {
 /// runs in as a Wasm continuation: it applies the closure.
 pub(crate) fn lower_tramp(cx: &mut Cx<'_>, h: HandlerId) -> Result<Body, String> {
     let results = cx.body_results(h)?;
-    let entry = cx.sig(FnSig {
-        params: vec![ValType::I32],
-        results,
-    });
+    let entry = cx.sig(FnSig::new([ValType::I32], results));
     let code = vec![
         I::LocalGet(0),
         I::LocalGet(0),
@@ -328,10 +316,7 @@ pub(crate) fn lower_drive(cx: &mut Cx<'_>, h: HandlerId, start: Start) -> Result
         code.push(I::Block(BlockType::Result(ValType::Ref(RefType::EXNREF))));
     }
     let body_results = cx.body_results(h)?;
-    let ret_block = cx.sig(FnSig {
-        params: Vec::new(),
-        results: body_results.clone(),
-    });
+    let ret_block = cx.sig(FnSig::new([], body_results.clone()));
     code.push(I::Block(BlockType::FunctionType(ret_block)));
     let mut op_params = Vec::new();
     for i in 0..n {
@@ -341,10 +326,7 @@ pub(crate) fn lower_drive(cx: &mut Cx<'_>, h: HandlerId, start: Start) -> Result
     for i in (0..n).rev() {
         let mut results = op_params[i as usize].clone();
         results.push(nullable(cx.op_cont(h, i)?));
-        let ty = cx.sig(FnSig {
-            params: Vec::new(),
-            results,
-        });
+        let ty = cx.sig(FnSig::new([], results));
         code.push(I::Block(BlockType::FunctionType(ty)));
     }
     if catching {
