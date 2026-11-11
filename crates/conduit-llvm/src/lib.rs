@@ -220,7 +220,10 @@ fn host_out(b: &mut FnBuilder, p: &Value, nullable: bool) -> Value {
 }
 
 /// The C signature of extern `ext`: its return type and its parameters'.
-/// Under the flat ABI, which natively is the C ABI (see [`Abi::Flat`]): an
+/// It returns its first result, and takes a pointer for each other one,
+/// after its arguments, to write it to, which C returns the same way on
+/// every target (see [`c_results`]). Under the flat ABI, which natively is
+/// the C ABI (see [`Abi::Flat`]): an
 /// array is a pointer to its elements and an `i32` length, or the pointer
 /// alone if it's `#[addr]`; a list of byte buffers is a pointer to a
 /// `struct iovec` for each and how many there are; an `i8` or `i16` is
@@ -230,8 +233,10 @@ fn host_out(b: &mut FnBuilder, p: &Value, nullable: bool) -> Value {
 pub fn extern_sig(ext: &conduit_ir::Extern) -> Result<(Type, Vec<Type>), String> {
     let sig = &ext.sig;
     if ext.abi != Abi::Flat {
-        let params = sig.params.iter().map(ty).collect::<Result<_, _>>()?;
-        return Ok((c_ret_ty(&sig.results)?, params));
+        let (ret, outs) = c_results(&sig.results)?;
+        let mut params: Vec<Type> = sig.params.iter().map(ty).collect::<Result<_, _>>()?;
+        params.extend(outs.iter().map(|_| Type::Ptr));
+        return Ok((ret, params));
     }
     let mut params = Vec::new();
     for (i, t) in sig.params.iter().enumerate() {
@@ -256,16 +261,27 @@ fn host_pair() -> Type {
     Type::Struct(vec![Type::Ptr, Type::Ptr])
 }
 
-/// What a C function giving `results` to Conduit, or an export giving
-/// them to C, returns: as [`ret_ty`], with each host value a
+/// The C type of a result of type `t` that C gives Conduit, from an
+/// extern, or Conduit gives C, from an export: a host value is a
 /// [`host_pair`].
-fn c_ret_ty(results: &[Ty]) -> Result<Type, String> {
-    let one = |t: &Ty| if t.is_host() { Ok(host_pair()) } else { ty(t) };
-    Ok(match results {
-        [] => Type::Void,
-        [t] => one(t)?,
-        many => Type::Struct(many.iter().map(one).collect::<Result<_, _>>()?),
-    })
+fn c_ty(t: &Ty) -> Result<Type, String> {
+    if t.is_host() { Ok(host_pair()) } else { ty(t) }
+}
+
+/// How a C function giving `results` to Conduit, or an export giving them
+/// to C, gives them: what it returns, the first one or `void`, and the
+/// types of the others, which it writes through a pointer for each, given
+/// after its arguments. A struct of them isn't returned: C's ABI returns
+/// a struct in ways that depend on its size and on the target, which LLVM
+/// leaves to its frontends, and out-pointers are the same everywhere, as
+/// in the flat ABI.
+fn c_results(results: &[Ty]) -> Result<(Type, Vec<Type>), String> {
+    let ret = match results.first() {
+        Some(t) => c_ty(t)?,
+        None => Type::Void,
+    };
+    let outs = results.iter().skip(1).map(c_ty).collect::<Result<_, _>>()?;
+    Ok((ret, outs))
 }
 
 /// What a function giving `results` returns: `void`, the one result, or a
@@ -530,8 +546,13 @@ fn export_fn(f: &Func, id: FuncId, symbol: &str, counts: bool) -> Result<ir::Fun
             params.push((ty(t)?, format!("p{i}")));
         }
     }
+    // Where the caller wants each result after the first.
+    let (ret, out_tys) = c_results(&f.results)?;
+    let first_out = params.len();
+    for i in 1..f.results.len() {
+        params.push((Type::Ptr, format!("r{i}")));
+    }
     let inner = ret_ty(&f.results)?;
-    let ret = c_ret_ty(&f.results)?;
     let mut b = FnBuilder::new(CallConv::C, ret.clone(), symbol.to_string(), params);
     let mut args = Vec::with_capacity(tys.len());
     let mut k = 0;
@@ -546,7 +567,7 @@ fn export_fn(f: &Func, id: FuncId, symbol: &str, counts: bool) -> Result<ir::Fun
         }
     }
     let call = Call::tailcc(inner.clone(), self::symbol(id), args);
-    if !f.results.iter().any(Ty::is_host) {
+    if f.results.len() <= 1 && !f.results.iter().any(Ty::is_host) {
         b.return_call(call);
         return Ok(b.finish());
     }
@@ -564,18 +585,16 @@ fn export_fn(f: &Func, id: FuncId, symbol: &str, counts: bool) -> Result<ir::Fun
             v
         });
     }
-    let value = match gave.len() {
-        1 => gave.pop().unwrap(),
-        _ => {
-            let mut agg = Value::Undef;
-            for (i, (v, t)) in gave.into_iter().zip(&f.results).enumerate() {
-                let t = if t.is_host() { host_pair() } else { ty(t)? };
-                agg = b.insert_value(ret.clone(), agg, t.val(v), i as u32);
-            }
-            agg
-        }
-    };
-    b.ret(Some(ret.val(value)));
+    let mut gave = gave.into_iter();
+    let first = gave.next();
+    for (k, (v, t)) in gave.zip(out_tys).enumerate() {
+        let p = b.param(first_out + k);
+        b.store(t, v, p);
+    }
+    match first {
+        Some(v) => b.ret(Some(ret.val(v))),
+        None => b.ret_void(),
+    }
     Ok(b.finish())
 }
 
@@ -1432,8 +1451,9 @@ impl<'m> Lower<'m> {
         }
         // A host value goes out as the host's value, which it borrows, and
         // comes back with its ops, in a new box.
-        let (ret, _) = extern_sig(ext)?;
-        let mut out = Vec::with_capacity(args.len());
+        let results = &ext.sig.results;
+        let (ret, out_tys) = c_results(results)?;
+        let mut out = Vec::with_capacity(args.len() + out_tys.len());
         for (a, t) in args.iter().zip(&ext.sig.params) {
             let v = self.value(a)?;
             let v = if t.is_host() {
@@ -1443,17 +1463,16 @@ impl<'m> Lower<'m> {
             };
             out.push(Typed(ty(t)?, v));
         }
-        let r = self
-            .b
-            .call(Call::c(ret.clone(), Value::global(&**symbol), out));
-        let results = &ext.sig.results;
-        let values: Vec<Value> = match (results.len(), r) {
-            (0, _) | (_, None) => Vec::new(),
-            (1, Some(r)) => vec![r],
-            (n, Some(r)) => (0..n)
-                .map(|i| self.b.extract_value(ret.clone(), &r, i as u32))
-                .collect(),
-        };
+        // Where the callee writes each result after the first.
+        let slots: Vec<(Type, Value)> = (out_tys.into_iter())
+            .map(|t| (t.clone(), self.b.alloca(t)))
+            .collect();
+        out.extend(slots.iter().map(|(_, p)| Type::Ptr.val(p)));
+        let r = self.b.call(Call::c(ret, Value::global(&**symbol), out));
+        let mut values: Vec<Value> = r.into_iter().collect();
+        for (t, p) in slots {
+            values.push(self.b.load(t, p));
+        }
         for ((t, v), &b) in results.iter().zip(values).zip(binds) {
             let v = if t.is_host() {
                 let value = self.b.extract_value(host_pair(), &v, 0);
@@ -1865,6 +1884,21 @@ mod tests {
             e.contains("both link to `f`, with different signatures"),
             "{e}"
         );
+    }
+
+    #[test]
+    fn several_results_go_through_pointers() {
+        // As a struct of all three, C would return this one through a
+        // hidden pointer on x86-64 and arm64, and LLVM in registers.
+        let text = emit(
+            "#[link(c, symbol = \"g\")]\n\
+             extern g(i32) -> (i64, host, i32)\n\
+             #[export(c, symbol = \"h\")]\n\
+             fn f(%x: i32) -> (i32, i64) {\n  jump ret(%x, 1i64)\n}\n",
+        )
+        .unwrap();
+        assert!(text.contains("declare i64 @g(i32, ptr, ptr)"), "{text}");
+        assert!(text.contains("define i32 @h(i32 %p0, ptr %r1)"), "{text}");
     }
 
     #[test]

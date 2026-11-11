@@ -1,6 +1,7 @@
 //! Exports that take and give host values, called from C: a host value
 //! given to Conduit is Conduit's reference, one given back is retained for
 //! the caller, and every box is released and freed once nothing holds it.
+//! Results after the first, of externs and exports, go through pointers.
 //! Skipped, with a note, when `clang` isn't installed.
 
 use std::path::PathBuf;
@@ -15,6 +16,15 @@ fn echo(%h: host) -> (host) {
 #[export(c, symbol = "twice")]
 fn twice(%h: host) -> (host, i32, host) {
   jump ret(%h, 7i32, %h)
+}
+
+#[link(c, symbol = "split")]
+extern split(i32) -> (i32, host, i64)
+
+#[export(c, symbol = "use_split")]
+fn use_split(%n: i32) -> (i32, host, i64) {
+  let %a: i32, %h: host, %b: i64 = call_extern split(%n)
+  jump ret(%a, %h, %b)
 }
 
 #[export(c, symbol = "forget_it")]
@@ -40,11 +50,11 @@ const MAIN: &str = r#"
 
 typedef struct { void (*retain)(void *); void (*release)(void *); } ops_t;
 typedef struct { void *value; const ops_t *ops; } host;
-typedef struct { host a; int32_t n; host b; } two;
 
 extern int64_t conduit_live;
 host echo(void *value, const ops_t *ops);
-two twice(void *value, const ops_t *ops);
+host twice(void *value, const ops_t *ops, int32_t *n, host *b);
+int32_t use_split(int32_t n, host *h, int64_t *big);
 int32_t forget_it(void *value, const ops_t *ops);
 host or_null(void *value, const ops_t *ops, int32_t keep);
 
@@ -53,6 +63,15 @@ static void retain(void *v) { refs++; }
 static void release(void *v) { refs--; }
 static const ops_t ops = {retain, release};
 static int value;
+
+// Gives Conduit a reference of its own.
+int32_t split(int32_t n, host *h, int64_t *big) {
+  retain(&value);
+  h->value = &value;
+  h->ops = &ops;
+  *big = (int64_t)n * 1000000000000;
+  return n + 1;
+}
 
 #define CHECK(c) do { if (!(c)) { printf("line %d: %s, refs %d, live %lld\n", __LINE__, #c, refs, (long long)conduit_live); return 1; } } while (0)
 
@@ -64,9 +83,16 @@ int main(void) {
   release(&value);
 
   retain(&value);
-  two t = twice(&value, &ops);
-  CHECK(t.a.value == &value && t.b.value == &value && t.n == 7 && refs == 3);
+  int32_t n7;
+  host b;
+  host a = twice(&value, &ops, &n7, &b);
+  CHECK(a.value == &value && b.value == &value && b.ops == &ops && n7 == 7 && refs == 3);
   release(&value);
+  release(&value);
+
+  host s;
+  int64_t big;
+  CHECK(use_split(5, &s, &big) == 6 && s.value == &value && big == 5000000000000 && refs == 2);
   release(&value);
 
   retain(&value);

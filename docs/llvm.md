@@ -47,7 +47,12 @@ collected too.
 - Externs with `#[link(c, symbol = "..")]`, called with the C calling
   convention, and exports with `#[export(c, symbol = "..")]`, which get a
   C-callable function. Externs that link to the same symbol share its
-  declaration, and must agree on its signature.
+  declaration, and must agree on its signature. Of several results, the
+  first is returned, and each other one is written through a pointer the
+  caller passes after the arguments, as in the flat ABI: C returns a
+  struct in ways that depend on its size and the target, which LLVM
+  leaves to frontends like clang, and pointers are the same everywhere.
+  So `extern f(i32) -> (i32, i64)` is `int32_t f(int32_t, int64_t *)`.
 - `#[abi(flat)]` externs, for which the flat ABI is the C ABI: an array
   is a pointer to its elements, 8 bytes into the object, and its length
   as an `i32`, or the pointer alone if it's `#[addr]`; a list of byte
@@ -126,9 +131,9 @@ At the boundary:
 | export parameter | `conduit_host`, as its two words | the caller gives Conduit a reference |
 | export result | `conduit_host` | Conduit calls `retain` for the caller, and drops its box |
 
-Several results are a struct, so an extern or export giving a host value
-and others gives a struct with a `conduit_host` in it. The flat ABI can't
-pass host values, as in Wasm.
+A host value among the results after the first is written through its
+pointer as a `conduit_host`, with the same ownership as one returned. The
+flat ABI can't pass host values, as in Wasm.
 
 Without counts, nothing is released: every host value Conduit gets stays
 alive, as in Wasm.
@@ -150,7 +155,7 @@ Not yet:
 | `join j(..) = ..` | a block `j<n>`; a jump stores the arguments in the parameters' slots, then `br` |
 | `case` | `switch`, on the constructor at 4 for data, with `unreachable` as the default when there's none |
 | `apply(c, ..)` | a call of the entry function whose address `c` holds at 8, with `c` first |
-| `jump ret(..)` | `ret`, of a struct for several results |
+| `jump ret(..)` | `ret`, of a struct for several results between Conduit's own functions |
 | a call in tail position (see `conduit_ir::tail`) | `tail call tailcc`, then `ret`: `tailcc` makes it a tail call always, as Conduit promises |
 
 ## Tests
