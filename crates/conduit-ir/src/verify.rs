@@ -10,6 +10,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
+use crate::ty::list;
 use crate::types::*;
 use crate::*;
 
@@ -360,7 +361,7 @@ fn const_value_ok<P: Program + ?Sized>(p: &P, value: &ConstValue, ty: &Ty) -> Re
             let decl = p
                 .constant(*id)
                 .ok_or_else(|| format!("unknown constant {id}"))?;
-            if sub(&decl.ty, ty) {
+            if decl.ty.is_subtype(ty) {
                 Ok(())
             } else {
                 Err(format!("{id} is a {}, not a {ty}", decl.ty))
@@ -431,10 +432,6 @@ fn const_cycle(m: &Module) -> Option<ConstId> {
     None
 }
 
-fn sub(a: &Ty, b: &Ty) -> bool {
-    a.is_subtype(b)
-}
-
 /// Where [`ty_ok`] checks a type: which mutabilities it may use besides
 /// `Imm`, `Mut` and `ReadOnly`.
 #[derive(Clone, Copy)]
@@ -491,11 +488,7 @@ fn ty_ok<P: Program + ?Sized>(p: &P, ty: &Ty, allowed: Allowed) -> Result<(), St
         Mutability::Param(0) => Err(format!("{ty} has a parameter 0, which is `inherit`")),
         Mutability::Param(i) if *i > allowed.params => Err(format!(
             "{m} in {ty} isn't a parameter here: there {}",
-            match allowed.params {
-                0 => "are none".to_string(),
-                1 => "is 'm1".to_string(),
-                n => format!("are 'm1 to 'm{n}"),
-            }
+            which_params("'m", allowed.params)
         )),
         _ => Ok(()),
     };
@@ -547,7 +540,7 @@ fn ty_ok<P: Program + ?Sized>(p: &P, ty: &Ty, allowed: Allowed) -> Result<(), St
         }
         Ty::Ref(ty) => {
             no_token(ty)?;
-            ty_ok(p, ty, Allowed { ..allowed })
+            ty_ok(p, ty, allowed)
         }
         Ty::Any(m) => mut_ok(m),
         Ty::Host | Ty::NullableHost => Ok(()),
@@ -575,13 +568,19 @@ pub(crate) fn row_ok<P: Program + ?Sized>(p: &P, row: &Row, params: u32) -> Resu
     match row.params().iter().find(|&&i| i == 0 || i > params) {
         Some(i) => Err(format!(
             "E{i} in row {row} isn't an effect parameter here: there {}",
-            match params {
-                0 => "are none".to_string(),
-                1 => "is E1".to_string(),
-                n => format!("are E1 to E{n}"),
-            }
+            which_params("E", params)
         )),
         None => Ok(()),
+    }
+}
+
+/// What parameters there are, for messages: "are none", "is E1" or "are E1
+/// to E3", for `n` parameters written as `prefix` and a number.
+fn which_params(prefix: &str, n: u32) -> String {
+    match n {
+        0 => "are none".to_string(),
+        1 => format!("is {prefix}1"),
+        n => format!("are {prefix}1 to {prefix}{n}"),
     }
 }
 
@@ -782,6 +781,7 @@ impl<P: Program + ?Sized> Cx<'_, P> {
     /// The types of atoms, or `None` if any of them is broken (which has
     /// been reported).
     fn atoms(&mut self, atoms: &[Atom]) -> Option<Vec<Ty>> {
+        // Every atom is checked, so that each broken one is reported.
         let tys: Vec<_> = atoms.iter().map(|a| self.atom(a)).collect();
         tys.into_iter().collect()
     }
@@ -988,7 +988,7 @@ impl<P: Program + ?Sized> Cx<'_, P> {
             )),
             Ok(results) => {
                 for ((r, o), b) in results.iter().zip(&out).zip(binds) {
-                    if !sub(r, o) {
+                    if !r.is_subtype(o) {
                         self.err(format!("the op gives a {r}, but {b} has type {o}"));
                     }
                 }
@@ -1107,7 +1107,7 @@ pub(crate) fn fits(tys: &[Ty], expected: &[Ty]) -> Checked<()> {
         ));
     }
     for (i, (ty, e)) in tys.iter().zip(expected).enumerate() {
-        if !sub(ty, e) {
+        if !ty.is_subtype(e) {
             return Err(format!("value {i} has type {ty}, but should have {e}"));
         }
     }
@@ -1178,10 +1178,6 @@ fn fits_int(ty: &Ty, n: i64) -> bool {
     }
 }
 
-fn list(tys: &[Ty]) -> String {
-    tys.iter().map(Ty::to_string).collect::<Vec<_>>().join(", ")
-}
-
 /// How many times each continuation may be used along one path, capped at 2.
 type Counts = BTreeMap<Var, u8>;
 
@@ -1228,9 +1224,7 @@ impl Linear<'_> {
             }
         }
     }
-}
 
-impl Linear<'_> {
     fn atoms<'b>(&self, atoms: impl IntoIterator<Item = &'b Atom>) -> Counts {
         let mut counts = Counts::new();
         for a in atoms {

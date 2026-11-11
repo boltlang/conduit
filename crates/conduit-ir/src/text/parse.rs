@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use super::Error;
 use super::lex::{Pos, Tok, lex};
-use super::names::{Names, Spelled, spelled};
+use super::names::{Names, Spelled, digits, spelled};
 use crate::*;
 
 /// Reads a module from its text.
@@ -533,186 +533,212 @@ impl Parser {
                 }
             };
             self.next();
-            let duplicate =
-                match name.as_str() {
-                    "data" => {
-                        let (id, debug_name) = self.def("data")?;
-                        let id = DataId(id);
-                        let decl = DataDecl {
-                            debug_name,
-                            ..self.data()?
-                        };
-                        m.data.insert(id, decl).map(|_| id.to_string())
+            let duplicate = match name.as_str() {
+                "data" => {
+                    let (id, debug_name) = self.def("data")?;
+                    let decl = DataDecl {
+                        debug_name,
+                        ..self.data()?
+                    };
+                    let id = DataId(id);
+                    m.data.insert(id, decl).map(|_| id.to_string())
+                }
+                "extern" => {
+                    let (id, debug_name) = self.def("extern")?;
+                    let ext = self.extern_decl(pos, attrs, debug_name)?;
+                    let id = ExternId(id);
+                    m.externs.insert(id, ext).map(|_| id.to_string())
+                }
+                "const" => {
+                    let (id, debug_name) = self.def("const")?;
+                    self.punct(":")?;
+                    let ty = self.ty()?;
+                    self.punct("=")?;
+                    let value = self.const_value()?;
+                    let decl = ConstDecl {
+                        ty,
+                        value,
+                        debug_name,
+                    };
+                    let id = ConstId(id);
+                    m.consts.insert(id, decl).map(|_| id.to_string())
+                }
+                "effect" => {
+                    let (id, debug_name) = self.def("effect")?;
+                    self.punct("{")?;
+                    let mut ops = Vec::new();
+                    while !self.eat_punct("}") {
+                        ops.push(self.sig()?);
                     }
-                    "extern" => {
-                        let (id, debug_name) = self.def("extern")?;
-                        let id = ExternId(id);
-                        let (link, abi) = self.link(pos, attrs, debug_name.as_deref())?;
-                        let params = self.list(Self::extern_param)?;
-                        self.punct("->")?;
-                        let results = self.list(Self::ty)?;
-                        let row = self.row()?;
-                        let addr = if params.iter().any(|p| p.0) {
-                            params.iter().map(|p| p.0).collect()
-                        } else {
-                            Vec::new()
-                        };
-                        let param_names = if params.iter().any(|p| p.1.is_some()) {
-                            params.iter().map(|p| p.1.clone()).collect()
-                        } else {
-                            Vec::new()
-                        };
-                        let sig = Sig {
-                            params: params.into_iter().map(|p| p.2).collect(),
-                            results,
-                            row,
-                        };
-                        let ext = Extern {
-                            link,
-                            sig,
-                            abi,
-                            addr,
-                            param_names,
-                            debug_name,
-                        };
-                        m.externs.insert(id, ext).map(|_| id.to_string())
+                    let id = EffectId(id);
+                    let decl = EffectDecl { ops, debug_name };
+                    m.effects.insert(id, decl).map(|_| id.to_string())
+                }
+                "handler" => {
+                    let (id, debug_name) = self.def("handler")?;
+                    let decl = HandlerDecl {
+                        debug_name,
+                        ..self.handler(pos)?
+                    };
+                    let id = HandlerId(id);
+                    m.handlers.insert(id, decl).map(|_| id.to_string())
+                }
+                "fn" => {
+                    let (id, name) = self.def("fn")?;
+                    let id = FuncId(id);
+                    if let Some(export) = self.export(attrs, name.as_deref())? {
+                        m.exports.insert(id, export);
                     }
-                    "const" => {
-                        let (id, debug_name) = self.def("const")?;
-                        let id = ConstId(id);
-                        self.punct(":")?;
-                        let ty = self.ty()?;
-                        self.punct("=")?;
-                        let value = self.const_value()?;
-                        let decl = ConstDecl {
-                            ty,
-                            value,
-                            debug_name,
-                        };
-                        m.consts.insert(id, decl).map(|_| id.to_string())
-                    }
-                    "effect" => {
-                        let (id, debug_name) = self.def("effect")?;
-                        let id = EffectId(id);
-                        self.punct("{")?;
-                        let mut ops = Vec::new();
-                        while !self.eat_punct("}") {
-                            ops.push(self.sig()?);
-                        }
-                        m.effects
-                            .insert(id, EffectDecl { ops, debug_name })
-                            .map(|_| id.to_string())
-                    }
-                    "handler" => {
-                        let (id, debug_name) = self.def("handler")?;
-                        let id = HandlerId(id);
-                        let (mut_params, effect_params) = self.param_names()?;
-                        if let Some(m) = mut_params.first() {
-                            return self.error_at(
-                                pos,
-                                format!("a handler has no mutability parameters, but {m} is one"),
-                            );
-                        }
-                        self.effect_params = effect_params;
-                        self.keyword("for")?;
-                        let mut effects = vec![EffectId(self.item("effect")?)];
-                        while self.eat_punct(",") {
-                            effects.push(EffectId(self.item("effect")?));
-                        }
-                        let row = self.row()?;
-                        self.keyword("env")?;
-                        let env = self.list(Self::ty)?;
-                        self.keyword("ops")?;
-                        // The clauses of each effect, the effects' apart by `;`.
-                        self.punct("(")?;
-                        let mut groups = vec![Vec::new()];
-                        loop {
-                            if !self.is_punct(";") && !self.is_punct(")") {
-                                groups.last_mut().unwrap().push(FuncId(self.item("fn")?));
-                            }
-                            if self.eat_punct(")") {
-                                break;
-                            }
-                            if self.eat_punct(";") {
-                                groups.push(Vec::new());
-                            } else if !self.eat_punct(",") {
-                                return self.unexpected("`,`, `;` or `)`");
-                            }
-                        }
-                        if groups.len() != effects.len() {
-                            return self.error_at(
-                                pos,
-                                format!(
-                                    "a handler for {} effects has clauses for {}, apart by `;`",
-                                    effects.len(),
-                                    groups.len()
-                                ),
-                            );
-                        }
-                        let ops = effects.into_iter().zip(groups).collect();
-                        self.keyword("ret")?;
-                        let ret = FuncId(self.item("fn")?);
-                        let effect_params =
-                            std::mem::take(&mut self.effect_params).len() as u32;
-                        m.handlers
-                            .insert(
-                                id,
-                                HandlerDecl {
-                                    effect_params,
-                                    env,
-                                    ops,
-                                    ret,
-                                    row,
-                                    debug_name,
-                                },
-                            )
-                            .map(|_| id.to_string())
-                    }
-                    "fn" => {
-                        let (id, name) = self.def("fn")?;
-                        let id = FuncId(id);
-                        if let Some(export) = self.export(attrs, name.as_deref())? {
-                            m.exports.insert(id, export);
-                        }
-                        let mut f = self.func()?;
-                        f.debug.name = name;
-                        m.funcs.insert(id, f).map(|_| id.to_string())
-                    }
-                    _ => return self.error_at(
+                    let mut f = self.func()?;
+                    f.debug.name = name;
+                    m.funcs.insert(id, f).map(|_| id.to_string())
+                }
+                _ => {
+                    return self.error_at(
                         pos,
                         format!(
-                            "expected `data`, `extern`, `const`, `effect`, `handler` or `fn`, found `{name}`"
+                            "expected `data`, `extern`, `const`, `effect`, `handler` or `fn`, \
+                             found `{name}`"
                         ),
-                    ),
-                };
+                    );
+                }
+            };
             if let Some(id) = duplicate {
                 return self.error_at(pos, format!("{id} is defined more than once"));
             }
         }
     }
 
+    /// An extern after its ID: its parameters, results and row. `attrs`
+    /// are the attributes before it, at `pos`.
+    fn extern_decl(
+        &mut self,
+        pos: Pos,
+        attrs: Vec<Attr>,
+        debug_name: Option<Box<str>>,
+    ) -> Res<Extern> {
+        let (link, abi) = self.link(pos, attrs, debug_name.as_deref())?;
+        let params = self.list(Self::extern_param)?;
+        self.punct("->")?;
+        let results = self.list(Self::ty)?;
+        let row = self.row()?;
+        // Each list is empty if nothing is in it.
+        let addr = if params.iter().any(|p| p.0) {
+            params.iter().map(|p| p.0).collect()
+        } else {
+            Vec::new()
+        };
+        let param_names = if params.iter().any(|p| p.1.is_some()) {
+            params.iter().map(|p| p.1.clone()).collect()
+        } else {
+            Vec::new()
+        };
+        let sig = Sig {
+            params: params.into_iter().map(|p| p.2).collect(),
+            results,
+            row,
+        };
+        Ok(Extern {
+            link,
+            sig,
+            abi,
+            addr,
+            param_names,
+            debug_name,
+        })
+    }
+
+    /// A handler after its ID, at `pos`, without its name.
+    fn handler(&mut self, pos: Pos) -> Res<HandlerDecl> {
+        let (mut_params, effect_params) = self.param_names()?;
+        if let Some(m) = mut_params.first() {
+            return self.error_at(
+                pos,
+                format!("a handler has no mutability parameters, but {m} is one"),
+            );
+        }
+        self.effect_params = effect_params;
+        let decl = self.handler_rest(pos);
+        let effect_params = std::mem::take(&mut self.effect_params).len() as u32;
+        Ok(HandlerDecl {
+            effect_params,
+            ..decl?
+        })
+    }
+
+    /// A handler after its effect parameters.
+    fn handler_rest(&mut self, pos: Pos) -> Res<HandlerDecl> {
+        self.keyword("for")?;
+        let mut effects = vec![EffectId(self.item("effect")?)];
+        while self.eat_punct(",") {
+            effects.push(EffectId(self.item("effect")?));
+        }
+        let row = self.row()?;
+        self.keyword("env")?;
+        let env = self.list(Self::ty)?;
+        self.keyword("ops")?;
+        // The clauses of each effect, the effects' apart by `;`.
+        self.punct("(")?;
+        let mut groups = vec![Vec::new()];
+        loop {
+            if !self.is_punct(";") && !self.is_punct(")") {
+                groups.last_mut().unwrap().push(FuncId(self.item("fn")?));
+            }
+            if self.eat_punct(")") {
+                break;
+            }
+            if self.eat_punct(";") {
+                groups.push(Vec::new());
+            } else if !self.eat_punct(",") {
+                return self.unexpected("`,`, `;` or `)`");
+            }
+        }
+        if groups.len() != effects.len() {
+            return self.error_at(
+                pos,
+                format!(
+                    "a handler for {} effects has clauses for {}, apart by `;`",
+                    effects.len(),
+                    groups.len()
+                ),
+            );
+        }
+        let ops = effects.into_iter().zip(groups).collect();
+        self.keyword("ret")?;
+        let ret = FuncId(self.item("fn")?);
+        Ok(HandlerDecl {
+            effect_params: 0,
+            env,
+            ops,
+            ret,
+            row,
+            debug_name: None,
+        })
+    }
+
     fn data(&mut self) -> Res<DataDecl> {
         (self.params, self.effect_params) = self.param_names()?;
         self.punct("{")?;
-        let mut ctors = Vec::new();
-        let result = loop {
-            if self.eat_punct("}") {
-                break Ok(());
-            }
-            match self.list(Self::ty) {
-                Ok(fields) => ctors.push(CtorDecl { fields }),
-                Err(e) => break Err(e),
-            }
-        };
+        let ctors = self.ctors();
         let params = std::mem::take(&mut self.params).len() as u32;
         let effect_params = std::mem::take(&mut self.effect_params).len() as u32;
-        result?;
         Ok(DataDecl {
             params,
             effect_params,
-            ctors,
+            ctors: ctors?,
             debug_name: None,
         })
+    }
+
+    /// A data declaration's constructors, up to its `}`.
+    fn ctors(&mut self) -> Res<Vec<CtorDecl>> {
+        let mut ctors = Vec::new();
+        while !self.eat_punct("}") {
+            ctors.push(CtorDecl {
+                fields: self.list(Self::ty)?,
+            });
+        }
+        Ok(ctors)
     }
 
     /// The mutability and effect parameters a data declaration, function
@@ -844,6 +870,14 @@ impl Parser {
             }
             _ => return self.error_at(pos, format!("expected a type, found `{name}`")),
         })
+    }
+
+    /// `[ty]`, as in `box[i32]`.
+    fn bracketed_ty(&mut self) -> Res<Ty> {
+        self.punct("[")?;
+        let ty = self.ty()?;
+        self.punct("]")?;
+        Ok(ty)
     }
 
     fn sig(&mut self) -> Res<Sig> {
@@ -1107,7 +1141,7 @@ impl Parser {
     fn tail(&mut self, info: &mut FuncInfo) -> Res<Tail> {
         crate::deep(|| {
             let pos = self.pos();
-            let name = self.ident("`let`, `join`, `jump`, `case` or `unreachable`")?;
+            let name = self.ident("`let`, `join`, `jump`, `case`, `unreachable` or `trap`")?;
             match name.as_str() {
                 "join" => {
                     let rec = self.eat_keyword("rec");
@@ -1183,7 +1217,7 @@ impl Parser {
                 _ => self.error_at(
                     pos,
                     format!(
-                        "expected `let`, `join`, `jump`, `case` or `unreachable`, found `{name}`"
+                        "expected `let`, `join`, `jump`, `case`, `unreachable` or `trap`, found `{name}`"
                     ),
                 ),
             }
@@ -1262,9 +1296,7 @@ impl Parser {
                     && matches!(self.toks.get(self.i + 1), Some((Tok::Punct("["), _))) =>
             {
                 self.next();
-                self.punct("[")?;
-                let ty = self.ty()?;
-                self.punct("]")?;
+                let ty = self.bracketed_ty()?;
                 self.punct("(")?;
                 let inner = self.const_value()?;
                 self.punct(")")?;
@@ -1309,12 +1341,6 @@ impl Parser {
     fn op(&mut self) -> Res<Op> {
         let pos = self.pos();
         let name = self.ident("an op")?;
-        let in_brackets = |p: &mut Self| -> Res<Ty> {
-            p.punct("[")?;
-            let ty = p.ty()?;
-            p.punct("]")?;
-            Ok(ty)
-        };
         let op = match name.as_str() {
             "call" => {
                 let f = FuncId(self.item("fn")?);
@@ -1359,8 +1385,8 @@ impl Parser {
             "ref_new" => Op::RefNew,
             "ref_get" => Op::RefGet,
             "ref_set" => Op::RefSet,
-            "box" => Op::Box(in_brackets(self)?),
-            "unbox" => Op::Unbox(in_brackets(self)?),
+            "box" => Op::Box(self.bracketed_ty()?),
+            "unbox" => Op::Unbox(self.bracketed_ty()?),
             "array_freeze" => Op::ArrayFreeze,
             "handle" => {
                 let h = HandlerId(self.item("handler")?);
@@ -1432,21 +1458,11 @@ impl Parser {
             "min" => plain(Prim::Min),
             "max" => plain(Prim::Max),
             "convert" => match sign {
-                Some(s) => {
-                    self.punct("[")?;
-                    let ty = self.ty()?;
-                    self.punct("]")?;
-                    Some(Prim::Convert(ty, s))
-                }
+                Some(s) => Some(Prim::Convert(self.bracketed_ty()?, s)),
                 None => None,
             },
             "reinterpret" => match sign {
-                None => {
-                    self.punct("[")?;
-                    let ty = self.ty()?;
-                    self.punct("]")?;
-                    Some(Prim::Reinterpret(ty))
-                }
+                None => Some(Prim::Reinterpret(self.bracketed_ty()?)),
                 Some(_) => None,
             },
             _ => return self.error_at(pos, format!("unknown op `{name}`")),
@@ -1459,14 +1475,6 @@ impl Parser {
             None => self.error_at(pos, format!("`{name}` needs `.s` or `.u`, like `{name}.s`")),
         }
     }
-}
-
-/// `n` as a decimal number without a sign.
-fn digits(n: &str) -> Option<u64> {
-    if n.is_empty() || !n.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    n.parse().ok()
 }
 
 /// A literal with its type suffix, like `5i32` or `1.5f64`. An `i8` or

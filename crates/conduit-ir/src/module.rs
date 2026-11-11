@@ -4,7 +4,7 @@ use crate::Program;
 
 use crate::id::{ConstId, CtorId, DataId, EffectId, ExternId, FuncId, HandlerId, Label, Var};
 use crate::row::Row;
-use crate::term::{Block, Lit, Tail};
+use crate::term::{Atom, Block, Lit, Tail};
 use crate::ty::{CtorDecl, Mutability, Sig, Ty};
 
 /// A whole program, before linking.
@@ -114,6 +114,14 @@ impl Func {
 
     pub fn var_ty(&self, var: Var) -> &Ty {
         &self.vars[var.0 as usize]
+    }
+
+    /// The type of an operand: its variable's, or its literal's.
+    pub fn atom_ty(&self, a: &Atom) -> Ty {
+        match a {
+            Atom::Var(v) => self.var_ty(*v).clone(),
+            Atom::Lit(lit) => lit.ty(),
+        }
     }
 
     /// The parameter and result types, and the row.

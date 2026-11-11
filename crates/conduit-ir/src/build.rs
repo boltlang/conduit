@@ -52,6 +52,7 @@
 
 use std::fmt;
 
+use crate::ty::list;
 use crate::verify::fits;
 use crate::verify::typing::op_results;
 use crate::*;
@@ -391,6 +392,14 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
         BlockRef(self.blocks.len() as u32 - 1)
     }
 
+    /// A new label, whose parameters have types `params`.
+    fn new_label(&mut self, params: Vec<Ty>) -> Label {
+        let label = self.func.new_label();
+        self.label_params.resize(label.0 as usize + 1, None);
+        self.label_params[label.0 as usize] = Some(params);
+        label
+    }
+
     /// Whether the current block can still be added to, reporting an
     /// error if not.
     fn open(&mut self, what: &str) -> bool {
@@ -479,8 +488,6 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
                 let fits = results.len() == out.len()
                     && results.iter().zip(&out).all(|(r, o)| r.is_subtype(o));
                 if !fits {
-                    let list =
-                        |tys: &[Ty]| tys.iter().map(Ty::to_string).collect::<Vec<_>>().join(", ");
                     self.error(format!(
                         "the op gives ({}), which doesn't fit ({})",
                         list(&results),
@@ -692,16 +699,12 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
     }
 
     pub fn apply(&mut self, closure: impl Into<Atom>, args: impl Atoms) -> Vec<Var> {
-        let mut all = vec![closure.into()];
-        all.extend(args.atoms());
-        self.emit(Op::Apply, all, None)
+        self.emit(Op::Apply, then(closure, args), None)
     }
 
     /// An `apply` of a closure with one result.
     pub fn apply1(&mut self, closure: impl Into<Atom>, args: impl Atoms) -> Var {
-        let mut all = vec![closure.into()];
-        all.extend(args.atoms());
-        self.emit1(Op::Apply, all, None)
+        self.emit1(Op::Apply, then(closure, args), None)
     }
 
     /// `new c(fields)`, as an object of mutability `m`.
@@ -932,16 +935,12 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
     }
 
     pub fn resume(&mut self, k: impl Into<Atom>, args: impl Atoms) -> Vec<Var> {
-        let mut all = vec![k.into()];
-        all.extend(args.atoms());
-        self.emit(Op::Resume, all, None)
+        self.emit(Op::Resume, then(k, args), None)
     }
 
     /// A `resume` of a continuation with one result.
     pub fn resume1(&mut self, k: impl Into<Atom>, args: impl Atoms) -> Var {
-        let mut all = vec![k.into()];
-        all.extend(args.atoms());
-        self.emit1(Op::Resume, all, None)
+        self.emit1(Op::Resume, then(k, args), None)
     }
 
     /// Continues `k` by performing operation `op` of `e` where it was
@@ -953,9 +952,7 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
         op: u32,
         args: impl Atoms,
     ) -> Vec<Var> {
-        let mut all = vec![k.into()];
-        all.extend(args.atoms());
-        self.emit(Op::Discontinue(e, op), all, None)
+        self.emit(Op::Discontinue(e, op), then(k, args), None)
     }
 
     /// A `discontinue` of a continuation with one result.
@@ -966,9 +963,7 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
         op: u32,
         args: impl Atoms,
     ) -> Var {
-        let mut all = vec![k.into()];
-        all.extend(args.atoms());
-        self.emit1(Op::Discontinue(e, op), all, None)
+        self.emit1(Op::Discontinue(e, op), then(k, args), None)
     }
 
     /// Ends the current block by returning `values`.
@@ -1034,11 +1029,9 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
         let at = self.current;
         let mut points = Vec::new();
         for tys in params {
-            let label = self.func.new_label();
+            let label = self.new_label(tys.to_vec());
             let vars = tys.iter().map(|ty| self.func.new_var(ty.clone())).collect();
             let block = self.block(at, None, format!("the body of {label}"));
-            self.label_params.resize(label.0 as usize + 1, None);
-            self.label_params[label.0 as usize] = Some(tys.to_vec());
             points.push(JoinPoint {
                 label,
                 params: vars,
@@ -1116,9 +1109,7 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
         }
         let holder = self.cases[case.0 as usize].block;
         let scrut = self.cases[case.0 as usize].scrut.clone();
-        let label = self.func.new_label();
-        self.label_params.resize(label.0 as usize + 1, None);
-        self.label_params[label.0 as usize] = Some(Vec::new());
+        let label = self.new_label(Vec::new());
         let names: Vec<String> = tags.iter().map(|&t| tag_text(t)).collect();
         let shared = self.block(
             holder,
@@ -1250,6 +1241,14 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
         })?;
         Ok(func)
     }
+}
+
+/// `first`, then `rest`: the arguments of an op that takes a closure or a
+/// continuation first.
+fn then(first: impl Into<Atom>, rest: impl Atoms) -> Vec<Atom> {
+    let mut all = vec![first.into()];
+    all.extend(rest.atoms());
+    all
 }
 
 /// Whether an op's result type depends on what it binds, so it can't be

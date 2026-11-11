@@ -79,13 +79,7 @@ impl Items {
     /// A constant's value: `5i32`, `[1i32, 2i32]`, `b"hi"`,
     /// `List.1(1i32, nil)`.
     fn const_value(&self, value: &ConstValue) -> String {
-        let all = |parts: &[ConstValue]| {
-            parts
-                .iter()
-                .map(|v| self.const_value(v))
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
+        let all = |parts: &[ConstValue]| comma(parts.iter().map(|v| self.const_value(v)));
         match value {
             ConstValue::Lit(lit) => lit_text(lit),
             ConstValue::Array(elems) => match bytes(elems) {
@@ -103,21 +97,26 @@ impl Items {
 
     fn ty(&self, ty: &Ty) -> String {
         match ty {
+            Ty::I8 => "i8".into(),
+            Ty::I16 => "i16".into(),
+            Ty::I32 => "i32".into(),
+            Ty::I64 => "i64".into(),
+            Ty::F32 => "f32".into(),
+            Ty::F64 => "f64".into(),
             Ty::Data(d, m, args, rows) => format!("{m} {}{}", self.data(*d), self.args(args, rows)),
             Ty::Array(elem, m) => format!("{m} [{}]", self.ty(elem)),
             Ty::Fn(sig, m) => format!("{m} fn{}", self.sig(sig)),
             Ty::Cont(sig) => format!("cont{}", self.sig(sig)),
             Ty::Ref(ty) => format!("ref {}", self.ty(ty)),
+            Ty::Any(m) => format!("{m} any"),
+            Ty::Host => "host".into(),
+            Ty::NullableHost => "nullable host".into(),
             Ty::Reuse(c) => format!("reuse {}", self.ctor(*c)),
-            other => other.to_string(),
         }
     }
 
     fn types(&self, tys: &[Ty]) -> String {
-        tys.iter()
-            .map(|ty| self.ty(ty))
-            .collect::<Vec<_>>()
-            .join(", ")
+        comma(tys.iter().map(|ty| self.ty(ty)))
     }
 
     fn sig(&self, sig: &Sig) -> String {
@@ -161,16 +160,15 @@ impl Items {
         if margs.is_empty() && rows.is_empty() {
             return String::new();
         }
-        let all: Vec<String> = margs
-            .iter()
-            .map(Mutability::to_string)
-            .chain(rows.iter().map(|r| self.row(r)))
-            .collect();
-        format!("[{}]", all.join(", "))
+        let all = (margs.iter().map(Mutability::to_string)).chain(rows.iter().map(|r| self.row(r)));
+        format!("[{}]", comma(all))
     }
 
+    /// What comes before an op's arguments: its name, and the items or
+    /// types it takes.
     fn op(&self, op: &Op) -> String {
         match op {
+            Op::Prim(p) => prim_name(p),
             Op::Call(f, margs, rows) => format!("call {}{}", self.func(*f), self.args(margs, rows)),
             Op::CallExtern(e) => format!("call_extern {}", self.extern_(*e)),
             Op::Closure(f, margs, rows) => {
@@ -186,7 +184,35 @@ impl Items {
             Op::Handle(h, rows) => format!("handle {}{}", self.handler(*h), self.args(&[], rows)),
             Op::Perform(e, i) => format!("perform {}.{i}", self.effect(*e)),
             Op::Discontinue(e, i) => format!("discontinue {}.{i}", self.effect(*e)),
-            op => op_name(op),
+            Op::Apply => "apply".into(),
+            Op::Undefined => "undefined".into(),
+            Op::ArrayNew => "array_new".into(),
+            Op::ArrayFill => "array_fill".into(),
+            Op::ArrayAlloc => "array_alloc".into(),
+            Op::ArrayCopy => "array_copy".into(),
+            Op::ArrayGet => "array_get".into(),
+            Op::ArraySet => "array_set".into(),
+            Op::ArrayLoad => "array_load".into(),
+            Op::ArrayStore => "array_store".into(),
+            Op::ArrayLen => "array_len".into(),
+            Op::ArrayClone => "array_clone".into(),
+            Op::ArrayFreeze => "array_freeze".into(),
+            Op::RefNew => "ref_new".into(),
+            Op::RefGet => "ref_get".into(),
+            Op::RefSet => "ref_set".into(),
+            Op::Resume => "resume".into(),
+            Op::Dup => "dup".into(),
+            Op::Drop => "drop".into(),
+            Op::IsUnique => "is_unique".into(),
+            Op::Free => "free".into(),
+            Op::DecRef => "decref".into(),
+            Op::DropReuse => "drop_reuse".into(),
+            Op::ReuseToken => "reuse_token".into(),
+            Op::Forget => "forget".into(),
+            Op::HostNull => "host_null".into(),
+            Op::HostIsNull => "host_is_null".into(),
+            Op::HostUnwrap => "host_unwrap".into(),
+            Op::HostFunction => "host_function".into(),
         }
     }
 }
@@ -246,7 +272,7 @@ pub(super) fn module(m: &Module) -> String {
         items.push(format!(
             "#[link({link})]\n{abi}extern {}({}) -> ({}){}",
             spelled,
-            params.join(", "),
+            comma(params),
             names.types(&ext.sig.results),
             names.does(&ext.sig.row)
         ));
@@ -269,18 +295,15 @@ pub(super) fn module(m: &Module) -> String {
     }
     for (id, h) in &m.handlers {
         let ops = (h.ops.iter())
-            .map(|(_, clauses)| {
-                let clauses: Vec<String> = clauses.iter().map(|&f| names.func(f)).collect();
-                clauses.join(", ")
-            })
+            .map(|(_, clauses)| comma(clauses.iter().map(|&f| names.func(f))))
             .collect::<Vec<_>>()
             .join("; ");
-        let effects: Vec<String> = h.effects().map(|e| names.effect(e)).collect();
+        let effects = comma(h.effects().map(|e| names.effect(e)));
         items.push(format!(
             "handler {}{} for {}{} env({}) ops({ops}) ret {}",
             names.handler(*id),
             param_list(0, h.effect_params),
-            effects.join(", "),
+            effects,
             names.does(&h.row),
             names.types(&h.env),
             names.func(h.ret)
@@ -332,12 +355,7 @@ fn func_with(names: &Items, id: FuncId, f: &Func) -> String {
         names,
         out: String::new(),
     };
-    let params = f
-        .params
-        .iter()
-        .map(|&v| p.binder(v))
-        .collect::<Vec<_>>()
-        .join(", ");
+    let params = p.binders(&f.params);
     let mparams = param_list(f.mut_params.count, f.effect_params);
     let _ = write!(
         p.out,
@@ -347,13 +365,13 @@ fn func_with(names: &Items, id: FuncId, f: &Func) -> String {
         names.does(&f.row)
     );
     if !f.mut_params.assumes.is_empty() {
-        let assumes: Vec<String> = f
-            .mut_params
-            .assumes
-            .iter()
-            .map(|(a, b)| format!("{a}: {b}"))
-            .collect();
-        let _ = write!(p.out, " where {}", assumes.join(", "));
+        let assumes = comma(
+            f.mut_params
+                .assumes
+                .iter()
+                .map(|(a, b)| format!("{a}: {b}")),
+        );
+        let _ = write!(p.out, " where {assumes}");
     }
 
     let mut bound = BTreeSet::new();
@@ -373,13 +391,12 @@ fn func_with(names: &Items, id: FuncId, f: &Func) -> String {
     if f.labels != max_label + 1 {
         let _ = write!(p.out, " labels {}", f.labels);
     }
-    let unbound: Vec<String> = (0..f.vars.len() as u32)
+    let unbound: Vec<Var> = (0..f.vars.len() as u32)
         .map(Var)
         .filter(|v| !bound.contains(v))
-        .map(|v| p.binder(v))
         .collect();
     if !unbound.is_empty() {
-        let _ = write!(p.out, " vars({})", unbound.join(", "));
+        let _ = write!(p.out, " vars({})", p.binders(&unbound));
     }
     p.out.push_str(" {\n");
     p.block(&f.body, 1);
@@ -462,10 +479,7 @@ impl Printer<'_> {
     }
 
     fn atoms(&self, args: &[Atom]) -> String {
-        args.iter()
-            .map(|a| self.atom(a))
-            .collect::<Vec<_>>()
-            .join(", ")
+        comma(args.iter().map(|a| self.atom(a)))
     }
 
     /// `%3: i32`. A variable without a type, which only broken IR has,
@@ -475,6 +489,10 @@ impl Printer<'_> {
             Some(ty) => format!("{}: {}", self.var(v), self.names.ty(ty)),
             None => format!("{}: ?", self.var(v)),
         }
+    }
+
+    fn binders(&self, vars: &[Var]) -> String {
+        comma(vars.iter().map(|&v| self.binder(v)))
     }
 
     fn line(&mut self, depth: usize, text: &str) {
@@ -528,12 +546,7 @@ impl Printer<'_> {
     fn block(&mut self, b: &Block, depth: usize) {
         crate::deep(|| {
             for l in &b.lets {
-                let binds = l
-                    .binds
-                    .iter()
-                    .map(|&v| self.binder(v))
-                    .collect::<Vec<_>>()
-                    .join(", ");
+                let binds = self.binders(&l.binds);
                 let space = if binds.is_empty() { "" } else { " " };
                 let text = format!(
                     "let {binds}{space}= {}({}){}",
@@ -551,12 +564,7 @@ impl Printer<'_> {
                             (0, false) => "join",
                             _ => "and",
                         };
-                        let params = def
-                            .params
-                            .iter()
-                            .map(|&v| self.binder(v))
-                            .collect::<Vec<_>>()
-                            .join(", ");
+                        let params = self.binders(&def.params);
                         let head = format!("{keyword} {}({params}) =", self.label(def.label));
                         self.nested(depth, &head, &def.body);
                     }
@@ -730,80 +738,39 @@ pub(super) fn prim_name(p: &Prim) -> String {
     }
 }
 
-/// Mutability arguments and rows, like `[imm, 'm1, effect20]`, or nothing
-/// if there are none.
-fn margs_text(margs: &[Mutability], rows: &[Row]) -> String {
-    if margs.is_empty() && rows.is_empty() {
-        return String::new();
-    }
-    let all: Vec<String> = margs
-        .iter()
-        .map(Mutability::to_string)
-        .chain(rows.iter().map(Row::to_string))
-        .collect();
-    format!("[{}]", all.join(", "))
-}
-
 /// The parameters a declaration declares, like `['m1, 'm2, E1]`, or
 /// nothing if it has none.
 fn param_list(muts: u32, effects: u32) -> String {
-    let all: Vec<String> = (1..=muts)
-        .map(|i| Mutability::Param(i).to_string())
-        .chain((1..=effects).map(|i| format!("E{i}")))
-        .collect();
-    if all.is_empty() {
-        String::new()
-    } else {
-        format!("[{}]", all.join(", "))
+    if muts == 0 && effects == 0 {
+        return String::new();
     }
+    let all = ((1..=muts).map(|i| Mutability::Param(i).to_string()))
+        .chain((1..=effects).map(|i| format!("E{i}")));
+    format!("[{}]", comma(all))
 }
 
-/// What comes before an op's arguments: its name, and the IDs or types
-/// it takes.
+/// Items apart by commas.
+fn comma(items: impl IntoIterator<Item = String>) -> String {
+    items.into_iter().collect::<Vec<_>>().join(", ")
+}
+
+/// A type, with items written by number, as its `Display` writes it.
+pub(crate) fn ty_text(ty: &Ty) -> String {
+    Items::default().ty(ty)
+}
+
+/// A signature, with items written by number.
+pub(crate) fn sig_text(sig: &Sig) -> String {
+    Items::default().sig(sig)
+}
+
+/// A row, with items written by number.
+pub(crate) fn row_text(row: &Row) -> String {
+    Items::default().row(row)
+}
+
+/// What comes before an op's arguments, with items written by number:
+/// its name, and the IDs or types it takes.
 pub(crate) fn op_name(op: &Op) -> String {
-    match op {
-        Op::Prim(p) => prim_name(p),
-        Op::Call(f, margs, rows) => format!("call {f}{}", margs_text(margs, rows)),
-        Op::CallExtern(e) => format!("call_extern {e}"),
-        Op::Closure(f, margs, rows) => format!("closure {f}{}", margs_text(margs, rows)),
-        Op::Apply => "apply".into(),
-        Op::New(c) => format!("new {c}"),
-        Op::Const(id) => format!("const {id}"),
-        Op::Undefined => "undefined".into(),
-        Op::Get(c, i) => format!("get {c}.{i}"),
-        Op::Set(c, i) => format!("set {c}.{i}"),
-        Op::ArrayNew => "array_new".into(),
-        Op::ArrayFill => "array_fill".into(),
-        Op::ArrayAlloc => "array_alloc".into(),
-        Op::ArrayCopy => "array_copy".into(),
-        Op::ArrayGet => "array_get".into(),
-        Op::ArraySet => "array_set".into(),
-        Op::ArrayLoad => "array_load".into(),
-        Op::ArrayStore => "array_store".into(),
-        Op::ArrayLen => "array_len".into(),
-        Op::ArrayClone => "array_clone".into(),
-        Op::RefNew => "ref_new".into(),
-        Op::RefGet => "ref_get".into(),
-        Op::RefSet => "ref_set".into(),
-        Op::Box(ty) => format!("box[{ty}]"),
-        Op::Unbox(ty) => format!("unbox[{ty}]"),
-        Op::ArrayFreeze => "array_freeze".into(),
-        Op::Handle(h, rows) => format!("handle {h}{}", margs_text(&[], rows)),
-        Op::Perform(e, i) => format!("perform {e}.{i}"),
-        Op::Resume => "resume".into(),
-        Op::Discontinue(e, i) => format!("discontinue {e}.{i}"),
-        Op::Dup => "dup".into(),
-        Op::Drop => "drop".into(),
-        Op::IsUnique => "is_unique".into(),
-        Op::Free => "free".into(),
-        Op::DecRef => "decref".into(),
-        Op::DropReuse => "drop_reuse".into(),
-        Op::ReuseToken => "reuse_token".into(),
-        Op::Reuse(c) => format!("reuse {c}"),
-        Op::Forget => "forget".into(),
-        Op::HostNull => "host_null".into(),
-        Op::HostIsNull => "host_is_null".into(),
-        Op::HostUnwrap => "host_unwrap".into(),
-        Op::HostFunction => "host_function".into(),
-    }
+    Items::default().op(op)
 }

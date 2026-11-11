@@ -1,9 +1,9 @@
 //! The types each op gives, shared by the verifier and the builder (see
 //! [`crate::build`]), so that they agree.
 
-use super::{
-    Allowed, Checked, fits, instantiate, object_mutability, prim_results, row_ok, sub, ty_ok,
-};
+use super::{Allowed, Checked, fits, instantiate, object_mutability, prim_results, row_ok, ty_ok};
+use crate::text::print::op_name;
+use crate::ty::list;
 use crate::types::{at_most, elem_ty, inherit, resolve, subst_rows, subst_sig_rows};
 use crate::*;
 
@@ -94,7 +94,7 @@ pub(crate) fn op_results<P: Program + ?Sized>(
                         article(*m)
                     ));
                 }
-                if !sub(ty, &field) {
+                if !ty.is_subtype(&field) {
                     return Err(format!(
                         "field {i} of {c} has type {field}, but gets a {ty}"
                     ));
@@ -134,7 +134,7 @@ pub(crate) fn op_results<P: Program + ?Sized>(
             }
             field_access(p, known, c, *d, &args[0])?;
             let field = field(p, *c, *i, Mutability::Mut, margs, rows)?;
-            if !sub(value, &field) {
+            if !value.is_subtype(&field) {
                 return Err(format!(
                     "field {i} of {c} has type {field}, but gets a {value}"
                 ));
@@ -144,7 +144,7 @@ pub(crate) fn op_results<P: Program + ?Sized>(
         Op::ArrayNew => {
             let elem = new_array(p, mp, out)?;
             for ty in tys {
-                if !sub(ty, &elem) {
+                if !ty.is_subtype(&elem) {
                     return Err(format!("array of {elem} gets an element of type {ty}"));
                 }
             }
@@ -155,7 +155,7 @@ pub(crate) fn op_results<P: Program + ?Sized>(
             let [Ty::I32, ty] = tys else {
                 return Err("array fill needs an i32 length and a value".into());
             };
-            if !sub(ty, &elem) {
+            if !ty.is_subtype(&elem) {
                 return Err(format!("array of {elem} gets an element of type {ty}"));
             }
             Ok(out.to_vec())
@@ -182,7 +182,7 @@ pub(crate) fn op_results<P: Program + ?Sized>(
                 Ty::I32,
             ] => {
                 let (have, want) = (elem_ty(src).unwrap(), elem_ty(dst).unwrap());
-                if sub(&have, &want) {
+                if have.is_subtype(&want) {
                     Ok(vec![])
                 } else {
                     Err(format!(
@@ -210,7 +210,7 @@ pub(crate) fn op_results<P: Program + ?Sized>(
         Op::ArraySet => match tys {
             [array @ Ty::Array(_, Mutability::Mut), Ty::I32, ty] => {
                 let elem = elem_ty(array).unwrap();
-                if sub(ty, &elem) {
+                if ty.is_subtype(&elem) {
                     Ok(vec![])
                 } else {
                     Err(format!("array of {elem} gets an element of type {ty}"))
@@ -249,7 +249,7 @@ pub(crate) fn op_results<P: Program + ?Sized>(
             _ => Err("array len needs an array".into()),
         },
         Op::RefNew => match (tys, out) {
-            ([ty], [Ty::Ref(inner)]) if sub(ty, inner) => Ok(out.to_vec()),
+            ([ty], [Ty::Ref(inner)]) if ty.is_subtype(inner) => Ok(out.to_vec()),
             ([ty], [Ty::Ref(inner)]) => Err(format!("ref of {inner} gets a {ty}")),
             _ => Err("ref new needs one value and binds one ref".into()),
         },
@@ -258,7 +258,7 @@ pub(crate) fn op_results<P: Program + ?Sized>(
             _ => Err("ref get needs a ref".into()),
         },
         Op::RefSet => match tys {
-            [Ty::Ref(inner), ty] if sub(ty, inner) => Ok(vec![]),
+            [Ty::Ref(inner), ty] if ty.is_subtype(inner) => Ok(vec![]),
             [Ty::Ref(inner), ty] => Err(format!("ref of {inner} gets a {ty}")),
             _ => Err("ref set needs a ref and a value".into()),
         },
@@ -266,7 +266,7 @@ pub(crate) fn op_results<P: Program + ?Sized>(
         Op::Box(ty) => {
             ty_ok(p, ty, Allowed::func(mp.count, effects))?;
             match tys {
-                [arg] if sub(arg, ty) => {}
+                [arg] if arg.is_subtype(ty) => {}
                 [arg] => return Err(format!("box of {ty} gets a {arg}")),
                 _ => return Err("box needs one value".into()),
             }
@@ -285,10 +285,7 @@ pub(crate) fn op_results<P: Program + ?Sized>(
             }
         }
         Op::DropReuse | Op::ReuseToken => {
-            let name = match op {
-                Op::DropReuse => "drop_reuse",
-                _ => "reuse_token",
-            };
+            let name = op_name(op);
             match (tys, out) {
                 ([Ty::Data(d, ..)], [Ty::Reuse(c)]) => {
                     field_access(p, known, c, *d, &args[0])
@@ -314,8 +311,8 @@ pub(crate) fn op_results<P: Program + ?Sized>(
         Op::Dup | Op::Drop | Op::Free | Op::DecRef | Op::IsUnique => match tys {
             [ty] if ty.is_object() && *op == Op::IsUnique => Ok(vec![Ty::I32]),
             [ty] if ty.is_object() => Ok(vec![]),
-            [ty] => Err(format!("{} of a {ty}, which isn't an object", op_word(op))),
-            _ => Err(format!("{} needs one object", op_word(op))),
+            [ty] => Err(format!("{} of a {ty}, which isn't an object", op_name(op))),
+            _ => Err(format!("{} needs one object", op_name(op))),
         },
         Op::Forget => match tys {
             [ty] if ty.is_object() => Ok(vec![]),
@@ -327,11 +324,7 @@ pub(crate) fn op_results<P: Program + ?Sized>(
             _ => Err("host_null takes nothing".into()),
         },
         Op::HostIsNull | Op::HostUnwrap => {
-            let name = if *op == Op::HostIsNull {
-                "host_is_null"
-            } else {
-                "host_unwrap"
-            };
+            let name = op_name(op);
             match tys {
                 [ty] if ty.is_host() && *op == Op::HostIsNull => Ok(vec![Ty::I32]),
                 [ty] if ty.is_host() => Ok(vec![Ty::Host]),
@@ -385,11 +378,7 @@ pub(crate) fn op_results<P: Program + ?Sized>(
             if !body.params.is_empty() || body.results != returns {
                 return Err(format!(
                     "the body of handle {h} has type fn{body}, but should have fn() -> ({})",
-                    returns
-                        .iter()
-                        .map(Ty::to_string)
-                        .collect::<Vec<_>>()
-                        .join(", ")
+                    list(returns)
                 ));
             }
             // The body's effects are handled, and what the clauses perform
@@ -497,7 +486,7 @@ fn array_clone<P: Program + ?Sized>(
         return Err("array freeze must bind one imm array".into());
     }
     let elem = new_array(p, mp, out)?;
-    if !sub(&have, &elem) {
+    if !have.is_subtype(&elem) {
         return Err(format!(
             "{what} of a {from} can't give a {}: its elements are {have}",
             out[0]
@@ -554,15 +543,5 @@ fn article(m: Mutability) -> &'static str {
     match m {
         Mutability::Imm | Mutability::Inherit => "an",
         _ => "a",
-    }
-}
-
-fn op_word(op: &Op) -> &'static str {
-    match op {
-        Op::Dup => "dup",
-        Op::IsUnique => "is_unique",
-        Op::Free => "free",
-        Op::DecRef => "decref",
-        _ => "drop",
     }
 }

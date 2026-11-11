@@ -31,7 +31,8 @@ pub(super) fn spelled(text: &str, prefix: &str) -> Option<Spelled> {
     valid(text, prefix).then(|| Spelled::Named(text.to_string(), None))
 }
 
-fn digits(n: &str) -> Option<u64> {
+/// `n` as a decimal number without a sign.
+pub(super) fn digits(n: &str) -> Option<u64> {
     if n.is_empty() || !n.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }

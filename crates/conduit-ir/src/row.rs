@@ -142,20 +142,9 @@ impl Row {
     }
 }
 
+/// As in the text format: `effect20 + E1`, `Nothing` or `Any`.
 impl fmt::Display for Row {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.any {
-            return f.write_str("Any");
-        }
-        if self.effects.is_empty() && self.params.is_empty() {
-            return f.write_str("Nothing");
-        }
-        let names: Vec<String> = self
-            .effects
-            .iter()
-            .map(EffectId::to_string)
-            .chain(self.params.iter().map(|p| format!("E{p}")))
-            .collect();
-        f.write_str(&names.join(" + "))
+        f.write_str(&crate::text::print::row_text(self))
     }
 }

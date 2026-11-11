@@ -18,23 +18,13 @@ use crate::{Atom, Block, JoinDef, Label, Tail, Var};
 /// `labels` slots, as many as a function has labels.
 pub fn join_defs(body: &Block, labels: u32) -> Vec<Option<&JoinDef>> {
     let mut table = vec![None; labels as usize];
-    let mut todo = vec![body];
-    while let Some(block) = todo.pop() {
-        match &block.tail {
-            Tail::Join { defs, body, .. } => {
-                for def in defs {
-                    if let Some(slot) = table.get_mut(def.label.0 as usize) {
-                        *slot = Some(def);
-                    }
-                    todo.push(&def.body);
+    for block in body.blocks() {
+        if let Tail::Join { defs, .. } = &block.tail {
+            for def in defs {
+                if let Some(slot) = table.get_mut(def.label.0 as usize) {
+                    *slot = Some(def);
                 }
-                todo.push(body);
             }
-            Tail::Case { arms, default, .. } => {
-                todo.extend(arms.iter().map(|arm| &arm.body));
-                todo.extend(default.as_deref());
-            }
-            Tail::Jump { .. } | Tail::Unreachable | Tail::Trap => {}
         }
     }
     table

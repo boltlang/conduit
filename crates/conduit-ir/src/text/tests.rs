@@ -272,7 +272,7 @@ fn errors_say_where() {
     );
     assert_eq!(
         error("fn fn1() -> () {"),
-        "1:17: expected `let`, `join`, `jump`, `case` or `unreachable`, found the end of the text"
+        "1:17: expected `let`, `join`, `jump`, `case`, `unreachable` or `trap`, found the end of the text"
     );
 }
 
@@ -402,7 +402,7 @@ fn parse_errors() {
         ),
         (
             "fn fn1() -> () { frob }",
-            "1:18: expected `let`, `join`, `jump`, `case` or `unreachable`, found `frob`",
+            "1:18: expected `let`, `join`, `jump`, `case`, `unreachable` or `trap`, found `frob`",
         ),
         (
             "fn fn1() -> () { jump ret(=) }",

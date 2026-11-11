@@ -35,6 +35,7 @@ pub use module::{
 pub use op::{Effects, Memory, Op, Prim, Sign};
 pub use row::Row;
 pub use term::{Arm, Atom, Block, Blocks, JoinDef, Let, Lit, Tag, Tail};
+pub use ty::{CtorDecl, Mutability, Sig, Ty};
 
 /// Runs `f`, on more stack if what's left is low. A function recurses as
 /// deep as the blocks it walks nest, which is as deep as the function is
@@ -44,7 +45,6 @@ pub use term::{Arm, Atom, Block, Blocks, JoinDef, Let, Lit, Tag, Tail};
 pub fn deep<R>(f: impl FnOnce() -> R) -> R {
     stacker::maybe_grow(128 * 1024, 2 * 1024 * 1024, f)
 }
-pub use ty::{CtorDecl, Mutability, Sig, Ty};
 
 /// How passes reach items other than the function they work on. Each
 /// lookup gives `None` for an unknown ID.

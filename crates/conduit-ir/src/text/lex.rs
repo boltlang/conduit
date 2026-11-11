@@ -59,7 +59,7 @@ pub(super) fn lex(src: &str) -> Result<Vec<(Tok, Pos)>, Error> {
 
         let tok = if c == 'b' && chars.get(i + 1) == Some(&'"') {
             i += 2;
-            Tok::Bytes(byte_string(&chars, &mut i, pos)?)
+            Tok::Bytes(string(&chars, &mut i, pos, "byte string")?)
         } else if c.is_ascii_alphabetic()
             || c == '_'
             || (c == '\'' && chars.get(i + 1).is_some_and(|c| c.is_ascii_alphabetic()))
@@ -122,33 +122,11 @@ pub(super) fn lex(src: &str) -> Result<Vec<(Tok, Pos)>, Error> {
             Tok::Num(chars[start..i].iter().collect())
         } else if c == '"' {
             i += 1;
-            let mut s = String::new();
-            loop {
-                match chars.get(i) {
-                    None | Some('\n') => return Err(err(pos, "unterminated string".into())),
-                    Some('"') => break,
-                    Some('\\') => {
-                        let escaped = match chars.get(i + 1) {
-                            Some('"') => '"',
-                            Some('\\') => '\\',
-                            Some('n') => '\n',
-                            Some('t') => '\t',
-                            None | Some('\n') => {
-                                return Err(err(pos, "unterminated string".into()));
-                            }
-                            _ => return Err(err(pos, "unknown escape in a string".into())),
-                        };
-                        s.push(escaped);
-                        i += 2;
-                    }
-                    Some(&c) => {
-                        s.push(c);
-                        i += 1;
-                    }
-                }
+            let bytes = string(&chars, &mut i, pos, "string")?;
+            match String::from_utf8(bytes) {
+                Ok(s) => Tok::Str(s),
+                Err(_) => return Err(err(pos, "a string must be valid UTF-8".into())),
             }
-            i += 1;
-            Tok::Str(s)
         } else {
             let two: String = chars[i..chars.len().min(i + 2)].iter().collect();
             let punct = match two.as_str() {
@@ -195,19 +173,19 @@ fn number_suffix(chars: &[char], i: usize) -> usize {
     }
 }
 
-/// The bytes of a byte string, from just after its `b"` to its closing
-/// `"`, which `i` is left after. Characters other than escapes are their
-/// UTF-8 bytes.
-fn byte_string(chars: &[char], i: &mut usize, pos: Pos) -> Result<Vec<u8>, Error> {
-    let err = |message: &str| Error {
+/// The bytes of a string or byte string, `what`, from just after its
+/// opening `"` to its closing one, which `i` is left after. Characters
+/// other than escapes are their UTF-8 bytes.
+fn string(chars: &[char], i: &mut usize, pos: Pos, what: &str) -> Result<Vec<u8>, Error> {
+    let err = |message: String| Error {
         line: pos.line,
         col: pos.col,
-        message: message.into(),
+        message,
     };
     let mut bytes = Vec::new();
     loop {
         match chars.get(*i) {
-            None | Some('\n') => return Err(err("unterminated byte string")),
+            None | Some('\n') => return Err(err(format!("unterminated {what}"))),
             Some('"') => break,
             Some('\\') => {
                 let escaped = match chars.get(*i + 1) {
@@ -220,14 +198,14 @@ fn byte_string(chars: &[char], i: &mut usize, pos: Pos) -> Result<Vec<u8>, Error
                     Some('x') => {
                         let digits = chars.get(*i + 2..*i + 4).unwrap_or_default();
                         if digits.len() != 2 || !digits.iter().all(char::is_ascii_hexdigit) {
-                            return Err(err("`\\x` needs two hex digits, like `\\x7f`"));
+                            return Err(err("`\\x` needs two hex digits, like `\\x7f`".into()));
                         }
                         let hex: String = digits.iter().collect();
                         *i += 2;
                         u8::from_str_radix(&hex, 16).unwrap()
                     }
-                    None | Some('\n') => return Err(err("unterminated byte string")),
-                    _ => return Err(err("unknown escape in a byte string")),
+                    None | Some('\n') => return Err(err(format!("unterminated {what}"))),
+                    _ => return Err(err(format!("unknown escape in a {what}"))),
                 };
                 bytes.push(escaped);
                 *i += 2;

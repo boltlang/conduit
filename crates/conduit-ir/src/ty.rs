@@ -97,12 +97,11 @@ impl Ty {
     }
 
     /// Whether a value of this type can be used where `other` is expected.
-    /// Only an object's own mutability can differ: `Imm` and `Mut` both fit
-    /// `ReadOnly`, and the row of a closure or continuation: a smaller one
-    /// fits a bigger one, and a `Host` fits a `NullableHost`. A data type's
-    /// arguments, mutabilities and rows,
-    /// must be equal, and so must the types inside a closure or
-    /// continuation type.
+    /// Only three things can differ: an object's own mutability (`Imm` and
+    /// `Mut` both fit `ReadOnly`), the row of a closure or continuation (a
+    /// smaller one fits a bigger one), and a `Host` fits a `NullableHost`.
+    /// Everything else must be equal: a data type's arguments and rows, and
+    /// the types inside a closure or continuation type.
     pub fn is_subtype(&self, other: &Ty) -> bool {
         match (self, other) {
             (Ty::Data(d1, m1, a1, r1), Ty::Data(d2, m2, a2, r2)) => {
@@ -208,35 +207,10 @@ impl Sig {
     }
 }
 
+/// As in the text format.
 impl fmt::Display for Ty {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Ty::I8 => write!(f, "i8"),
-            Ty::I16 => write!(f, "i16"),
-            Ty::I32 => write!(f, "i32"),
-            Ty::I64 => write!(f, "i64"),
-            Ty::F32 => write!(f, "f32"),
-            Ty::F64 => write!(f, "f64"),
-            Ty::Data(d, m, args, rows) if args.is_empty() && rows.is_empty() => {
-                write!(f, "{m} {d}")
-            }
-            Ty::Data(d, m, args, rows) => {
-                let args: Vec<String> = args
-                    .iter()
-                    .map(Mutability::to_string)
-                    .chain(rows.iter().map(Row::to_string))
-                    .collect();
-                write!(f, "{m} {d}[{}]", args.join(", "))
-            }
-            Ty::Array(elem, m) => write!(f, "{m} [{elem}]"),
-            Ty::Fn(sig, m) => write!(f, "{m} fn{sig}"),
-            Ty::Cont(sig) => write!(f, "cont{sig}"),
-            Ty::Ref(ty) => write!(f, "ref {ty}"),
-            Ty::Any(m) => write!(f, "{m} any"),
-            Ty::Host => write!(f, "host"),
-            Ty::NullableHost => write!(f, "nullable host"),
-            Ty::Reuse(c) => write!(f, "reuse {c}"),
-        }
+        f.write_str(&crate::text::print::ty_text(self))
     }
 }
 
@@ -252,17 +226,15 @@ impl fmt::Display for Mutability {
     }
 }
 
+/// As in the text format: `(i32) -> (i64) does effect20`.
 impl fmt::Display for Sig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "({}) -> ({})", list(&self.params), list(&self.results))?;
-        if !self.row.is_nothing() {
-            write!(f, " does {}", self.row)?;
-        }
-        Ok(())
+        f.write_str(&crate::text::print::sig_text(self))
     }
 }
 
-fn list(tys: &[Ty]) -> String {
+/// Types apart by commas, as in a signature: `i32, mut data10`.
+pub(crate) fn list(tys: &[Ty]) -> String {
     tys.iter().map(Ty::to_string).collect::<Vec<_>>().join(", ")
 }
 
