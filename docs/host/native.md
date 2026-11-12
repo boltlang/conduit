@@ -35,6 +35,11 @@ clang -O2 -Wno-override-module module.ll host.c -o program
 - **`counts`** frees memory by reference counting, for a module that
   `insert_counts` ran on; without it, nothing is ever freed. **`cycles`**
   also collects what counting alone can't, as in Wasm.
+- **Debug info:** with `conduit_llvm::emit_module_with_sources` and a
+  `Sources` that says where each of the IR's `SourceId`s is in the
+  frontend's program, the module has DWARF debug info, which debuggers
+  and profilers read (see "Debug info" in
+  [llvm.md](../backends/llvm.md)).
 - **Linking** needs only what a C program has: `malloc`, `calloc`,
   `realloc` and `free`, and for handlers that abort and for exceptions,
   the unwinder (`libgcc_s` or `libunwind`, with

@@ -209,6 +209,28 @@ Not yet:
   rest of the pipeline is the same as for Wasm without stack switching.
   Native stack switching is #46.
 
+## Debug info
+
+The IR's sources, `@src` on `let`s and `jump`s, are opaque to Conduit, so
+the frontend says where each one is: a `conduit_llvm::Sources`, of a
+`Location` (file, line and column) for each `SourceId`, and the directory
+relative files are in, given to `emit_module_with_sources` (#50). With
+one, the module has DWARF debug info (`src/debug.rs`):
+
+- each function with a source in its body is a `DISubprogram`, named
+  after its debug name, with its symbol as its linkage name, at the line
+  of its first source;
+- each instruction lowered from a `let` or `jump` with a source has its
+  `DILocation`, and one lowered from one without has that of the last one
+  before it, so that no call in a function with debug info is without
+  one, which LLVM's verifier rejects;
+- the backend's own functions, like closures' entries, export wrappers
+  and the runtime, have none, and there are no variables yet.
+
+So `gdb`, `lldb` and `perf` show code where it comes from in the
+frontend's program. Without sources, the module has no debug info at
+all.
+
 ## How
 
 | Conduit | LLVM |

@@ -37,12 +37,16 @@
 //!   accesses out of bounds trap.
 
 mod counts;
+mod debug;
 mod handlers;
 mod heap;
 pub mod ir;
 pub mod native;
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
+
+pub use debug::{Location, Sources};
 
 use counts::Kind;
 use ir::{
@@ -52,7 +56,7 @@ use ir::{
 
 use conduit_ir::{
     Abi, Atom, Block, ConstId, ConstValue, CtorId, ExternId, Func, FuncId, JoinDef, Label, Link,
-    Lit, Module, Op, Prim, Sign, Tag, Tail, Ty, Var,
+    Lit, Module, Op, Prim, Sign, SourceId, Tag, Tail, Ty, Var,
 };
 
 /// Why a module can't be lowered: an item, and what's wrong.
@@ -400,12 +404,36 @@ pub fn emit_module_with(m: &Module, options: &Options) -> Result<String, Error> 
     lower_module_with(m, options).map(|m| m.to_string())
 }
 
+/// [`emit_module_with`], with debug info from where `sources` says the
+/// module's sources are: see [`lower_module_with_sources`].
+pub fn emit_module_with_sources(
+    m: &Module,
+    options: &Options,
+    sources: &Sources,
+) -> Result<String, Error> {
+    lower_module_with_sources(m, options, sources).map(|m| m.to_string())
+}
+
 /// The module as LLVM IR, or what it has that isn't supported yet. Each
 /// function `f` is `@fn<f>`, `tailcc`, and each `#[export(c, symbol =
 /// "s")]` gets a C-callable `@s` that calls it. Externs must be
 /// `#[link(c, symbol = "..")]`.
 pub fn lower_module_with(m: &Module, options: &Options) -> Result<ir::Module, Error> {
+    lower_module_with_sources(m, options, &Sources::default())
+}
+
+/// [`lower_module_with`], with DWARF debug info, if `sources` has any
+/// locations: each function with a source in its body is a
+/// `DISubprogram`, and each instruction lowered from a `let` or `jump`
+/// with a source has its location, so that debuggers and profilers show
+/// where in the frontend's program code comes from.
+pub fn lower_module_with_sources(
+    m: &Module,
+    options: &Options,
+    sources: &Sources,
+) -> Result<ir::Module, Error> {
     let err = |func: Option<FuncId>, message: String| Error { func, message };
+    let debug = debug::Debug::new(sources).map(RefCell::new);
     let (m, hs) = handlers::plain_clauses(m).map_err(|message| err(None, message))?;
     let m = &*m;
     let mut out = ir::Module::default();
@@ -520,7 +548,8 @@ pub fn lower_module_with(m: &Module, options: &Options) -> Result<ir::Module, Er
         .extend((hs.items(m, options.counts)).map_err(|message| err(None, message))?);
     let mut kinds = BTreeSet::new();
     for (&id, f) in &m.funcs {
-        let lowered = Lower::new(m, id, f, options, &callbacks, &hs).and_then(Lower::func);
+        let lowered =
+            Lower::new(m, id, f, options, &callbacks, &hs, debug.as_ref()).and_then(Lower::func);
         let (func, fn_entries, fn_kinds) = lowered.map_err(|message| err(Some(id), message))?;
         out.push(func);
         entries.extend(fn_entries);
@@ -579,7 +608,22 @@ pub fn lower_module_with(m: &Module, options: &Options) -> Result<ir::Module, Er
         let wrapper = export_fn(f, id, symbol, options.counts, Handlers::of(m));
         out.push(wrapper.map_err(|message| err(Some(id), message))?);
     }
+    if let Some(debug) = debug {
+        out.metadata = debug.into_inner().finish();
+    }
     Ok(out)
+}
+
+/// The sources of the `let`s and `jump`s of `body`, in the order the
+/// blocks are lowered in.
+fn sources_of(body: &Block) -> impl Iterator<Item = SourceId> + '_ {
+    body.blocks().flat_map(|b| {
+        let jump = match &b.tail {
+            Tail::Jump { source, .. } => *source,
+            _ => None,
+        };
+        b.lets.iter().filter_map(|l| l.source).chain(jump)
+    })
 }
 
 /// The C function `symbol` that calls function `id`, `f`, as an export.
@@ -1000,6 +1044,10 @@ struct Lower<'m> {
     unwind: Option<(ir::Label, Vec<(Var, u32)>)>,
     /// Those landing pads, which go after the body.
     pads: Vec<(ir::Label, Vec<(Var, u32)>)>,
+    /// The module's debug info, and the function's `DISubprogram`, if it
+    /// has one.
+    debug: Option<&'m RefCell<debug::Debug>>,
+    subprogram: Option<u32>,
 }
 
 impl<'m> Lower<'m> {
@@ -1010,12 +1058,30 @@ impl<'m> Lower<'m> {
         options: &Options,
         callbacks: &'m [(Vec<Ty>, Vec<Ty>)],
         handlers: &'m handlers::Handlers,
+        debug: Option<&'m RefCell<debug::Debug>>,
     ) -> Result<Lower<'m>, String> {
         let params = (f.params.iter())
             .map(|v| Ok((ty(f.var_ty(*v))?, format!("a{}", v.0))))
             .collect::<Result<_, String>>()?;
         let ret = ret_ty(&f.results)?;
         let mut b = FnBuilder::new(CallConv::Tail, ret.clone(), fn_name(id), params);
+        // A `DISubprogram` at its first source the frontend placed, and
+        // everything at that until a `let` or `jump` says otherwise.
+        let first = debug.and_then(|d| {
+            let d = d.borrow();
+            sources_of(&f.body).find_map(|s| d.location_of(s))
+        });
+        let subprogram = match (debug, first) {
+            (Some(d), Some(at)) => {
+                let mut d = d.borrow_mut();
+                let name = f.debug.name.as_deref().map_or(fn_name(id), str::to_string);
+                let sp = d.subprogram(&name, &fn_name(id), &at);
+                b.subprogram(sp);
+                b.set_loc(Some(d.location(sp, &at)));
+                Some(sp)
+            }
+            _ => None,
+        };
         // A slot for each variable, and the parameters stored in theirs.
         let vars: Vec<Value> = (f.vars.iter().enumerate())
             .map(|(i, t)| {
@@ -1047,7 +1113,22 @@ impl<'m> Lower<'m> {
             }),
             unwind: None,
             pads: Vec::new(),
+            debug,
+            subprogram,
         })
+    }
+
+    /// Lowers what comes next at `source`, if it has one and the function
+    /// has debug info.
+    fn at(&mut self, source: Option<SourceId>) {
+        let (Some(d), Some(sp), Some(source)) = (self.debug, self.subprogram, source) else {
+            return;
+        };
+        let at = d.borrow().location_of(source);
+        if let Some(at) = at {
+            let loc = d.borrow_mut().location(sp, &at);
+            self.b.set_loc(Some(loc));
+        }
     }
 
     fn func(mut self) -> Result<Lowered, String> {
@@ -1127,6 +1208,7 @@ impl<'m> Lower<'m> {
         conduit_ir::deep(|| {
             let owned = self.owned.as_ref().map(|o| o.during_each(b));
             for (i, l) in b.lets.iter().enumerate() {
+                self.at(l.source);
                 let last = i + 1 == b.lets.len();
                 let tail = last && conduit_ir::tail::returns(&l.binds, &b.tail, &self.defs);
                 if tail
@@ -2123,8 +2205,20 @@ impl<'m> Lower<'m> {
                     self.block(&d.body)?;
                 }
             }
-            Tail::Jump { target, args, .. } if *target == Label::RET => self.ret(args)?,
-            Tail::Jump { target, args, .. } => {
+            Tail::Jump {
+                target,
+                args,
+                source,
+            } if *target == Label::RET => {
+                self.at(*source);
+                self.ret(args)?
+            }
+            Tail::Jump {
+                target,
+                args,
+                source,
+            } => {
+                self.at(*source);
                 let def = (self.defs.get(target.0 as usize).copied().flatten())
                     .ok_or_else(|| format!("{target} isn't defined"))?;
                 // Every argument first, since they may be the parameters.

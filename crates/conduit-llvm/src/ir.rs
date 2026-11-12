@@ -315,7 +315,11 @@ pub enum Terminator {
 pub struct Block {
     pub label: Label,
     pub insts: Vec<Inst>,
+    /// Each instruction's debug location, the metadata node it's `!dbg`,
+    /// if it has one.
+    pub locs: Vec<Option<u32>>,
     pub term: Terminator,
+    pub term_loc: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -330,6 +334,9 @@ pub struct Function {
     pub attrs: Vec<&'static str>,
     /// Its personality function, if it has landing pads.
     pub personality: Option<Value>,
+    /// Its `DISubprogram`, the metadata node it's `!dbg`, if it has debug
+    /// info.
+    pub dbg: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -393,6 +400,9 @@ pub enum Item {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Module {
     pub items: Vec<Item>,
+    /// Lines of metadata, like `!3 = !DILocation(..)`, which go after the
+    /// items.
+    pub metadata: Vec<String>,
 }
 
 impl Module {
@@ -425,9 +435,11 @@ impl From<Function> for Item {
 pub struct FnBuilder {
     func: Function,
     allocas: Vec<Inst>,
-    current: Option<(Label, Vec<Inst>)>,
+    current: Option<(Label, Vec<Inst>, Vec<Option<u32>>)>,
     temps: u32,
     labels: u32,
+    /// The debug location of what's built next.
+    loc: Option<u32>,
 }
 
 impl FnBuilder {
@@ -447,11 +459,13 @@ impl FnBuilder {
                 blocks: Vec::new(),
                 attrs: Vec::new(),
                 personality: None,
+                dbg: None,
             },
             allocas: Vec::new(),
-            current: Some((Label("entry".into()), Vec::new())),
+            current: Some((Label("entry".into()), Vec::new(), Vec::new())),
             temps: 0,
             labels: 0,
+            loc: None,
         }
     }
 
@@ -470,6 +484,17 @@ impl FnBuilder {
         self.func.attrs.push(attr);
     }
 
+    /// Gives the function its `DISubprogram`, metadata node `node`.
+    pub fn subprogram(&mut self, node: u32) {
+        self.func.dbg = Some(node);
+    }
+
+    /// The debug location, metadata node `node`, of what's built from now
+    /// on, or none.
+    pub fn set_loc(&mut self, node: Option<u32>) {
+        self.loc = node;
+    }
+
     /// Gives the function a personality, which its landing pads need.
     pub fn personality(&mut self, f: impl Into<Value>) {
         self.func.personality = Some(f.into());
@@ -482,7 +507,9 @@ impl FnBuilder {
             self.func.name
         );
         if let Some(entry) = self.func.blocks.first_mut() {
+            let n = self.allocas.len();
             entry.insts.splice(0..0, self.allocas);
+            entry.locs.splice(0..0, std::iter::repeat_n(None, n));
         }
         self.func
     }
@@ -506,12 +533,15 @@ impl FnBuilder {
             self.func.name,
             label.0
         );
-        self.current = Some((label.clone(), Vec::new()));
+        self.current = Some((label.clone(), Vec::new(), Vec::new()));
     }
 
     fn push(&mut self, inst: Inst) {
         match &mut self.current {
-            Some((_, insts)) => insts.push(inst),
+            Some((_, insts, locs)) => {
+                insts.push(inst);
+                locs.push(self.loc);
+            }
             None => panic!("{}: an instruction after a terminator", self.func.name),
         }
     }
@@ -523,10 +553,16 @@ impl FnBuilder {
     }
 
     pub fn terminate(&mut self, term: Terminator) {
-        let Some((label, insts)) = self.current.take() else {
+        let Some((label, insts, locs)) = self.current.take() else {
             panic!("{}: a terminator after a terminator", self.func.name);
         };
-        self.func.blocks.push(Block { label, insts, term });
+        self.func.blocks.push(Block {
+            label,
+            insts,
+            locs,
+            term,
+            term_loc: self.loc,
+        });
     }
 
     /// A slot for a value of type `ty`, in the entry block.
@@ -1113,11 +1149,12 @@ impl Display for Terminator {
 
 impl Display for Block {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let dbg = |loc: Option<u32>| loc.map_or(String::new(), |n| format!(", !dbg !{n}"));
         writeln!(f, "{}:", self.label.0)?;
-        for inst in &self.insts {
-            writeln!(f, "  {inst}")?;
+        for (i, inst) in self.insts.iter().enumerate() {
+            writeln!(f, "  {inst}{}", dbg(self.locs.get(i).copied().flatten()))?;
         }
-        writeln!(f, "  {}", self.term)
+        writeln!(f, "  {}{}", self.term, dbg(self.term_loc))
     }
 }
 
@@ -1136,6 +1173,9 @@ impl Display for Function {
         }
         if let Some(p) = &self.personality {
             write!(f, " personality ptr {p}")?;
+        }
+        if let Some(n) = self.dbg {
+            write!(f, " !dbg !{n}")?;
         }
         writeln!(f, " {{")?;
         for b in &self.blocks {
@@ -1200,6 +1240,12 @@ impl Display for Module {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         for item in &self.items {
             write!(f, "{item}")?;
+        }
+        if !self.metadata.is_empty() {
+            writeln!(f)?;
+            for line in &self.metadata {
+                writeln!(f, "{line}")?;
+            }
         }
         Ok(())
     }
