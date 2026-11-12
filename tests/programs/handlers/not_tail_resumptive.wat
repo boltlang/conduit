@@ -17,9 +17,9 @@
   (global (;3;) (mut i32) i32.const 65592)
   (global (;4;) (mut i32) i32.const 56)
   (global (;5;) (mut i32) i32.const 0)
-  (export "main" (func $main_export))
+  (export "main" (func $main))
   (export "memory" (memory 0))
-  (export "conduit_reset" (func 32))
+  (export "conduit_reset" (func 31))
   (elem (;0;) (table 0) (i32.const 0) func 21 22 23 24 25 26 27 28 29 30)
   (func $ask (;0;) (type 0) (param i32) (result i32)
     (local i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32)
@@ -1327,37 +1327,7 @@
     local.get 1
     return_call $doubler_start
   )
-  (func $main_export (;31;) (type 1) (result i32)
-    (local i32 i32 i32)
-    global.get 3
-    local.set 0
-    global.get 4
-    local.set 1
-    block ;; label = @1
-      block (result exnref) ;; label = @2
-        try_table (catch_all_ref 0 (;@2;)) ;; label = @3
-          call $main
-          local.set 2
-        end
-        br 1 (;@1;)
-      end
-      global.get 4
-      local.get 1
-      i32.ne
-      if ;; label = @2
-        global.get 4
-        local.get 1
-        call 20
-        local.get 1
-        global.set 4
-      end
-      local.get 0
-      global.set 3
-      throw_ref
-    end
-    local.get 2
-  )
-  (func (;32;) (type 9)
+  (func (;31;) (type 9)
     i32.const 0
     global.set 1
     i32.const 0

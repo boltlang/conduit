@@ -247,6 +247,12 @@ pub(crate) struct Cx<'m> {
     pub hosts: Option<Hosts>,
     /// What `host_function` needs, if the module has any.
     pub callbacks: Option<Callbacks>,
+    /// Whether an exception from the host can unwind some of its code:
+    /// some function has `throw` in its row. Otherwise an entry point
+    /// needn't catch one, since one that unwinds the module anyway is
+    /// undefined behavior (see "Exceptions from the host" in
+    /// `docs/ir.md`).
+    pub throws: bool,
 }
 
 /// Closures the host calls, made by `host_function`: in Wasm, a JavaScript
@@ -325,7 +331,8 @@ pub(crate) struct Hosts {
 /// closure, then `params`, as the host gives them, and gives `results` as
 /// the host takes them (see `from_host` and `to_host`). It
 /// empties the handler stack, if the module has handlers, and puts it back
-/// after. Each host value it's given goes in a box, and each box it gives
+/// after, also when an exception unwinds it, if the module
+/// [throws](Cx::throws), as it then does with the shadow stack. Each host value it's given goes in a box, and each box it gives
 /// back becomes its `externref`, and the box is dropped. `call` makes the
 /// call, from the locals that hold the arguments, as Conduit has them.
 fn host_entry(
@@ -409,7 +416,7 @@ fn host_entry(
         }
         args.push(p);
     }
-    if saved.is_none() && stack.is_none() {
+    if !cx.throws || (saved.is_none() && stack.is_none()) {
         code.extend(call(&args));
     } else {
         // The call, which puts things back as they were however it ends:
@@ -1164,6 +1171,7 @@ impl<'m> Cx<'m> {
             slot_lists: None,
             hosts: None,
             callbacks: None,
+            throws: m.funcs.values().any(|f| f.row.throws()),
         };
         if options.counts {
             cx.rt = Some(counts::Runtime::new(m, cx.alloc + 1, options.cycles));
@@ -1537,8 +1545,8 @@ fn lower_runtime(cx: &mut Cx<'_>) -> Result<(Vec<Lowered>, Vec<Lowered>), Error>
 /// The wrappers of exports, the first at index `next`, with the index of
 /// each. With handler frames in memory, each export runs under a wrapper
 /// that empties the handler stack and puts it back after, and with a
-/// shadow stack, under one that puts its pointer back, however the export
-/// ends. An export that takes or gives host values runs under one too,
+/// shadow stack, in a module that [throws](Cx::throws), under one that
+/// puts its pointer back, however the export ends. An export that takes or gives host values runs under one too,
 /// which converts them (see `host_entry`).
 fn lower_export_wrappers(
     cx: &mut Cx<'_>,
@@ -1555,7 +1563,10 @@ fn lower_export_wrappers(
         let Some(func) = m.funcs.get(&f) else {
             continue;
         };
-        if m.handlers.is_empty() && cx.stack.is_none() && !takes_or_gives_host(m, f) {
+        // The shadow stack only needs putting back if an exception can
+        // unwind the export.
+        let stack = cx.stack.is_some() && cx.throws;
+        if m.handlers.is_empty() && !stack && !takes_or_gives_host(m, f) {
             continue;
         }
         let err = Error::at(Item::Func(f));

@@ -48,8 +48,9 @@ seen.
 
 ## Entry points
 
-`host_entry` makes every export wrapper and trampoline. When the module has
-handlers or a shadow stack, it:
+`host_entry` makes every export wrapper and trampoline. When some function
+of the module has `throw` in its row, so that an exception from the host
+can unwind it, and the module has handlers or a shadow stack, it:
 
 1. saves `HANDLERS`, `SITE`, and the shadow stack's pointer and limit in
    locals, and empties `HANDLERS`, since an export starts with no
@@ -66,7 +67,15 @@ returns has popped what it pushed already. Putting it back, with
 point saved it, which the frames that unwound took and never released.
 
 An export of a module with a shadow stack but no handlers and no host
-values didn't need a wrapper before. It has one now.
+values needs a wrapper only for that, so it has one only when something
+throws.
+
+In a module where nothing has `throw`, an entry point catches nothing: it
+empties `HANDLERS` and puts it back when the call returns, as before #40.
+An exception that unwinds it anyway came from an extern without `throw`,
+which is undefined behavior (see "Exceptions from the host" in
+[`../ir.md`](../ir.md)), after which the host must not use the instance
+again, so nothing would see the state it leaves.
 
 With stack switching, a continuation runs on shadow stack segments of its
 own. Its `drive` function catches what its body throws and switches back

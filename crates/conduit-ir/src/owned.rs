@@ -61,7 +61,7 @@ pub fn lent(f: &Func, borrowed: impl Fn(usize) -> bool) -> BTreeSet<Var> {
 /// host, which only an extern with `throw` can.
 ///
 /// So: a `perform`, `discontinue`, `resume` or `handle`, or a call or
-/// `apply` of something whose row [unwinds](unwinds), in a function whose
+/// `apply` of something whose row [`unwinds`], in a function whose
 /// own row does too, since what it performs is otherwise handled inside
 /// it; or a `call_extern` whose row has `throw`.
 pub fn may_unwind(m: &Module, f: &Func, l: &Let) -> bool {

@@ -232,28 +232,14 @@
     return_call $produce
   )
   (func $main_export (;7;) (type 0) (result i32)
-    (local i32 i32 i32)
+    (local i32 i32)
     global.get 1
     local.set 0
     global.get 2
     local.set 1
     i32.const 0
     global.set 1
-    block ;; label = @1
-      block (result exnref) ;; label = @2
-        try_table (catch_all_ref 0 (;@2;)) ;; label = @3
-          call $main
-          local.set 2
-        end
-        br 1 (;@1;)
-      end
-      local.get 0
-      global.set 1
-      local.get 1
-      global.set 2
-      throw_ref
-    end
-    local.get 2
+    call $main
     local.get 0
     global.set 1
     local.get 1

@@ -1593,112 +1593,56 @@
     return_call $get_then_log
   )
   (func $issue_export (;46;) (type 5) (result i32)
-    (local i32 i32 i32)
+    (local i32 i32)
     global.get 1
     local.set 0
     global.get 2
     local.set 1
     i32.const 0
     global.set 1
-    block ;; label = @1
-      block (result exnref) ;; label = @2
-        try_table (catch_all_ref 0 (;@2;)) ;; label = @3
-          call $issue
-          local.set 2
-        end
-        br 1 (;@1;)
-      end
-      local.get 0
-      global.set 1
-      local.get 1
-      global.set 2
-      throw_ref
-    end
-    local.get 2
+    call $issue
     local.get 0
     global.set 1
     local.get 1
     global.set 2
   )
   (func $log_reads_outer_export (;47;) (type 5) (result i32)
-    (local i32 i32 i32)
+    (local i32 i32)
     global.get 1
     local.set 0
     global.get 2
     local.set 1
     i32.const 0
     global.set 1
-    block ;; label = @1
-      block (result exnref) ;; label = @2
-        try_table (catch_all_ref 0 (;@2;)) ;; label = @3
-          call $log_reads_outer
-          local.set 2
-        end
-        br 1 (;@1;)
-      end
-      local.get 0
-      global.set 1
-      local.get 1
-      global.set 2
-      throw_ref
-    end
-    local.get 2
+    call $log_reads_outer
     local.get 0
     global.set 1
     local.get 1
     global.set 2
   )
   (func $log_then_fail_export (;48;) (type 5) (result i32)
-    (local i32 i32 i32)
+    (local i32 i32)
     global.get 1
     local.set 0
     global.get 2
     local.set 1
     i32.const 0
     global.set 1
-    block ;; label = @1
-      block (result exnref) ;; label = @2
-        try_table (catch_all_ref 0 (;@2;)) ;; label = @3
-          call $log_then_fail
-          local.set 2
-        end
-        br 1 (;@1;)
-      end
-      local.get 0
-      global.set 1
-      local.get 1
-      global.set 2
-      throw_ref
-    end
-    local.get 2
+    call $log_then_fail
     local.get 0
     global.set 1
     local.get 1
     global.set 2
   )
   (func $nested_export (;49;) (type 5) (result i32)
-    (local i32 i32 i32)
+    (local i32 i32)
     global.get 1
     local.set 0
     global.get 2
     local.set 1
     i32.const 0
     global.set 1
-    block ;; label = @1
-      block (result exnref) ;; label = @2
-        try_table (catch_all_ref 0 (;@2;)) ;; label = @3
-          call $nested
-          local.set 2
-        end
-        br 1 (;@1;)
-      end
-      local.get 0
-      global.set 1
-      local.get 1
-      global.set 2
-      throw_ref
-    end
-    local.get 2
+    call $nested
     local.get 0
     global.set 1
     local.get 1
