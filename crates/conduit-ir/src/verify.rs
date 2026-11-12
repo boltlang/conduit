@@ -100,6 +100,16 @@ pub fn verify_module(m: &Module) -> Result<(), Vec<Error>> {
         }
     }
     for (&id, effect) in &m.effects {
+        if id == EffectId::THROW && effect.ops != EffectDecl::throw().ops {
+            errors.push(decl_error(
+                Item::Effect(id),
+                format!(
+                    "throw is built in, with one operation, {}: declare it with \
+                     `Module::declare_throw`",
+                    EffectDecl::throw().ops[0]
+                ),
+            ));
+        }
         for (i, sig) in effect.ops.iter().enumerate() {
             if let Err(message) = sig_ok(m, sig, 0, 0).and_then(|()| no_row(sig)) {
                 errors.push(decl_error(
@@ -345,6 +355,15 @@ fn check_handler<P: Program + ?Sized>(
             if !crate::types::is_sub_sig(p, &types, &expected) {
                 err(format!(
                     "clause {clause} for {e}.{i} has type {sig}, but should have {expected}"
+                ));
+            } else if *e == EffectId::THROW
+                && p.func(clause)
+                    .is_some_and(|f| crate::clause::aborting(f).is_none())
+            {
+                // What raised is gone: see "Rules" in docs/exceptions.md.
+                err(format!(
+                    "clause {clause} for throw.{i} may resume its continuation, but nothing \
+                     can be resumed after an exception"
                 ));
             } else if !sig.row.is_in(&h.row) {
                 err(format!(
@@ -616,6 +635,13 @@ fn no_token(ty: &Ty) -> Result<(), String> {
 /// parameters `E1` to `E{params}`.
 pub(crate) fn row_ok<P: Program + ?Sized>(p: &P, row: &Row, params: u32) -> Result<(), String> {
     if let Some(e) = row.effects().iter().find(|&&e| p.effect(e).is_none()) {
+        if *e == EffectId::THROW {
+            return Err(
+                "a row has throw, which the module doesn't declare: declare it with \
+                 `Module::declare_throw`"
+                    .into(),
+            );
+        }
         return Err(format!("unknown effect {e} in row {row}"));
     }
     match row.params().iter().find(|&&i| i == 0 || i > params) {

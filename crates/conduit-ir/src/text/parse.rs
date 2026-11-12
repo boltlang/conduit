@@ -17,6 +17,7 @@ pub fn parse(src: &str) -> Result<Module, Error> {
         items,
         vars: Names::default(),
         labels: Names::default(),
+        uses_throw: false,
     };
     p.module()
 }
@@ -80,6 +81,9 @@ struct Parser {
     /// The names of the variables and labels of the function being read.
     vars: Names,
     labels: Names,
+    /// Whether the module refers to `throw`, so that it gets its
+    /// declaration.
+    uses_throw: bool,
 }
 
 /// An attribute like `#[link(wasm, module = "env")]`.
@@ -547,7 +551,12 @@ impl Parser {
                 );
             }
             let name = match self.peek() {
-                Tok::Eof => return Ok(m),
+                Tok::Eof => {
+                    if self.uses_throw {
+                        m.declare_throw();
+                    }
+                    return Ok(m);
+                }
                 Tok::Ident(s) => s.clone(),
                 _ => {
                     return self
@@ -694,9 +703,9 @@ impl Parser {
     /// A handler after its effect parameters.
     fn handler_rest(&mut self, pos: Pos) -> Res<HandlerDecl> {
         self.keyword("for")?;
-        let mut effects = vec![EffectId(self.item("effect")?)];
+        let mut effects = vec![self.effect_ref()?];
         while self.eat_punct(",") {
-            effects.push(EffectId(self.item("effect")?));
+            effects.push(self.effect_ref()?);
         }
         let row = self.row()?;
         self.keyword("env")?;
@@ -936,15 +945,8 @@ impl Parser {
         if self.eat_keyword("Any") {
             return Ok(Row::ANY);
         }
-        let (mut effects, mut params, mut throw) = (Vec::new(), Vec::new(), false);
+        let (mut effects, mut params) = (Vec::new(), Vec::new());
         loop {
-            if self.eat_keyword("throw") {
-                throw = true;
-                if !self.eat_punct("+") {
-                    break;
-                }
-                continue;
-            }
             let param = match self.peek() {
                 Tok::Ident(s) => self.effect_params.iter().position(|p| p == s),
                 _ => None,
@@ -954,13 +956,22 @@ impl Parser {
                     self.next();
                     params.push(i as u32 + 1);
                 }
-                None => effects.push(EffectId(self.item("effect")?)),
+                None => effects.push(self.effect_ref()?),
             }
             if !self.eat_punct("+") {
                 break;
             }
         }
-        Ok(Row::with_params(effects, params).with_throw(throw))
+        Ok(Row::with_params(effects, params))
+    }
+
+    /// An effect: `throw`, the built-in one, or one the module declares.
+    fn effect_ref(&mut self) -> Res<EffectId> {
+        if self.eat_keyword("throw") {
+            self.uses_throw = true;
+            return Ok(EffectId::THROW);
+        }
+        Ok(EffectId(self.item("effect")?))
     }
 
     fn var(&mut self, info: &mut FuncInfo) -> Res<Var> {
@@ -1440,7 +1451,7 @@ impl Parser {
                 Op::Handle(h, rows)
             }
             "perform" => {
-                let e = EffectId(self.item("effect")?);
+                let e = self.effect_ref()?;
                 self.punct(".")?;
                 Op::Perform(e, self.index()?)
             }
@@ -1454,7 +1465,7 @@ impl Parser {
             "reuse_token" => Op::ReuseToken,
             "reuse" => Op::Reuse(self.ctor()?),
             "discontinue" => {
-                let e = EffectId(self.item("effect")?);
+                let e = self.effect_ref()?;
                 self.punct(".")?;
                 Op::Discontinue(e, self.index()?)
             }

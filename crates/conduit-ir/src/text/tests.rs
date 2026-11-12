@@ -1050,3 +1050,41 @@ fn f(%f: imm fn() -> () does throw + Log) -> () does throw + Log {
     m.effects.get_mut(&EffectId(0)).unwrap().debug_name = Some("throw".into());
     assert!(!print(&m).contains("effect throw"), "{}", print(&m));
 }
+
+/// `throw` is an effect everywhere one can be named, whose declaration
+/// the module gets without writing it, and which must be the built-in
+/// one.
+#[test]
+fn throw_as_an_effect() {
+    let text = "handler catch for throw env() ops(caught) ret fine
+
+fn caught(%e: nullable host, %k: cont() -> ()) -> () {
+  jump ret()
+}
+
+fn fine() -> () {
+  jump ret()
+}
+
+fn raises(%e: nullable host) -> () does throw {
+  let = perform throw.0(%e)
+  jump ret()
+}
+";
+    let m = parse(text).unwrap();
+    assert_eq!(print(&m), text);
+    assert_eq!(m.effects[&EffectId::THROW], EffectDecl::throw());
+    verify_module(&m).unwrap();
+    let mut wrong = m.clone();
+    wrong.effects.get_mut(&EffectId::THROW).unwrap().ops[0].params = vec![Ty::I32];
+    let errors = verify_module(&wrong).unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message.contains("throw is built in")),
+        "{errors:?}"
+    );
+    let mut undeclared = m;
+    undeclared.effects.clear();
+    assert!(verify_module(&undeclared).is_err());
+}

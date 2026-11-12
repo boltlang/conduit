@@ -1,6 +1,7 @@
-// `throw`, the built-in effect of what an exception from the host can
-// unwind (#59): it's in the row of everything that can reach an extern
-// that has it, and no handler takes it out.
+// `throw`, the built-in effect of exceptions from the host (#59, #38):
+// it's in the row of everything that can reach an extern that has it,
+// only a handler for it takes it out, and none of that handler's clauses
+// may resume.
 
 effect Ask {
   () -> (i32)
@@ -77,7 +78,30 @@ fn fn10() -> () does Any {
   jump ret()
 }
 
+// A clause for `raise` that resumes: nothing can be resumed after an
+// exception.
+handler resumes for throw env() ops(fn11) ret fn5
+
+fn fn11(%e: nullable host, %k: cont() -> ()) -> () {
+  let = resume(%k)
+  jump ret()
+}
+
+// One that aborts catches, and takes `throw` out of the row.
+handler catches for throw env() ops(fn12) ret fn5
+
+fn fn12(%e: nullable host, %k: cont() -> ()) -> () {
+  jump ret()
+}
+
+fn fn13() -> () {
+  let %b: imm fn() -> () does throw = closure fn1()
+  let = handle catches(%b)
+  jump ret()
+}
+
 //# verify-error: fn0: call_extern extern0 may perform throw, but the function has no effects
 //# verify-error: fn2: fn1 does throw, which isn't in the row of fn() -> ()
 //# verify-error: fn3: call fn1 may perform throw, but the function only does effect0
 //# verify-error: fn7: the body of handle handler0 does throw + effect0, which isn't in effect0
+//# verify-error: resumes (handler2): clause fn11 for throw.0 may resume its continuation, but nothing can be resumed after an exception

@@ -24,6 +24,16 @@ pub struct Module {
     pub exports: BTreeMap<FuncId, Export>,
 }
 
+impl Module {
+    /// Declares the built-in effect `throw`, if it isn't yet: a module
+    /// whose rows, handlers or ops use [`EffectId::THROW`] must.
+    pub fn declare_throw(&mut self) {
+        self.effects
+            .entry(EffectId::THROW)
+            .or_insert_with(EffectDecl::throw);
+    }
+}
+
 /// A top-level function. Nested functions don't exist: frontends lift them,
 /// with their captured values as the first parameters.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -312,6 +322,18 @@ pub struct EffectDecl {
     pub ops: Vec<Sig>,
     /// A name to show it by. See [`FuncDebug`].
     pub debug_name: Option<Box<str>>,
+}
+
+impl EffectDecl {
+    /// The declaration of the built-in [`EffectId::THROW`]: one operation,
+    /// `raise`, which takes the value thrown and gives nothing, since no
+    /// clause for it resumes.
+    pub fn throw() -> EffectDecl {
+        EffectDecl {
+            ops: vec![Sig::new(vec![Ty::NullableHost], vec![])],
+            debug_name: Some("throw".into()),
+        }
+    }
 }
 
 /// A deep handler of one or more effects. A `perform` goes to the nearest

@@ -81,6 +81,7 @@ fn may_throw(m: &Module) -> bool {
 /// and closure may then throw, which costs a cleanup at more calls than
 /// need one, but only in modules that both throw and are lowered.
 fn throw_everywhere(m: &mut Module) {
+    m.declare_throw();
     fn sig(s: &mut Sig) {
         s.row = s.row.with_throw(true);
         s.params.iter_mut().chain(&mut s.results).for_each(ty);

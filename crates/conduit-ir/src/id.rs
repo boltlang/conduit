@@ -48,6 +48,14 @@ pub struct Var(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Label(pub u32);
 
+impl EffectId {
+    /// The built-in effect `throw`, of exceptions from the host, whose one
+    /// operation, `raise`, gives the value thrown: see
+    /// `docs/exceptions.md`. A module that uses it has its declaration,
+    /// [`EffectDecl::throw`](crate::EffectDecl::throw), under this ID.
+    pub const THROW: EffectId = EffectId(u64::MAX);
+}
+
 impl Label {
     /// The label in scope in every function body, whose parameters are the
     /// function's results. Returning is `jump ret(..)`.
@@ -68,11 +76,21 @@ display! {
     FuncId => "fn{}",
     DataId => "data{}",
     ExternId => "extern{}",
-    EffectId => "effect{}",
     HandlerId => "handler{}",
     ConstId => "const{}",
     SourceId => "src{}",
     Var => "%{}",
+}
+
+/// `effect{n}`, or `throw` for [`EffectId::THROW`].
+impl std::fmt::Display for EffectId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if *self == EffectId::THROW {
+            f.write_str("throw")
+        } else {
+            write!(f, "effect{}", self.0)
+        }
+    }
 }
 
 impl std::fmt::Display for Label {

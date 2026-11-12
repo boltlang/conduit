@@ -31,7 +31,14 @@ impl Items {
         Items {
             data: spellings("data", 0, &named(&m.data, |d| d.0, |d| &d.debug_name)),
             externs: spellings("extern", 0, &named(&m.externs, |e| e.0, |e| &e.debug_name)),
-            effects: spellings("effect", 0, &named(&m.effects, |e| e.0, |e| &e.debug_name)),
+            effects: spellings(
+                "effect",
+                0,
+                &named(&m.effects, |e| e.0, |e| &e.debug_name)
+                    .into_iter()
+                    .filter(|&(id, _)| id != EffectId::THROW.0)
+                    .collect::<Vec<_>>(),
+            ),
             handlers: spellings(
                 "handler",
                 0,
@@ -61,6 +68,9 @@ impl Items {
     }
 
     fn effect(&self, e: EffectId) -> String {
+        if e == EffectId::THROW {
+            return "throw".to_string();
+        }
         Self::get(&self.effects, "effect", e.0)
     }
 
@@ -145,9 +155,14 @@ impl Items {
         if row.is_nothing() {
             return "Nothing".to_string();
         }
-        let throw = row.throws().then(|| "throw".to_string());
+        // `throw` first, though its ID is the last.
+        let effects = row.effects().iter().filter(|&&e| e != EffectId::THROW);
+        let throw = row
+            .effects()
+            .contains(&EffectId::THROW)
+            .then(|| "throw".to_string());
         let items: Vec<String> = (throw.into_iter())
-            .chain(row.effects().iter().map(|&e| self.effect(e)))
+            .chain(effects.map(|&e| self.effect(e)))
             .chain(row.params().iter().map(|p| format!("E{p}")))
             .collect();
         items.join(" + ")
@@ -284,7 +299,8 @@ pub(super) fn module(m: &Module) -> String {
             names.const_value(&decl.value)
         ));
     }
-    for (id, effect) in &m.effects {
+    // `throw` is built in, so it has no declaration in the text.
+    for (id, effect) in m.effects.iter().filter(|(id, _)| **id != EffectId::THROW) {
         let mut s = format!("effect {} {{\n", names.effect(*id));
         for sig in &effect.ops {
             let _ = writeln!(s, "  {}", names.sig(sig));

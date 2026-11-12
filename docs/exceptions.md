@@ -55,9 +55,11 @@ fn caught(%e: nullable host, %k: cont() -> (R)) -> (R) { .. }  // never resumes
 fn fine(%r: ..) -> (R) { .. }
 ```
 
-*Status:* `throw` in rows, and externs with it, are implemented, as a
-flag on rows that nothing performs or handles (#59). Making it an effect
-with `raise`, performing it and handling it, is in progress (#38, #63).
+*Status:* implemented: `throw` is an effect under the reserved
+`EffectId::THROW`, whose declaration a module gets with
+`Module::declare_throw` (the text format adds it), and Conduit code can
+perform and handle it in every implementation. Catching what the host
+throws isn't implemented yet: see below.
 
 ## Rules
 
@@ -89,7 +91,9 @@ with `raise`, performing it and handling it, is in progress (#38, #63).
 5. **Host value ops never throw.** Natively, `retain` and `release` of a
    `conduit_host_ops` run from drops, which can't have `throw`.
 
-*Status:* 3, 4 and 5 are implemented (#59). 1 and 2 come with `raise`.
+*Status:* 1, 3, 4 and 5 are implemented. A `raise` that nothing
+handles still traps, as any operation does, rather than going to the
+host.
 
 ## How the implementations do it
 
@@ -123,6 +127,9 @@ become a `raise` somewhere:
   call of the extern raises.
 
 *Status:* the cleanups are implemented in Wasm and natively, and so are
-the entry points for a `throw` that only unwinds (#59, #40). Evidence
+the entry points for a `throw` that only unwinds (#59, #40). A `raise`
+from Conduit code is caught by a handler for `throw` everywhere, as an
+aborting clause's operation is. Catching what the host throws isn't
+implemented: a handler for `throw` doesn't see it yet, and evidence
 passing gives every row of a module that throws `throw` instead of
-converting (#62). Catching and raising aren't implemented yet.
+converting (#62).

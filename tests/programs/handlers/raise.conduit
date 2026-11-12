@@ -1,0 +1,58 @@
+// Raising from Conduit code and catching it (#38, #63): `throw` is an
+// effect whose clause never resumes, so catching is an aborting handler.
+// What the frames it leaves own is dropped, with counts.
+
+data Box {
+  (i32)
+}
+
+// Gives 1 when what's handled raises, and what it gave otherwise.
+handler catch for throw env() ops(caught) ret fine
+
+fn caught(%e: nullable host, %k: cont() -> (i32)) -> (i32) {
+  jump ret(-1i32)
+}
+
+fn fine(%r: i32) -> (i32) {
+  jump ret(%r)
+}
+
+fn checked(%x: i32) -> (i32) does throw {
+  let %b: mut Box = new Box.0(%x)
+  let %neg: i32 = lt.s(%x, 0i32)
+  case %neg {
+    0 =>
+      let %y: i32 = get Box.0.0(%b)
+      jump ret(%y)
+    _ =>
+      let %none: nullable host = host_null()
+      let = perform throw.0(%none)
+      jump ret(0i32)
+  }
+}
+
+fn twice_checked(%x: i32) -> (i32) does throw {
+  let %b: mut Box = new Box.0(%x)
+  let %y: i32 = call checked(%x)
+  let %z: i32 = get Box.0.0(%b)
+  let %r: i32 = add(%y, %z)
+  jump ret(%r)
+}
+
+fn try(%x: i32) -> (i32) {
+  let %body: imm fn() -> (i32) does throw = closure twice_checked(%x)
+  let %r: i32 = handle catch(%body)
+  jump ret(%r)
+}
+
+// 3 + 3, then -1 for the raise.
+fn both() -> (i32) {
+  let %a: i32 = call try(3i32)
+  let %b: i32 = call try(-5i32)
+  let %r: i32 = add(%a, %b)
+  jump ret(%r)
+}
+
+//# run try(3i32) == 6i32
+//# run try(-5i32) == -1i32
+//# run both() == 5i32

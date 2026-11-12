@@ -6,10 +6,8 @@ use std::fmt;
 use crate::id::EffectId;
 
 /// A set of effects and effect parameters, or `Any`, which can perform
-/// anything, and whether it has the built-in `throw`: an exception from
-/// outside Conduit, like a JavaScript one from an extern, can unwind what
-/// has it. Nothing performs `throw`, and no handler takes it out of a
-/// row; see "Exceptions from the host" in `docs/ir.md`.
+/// anything. The built-in effect `throw`, [`EffectId::THROW`], is one of
+/// the effects: see `docs/exceptions.md`.
 ///
 /// Parameter `i` is `E{i}`, counted from 1, of the function, data type or
 /// handler the row is in, as mutability parameters are. Calls, closures,
@@ -21,7 +19,6 @@ use crate::id::EffectId;
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct Row {
     any: bool,
-    throw: bool,
     effects: Vec<EffectId>,
     params: Vec<u32>,
 }
@@ -30,7 +27,6 @@ impl Row {
     /// No effects.
     pub const NOTHING: Row = Row {
         any: false,
-        throw: false,
         effects: Vec::new(),
         params: Vec::new(),
     };
@@ -38,7 +34,6 @@ impl Row {
     /// Anything: for frontends that don't track effects.
     pub const ANY: Row = Row {
         any: true,
-        throw: false,
         effects: Vec::new(),
         params: Vec::new(),
     };
@@ -50,7 +45,6 @@ impl Row {
         effects.dedup();
         Row {
             any: false,
-            throw: false,
             effects,
             params: Vec::new(),
         }
@@ -60,7 +54,6 @@ impl Row {
     pub fn one(e: EffectId) -> Row {
         Row {
             any: false,
-            throw: false,
             effects: vec![e],
             params: Vec::new(),
         }
@@ -70,7 +63,6 @@ impl Row {
     pub fn param(i: u32) -> Row {
         Row {
             any: false,
-            throw: false,
             effects: Vec::new(),
             params: vec![i],
         }
@@ -89,32 +81,33 @@ impl Row {
     }
 
     /// Just `throw`.
-    pub const THROW: Row = Row {
-        any: false,
-        throw: true,
-        effects: Vec::new(),
-        params: Vec::new(),
-    };
+    pub fn throw() -> Row {
+        Row::one(EffectId::THROW)
+    }
 
     pub fn is_any(&self) -> bool {
         self.any
     }
 
     pub fn is_nothing(&self) -> bool {
-        !self.any && !self.throw && self.effects.is_empty() && self.params.is_empty()
+        !self.any && self.effects.is_empty() && self.params.is_empty()
     }
 
     /// Whether an exception from the host can unwind what has this row:
     /// it has `throw`, or is `Any`.
     pub fn throws(&self) -> bool {
-        self.any || self.throw
+        self.any || self.effects.contains(&EffectId::THROW)
     }
 
     /// The row with `throw`, or without it. `Any` stays `Any`.
     pub fn with_throw(&self, throw: bool) -> Row {
-        let mut row = self.clone();
-        row.throw = throw && !row.any;
-        row
+        if self.any {
+            self.clone()
+        } else if throw {
+            self.union(&Row::throw())
+        } else {
+            self.without(EffectId::THROW)
+        }
     }
 
     /// The effects, unless it's `Any`.
@@ -132,7 +125,6 @@ impl Row {
     pub fn is_in(&self, other: &Row) -> bool {
         other.any
             || (!self.any
-                && (!self.throw || other.throw)
                 && self.effects.iter().all(|e| other.effects.contains(e))
                 && self.params.iter().all(|p| other.params.contains(p)))
     }
@@ -146,7 +138,6 @@ impl Row {
             self.effects.iter().chain(&other.effects).copied(),
             self.params.iter().chain(&other.params).copied(),
         )
-        .with_throw(self.throw || other.throw)
     }
 
     /// The row with each parameter `i` replaced by `args[i - 1]`. A
@@ -156,7 +147,7 @@ impl Row {
         if self.any || self.params.is_empty() || args.is_empty() {
             return self.clone();
         }
-        let mut row = Row::new(self.effects.iter().copied()).with_throw(self.throw);
+        let mut row = Row::new(self.effects.iter().copied());
         for &p in &self.params {
             match args.get(p as usize - 1) {
                 Some(arg) => row = row.union(arg),
@@ -190,20 +181,20 @@ mod tests {
         let log = Row::one(EffectId(1));
         let both = log.with_throw(true);
         assert!(both.throws() && !log.throws() && !both.is_nothing());
-        assert!(Row::THROW.is_in(&both) && !Row::THROW.is_in(&log));
+        assert!(Row::throw().is_in(&both) && !Row::throw().is_in(&log));
         assert!(log.is_in(&both) && !both.is_in(&log));
-        assert_eq!(Row::THROW.union(&log), both);
-        assert!(Row::ANY.throws() && Row::THROW.is_in(&Row::ANY));
+        assert_eq!(Row::throw().union(&log), both);
+        assert!(Row::ANY.throws() && Row::throw().is_in(&Row::ANY));
         assert_eq!(Row::ANY.with_throw(true), Row::ANY);
         // A parameter given a row with `throw` gives the row `throw`, and
         // `throw` stays when the parameters are substituted.
-        assert!(Row::param(1).subst(&[Row::THROW]).throws());
+        assert!(Row::param(1).subst(&[Row::throw()]).throws());
         assert!(
             Row::param(1)
                 .with_throw(true)
                 .subst(std::slice::from_ref(&log))
                 .throws()
         );
-        assert_eq!(both.without(EffectId(1)), Row::THROW);
+        assert_eq!(both.without(EffectId(1)), Row::throw());
     }
 }
