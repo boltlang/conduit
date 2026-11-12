@@ -2,6 +2,8 @@ use std::fmt;
 
 use conduit_ir::{EffectId, FuncId, SourceId};
 
+use crate::Value;
+
 /// Why evaluation stopped.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Error {
@@ -42,6 +44,10 @@ pub enum ErrorKind {
     Exit(i32),
     /// IR that the verifier would have rejected.
     Unverified(String),
+    /// A `raise` of `throw` that nothing handled, which goes to the host
+    /// as an exception (see `docs/exceptions.md`): what was thrown, as
+    /// the host sees it, like `host 3` or `null`.
+    Uncaught(String),
 }
 
 impl fmt::Display for Error {
@@ -73,6 +79,7 @@ impl fmt::Display for Error {
             ErrorKind::Host(message) => write!(f, "host function failed: {message}"),
             ErrorKind::Exit(code) => write!(f, "exited with code {code}"),
             ErrorKind::Unverified(message) => write!(f, "invalid IR: {message}"),
+            ErrorKind::Uncaught(value) => write!(f, "uncaught exception: {value}"),
         }
     }
 }
@@ -80,13 +87,17 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {}
 
 /// Why a host function gives no results.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum HostError {
     /// It failed, which ends the run with [`ErrorKind::Host`].
     Failed(String),
     /// It ends the program with this exit code, unwinding no handlers, which
     /// ends the run with [`ErrorKind::Exit`].
     Exit(i32),
+    /// It threw this host value, or null, as a JavaScript function can.
+    /// The call of an extern with `throw` in its row raises it there, and
+    /// one without is undefined behavior: see `docs/exceptions.md`.
+    Throw(Value),
 }
 
 impl From<String> for HostError {
@@ -106,7 +117,21 @@ impl From<HostError> for ErrorKind {
         match e {
             HostError::Failed(message) => ErrorKind::Host(message),
             HostError::Exit(code) => ErrorKind::Exit(code),
+            HostError::Throw(v) => ErrorKind::Undefined(format!(
+                "a host function threw {}, from an extern without throw in its row",
+                thrown(v)
+            )),
         }
+    }
+}
+
+/// A thrown value as the host sees it, for messages.
+pub(crate) fn thrown(v: Value) -> String {
+    match v {
+        Value::Host(n) => format!("host {n}"),
+        Value::Function(k) => format!("host function {k}"),
+        Value::Null => "null".into(),
+        other => format!("{other:?}"),
     }
 }
 

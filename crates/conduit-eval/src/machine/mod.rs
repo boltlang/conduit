@@ -793,7 +793,11 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                 let margs = self.concrete_all(margs)?;
                 return self.call_from(*f, margs, args, binds, next);
             }
-            Op::CallExtern(e) => self.call_extern(*e, args)?,
+            Op::CallExtern(e) => match self.call_extern(*e, args)? {
+                Ok(results) => results,
+                // What it threw is raised where it was called.
+                Err(thrown) => return self.perform(EffectId::THROW, 0, vec![thrown], binds, next),
+            },
             Op::Closure(f, margs, _) => {
                 let is_mut = self.binds_mut(binds)?;
                 let margs = self.concrete_all(margs)?;
@@ -1125,8 +1129,13 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
     }
 
     /// Calls the host's function for extern `e`. A host value is the
-    /// host's number, both ways, and a null is itself.
-    fn call_extern(&mut self, e: ExternId, mut args: Vec<Value>) -> Step<Vec<Value>> {
+    /// host's number, both ways, and a null is itself. What it threw, if
+    /// `e`'s row has `throw`, is the error, to raise.
+    fn call_extern(
+        &mut self,
+        e: ExternId,
+        mut args: Vec<Value>,
+    ) -> Step<Result<Vec<Value>, Value>> {
         let decl = self
             .p
             .extern_fn(e)
@@ -1147,9 +1156,16 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
         let mut arrays = Arrays {
             heap: &mut self.heap,
         };
-        let mut results = (self.host)
-            .call(name, decl, &args, &mut arrays)
-            .map_err(ErrorKind::from)?;
+        let mut results = match (self.host).call(name, decl, &args, &mut arrays) {
+            Ok(results) => results,
+            Err(HostError::Throw(v)) if decl.sig.row.throws() => {
+                let thrown = self
+                    .take_from_host(v, &Ty::NullableHost)
+                    .map_err(|what| ErrorKind::Host(format!("{name} threw a {what} value")))?;
+                return Ok(Err(thrown));
+            }
+            Err(e) => return Err(ErrorKind::from(e)),
+        };
         if results.len() != decl.sig.results.len() {
             return Err(ErrorKind::Host(format!(
                 "{name} gave {} results instead of {}",
@@ -1164,7 +1180,7 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                 ))
             })?;
         }
-        Ok(results)
+        Ok(Ok(results))
     }
 
     fn handle(
@@ -1198,11 +1214,16 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
             }
             Frame::Code(_) => false,
         };
-        let at = self
-            .stack
-            .iter()
-            .rposition(handles)
-            .ok_or(ErrorKind::Unhandled(effect))?;
+        let Some(at) = self.stack.iter().rposition(handles) else {
+            // An exception nothing catches goes to the host.
+            if effect == EffectId::THROW
+                && let [thrown] = &args[..]
+            {
+                let thrown = self.give_to_host(*thrown, &Ty::NullableHost)?;
+                return Err(ErrorKind::Uncaught(crate::error::thrown(thrown)));
+            }
+            return Err(ErrorKind::Unhandled(effect));
+        };
         self.code()?.waiting = Some((binds, next));
         // The continuation is the handler's frame and everything above it,
         // so that the resumed computation is handled again.

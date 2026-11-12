@@ -44,6 +44,11 @@
 - **Hosts take and give values,** whatever the extern's ABI. A `Host`
   gets an `Arrays` view of the heap, which reads any array it's given and
   writes the `mut` ones, as a flat-ABI host does through memory.
+- **Hosts can throw,** with `HostError::Throw` and the value thrown. The
+  call of an extern with `throw` in its row raises it there, so a
+  handler for `throw` catches it, and a `raise` nothing handles ends the
+  run with `ErrorKind::Uncaught`. A throw from an extern without `throw`
+  is undefined behavior (see [exceptions.md](exceptions.md)).
 - **Reference counts are checked** with `Machine::counting` on. Every
   object has a count, which `Dup`, `Drop` and the ops that count for
   themselves change (see "Reference counts" in [ir.md](ir.md)), and an object is freed at

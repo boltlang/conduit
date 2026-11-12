@@ -1497,6 +1497,89 @@ fn main(%n: i32) -> (i32) {
     assert_eq!(error.kind, ErrorKind::Exit(3));
 }
 
+/// A host function can throw a host value, which the call of an extern
+/// with `throw` raises, so that a handler for `throw` catches it. One that
+/// nothing catches ends the run with it, and one from an extern without
+/// `throw` is undefined behavior (see docs/exceptions.md).
+#[test]
+fn hosts_can_throw() {
+    struct Throws;
+    impl Host for Throws {
+        fn call(
+            &mut self,
+            name: &str,
+            _: &Extern,
+            args: &[Value],
+            _: &mut Arrays<'_, '_>,
+        ) -> Result<Vec<Value>, HostError> {
+            match (name, args) {
+                ("parse" | "parse_unmarked", [Value::I32(n)]) if *n < 0 => {
+                    Err(HostError::Throw(Value::Host(7)))
+                }
+                ("parse" | "parse_unmarked", [Value::I32(n)]) => Ok(vec![Value::I32(n * 10)]),
+                ("is_seven", [Value::Host(h)]) => Ok(vec![Value::I32(i32::from(*h == 7))]),
+                _ => Err("no such function".into()),
+            }
+        }
+    }
+    let m = conduit_ir::text::parse(
+        "data Box {
+  (i32)
+}
+#[link(emu)]
+extern parse(i32) -> (i32) does throw
+#[link(emu)]
+extern parse_unmarked(i32) -> (i32)
+#[link(emu)]
+extern is_seven(host) -> (i32)
+handler catch for throw env() ops(caught) ret fine
+fn caught(%e: nullable host, %k: cont() -> (i32)) -> (i32) {
+  let %h: host = host_unwrap(%e)
+  let %seven: i32 = call_extern is_seven(%h)
+  let %r: i32 = sub(0i32, %seven)
+  jump ret(%r)
+}
+fn fine(%r: i32) -> (i32) {
+  jump ret(%r)
+}
+fn body(%n: i32) -> (i32) does throw {
+  let %b: mut Box = new Box.0(%n)
+  let %r: i32 = call_extern parse(%n)
+  let %x: i32 = get Box.0.0(%b)
+  let %s: i32 = add(%r, %x)
+  jump ret(%s)
+}
+fn main(%n: i32) -> (i32) {
+  let %b: imm fn() -> (i32) does throw = closure body(%n)
+  let %r: i32 = handle catch(%b)
+  jump ret(%r)
+}
+fn uncaught(%n: i32) -> (i32) does throw {
+  let %r: i32 = call body(%n)
+  jump ret(%r)
+}
+fn unmarked(%n: i32) -> (i32) {
+  let %r: i32 = call_extern parse_unmarked(%n)
+  jump ret(%r)
+}",
+    )
+    .unwrap();
+    verify_module(&m).unwrap();
+    let find = |name| conduit_ir::text::find_func(&m, name).unwrap();
+    let run = |n: i32| Machine::new(&m, Throws).call(find("main"), vec![Value::I32(n)]);
+    assert_eq!(run(2).unwrap(), vec![Value::I32(22)]);
+    // It threw host 7, which the clause got.
+    assert_eq!(run(-1).unwrap(), vec![Value::I32(-1)]);
+    let error = Machine::new(&m, Throws)
+        .call(find("uncaught"), vec![Value::I32(-1)])
+        .unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Uncaught("host 7".into()));
+    let error = Machine::new(&m, Throws)
+        .call(find("unmarked"), vec![Value::I32(-1)])
+        .unwrap_err();
+    assert!(matches!(error.kind, ErrorKind::Undefined(_)), "{error}");
+}
+
 /// Every op that counts finds an object that's been freed, not only `drop`
 /// and uses: each is undefined behavior, named after the op.
 #[test]

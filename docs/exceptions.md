@@ -91,9 +91,9 @@ throws isn't implemented yet: see below.
 5. **Host value ops never throw.** Natively, `retain` and `release` of a
    `conduit_host_ops` run from drops, which can't have `throw`.
 
-*Status:* 1, 3, 4 and 5 are implemented. A `raise` that nothing
-handles still traps, as any operation does, rather than going to the
-host.
+*Status:* 1, 3, 4 and 5 are implemented, and 2 in the evaluator: a
+`raise` that nothing handles ends its run with `ErrorKind::Uncaught`. In
+Wasm and natively it still traps, as any operation does.
 
 ## How the implementations do it
 
@@ -129,7 +129,8 @@ become a `raise` somewhere:
 *Status:* the cleanups are implemented in Wasm and natively, and so are
 the entry points for a `throw` that only unwinds (#59, #40). A `raise`
 from Conduit code is caught by a handler for `throw` everywhere, as an
-aborting clause's operation is. Catching what the host throws isn't
-implemented: a handler for `throw` doesn't see it yet, and evidence
-passing gives every row of a module that throws `throw` instead of
-converting (#62).
+aborting clause's operation is, and the evaluator raises what a host
+function throws. Catching what the host throws in Wasm and natively
+isn't implemented: a handler for `throw` doesn't see it yet, and
+evidence passing gives every row of a module that throws `throw`
+instead of converting (#62).
