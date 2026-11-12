@@ -121,7 +121,8 @@ is unique, and a reuse token holds no memory.
 
 ## Host values
 
-A native host's value is its own pointer, with the functions that keep
+How to write a host for a module built this way is in
+[host/native.md](host/native.md). A native host's value is its own pointer, with the functions that keep
 it alive and let it go, as C passes them:
 
 ```c

@@ -11,6 +11,7 @@
 | [lowerings.md](lowerings.md) | Evidence passing, which removes effect handlers, and reference counting, which makes counts explicit | frontend and backend authors |
 | [wasm.md](wasm.md) | The Wasm backend: its options, how it lowers control flow and handlers, and how values live in linear memory | backend authors |
 | [llvm.md](llvm.md) | The experimental LLVM backend: what it lowers, how, and its tests | backend authors |
+| [host/native.md](host/native.md) | Running natively, through the LLVM backend: building, linking, the C calling convention, host values, callbacks, exceptions, with an example | embedders and runtime authors |
 | [host/js.md](host/js.md) | Running in browsers and Node.js: what the engine needs, host values, strings, callbacks, garbage collection | embedders and runtime authors |
 | [evaluator.md](evaluator.md) | `conduit-eval`, which runs IR directly, for tests | frontend and pass authors |
 
