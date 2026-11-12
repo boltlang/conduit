@@ -127,47 +127,52 @@ pub fn elem_ty(ty: &Ty) -> Option<Ty> {
 /// "Subtyping" in `docs/verify.md`.
 ///
 /// - An object's own mutability: `Imm` and `Mut` fit `ReadOnly`.
-/// - Under a `ReadOnly` view, which is never written through, what an
-///   object holds fits too: an array's elements, and a data type's fields,
-///   with the view's `ReadOnly` in place of `Inherit`, so that a
-///   `mut [mut [i32]]` fits `ro [ro [i32]]`, and a `D[mut]` fits
-///   `ro D[ro]` when `D`'s fields do. Under any other mutability, they
-///   must be equal, since a `Mut` object can be written, and an `Imm` one
-///   holds only `Imm` values.
+/// - Under a view that's never written through, `ReadOnly` or `Imm`,
+///   what an object holds fits too: an array's elements, and a data
+///   type's fields, with the view's mutability in place of `Inherit`.
+///   So a `mut [mut [i32]]` fits `ro [ro [i32]]`, a `D[mut]` fits
+///   `ro D[ro]` when `D`'s fields do, and an `imm D[Nothing]` fits
+///   `imm D[E]` when `D`'s closures only do its row (#57, #60). Under
+///   `Mut`, they must be equal, since a `Mut` object can be written.
 /// - A closure or continuation takes what fits its parameters and gives
 ///   what fits its results: parameters contravariant, results covariant,
 ///   and a row that's in the other's.
 /// - A `Host` fits a `NullableHost`.
 ///
-/// Everything else must be equal: a ref's type, which can be written,
-/// and a data type's rows.
+/// Everything else must be equal, like a ref's type, which can be
+/// written.
 pub fn is_subtype<P: Program + ?Sized>(p: &P, a: &Ty, b: &Ty) -> bool {
     sub(p, a, b, &mut Vec::new())
 }
 
 /// The data types being compared, which are assumed to fit, so that
 /// recursive types terminate.
-type Assumed = Vec<(
-    DataId,
-    Mutability,
-    Vec<Mutability>,
-    Vec<Mutability>,
-    Vec<Row>,
-)>;
+type Assumed = Vec<(DataId, [Mutability; 2], [Vec<Mutability>; 2], [Vec<Row>; 2])>;
+
+/// Whether nothing is written through a view of mutability `m`, so that
+/// what it holds can be seen as its supertypes.
+fn read_only(m: Mutability) -> bool {
+    matches!(m, Mutability::ReadOnly | Mutability::Imm)
+}
 
 fn sub<P: Program + ?Sized>(p: &P, a: &Ty, b: &Ty, assumed: &mut Assumed) -> bool {
     crate::deep(|| match (a, b) {
         (Ty::Data(d1, m1, a1, r1), Ty::Data(d2, m2, a2, r2)) => {
-            if d1 != d2 || r1 != r2 || !m1.is_sub(*m2) {
+            if d1 != d2 || !m1.is_sub(*m2) {
                 return false;
             }
-            if a1 == a2 {
+            if a1 == a2 && r1 == r2 {
                 return true;
             }
-            if *m2 != Mutability::ReadOnly {
+            if !read_only(*m2) {
                 return false;
             }
-            let key = (*d1, *m1, a1.clone(), a2.clone(), r1.clone());
+            let key = (
+                *d1,
+                [*m1, *m2],
+                [a1.clone(), a2.clone()],
+                [r1.clone(), r2.clone()],
+            );
             if assumed.contains(&key) {
                 return true;
             }
@@ -177,15 +182,14 @@ fn sub<P: Program + ?Sized>(p: &P, a: &Ty, b: &Ty, assumed: &mut Assumed) -> boo
             };
             (decl.ctors.iter().flat_map(|c| &c.fields)).all(|f| {
                 let have = resolve(f, *m1, a1, r1);
-                let want = resolve(f, Mutability::ReadOnly, a2, r2);
+                let want = resolve(f, *m2, a2, r2);
                 sub(p, &have, &want, assumed)
             })
         }
         (Ty::Array(e1, m1), Ty::Array(e2, m2)) => {
             m1.is_sub(*m2)
                 && (e1 == e2
-                    || (*m2 == Mutability::ReadOnly
-                        && sub(p, &inherit(e1, *m1), &inherit(e2, *m2), assumed)))
+                    || (read_only(*m2) && sub(p, &inherit(e1, *m1), &inherit(e2, *m2), assumed)))
         }
         (Ty::Fn(s1, m1), Ty::Fn(s2, m2)) => m1.is_sub(*m2) && sig_sub(p, s1, s2, assumed),
         (Ty::Cont(s1), Ty::Cont(s2)) => sig_sub(p, s1, s2, assumed),

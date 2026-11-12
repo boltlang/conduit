@@ -1,8 +1,8 @@
-// What a deep `ro` view still doesn't allow (#57): an object that can be
-// written holds what its type says, so what's in it can't be seen as
-// anything else; a closure can't be used as one taking less than it
-// takes; and a data type's argument can only change where its fields are
-// read.
+// What a deep `ro` view still doesn't allow (#57, #60): an object that
+// can be written holds what its type says, so what's in it can't be seen
+// as anything else; a closure can't be used as one taking less than it
+// takes; and a data type's argument or row can only change where its
+// fields are read, and only the way they're read.
 
 data W {
   (i32)
@@ -49,7 +49,63 @@ fn fn8(%q: mut Q[mut]) -> () {
   jump ret()
 }
 
+effect Log {
+  (i32) -> ()
+}
+
+data Thunk[E1] {
+  (imm fn() -> (i32) does E1)
+}
+
+// The row is in an object that can be written.
+fn fn9(%t: mut Thunk[Log]) -> () {
+  jump ret()
+}
+
+fn fn10(%t: mut Thunk[Nothing]) -> () {
+  let = call fn9(%t)
+  jump ret()
+}
+
+// The row is in what the field's closure takes, so a smaller row doesn't
+// fit, even under `imm`: the sink would get a thunk that logs.
+data Sink[E1] {
+  (imm fn(imm fn() -> () does E1) -> ())
+}
+
+fn fn11(%s: imm Sink[Log]) -> () {
+  jump ret()
+}
+
+fn fn12(%s: imm Sink[Nothing]) -> () {
+  let = call fn11(%s)
+  jump ret()
+}
+
+// The other way round fits.
+fn fn13(%s: imm Sink[Nothing]) -> () {
+  jump ret()
+}
+
+fn fn14(%s: imm Sink[Log]) -> () {
+  let = call fn13(%s)
+  jump ret()
+}
+
+// A `mut` array's elements stay as they are, rows too.
+fn fn15(%ts: mut [imm Thunk[Log]]) -> () {
+  jump ret()
+}
+
+fn fn16(%ts: mut [imm Thunk[Nothing]]) -> () {
+  let = call fn15(%ts)
+  jump ret()
+}
+
 //# verify-error: fn2: call of fn1: value 0 has type mut [mut [i32]], but should have mut [ro [i32]]
 //# verify-error: fn4: call of fn3: value 0 has type imm fn(imm data0) -> (i32), but should have imm fn(ro data0) -> (i32)
 //# verify-error: fn6: call of fn5: value 0 has type ref mut [i32], but should have ref ro [i32]
 //# verify-error: fn8: call of fn7: value 0 has type mut data1[mut], but should have ro data1[ro]
+//# verify-error: fn10: call of fn9: value 0 has type mut data2[Nothing], but should have mut data2[effect0]
+//# verify-error: fn12: call of fn11: value 0 has type imm data3[Nothing], but should have imm data3[effect0]
+//# verify-error: fn16: call of fn15: value 0 has type mut [imm data2[Nothing]], but should have mut [imm data2[effect0]]

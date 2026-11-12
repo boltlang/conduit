@@ -1,0 +1,79 @@
+// A data type's rows under a view that's never written through, `ro` or
+// `imm` (#60): what it holds needs only fit, so a thunk that does nothing
+// can be used where one that may log is expected.
+
+effect Log {
+  (i32) -> ()
+}
+
+data Thunk[E1] {
+  (imm fn() -> (i32) does E1)
+}
+
+fn seven() -> (i32) {
+  jump ret(7i32)
+}
+
+fn logs_eight() -> (i32) does Log {
+  let = perform Log.0(1i32)
+  jump ret(8i32)
+}
+
+fn force(%t: ro Thunk[Log]) -> (i32) does Log {
+  let %f: imm fn() -> (i32) does Log = get Thunk.0.0(%t)
+  let %r: i32 = apply(%f)
+  jump ret(%r)
+}
+
+// Forces each thunk and adds up what they give.
+fn force_all(%ts: imm [imm Thunk[Log]]) -> (i32) does Log {
+  let %a: imm Thunk[Log] = array_get(%ts, 0i32)
+  let %b: imm Thunk[Log] = array_get(%ts, 1i32)
+  let %x: i32 = call force(%a)
+  let %y: i32 = call force(%b)
+  let %r: i32 = add(%x, %y)
+  jump ret(%r)
+}
+
+fn body() -> (i32) does Log {
+  let %g: imm fn() -> (i32) = closure seven()
+  // A `mut Thunk[Nothing]` seen as `ro Thunk[Log]`.
+  let %m: mut Thunk[Nothing] = new Thunk.0(%g)
+  let %x: i32 = call force(%m)
+  // An `imm` array of `imm Thunk[Nothing]` seen as one of `imm Thunk[Log]`.
+  let %i: imm Thunk[Nothing] = new Thunk.0(%g)
+  let %pure: imm [imm Thunk[Nothing]] = array_new(%i, %i)
+  let %y: i32 = call force_all(%pure)
+  let %h: imm fn() -> (i32) does Log = closure logs_eight()
+  let %l: imm Thunk[Log] = new Thunk.0(%h)
+  let %mixed: imm [imm Thunk[Log]] = array_new(%i, %l)
+  let %z: i32 = call force_all(%mixed)
+  let %xy: i32 = add(%x, %y)
+  let %r: i32 = add(%xy, %z)
+  jump ret(%r)
+}
+
+handler logger for Log env(ref i32) ops(log) ret logged
+
+fn log(%total: ref i32, %x: i32, %k: cont() -> (i32)) -> (i32) {
+  let %t: i32 = ref_get(%total)
+  let %t1: i32 = add(%t, %x)
+  let = ref_set(%total, %t1)
+  let %r: i32 = resume(%k)
+  jump ret(%r)
+}
+
+fn logged(%total: ref i32, %r: i32) -> (i32) {
+  jump ret(%r)
+}
+
+// 7 + (7 + 7) + (7 + 8), with one log.
+fn rows() -> (i32, i32) {
+  let %total: ref i32 = ref_new(0i32)
+  let %b: imm fn() -> (i32) does Log = closure body()
+  let %r: i32 = handle logger(%total, %b)
+  let %t: i32 = ref_get(%total)
+  jump ret(%r, %t)
+}
+
+//# run rows() == (36i32, 1i32)

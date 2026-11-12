@@ -528,9 +528,10 @@ An object of mutability `m` holds only what is **at most** `m` all the
 way down, in the order `Imm ⊑ ReadOnly ⊑ Mut`. So an `Imm` one holds no
 `Ref`, `Cont` or anything `Mut` or `ReadOnly`, and a `Mut` one holds
 anything. Only `Mut` objects can be written. `Imm` and `Mut` are
-subtypes of `ReadOnly`, all the way down under a `ReadOnly` view, and a
-closure that gives `Imm` or `Mut` values fits one that gives `ReadOnly`
-ones, as one that takes `ReadOnly` fits one that takes either. Nothing
+subtypes of `ReadOnly`, all the way down under a `ReadOnly` view; under
+a `ReadOnly` or `Imm` view, what an object holds, rows too, need only
+fit; and a closure that gives `Imm` or `Mut` values fits one that gives
+`ReadOnly` ones, as one that takes `ReadOnly` fits one that takes either. Nothing
 else converts between mutabilities: a value of another mutability is a
 new value (see below). The verifier
 checks all of this: see "Mutability" in [verify.md](verify.md).
