@@ -416,6 +416,12 @@ pub fn lower_module_with(m: &Module, options: &Options) -> Result<ir::Module, Er
         attrs: vec!["noreturn", "nounwind"],
         ..Declare::new(Type::Void, "llvm.trap", vec![])
     });
+    // For the landing pads of what an abort or an exception from the host
+    // unwinds.
+    out.push(Declare {
+        variadic: true,
+        ..Declare::new(Type::I32, handlers::PERSONALITY, vec![])
+    });
     out.push(Declare::new(
         Type::Ptr,
         "calloc",
@@ -976,7 +982,7 @@ impl<'m> Lower<'m> {
             counts: options.counts,
             cycles: options.counts && options.cycles,
             kinds: BTreeSet::new(),
-            owned: (options.counts && !f.row.is_nothing()).then(|| {
+            owned: (options.counts && conduit_ir::owned::unwinds(m, &f.row)).then(|| {
                 conduit_ir::owned::Owned::new(f, |g, i| {
                     m.funcs.get(&g).is_some_and(|g| g.is_borrowed(i))
                 })
@@ -1012,8 +1018,9 @@ impl<'m> Lower<'m> {
         Ok(())
     }
 
-    /// A call that an abort can unwind: an `invoke` of the landing pad of
-    /// the `let` being lowered, if it has one.
+    /// A call that an abort or an exception from the host can unwind: an
+    /// `invoke` of the landing pad of the `let` being lowered, if it has
+    /// one.
     fn call_out(&mut self, call: Call) -> Option<Value> {
         match self.unwind.as_ref().map(|(pad, _)| pad.clone()) {
             Some(pad) => {
@@ -1935,7 +1942,7 @@ impl<'m> Lower<'m> {
             .map(|t| (t.clone(), self.b.alloca(t)))
             .collect();
         out.extend(slots.iter().map(|(_, p)| Type::Ptr.val(p)));
-        let r = self.b.call(Call::c(ret, Value::global(&**symbol), out));
+        let r = self.call_out(Call::c(ret, Value::global(&**symbol), out));
         let mut values: Vec<Value> = r.into_iter().collect();
         for (t, p) in slots {
             values.push(self.b.load(t, p));
@@ -1998,7 +2005,7 @@ impl<'m> Lower<'m> {
             out.push(Typed(Type::Ptr, p.clone()));
             outs.push((t, p));
         }
-        let r = self.b.call(Call::c(ret, Value::global(symbol), out));
+        let r = self.call_out(Call::c(ret, Value::global(symbol), out));
         for iov in lists {
             let free = Call::c(
                 Type::Void,

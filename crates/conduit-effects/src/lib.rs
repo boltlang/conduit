@@ -29,6 +29,9 @@
 //!   them. Which calls may yield comes from rows: an effect yields if one
 //!   of its handlers has a clause that isn't tail-resumptive, or performs
 //!   one that does.
+//! - **`throw`** is the one effect left, in modules where some function
+//!   has it: every row of the lowered module gets it (see
+//!   `throw_everywhere`).
 //! - **Continuations** are closures that take a closure giving what the
 //!   `perform` gives: `resume` passes one giving the values, and
 //!   `discontinue` one that performs its operation there. A flag in each
@@ -51,6 +54,7 @@ pub fn lower_effects(m: &mut Module) -> Result<(), String> {
     if m.handlers.is_empty() && !uses_effects(m) {
         return Ok(());
     }
+    let throws = may_throw(m);
     let mut cx = Lower::new(m)?;
     cx.prepare()?;
     cx.emit()?;
@@ -58,7 +62,71 @@ pub fn lower_effects(m: &mut Module) -> Result<(), String> {
         return Err(cx.errors.join("\n"));
     }
     *m = cx.out;
+    if throws {
+        throw_everywhere(m);
+    }
     Ok(())
+}
+
+/// Whether an exception from the host may unwind some of `m`'s code: some
+/// function has `throw` in its row, or `Any`. One that calls an extern
+/// with `throw` has it, so externs that nothing calls don't count.
+fn may_throw(m: &Module) -> bool {
+    m.funcs.values().any(|f| f.row.throws())
+}
+
+/// Gives every row in `m` `throw`. The lowering takes out every effect,
+/// `throw` too; this puts it back where the backends look for it, in
+/// modules that have it, without following where it went: every function
+/// and closure may then throw, which costs a cleanup at more calls than
+/// need one, but only in modules that both throw and are lowered.
+fn throw_everywhere(m: &mut Module) {
+    fn sig(s: &mut Sig) {
+        s.row = s.row.with_throw(true);
+        s.params.iter_mut().chain(&mut s.results).for_each(ty);
+    }
+    fn ty(t: &mut Ty) {
+        match t {
+            Ty::Fn(s, _) | Ty::Cont(s) => sig(s),
+            Ty::Array(e, _) | Ty::Ref(e) => ty(e),
+            _ => {}
+        }
+    }
+    fn value(v: &mut ConstValue) {
+        match v {
+            ConstValue::Box(t, inner) => {
+                ty(t);
+                value(inner);
+            }
+            ConstValue::Array(parts) | ConstValue::New(_, parts) => {
+                parts.iter_mut().for_each(value)
+            }
+            ConstValue::Lit(_) | ConstValue::Const(_) | ConstValue::Closure(_) => {}
+        }
+    }
+    for f in m.funcs.values_mut() {
+        f.row = f.row.with_throw(true);
+        f.vars.iter_mut().chain(&mut f.results).for_each(ty);
+        f.body.for_each_mut(|b| {
+            for l in &mut b.lets {
+                if let Op::Box(t) | Op::Unbox(t) = &mut l.op {
+                    ty(t);
+                }
+            }
+        });
+    }
+    for e in m.externs.values_mut() {
+        sig(&mut e.sig);
+    }
+    for d in m.data.values_mut() {
+        for c in &mut d.ctors {
+            c.fields.iter_mut().for_each(ty);
+        }
+    }
+    for c in m.consts.values_mut() {
+        ty(&mut c.ty);
+        value(&mut c.value);
+    }
 }
 
 /// Whether some function has a row, a continuation or an effect op.

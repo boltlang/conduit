@@ -63,6 +63,12 @@ can run on it.
   the handlers there. A flag makes a second use trap. A node's link to the
   evidence outside is set each time it runs, so a continuation resumed
   somewhere else runs under the handlers there.
+- **`throw` stays.** Every row is gone afterwards, but in a module where
+  some function has `throw`, every row, closure type and continuation of
+  the lowered module gets it back, so that the backends still put
+  cleanups where an exception from the host can unwind. That doesn't
+  follow where it went, so it costs a cleanup at calls that don't need
+  one, but only in modules that both throw and are lowered.
 
 The test programs run after it in the evaluator, after the optimizer, and
 in Wasm without stack switching.

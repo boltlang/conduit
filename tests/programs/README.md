@@ -143,6 +143,7 @@ in `conduit-test` checks.
 |---|---|---|
 | `double` | `(i32) -> (i32)` | twice its argument |
 | `double_io` | `(i32) -> (i32) does io` | the same, requiring the effect `io` |
+| `double_throw` | `(i32) -> (i32) does throw` | the same, as an extern that may throw an exception, though it never does |
 | `sum` | `#[abi(flat)]`, `(imm [i8]) -> (i32) does io` | the sum of its bytes, as signed |
 | `fill` | `#[abi(flat)]`, `(mut [i8], i32) -> () does io` | sets every byte to the second argument's low byte |
 | `gather` | `#[abi(flat)]`, `(imm [imm [i8]]) -> (i32, i32) does io` | how many buffers, and the sum of all their bytes |

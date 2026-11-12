@@ -134,7 +134,7 @@ pub(crate) fn lower_func<'m>(cx: &mut Cx<'m>, f: &'m Func) -> Result<Body, Strin
         on_stack: false,
         owned: None,
     };
-    if fcx.cx.rt.is_some() && !f.row.is_nothing() {
+    if fcx.cx.rt.is_some() && conduit_ir::owned::unwinds(fcx.cx.m, &f.row) {
         let m = fcx.cx.m;
         fcx.owned = Some(conduit_ir::owned::Owned::new(f, move |g, i| {
             m.funcs.get(&g).is_some_and(|g| g.is_borrowed(i))

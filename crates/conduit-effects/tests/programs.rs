@@ -162,7 +162,8 @@ fn effects_left(m: &Module) -> Option<String> {
         return Some("handlers".into());
     }
     for (id, f) in &m.funcs {
-        if !f.row.is_nothing() {
+        // `throw` stays: the backends need it.
+        if !f.row.with_throw(false).is_nothing() {
             return Some(format!("a row on {id}"));
         }
         for b in f.body.blocks() {

@@ -25,7 +25,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::tail::join_defs;
-use crate::{Atom, Block, Func, FuncId, Label, Let, Module, Mutability, Op, Tail, Ty, Var};
+use crate::{Atom, Block, Func, FuncId, Label, Let, Module, Mutability, Op, Row, Tail, Ty, Var};
 
 type Counts = BTreeMap<Var, i64>;
 
@@ -56,24 +56,38 @@ pub fn lent(f: &Func, borrowed: impl Fn(usize) -> bool) -> BTreeSet<Var> {
     lent
 }
 
-/// Whether an abort can unwind `f`'s frame while `l` runs, as it can only
-/// through code that may perform: a `perform`, `discontinue`, `resume` or
-/// `handle`, or a call or `apply` of a function whose row isn't empty, in
-/// a function whose own row isn't empty either, since what it performs is
-/// otherwise handled inside it.
+/// Whether something can unwind `f`'s frame while `l` runs: an abort,
+/// which only code that may perform can make, or an exception from the
+/// host, which only an extern with `throw` can.
+///
+/// So: a `perform`, `discontinue`, `resume` or `handle`, or a call or
+/// `apply` of something whose row [unwinds](unwinds), in a function whose
+/// own row does too, since what it performs is otherwise handled inside
+/// it; or a `call_extern` whose row has `throw`.
 pub fn may_unwind(m: &Module, f: &Func, l: &Let) -> bool {
-    if f.row.is_nothing() {
+    if !unwinds(m, &f.row) {
         return false;
     }
     match &l.op {
         Op::Perform(..) | Op::Discontinue(..) | Op::Resume | Op::Handle(..) => true,
-        Op::Call(g, ..) => m.funcs.get(g).is_none_or(|g| !g.row.is_nothing()),
+        Op::Call(g, ..) => m.funcs.get(g).is_none_or(|g| unwinds(m, &g.row)),
+        Op::CallExtern(e) => m.externs.get(e).is_none_or(|e| e.sig.row.throws()),
         Op::Apply => match l.args.first().map(|a| f.atom_ty(a)) {
-            Some(Ty::Fn(sig, _)) => !sig.row.is_nothing(),
+            Some(Ty::Fn(sig, _)) => unwinds(m, &sig.row),
             _ => true,
         },
         _ => false,
     }
+}
+
+/// Whether code of row `row` can be unwound: it may perform an effect
+/// that has operations, which an aborting handler can unwind, or has
+/// `throw`, or is `Any`. An effect without operations, like an extern's
+/// `io`, can't be performed, so it can't abort.
+pub fn unwinds(m: &Module, row: &Row) -> bool {
+    row.throws()
+        || !row.params().is_empty()
+        || (row.effects().iter()).any(|e| m.effects.get(e).is_none_or(|d| !d.ops.is_empty()))
 }
 
 /// The analysis of one counted function.

@@ -145,10 +145,9 @@ impl Items {
         if row.is_nothing() {
             return "Nothing".to_string();
         }
-        let items: Vec<String> = row
-            .effects()
-            .iter()
-            .map(|&e| self.effect(e))
+        let throw = row.throws().then(|| "throw".to_string());
+        let items: Vec<String> = (throw.into_iter())
+            .chain(row.effects().iter().map(|&e| self.effect(e)))
             .chain(row.params().iter().map(|p| format!("E{p}")))
             .collect();
         items.join(" + ")

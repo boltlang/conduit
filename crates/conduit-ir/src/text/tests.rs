@@ -1027,3 +1027,26 @@ fn product#3() -> () { jump ret() }",
         Err("`%1` isn't a function: expected `fn1` or a name".into())
     );
 }
+
+/// `throw` is written first in a row, and is built in, so no effect can be
+/// named that, and one whose name is `throw` is written by its number.
+#[test]
+fn throw_in_rows() {
+    let text = "effect Log {
+  (i32) -> ()
+}
+
+fn f(%f: imm fn() -> () does throw + Log) -> () does throw + Log {
+  let = apply(%f)
+  jump ret()
+}
+";
+    let m = parse(text).unwrap();
+    assert_eq!(print(&m), text);
+    assert!(m.funcs[&FuncId(0)].row.throws());
+    let err = parse("effect throw {\n}\n").unwrap_err();
+    assert!(err.to_string().contains("`throw` is built in"), "{err}");
+    let mut m = parse("effect e {\n}\n").unwrap();
+    m.effects.get_mut(&EffectId(0)).unwrap().debug_name = Some("throw".into());
+    assert!(!print(&m).contains("effect throw"), "{}", print(&m));
+}

@@ -1,0 +1,83 @@
+// `throw`, the built-in effect of what an exception from the host can
+// unwind (#59): it's in the row of everything that can reach an extern
+// that has it, and no handler takes it out.
+
+effect Ask {
+  () -> (i32)
+}
+
+#[link(wasm, module = "env", name = "boom")]
+extern boom() -> () does throw
+
+// Calls an extern that throws, without `throw` in its row.
+fn fn0() -> () {
+  let = call_extern boom()
+  jump ret()
+}
+
+fn fn1() -> () does throw {
+  let = call_extern boom()
+  jump ret()
+}
+
+// A closure that throws, of a type that doesn't.
+fn fn2() -> () {
+  let %f: imm fn() -> () = closure fn1()
+  jump ret()
+}
+
+// Calls a function that throws.
+fn fn3() -> () does Ask {
+  let = call fn1()
+  jump ret()
+}
+
+// A handler for `Ask` doesn't take out `throw`: the body throws, and the
+// handler's row doesn't have it.
+handler asker for Ask env() ops(fn4) ret fn5
+
+fn fn4(%k: cont(i32) -> ()) -> () {
+  let = resume(%k, 1i32)
+  jump ret()
+}
+
+fn fn5() -> () {
+  jump ret()
+}
+
+fn fn6() -> () does Ask + throw {
+  let %x: i32 = perform Ask.0()
+  let = call_extern boom()
+  jump ret()
+}
+
+fn fn7() -> () does throw {
+  let %b: imm fn() -> () does Ask + throw = closure fn6()
+  let = handle asker(%b)
+  jump ret()
+}
+
+// One whose row has `throw` lets it through.
+handler passes for Ask does throw env() ops(fn8) ret fn5
+
+fn fn8(%k: cont(i32) -> () does throw) -> () does throw {
+  let = resume(%k, 1i32)
+  jump ret()
+}
+
+fn fn9() -> () does throw {
+  let %b: imm fn() -> () does Ask + throw = closure fn6()
+  let = handle passes(%b)
+  jump ret()
+}
+
+// `Any` has `throw`.
+fn fn10() -> () does Any {
+  let = call fn1()
+  jump ret()
+}
+
+//# verify-error: fn0: call_extern extern0 may perform throw, but the function has no effects
+//# verify-error: fn2: fn1 does throw, which isn't in the row of fn() -> ()
+//# verify-error: fn3: call fn1 may perform throw, but the function only does effect0
+//# verify-error: fn7: the body of handle handler0 does throw + effect0, which isn't in effect0

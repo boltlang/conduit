@@ -1,0 +1,55 @@
+// Code that can reach an extern with `throw` (#59): the function that
+// calls it, a closure that does, and a handler that lets it through, one
+// whose clause does work after resuming, so that it isn't lowered
+// directly. Objects are owned across each call that may throw.
+
+effect Ask {
+  () -> (i32)
+}
+
+data Box {
+  (i32)
+}
+
+handler summing for Ask does throw env() ops(ask) ret done
+
+// Adds 1 to what the rest of the body gives: not tail-resumptive.
+fn ask(%k: cont(i32) -> (i32) does throw) -> (i32) does throw {
+  let %b: mut Box = new Box.0(1i32)
+  let %r: i32 = resume(%k, 10i32)
+  let %one: i32 = get Box.0.0(%b)
+  let %s: i32 = add(%r, %one)
+  jump ret(%s)
+}
+
+fn done(%r: i32) -> (i32) {
+  jump ret(%r)
+}
+
+fn doubled(%x: i32) -> (i32) does throw {
+  let %b: mut Box = new Box.0(%x)
+  let %y: i32 = call_extern double_throw(%x)
+  let %z: i32 = get Box.0.0(%b)
+  let %r: i32 = add(%y, %z)
+  jump ret(%r)
+}
+
+fn body(%f: imm fn(i32) -> (i32) does throw) -> (i32) does Ask + throw {
+  let %b: mut Box = new Box.0(2i32)
+  let %a: i32 = perform Ask.0()
+  let %x: i32 = apply(%f, %a)
+  let %two: i32 = get Box.0.0(%b)
+  let %r: i32 = add(%x, %two)
+  jump ret(%r)
+}
+
+// (10 * 2 + 10) + 2 + 1
+fn main() -> (i32) does throw {
+  let %f: imm fn(i32) -> (i32) does throw = closure doubled()
+  let %b: imm fn() -> (i32) does Ask + throw = closure body(%f)
+  let %r: i32 = handle summing(%b)
+  jump ret(%r)
+}
+
+//# host
+//# run main() == 33i32

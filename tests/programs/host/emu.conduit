@@ -12,6 +12,10 @@ extern double(i32) -> (i32)
 #[link(emu, name = "double")]
 extern double_io(i32) -> (i32) does io
 
+// `double` again, which may throw an exception, though it never does.
+#[link(emu, name = "double")]
+extern double_throw(i32) -> (i32) does throw
+
 #[link(emu)]
 #[abi(flat)]
 extern sum(imm [i8]) -> (i32) does io

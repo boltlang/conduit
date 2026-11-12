@@ -30,15 +30,15 @@ effect Fail {
 // Tail-resumptive, so its frames are on the handler stack.
 handler answer for Ask env() ops(ask) ret same
 
-// Aborting.
-handler stop for Fail env() ops(fail) ret same
+// Aborting. What it handles may throw, which it lets through.
+handler stop for Fail does throw env() ops(fail) ret same
 
 fn ask(%k: cont(i32) -> (i32)) -> (i32) {
   let %r: i32 = resume(%k, 42i32)
   jump ret(%r)
 }
 
-fn fail(%k: cont(i32) -> (i32)) -> (i32) {
+fn fail(%k: cont(i32) -> (i32) does throw) -> (i32) {
   jump ret(0i32)
 }
 
@@ -47,14 +47,14 @@ fn same(%r: i32) -> (i32) {
 }
 
 #[link(wasm, module = "thrower", name = "boom")]
-extern boom() -> ()
+extern boom() -> () does throw
 
 #[link(wasm, module = "host", name = "call_inner")]
 extern call_inner() -> (i32)
 
 // An object on the shadow stack, then an exception.
 #[export(wasm)]
-fn inner() -> () {
+fn inner() -> () does throw {
   let %p: mut Pair = new Pair.0(1i32, 2i32)
   let %x: i32 = get Pair.0.0(%p)
   let = call_extern boom()
@@ -78,16 +78,34 @@ fn outer() -> (i32) {
 }
 
 // The exception goes through an aborting handler.
-fn risky() -> (i32) does Fail {
+fn risky() -> (i32) does Fail + throw {
   let = call_extern boom()
   let %x: i32 = perform Fail.0()
   jump ret(%x)
 }
 
 #[export(wasm)]
-fn guarded() -> (i32) {
-  let %b: imm fn() -> (i32) does Fail = closure risky()
+fn guarded() -> (i32) does throw {
+  let %b: imm fn() -> (i32) does Fail + throw = closure risky()
   let %r: i32 = handle stop(%b)
+  jump ret(%r)
+}
+
+// Frames that own objects while an extern throws (#59): the one that
+// calls it, and one whose row has nothing but `throw`.
+fn middle(%n: i32) -> (i32) does throw {
+  let %p: mut Pair = new Pair.0(%n, %n)
+  let = call_extern boom()
+  let %x: i32 = get Pair.0.0(%p)
+  jump ret(%x)
+}
+
+#[export(wasm)]
+fn owning(%n: i32) -> (i32) does throw {
+  let %q: mut Pair = new Pair.0(%n, %n)
+  let %x: i32 = call middle(%n)
+  let %y: i32 = get Pair.0.1(%q)
+  let %r: i32 = add(%x, %y)
   jump ret(%r)
 }
 
@@ -210,4 +228,21 @@ fn a_trap_is_undone_by_conduit_reset() {
         assert!(trapping.call(&mut store, 1).is_err());
     }
     assert!(pages(&mut store, &instance) > before);
+}
+
+#[test]
+fn an_exception_drops_what_the_frames_it_unwinds_own() {
+    // On the heap, so that `conduit_live` counts them.
+    let (mut store, instance) = instantiate(Options {
+        counts: true,
+        stack_objects: false,
+        ..Options::default()
+    });
+    let owning = func::<i32, i32>(&mut store, &instance, "owning");
+    let live = instance.get_global(&mut store, "conduit_live").unwrap();
+    let before = live.get(&mut store).i32().unwrap();
+    for _ in 0..100 {
+        assert!(owning.call(&mut store, 1).is_err());
+    }
+    assert_eq!(live.get(&mut store).i32().unwrap(), before);
 }

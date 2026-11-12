@@ -13,6 +13,10 @@ extern double(i32) -> (i32)
 #[link(wasm, module = "test", name = "double")]
 extern double_io(i32) -> (i32) does io
 
+// `double` again, which may throw an exception, though it never does.
+#[link(wasm, module = "test", name = "double")]
+extern double_throw(i32) -> (i32) does throw
+
 #[link(wasm, module = "test")]
 #[abi(flat)]
 extern sum(imm [i8]) -> (i32) does io

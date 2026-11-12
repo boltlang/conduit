@@ -586,6 +586,9 @@ impl Parser {
                     m.consts.insert(id, decl).map(|_| id.to_string())
                 }
                 "effect" => {
+                    if self.is_keyword("throw") {
+                        return self.error("`throw` is built in: no effect can be named that");
+                    }
                     let (id, debug_name) = self.def("effect")?;
                     self.punct("{")?;
                     let mut ops = Vec::new();
@@ -923,9 +926,9 @@ impl Parser {
         self.row_items()
     }
 
-    /// A row: `Effect20 + E1`, `Nothing` or `Any`. A name is an effect
-    /// parameter if the declaration being read has one of that name, and
-    /// an effect otherwise.
+    /// A row: `Effect20 + E1`, `Nothing` or `Any`, where `throw` is the
+    /// built-in effect. A name is an effect parameter if the declaration
+    /// being read has one of that name, and an effect otherwise.
     fn row_items(&mut self) -> Res<Row> {
         if self.eat_keyword("Nothing") {
             return Ok(Row::NOTHING);
@@ -933,8 +936,15 @@ impl Parser {
         if self.eat_keyword("Any") {
             return Ok(Row::ANY);
         }
-        let (mut effects, mut params) = (Vec::new(), Vec::new());
+        let (mut effects, mut params, mut throw) = (Vec::new(), Vec::new(), false);
         loop {
+            if self.eat_keyword("throw") {
+                throw = true;
+                if !self.eat_punct("+") {
+                    break;
+                }
+                continue;
+            }
             let param = match self.peek() {
                 Tok::Ident(s) => self.effect_params.iter().position(|p| p == s),
                 _ => None,
@@ -950,7 +960,7 @@ impl Parser {
                 break;
             }
         }
-        Ok(Row::with_params(effects, params))
+        Ok(Row::with_params(effects, params).with_throw(throw))
     }
 
     fn var(&mut self, info: &mut FuncInfo) -> Res<Var> {

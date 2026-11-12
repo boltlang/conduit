@@ -169,14 +169,6 @@ impl Handlers {
         if self.discontinues {
             out.push(Item::Text(format!("@{SITE} = internal global ptr null\n")));
         }
-        // For the landing pads of aborts, and of what they unwind.
-        out.push(
-            Declare {
-                variadic: true,
-                ..Declare::new(Type::I32, PERSONALITY, vec![])
-            }
-            .into(),
-        );
         if !self.aborting.is_empty() {
             out.push(
                 Declare::new(

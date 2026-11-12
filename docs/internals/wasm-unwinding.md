@@ -123,15 +123,16 @@ reset.
 
 ## What still leaks
 
-- **Objects the unwound frames owned, mostly.** An abort drops what the
-  frames it skips own (#56): when counting, each call that may perform,
-  in a function whose row isn't empty, is in a `try_table` that catches
-  everything, drops what the frame owns then (see `conduit_ir::owned`),
-  and rethrows, and a `handle` that's unwound drops its handler's
-  environment. A foreign exception runs those too, but a frame that owns
-  something only has one at a call that may perform: one unwound from a
-  call of an extern, or from a function whose row is empty, leaks what
-  it owns, host values among them: #59.
+- **Nothing, for an exception from an extern with `throw` (#59).** With
+  counts, each call that can be unwound while its frame owns something is
+  in a `try_table` that catches everything, drops what the frame owns
+  then (see `conduit_ir::owned`), and rethrows, and a `handle` that's
+  unwound drops its handler's environment. The calls that can be unwound
+  are those that may perform, for aborts, and the `call_extern`s with
+  `throw` and what can reach them, for exceptions from the host. An
+  extern without `throw` that throws is undefined behavior: what the
+  frames it unwinds own leaks then, and the instance must not be used
+  again.
 - **After a trap:** the same, and the boxes an entry point made for host
   values it was given, and with stack switching, the shadow stack segments
   of the continuation that trapped. A trap in the middle of a cycle

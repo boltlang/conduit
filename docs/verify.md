@@ -324,6 +324,12 @@ written in types. `closure f[args]` binds a `fn` whose row has `f`'s row in
 it, with the arguments in place, and whose signature `f`'s fits once the
 captures are taken off (see "Subtyping").
 
+**`throw`.** The built-in effect of what an exception from the host can
+unwind (see "Exceptions from the host" in [ir.md](ir.md)) is checked as
+any effect in a row is: a `call_extern` of an extern with `throw` may
+perform it. No handler takes it out, so a `handle` whose body has it
+needs it in the handler's row.
+
 **Subtyping.** A closure or continuation type fits where one with a bigger
 row is expected: `fn() -> () does Effect20` fits where
 `fn() -> () does Effect20 + Effect21` is expected, and everything fits a
