@@ -42,9 +42,11 @@
 //!   than `PCT` percent, which CI does for a pull request.
 //! - `--badges DIR`: write badges for the README to `DIR`, in the JSON
 //!   that shields.io's endpoint badges read, which CI publishes for each
-//!   push to `main`. They summarize the benchmarks in `bench/`: what
-//!   counting costs in fuel, with everything on, over no counts, how many
-//!   fewer objects reuse allocates, and how many benchmarks there are.
+//!   push to `main`. They summarize the benchmarks of data structures in
+//!   `bench/`, each by its largest run: what counting costs in fuel, with
+//!   everything on, over no counts, how many fewer objects reuse
+//!   allocates, both as geometric means over the benchmarks, and how many
+//!   benchmarks there are (see `badges`).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -761,16 +763,27 @@ fn commit() -> Option<String> {
     Some(if dirty { commit + "+dirty" } else { commit })
 }
 
-/// The programs the badges summarize: the benchmarks in the style of the
-/// Perceus paper's, not the test programs that also have a `bench` check.
-const BADGE_PROGRAMS: &str = "bench/";
+/// The programs the badges summarize: the benchmarks of data structures,
+/// in the style of the Perceus paper's, which is what counting and reuse
+/// are about. The `bench/effects_*` ones compare ways of lowering
+/// handlers, and would only dilute both: they have nothing to reuse, and
+/// what counting costs there is mostly evidence passing's.
+const BADGE_PROGRAMS: &[&str] = &[
+    "bench/binarytrees",
+    "bench/bstinsert",
+    "bench/cfold",
+    "bench/nqueens",
+];
 
-/// Writes the README's badges to `dir`, as shields.io endpoint JSON:
-/// `overhead.json`, the geometric mean over the benchmarks' runs of the
-/// fuel with everything on (`+cycles`) over the fuel without counts
-/// (`optimized`); `reuse.json`, how many fewer objects the evaluator
-/// allocates with reuse than with counts alone, over all the runs; and
-/// `benchmarks.json`, how many there are.
+/// Writes the README's badges to `dir`, as shields.io endpoint JSON, over
+/// [`BADGE_PROGRAMS`], each by its largest run, the one that takes the
+/// most fuel without counts, so that a warm-up run doesn't weigh as much
+/// as the run that matters, and each benchmark weighs the same:
+/// `overhead.json`, the geometric mean of the fuel with everything on
+/// (`+cycles`) over the fuel without counts (`optimized`);
+/// `reuse.json`, how many fewer objects the evaluator allocates with
+/// reuse than with counts alone, as the geometric mean of each one's
+/// ratio; and `benchmarks.json`, how many there are.
 fn badges(results: &[Measured], programs: &[Program], dir: &Path) -> Result<(), String> {
     // Wasm's fuel, the only measurement that's the same every time.
     let wasm: Vec<&Measured> = (results.iter())
@@ -782,61 +795,57 @@ fn badges(results: &[Measured], programs: &[Program], dir: &Path) -> Result<(), 
             .and_then(|r| r.fuel)
             .map(|f| f as f64)
     };
-    let mut logs = Vec::new();
-    for r in wasm
-        .iter()
-        .filter(|r| r.program.starts_with(BADGE_PROGRAMS))
-    {
-        if r.config != "optimized" {
-            continue;
-        }
-        let (Some(counted), Some(plain)) = (fuel(&r.program, &r.run, "+cycles"), r.fuel) else {
-            return Err("the badges need the optimized and +cycles configs, as Wasm".into());
-        };
-        logs.push((counted / plain as f64).ln());
-    }
-    if logs.is_empty() {
-        return Err(format!(
-            "no benchmarks in {BADGE_PROGRAMS} to make badges of"
-        ));
-    }
-    let overhead = (logs.iter().sum::<f64>() / logs.len() as f64).exp() - 1.0;
-
-    // Allocations, in the evaluator, which counts them.
-    let (mut without, mut with) = (0u64, 0u64);
-    let mut count = 0;
+    let geomean =
+        |ratios: &[f64]| (ratios.iter().map(|r| r.ln()).sum::<f64>() / ratios.len() as f64).exp();
+    let (mut overheads, mut kept) = (Vec::new(), Vec::new());
     for p in programs
         .iter()
-        .filter(|p| p.name.starts_with(BADGE_PROGRAMS))
+        .filter(|p| BADGE_PROGRAMS.contains(&p.name.as_str()))
     {
-        count += 1;
+        // Its largest run.
+        let largest = (wasm.iter())
+            .filter(|r| r.program == p.name && r.config == "optimized")
+            .max_by_key(|r| r.fuel)
+            .ok_or("the badges need the optimized config, as Wasm")?;
+        let (Some(counted), Some(plain)) = (fuel(&p.name, &largest.run, "+cycles"), largest.fuel)
+        else {
+            return Err("the badges need the optimized and +cycles configs, as Wasm".into());
+        };
+        overheads.push(counted / plain as f64);
+
+        // Its allocations, in the evaluator, which counts them.
         let base = prepare(p.module()?)?;
-        let mut compiled = Vec::new();
+        let runs = p.runs(&base)?;
+        let run = (runs.iter())
+            .find(|r| call_text(r.name, r.args) == largest.run)
+            .ok_or_else(|| format!("{}: no run {}", p.name, largest.run))?;
+        let mut allocs = Vec::new();
         for name in ["counts", "+reuse"] {
             let mut m = base.clone();
             Config::named(name).unwrap().apply(&mut m)?;
-            compiled.push(m);
+            let mut machine = conduit_eval::Machine::new(&m, conduit_test::eval::TestHost);
+            machine.counting = true;
+            let args = run
+                .args
+                .iter()
+                .map(|&l| conduit_eval::Value::from(l))
+                .collect();
+            machine.call(run.func, args).map_err(|e| format!("{e:?}"))?;
+            allocs.push(machine.stats.allocs as f64);
         }
-        for run in p.runs(&base)? {
-            let allocs = |m: &Module| {
-                let mut machine = conduit_eval::Machine::new(m, conduit_test::eval::TestHost);
-                machine.counting = true;
-                let args = run
-                    .args
-                    .iter()
-                    .map(|&l| conduit_eval::Value::from(l))
-                    .collect();
-                machine.call(run.func, args).map_err(|e| format!("{e:?}"))?;
-                Ok::<_, String>(machine.stats.allocs)
-            };
-            without += allocs(&compiled[0])?;
-            with += allocs(&compiled[1])?;
+        if allocs[0] > 0.0 {
+            kept.push(allocs[1].max(1.0) / allocs[0]);
         }
     }
-    let saved = if without == 0 {
+    let count = overheads.len();
+    if count == 0 {
+        return Err(format!("none of {BADGE_PROGRAMS:?} to make badges of"));
+    }
+    let overhead = geomean(&overheads) - 1.0;
+    let saved = if kept.is_empty() {
         0.0
     } else {
-        1.0 - with as f64 / without as f64
+        1.0 - geomean(&kept)
     };
 
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
