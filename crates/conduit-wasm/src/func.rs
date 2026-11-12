@@ -1,4 +1,4 @@
-//! How a function body becomes Wasm code. See "Control flow" in `docs/wasm.md`
+//! How a function body becomes Wasm code. See "Control flow" in `docs/backends/wasm.md`
 //! and the crate's documentation for the layouts of objects.
 //!
 //! Every variable is a local, and every block ends in a `return`, `br`,
@@ -1505,7 +1505,7 @@ impl<'m> FuncCx<'_, 'm> {
     /// `h` handles `throw` and the module imports the host's tag, what the
     /// host throws in the body is caught, boxed, and given to the clause
     /// for `raise` as a `perform` would, whose abort ends the `handle` as
-    /// any does (see `docs/exceptions.md`).
+    /// any does (see `docs/ir/exceptions.md`).
     fn body_catching_host(
         &mut self,
         h: conduit_ir::HandlerId,

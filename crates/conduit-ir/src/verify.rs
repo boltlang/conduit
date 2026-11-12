@@ -1,4 +1,4 @@
-//! Checks that IR follows the rules of `docs/ir.md`, as `docs/verify.md`
+//! Checks that IR follows the rules of `docs/ir/ir.md`, as `docs/ir/verify.md`
 //! lists them: scoping, types, mutability, exhaustive cases, and
 //! continuations visibly used more than once.
 //!
@@ -366,7 +366,7 @@ fn check_handler<P: Program + ?Sized>(
                 && p.func(clause)
                     .is_some_and(|f| crate::clause::aborting(f).is_none())
             {
-                // What raised is gone: see "Rules" in docs/exceptions.md.
+                // What raised is gone: see "Rules" in docs/ir/exceptions.md.
                 err(format!(
                     "clause {clause} for throw.{i} may resume its continuation, but nothing \
                      can be resumed after an exception"
@@ -1287,7 +1287,7 @@ fn max_into(a: &mut Counts, b: &Counts) {
 ///
 /// This only sees direct uses: a continuation stored in a closure, a field,
 /// an array, a ref or an `Any` can be used again through it, which the
-/// run-time check catches instead (see `docs/verify.md`). And it doesn't
+/// run-time check catches instead (see `docs/ir/verify.md`). And it doesn't
 /// know which paths can run, so branches on the same condition count as if
 /// both could be taken.
 struct Linear<'a> {

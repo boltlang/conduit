@@ -156,7 +156,7 @@ pub struct Machine<'p, P: ?Sized, H> {
     pub fuel: Option<u64>,
     /// Whether to count references: `dup` and `drop` change counts and
     /// free, and the ops that make or remove references inside objects
-    /// count them (see "Reference counts" in `docs/ir.md`). Off, `dup` and
+    /// count them (see "Reference counts" in `docs/ir/ir.md`). Off, `dup` and
     /// `drop` do nothing, and nothing is freed.
     pub counting: bool,
     /// Whether to collect cycles too, with counting, by trial deletion

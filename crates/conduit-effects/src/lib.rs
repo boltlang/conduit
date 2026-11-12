@@ -1,5 +1,5 @@
 //! Evidence passing: removes effect handlers from a module, so that any
-//! backend can run it. See "Evidence passing" in `docs/lowerings.md`.
+//! backend can run it. See "Evidence passing" in `docs/passes/lowerings.md`.
 //!
 //! After [`lower_effects`], a module has no `handle`, `perform`, `resume`
 //! or `discontinue`, no continuation types, and no rows: everything is

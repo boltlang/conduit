@@ -1,5 +1,5 @@
 //! The IR of Conduit: a typed, monomorphic, A-normal-form tree with join
-//! points. See `docs/ir.md` for the design.
+//! points. See `docs/ir/ir.md` for the design.
 //!
 //! A function's body is a [`Block`]: a list of [`Let`]s, then a [`Tail`]
 //! that ends it. So a pass handles 5 kinds of thing: a `let`, and the 4

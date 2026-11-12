@@ -3,7 +3,7 @@
 How a Wasm module from `conduit-wasm` talks to a JavaScript host: what the
 engine must support, what to give the module and what it gives back, how
 JavaScript values and functions cross, and how two garbage collectors share
-them. The IR itself is in [`../ir.md`](../ir.md); this is what an embedder,
+them. The IR itself is in [`../ir/ir.md`](../ir/ir.md); this is what an embedder,
 like Bolt's runtimes (`runtime/browser.mjs` and `runtime/node.mjs` in Bolt),
 needs to know.
 
@@ -83,7 +83,7 @@ try {
 ```
 
 What the unwound code held leaks. See
-[`internals/wasm-unwinding.md`](../internals/wasm-unwinding.md).
+[`../internals/wasm-unwinding.md`](../internals/wasm-unwinding.md).
 
 ## Host values
 
@@ -255,7 +255,7 @@ exception, even in the middle of a call into the module, can go on using
 the instance. Conduit code catches JavaScript exceptions by handling
 `throw`, and throws them by performing it, when the frontend links
 `throw` to a tag the module imports, which the page gives as
-`WebAssembly.JSTag` (see [`../exceptions.md`](../exceptions.md)):
+`WebAssembly.JSTag` (see [`../ir/exceptions.md`](../ir/exceptions.md)):
 
 ```js
 WebAssembly.instantiate(bytes, { bolt: { js_tag: WebAssembly.JSTag }, ... })
@@ -292,8 +292,9 @@ evaluator and in Wasmtime alike.
 
 - #35: keep host values that are never stored in Wasm locals, without a
   slot, for code that makes many short-lived strings.
-- #38, #63: catch JavaScript exceptions, by handling `throw`, and throw
-  them, by performing it (see [`../exceptions.md`](../exceptions.md)).
+- #64, #65: catch JavaScript exceptions in a handler that also switches
+  stacks, and in modules lowered by evidence passing (see
+  [exceptions.md](../ir/exceptions.md)).
 - #39: imported string constants for string literals.
 - Externs that suspend, for promises, through JSPI: an open question of
   the effect system.

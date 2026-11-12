@@ -124,7 +124,7 @@ pub fn elem_ty(ty: &Ty) -> Option<Ty> {
 }
 
 /// Whether a value of type `a` can be used where `b` is expected: see
-/// "Subtyping" in `docs/verify.md`.
+/// "Subtyping" in `docs/ir/verify.md`.
 ///
 /// - An object's own mutability: `Imm` and `Mut` fit `ReadOnly`.
 /// - Under a view that's never written through, `ReadOnly` or `Imm`,

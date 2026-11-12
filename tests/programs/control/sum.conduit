@@ -1,4 +1,4 @@
-// `sum` from docs/ir.md: a loop as a recursive join point.
+// `sum` from docs/ir/ir.md: a loop as a recursive join point.
 
 fn sum(%n: i32) -> (i32) {
   join rec loop(%i: i32, %acc: i32) =

@@ -76,7 +76,7 @@ fn if_else() {
     );
 }
 
-/// `fac` from docs/ir.md: one arm for the tags 0 and 1, which the builder
+/// `fac` from docs/ir/ir.md: one arm for the tags 0 and 1, which the builder
 /// turns into a join point, and a recursive call.
 #[test]
 fn factorial() {

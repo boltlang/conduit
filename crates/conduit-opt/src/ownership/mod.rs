@@ -1,5 +1,5 @@
 //! Reference counts, made explicit: [`insert_counts`] adds the `dup`s and
-//! `drop`s that "Reference counts" in `docs/ir.md` asks for, so that a
+//! `drop`s that "Reference counts" in `docs/ir/ir.md` asks for, so that a
 //! program frees every object once nothing refers to it any more, except in
 //! cycles.
 //!

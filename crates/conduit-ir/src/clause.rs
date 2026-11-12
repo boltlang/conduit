@@ -1,6 +1,6 @@
 //! Handler clauses that a backend can compile without capturing a
 //! continuation. See "Two kinds of clause a backend should notice" in
-//! `docs/ir.md`.
+//! `docs/ir/effects.md`.
 
 use crate::{Atom, Block, Func, HandlerId, Label, Module, Op, Tail, Ty, Var};
 

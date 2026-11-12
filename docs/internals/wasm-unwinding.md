@@ -74,7 +74,7 @@ In a module where nothing has `throw`, an entry point catches nothing: it
 empties `HANDLERS` and puts it back when the call returns, as before #40.
 An exception that unwinds it anyway came from an extern without `throw`,
 which is undefined behavior (see "Exceptions from the host" in
-[`../ir.md`](../ir.md)), after which the host must not use the instance
+[`../ir/ir.md`](../ir/ir.md)), after which the host must not use the instance
 again, so nothing would see the state it leaves.
 
 With stack switching, a continuation runs on shadow stack segments of its

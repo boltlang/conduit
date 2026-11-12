@@ -51,7 +51,7 @@ pub struct Label(pub u32);
 impl EffectId {
     /// The built-in effect `throw`, of exceptions from the host, whose one
     /// operation, `raise`, gives the value thrown: see
-    /// `docs/exceptions.md`. A module that uses it has its declaration,
+    /// `docs/ir/exceptions.md`. A module that uses it has its declaration,
     /// [`EffectDecl::throw`](crate::EffectDecl::throw), under this ID.
     pub const THROW: EffectId = EffectId(u64::MAX);
 }

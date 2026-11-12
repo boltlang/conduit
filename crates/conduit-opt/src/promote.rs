@@ -1,7 +1,7 @@
 //! Ref promotion, like LLVM's `mem2reg`: a ref that doesn't escape becomes
 //! the values it holds, passed between join points as parameters.
 //!
-//! Frontends turn each mutable local into a ref (rule 6 in `docs/ir.md`),
+//! Frontends turn each mutable local into a ref (rule 6 in `docs/ir/ir.md`),
 //! so this is what turns them back into plain values. A ref is promoted
 //! when a `ref_new` in the function makes it and its only uses are as the
 //! first argument of `ref_get` and `ref_set`: it isn't captured, passed to

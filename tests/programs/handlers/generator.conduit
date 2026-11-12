@@ -1,4 +1,4 @@
-// The generator from docs/ir.md: `produce` yields 1, 2 and 3, and a
+// The generator from docs/ir/effects.md: `produce` yields 1, 2 and 3, and a
 // handler adds them up in a ref.
 
 effect Yield {

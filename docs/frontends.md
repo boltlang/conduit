@@ -2,7 +2,7 @@
 
 How a compiler uses Conduit: what to build, which steps to run in which
 order, and what Conduit carries that a frontend's own IR would. The IR
-itself is in [ir.md](ir.md).
+itself is in [ir.md](ir/ir.md).
 
 ## The pipeline
 
@@ -92,18 +92,18 @@ what such an IR usually carries:
 - **Generic code.** Conduit is monomorphic, so a frontend with generics or
   type classes monomorphizes and resolves method calls while lowering to
   Conduit, erasing to `Any` and passing dictionaries for polymorphic
-  recursion (see "Polymorphism" in [ir.md](ir.md)). Any interpreter that runs on Conduit then
+  recursion (see "Polymorphism" in [ir.md](ir/ir.md)). Any interpreter that runs on Conduit then
   runs that code too.
 - **Mutability.** A language with `imm` and `mut` views of the same data
   maps them to the mutability in Conduit's types, and builds its copies
   between them with `New` and `ArrayClone`. Code that's generic over
   mutability keeps its parameters, as functions with mutability
-  parameters. See "Mutability" in [ir.md](ir.md).
+  parameters. See "Mutability" in [ir.md](ir/ir.md).
 - **Sources.** Frontends need to map code back to source, for errors and
   for limits on how long an interpreter runs. `Let` and `Jump` carry a
   `source`, which is opaque to Conduit and carried through inlining.
 - **Strings and chars.** A string literal is a constant of type
-  `imm [i8]` (see "Constants" in [ir.md](ir.md)), written `b"hi"` in the text, which a `Mut` string copies with
+  `imm [i8]` (see "Constants" in [ir.md](ir/ir.md)), written `b"hi"` in the text, which a `Mut` string copies with
   `ArrayClone`. Chars are `i32`.
 - **Incremental compilation.** A query-based frontend (Salsa, for example)
   caches Conduit IR and wants unchanged functions not to be recompiled.

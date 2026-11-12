@@ -21,6 +21,11 @@ Some of its properties:
  - The IR defines join points to easily share control flow between multiple
    statements.
 
+## Documentation
+
+Start at [docs/README.md](docs/README.md): the IR, the passes, the
+backends, and what a host does to run a module.
+
  ## Projects Using Conduit
 
  - [The Bolt Programming Language](https://boltlang.net)

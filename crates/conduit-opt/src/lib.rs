@@ -1,4 +1,4 @@
-//! Optimization passes on Conduit IR. `docs/optimisations.md` gives the
+//! Optimization passes on Conduit IR. `docs/passes/optimisations.md` gives the
 //! design, "A few rewrites", and lists them one by one.
 //!
 //! A [`Pass`] rewrites one function at a time and reaches other items only

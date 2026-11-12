@@ -45,7 +45,7 @@ pub enum ErrorKind {
     /// IR that the verifier would have rejected.
     Unverified(String),
     /// A `raise` of `throw` that nothing handled, which goes to the host
-    /// as an exception (see `docs/exceptions.md`): what was thrown, as
+    /// as an exception (see `docs/ir/exceptions.md`): what was thrown, as
     /// the host sees it, like `host 3` or `null`.
     Uncaught(String),
 }
@@ -96,7 +96,7 @@ pub enum HostError {
     Exit(i32),
     /// It threw this host value, or null, as a JavaScript function can.
     /// The call of an extern with `throw` in its row raises it there, and
-    /// one without is undefined behavior: see `docs/exceptions.md`.
+    /// one without is undefined behavior: see `docs/ir/exceptions.md`.
     Throw(Value),
 }
 

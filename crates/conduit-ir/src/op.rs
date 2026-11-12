@@ -102,7 +102,7 @@ pub enum Op {
     /// then the operation's arguments.
     Discontinue(EffectId, u32),
     /// Adds 1 to an object's reference count; binds nothing. Args: the
-    /// object. See "Reference counts" in `docs/ir.md`.
+    /// object. See "Reference counts" in `docs/ir/ir.md`.
     Dup,
     /// Takes 1 from an object's reference count, and frees it when that
     /// reaches 0, which drops what it holds; binds nothing. Args: the
@@ -220,7 +220,7 @@ impl Op {
     }
 
     /// Whether the op takes the reference of its argument `i`, moving it,
-    /// rather than borrowing it, as "Every op at a glance" in `docs/ir.md`
+    /// rather than borrowing it, as "Every op at a glance" in `docs/ir/ir.md`
     /// says, if no parameter of a call is borrowed: a call doesn't take
     /// the arguments its callee borrows (see [`Func::borrowed`]). Of the
     /// counting ops, those that take a reference away without moving it

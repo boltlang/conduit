@@ -281,7 +281,7 @@ run.
 
 ## Effect types
 
-See "Effect types" in [the IR](ir.md#effect-types).
+See "Effect types" in [effects.md](effects.md#effect-types).
 
 Every function, closure type and continuation type has a row of effects
 after `does`. The verifier checks that each `perform` is in a function

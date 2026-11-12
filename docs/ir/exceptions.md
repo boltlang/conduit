@@ -6,7 +6,7 @@ throws to its host. The rules here are what frontends, backends and hosts
 can rely on. Each section says whether it's implemented yet.
 
 Conduit's own aborts, an aborting handler's clause leaving its body, are
-effects (see "Effect handlers" in [ir.md](ir.md)), and traps stop the
+effects (see [effects.md](effects.md)), and traps stop the
 program: neither is an exception in this sense, though backends may use
 their exception machinery for aborts.
 
@@ -132,7 +132,7 @@ become a `raise` somewhere:
   `raise` that reaches one is thrown to the host, as JavaScript's
   exception in Wasm. In a module where nothing has `throw`, entry points
   catch nothing (see
-  [`internals/wasm-unwinding.md`](internals/wasm-unwinding.md)).
+  [`../internals/wasm-unwinding.md`](../internals/wasm-unwinding.md)).
 - **Native code** runs cleanups for any exception, with C's personality,
   `__gcc_personality_v0`, which can't catch. Catching a C++ exception
   needs the C++ runtime's, and a hook that makes a `conduit_host` of it,

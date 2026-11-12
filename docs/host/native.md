@@ -1,7 +1,7 @@
 # Native hosts
 
 How to run a module natively: build it with the LLVM backend
-(`conduit-llvm`, see [llvm.md](../llvm.md)), link it with C code that
+(`conduit-llvm`, see [llvm.md](../backends/llvm.md)), link it with C code that
 provides its externs and calls its exports, and what that C code can rely
 on. The backend is experimental; this is what it does today, tested on
 Linux on x86-64.
@@ -91,7 +91,7 @@ int32_t divmod(int32_t a, int32_t b, int32_t *rem);
 ```
 
 An `#[abi(flat)]` extern takes arrays as C does (see "What it handles" in
-[llvm.md](../llvm.md)): an array as a pointer to its elements and its
+[llvm.md](../backends/llvm.md)): an array as a pointer to its elements and its
 length as an `int32_t`, or only the pointer for `#[addr]`; a list of byte
 buffers as a `struct iovec *` and how many there are; an `i8` or `i16`
 zero-extended to an `int32_t`. The host may write only `mut` arrays, and
@@ -127,7 +127,10 @@ when it goes:
 | export parameter | `conduit_host` | the caller gives Conduit a reference |
 | export result | `conduit_host` | Conduit calls `retain` for the caller |
 
-When the box's count gets to 0, Conduit calls `release`. `retain` and
+A host value among the results after the first is written through its
+pointer as a `conduit_host`, owned as one returned is. The flat ABI
+can't pass host values. When the box's count gets to 0, Conduit calls
+`release`. `retain` and
 `release` run from inside Conduit's code, drops among it, so they must
 not throw; and since they run in the middle of it, they're best kept from
 calling into the module. Without counts, nothing is released.
@@ -167,7 +170,7 @@ and the host, like a callback that captures what holds it, leaks.
 ## Exceptions
 
 A C host has none, so this is for C++ hosts (see
-[exceptions.md](../exceptions.md)):
+[exceptions.md](../ir/exceptions.md)):
 
 - **An extern that may throw** must have `throw` in its row,
   `does throw`. One without that throws is undefined behavior, and is

@@ -1,4 +1,4 @@
-// The loop from rule 6 of docs/ir.md: `var i = 0; while i < n { i = i + 1 };
+// The loop from rule 6 of docs/ir/ir.md: `var i = 0; while i < n { i = i + 1 };
 // return i`. The ref becomes a parameter of the loop.
 fn count(%n: i32) -> (i32) {
   let %i: ref i32 = ref_new(0i32)

@@ -49,7 +49,7 @@ pub struct Func {
     pub labels: u32,
     pub params: Vec<Var>,
     /// Which parameters are borrowed, by the convention between the
-    /// function and its callers that "Reference counts" in `docs/ir.md`
+    /// function and its callers that "Reference counts" in `docs/ir/ir.md`
     /// describes: the caller keeps the reference, so a call doesn't take
     /// it. Empty if none is; `conduit_opt::ownership::insert_counts` sets
     /// it. It only means something in counted code, which says where
@@ -329,7 +329,7 @@ pub struct EffectDecl {
     /// handles throws to the host with it: in Wasm, a `wasm` link names
     /// the imported tag, `WebAssembly.JSTag` in JavaScript. Without one,
     /// a handler for `throw` only catches what Conduit code raises. See
-    /// `docs/exceptions.md`.
+    /// `docs/ir/exceptions.md`.
     pub link: Option<Link>,
 }
 

@@ -15,12 +15,12 @@
   moves the frames from the nearest handler of its effect up into the
   continuation, and `resume` moves them back. `discontinue` moves them
   back too, and then performs in the frame that was waiting. A second use
-  finds the frames gone, which is an error (rule 7 of "Effect handlers" in [ir.md](ir.md)).
+  finds the frames gone, which is an error (rule 7 of "Rules" in [effects.md](../ir/effects.md)).
 - **Host values** are objects too, counted and checked for leaks like
   others. A host function sees one as `Value::Host(n)`, the number it gave,
   a null as `Value::Null`, and a host function as `Value::Function(k)`,
   which it calls later with `Machine::call_function` (see "The evaluator"
-  in [`host/js.md`](host/js.md)).
+  in [`../host/js.md`](../host/js.md)).
 - **Objects know their mutability.** Every object that can be `Imm` or
   `Mut` carries an "is mut" flag. A write to an `Imm` object is an error,
   which can only happen if an optimization broke the mutability rules.
@@ -48,10 +48,10 @@
   call of an extern with `throw` in its row raises it there, so a
   handler for `throw` catches it, and a `raise` nothing handles ends the
   run with `ErrorKind::Uncaught`. A throw from an extern without `throw`
-  is undefined behavior (see [exceptions.md](exceptions.md)).
+  is undefined behavior (see [exceptions.md](../ir/exceptions.md)).
 - **Reference counts are checked** with `Machine::counting` on. Every
   object has a count, which `Dup`, `Drop` and the ops that count for
-  themselves change (see "Reference counts" in [ir.md](ir.md)), and an object is freed at
+  themselves change (see "Reference counts" in [ir.md](../ir/ir.md)), and an object is freed at
   0. A use of a freed object, or a `Drop` of one, is undefined behavior,
   which stops the machine, and so is counting what `undefined` gave:
   its `Dup` or `Drop`, freeing an object that holds it, or a `Set` or

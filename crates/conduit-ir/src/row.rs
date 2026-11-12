@@ -1,5 +1,5 @@
 //! Rows: the effects a function, closure or continuation may perform. See
-//! "Effect types" in `docs/ir.md`.
+//! "Effect types" in `docs/ir/effects.md`.
 
 use std::fmt;
 
@@ -7,7 +7,7 @@ use crate::id::EffectId;
 
 /// A set of effects and effect parameters, or `Any`, which can perform
 /// anything. The built-in effect `throw`, [`EffectId::THROW`], is one of
-/// the effects: see `docs/exceptions.md`.
+/// the effects: see `docs/ir/exceptions.md`.
 ///
 /// Parameter `i` is `E{i}`, counted from 1, of the function, data type or
 /// handler the row is in, as mutability parameters are. Calls, closures,

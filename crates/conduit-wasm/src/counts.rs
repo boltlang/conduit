@@ -1,5 +1,5 @@
 //! Reference counting in linear memory, for a module whose counts are
-//! explicit (see "Reference counts" in `docs/ir.md`), when
+//! explicit (see "Reference counts" in `docs/ir/ir.md`), when
 //! [`Options::counts`](crate::Options::counts) asks for it, and cycle
 //! collection, when [`Options::cycles`](crate::Options::cycles) does too.
 //!

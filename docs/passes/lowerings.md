@@ -4,7 +4,7 @@ Two Conduit-to-Conduit passes that aren't optimizations, and that a
 frontend or backend runs after optimizing, when it wants what they give:
 evidence passing, which removes effect handlers so that a backend without
 them can run the program, and reference counting, which makes the counts
-explicit so that memory is freed. [frontends.md](frontends.md) says in
+explicit so that memory is freed. [frontends.md](../frontends.md) says in
 which order they run.
 
 ## Evidence passing (`conduit_effects::lower_effects`)

@@ -1,7 +1,7 @@
 //! Lowers Conduit IR to WebAssembly, with objects in linear memory, so
 //! the output needs no GC: only tail calls and bulk memory, and exception
 //! handling for aborting handlers, all part of Wasm 3.0. See
-//! `docs/wasm.md`. Every object comes from
+//! `docs/backends/wasm.md`. Every object comes from
 //! `alloc`. By default that's a bump allocator and memory is never freed;
 //! with [`Options::counts`], for a module whose reference counts are
 //! explicit, objects are freed onto free lists that `alloc` takes from
@@ -247,13 +247,12 @@ pub(crate) struct Cx<'m> {
     /// Whether an exception from the host can unwind some of its code:
     /// some function has `throw` in its row. Otherwise an entry point
     /// needn't catch one, since one that unwinds the module anyway is
-    /// undefined behavior (see "Exceptions from the host" in
-    /// `docs/ir.md`).
+    /// undefined behavior (see `docs/ir/exceptions.md`).
     pub throws: bool,
     /// Where the host's exceptions come from, if `throw` has a wasm link:
     /// the tag the module imports, number 0, which a handler for `throw`
     /// catches and a `raise` that nothing handles throws (see
-    /// `docs/exceptions.md`).
+    /// `docs/ir/exceptions.md`).
     pub host_tag: Option<(&'m str, &'m str)>,
     /// The tag an aborting clause throws, holding its handler's frame:
     /// the first the module defines, after the host's if it imports it.

@@ -4,7 +4,7 @@
 in linear memory, from an allocator of its own, so the engine needs no Wasm
 GC: Wasm 2.0 with tail calls, exception handling for aborting handlers, and
 stack switching only when asked for. What a JavaScript host gives and gets
-is in [host/js.md](host/js.md).
+is in [../host/js.md](../host/js.md).
 
 `emit_module_with(m, &Options)` takes these options, and `emit_module` the
 defaults:
@@ -80,7 +80,7 @@ aborting without capturing a continuation:
   clause runs its body in a `try_table`, which catches the exception,
   rethrows it if the frame isn't its own, and otherwise gives the frame's
   results.
-- **Exceptions from the host** (see [exceptions.md](exceptions.md)): when
+- **Exceptions from the host** (see [exceptions.md](../ir/exceptions.md)): when
   `throw` has a `#[link(wasm, module = "..", name = "..")]`, the module
   imports that tag, of one `externref`, before the tags it defines. In
   JavaScript it's `WebAssembly.JSTag`, under whatever name the frontend
@@ -122,7 +122,7 @@ three ops.
   continuation holds its slot. The frame's link to the handlers outside is set each time,
   so a continuation resumed somewhere else sees the handlers there. A
   Wasm continuation can only be resumed once, so a second `resume` traps,
-  as rule 7 of [ir.md](ir.md) says. `discontinue F.op(k, args)` throws a closure that
+  as rule 7 of [ir.md](../ir/ir.md) says. `discontinue F.op(k, args)` throws a closure that
   performs `F.op(args)` into `k` with `resume_throw`, and the `perform`
   that `k` was captured at catches it and calls it. Handlers whose clauses
   are all tail-resumptive or aborting keep the lowering above, and only a
@@ -142,7 +142,7 @@ three ops.
   of the yield state, which then holds nothing for that yield, so the
   runtime's own objects never form a cycle; a test checks this on the
   evaluator's heap after every run. The output is ordinary Conduit IR, so every backend runs it, including Wasm
-  without stack switching and native ones. See [lowerings.md](lowerings.md).
+  without stack switching and native ones. See [lowerings.md](../passes/lowerings.md).
 
 ## Operations per target
 
@@ -207,13 +207,13 @@ three ops.
   clears its slot and goes on a free list. A module with `host_function`
   imports `conduit.function` from the runtime, has a trampoline for each
   signature of closure, and exports `conduit_release`. All of it is in
-  [`host/js.md`](host/js.md).
+  [`../host/js.md`](../host/js.md).
 - **Exceptions and traps** that unwind through the module, like a
   JavaScript one from an extern, leave its handler stack and shadow stack
   as each of the host's entry points found them: an export's wrapper or a
   trampoline catches everything, puts them back, and rethrows. After a
   trap, which nothing catches, the host calls `conduit_reset()`. See
-  [`internals/wasm-unwinding.md`](internals/wasm-unwinding.md).
+  [`../internals/wasm-unwinding.md`](../internals/wasm-unwinding.md).
 - With `Options::cycles` too, cycles are collected by trial deletion.
   The header's count is then 28 bits, with the collector's color and a
   "buffered" bit above it, and the sign bit for immortal. A `drop` that

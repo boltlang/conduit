@@ -1,4 +1,4 @@
-// `fac` from docs/ir.md: a join point shared by two arms, and a call
+// `fac` from docs/ir/ir.md: a join point shared by two arms, and a call
 // that isn't a tail call.
 
 fn fac(%n: i32) -> (i32) {

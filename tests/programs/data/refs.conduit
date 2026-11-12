@@ -1,4 +1,4 @@
-// The `var i` loop from rule 6 in docs/ir.md, with its ref not promoted.
+// The `var i` loop from rule 6 in docs/ir/ir.md, with its ref not promoted.
 
 fn count(%n: i32) -> (i32) {
   let %i: ref i32 = ref_new(0i32)

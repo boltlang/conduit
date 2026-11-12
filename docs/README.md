@@ -1,26 +1,50 @@
 # Conduit's documentation
 
+Start with [frontends.md](frontends.md), which shows the pipeline from
+building IR to running it, with an example. The rest is grouped by what
+it's about.
+
+## The IR: [`ir/`](ir/)
+
 | Document | What's in it | For |
 |---|---|---|
-| [ir.md](ir.md) | The IR: types, ops, rules, mutability, reference counts, effect handlers and their types, and why it's built the way it is | everyone |
-| [frontends.md](frontends.md) | How a compiler uses Conduit: the pipeline from building IR to a Wasm module, an example, and what Conduit carries for a frontend | frontend authors |
-| [text.md](text.md) | The text format that `conduit_ir::text` reads and prints, which tests and error messages use | everyone |
-| [verify.md](verify.md) | What the verifier checks, rule by rule | frontend and pass authors |
-| [optimisations.md](optimisations.md) | The optimizer's passes, one by one, and the few rewrites they're made of | pass authors |
-| [exceptions.md](exceptions.md) | Exceptions the host throws and Conduit catches or throws: the `throw` effect and its rules | frontend, backend and runtime authors |
-| [lowerings.md](lowerings.md) | Evidence passing, which removes effect handlers, and reference counting, which makes counts explicit | frontend and backend authors |
-| [wasm.md](wasm.md) | The Wasm backend: its options, how it lowers control flow and handlers, and how values live in linear memory | backend authors |
-| [llvm.md](llvm.md) | The experimental LLVM backend: what it lowers, how, and its tests | backend authors |
-| [host/native.md](host/native.md) | Running natively, through the LLVM backend: building, linking, the C calling convention, host values, callbacks, exceptions, with an example | embedders and runtime authors |
-| [host/js.md](host/js.md) | Running in browsers and Node.js: what the engine needs, host values, strings, callbacks, garbage collection | embedders and runtime authors |
-| [evaluator.md](evaluator.md) | `conduit-eval`, which runs IR directly, for tests | frontend and pass authors |
+| [ir.md](ir/ir.md) | The IR: types, ops, rules, mutability, reference counts, and why it's built the way it is | everyone |
+| [effects.md](ir/effects.md) | Effect handlers, continuations and effect types: rows and effect parameters | everyone |
+| [exceptions.md](ir/exceptions.md) | Exceptions the host throws and Conduit catches or throws: the `throw` effect and its rules | frontend, backend and runtime authors |
+| [text.md](ir/text.md) | The text format that `conduit_ir::text` reads and prints, which tests and error messages use | everyone |
+| [verify.md](ir/verify.md) | What the verifier checks, rule by rule | frontend and pass authors |
 
-How parts of Conduit work inside, for those who change them, is in
-[`internals/`](internals/):
+## Passes: [`passes/`](passes/)
+
+| Document | What's in it | For |
+|---|---|---|
+| [optimisations.md](passes/optimisations.md) | The optimizer's passes, one by one, and the few rewrites they're made of | pass authors |
+| [lowerings.md](passes/lowerings.md) | Evidence passing, which removes effect handlers, and reference counting, which makes counts explicit | frontend and backend authors |
+
+## Backends: [`backends/`](backends/)
+
+| Document | What's in it | For |
+|---|---|---|
+| [wasm.md](backends/wasm.md) | The Wasm backend: its options, how it lowers control flow and handlers, and how values live in linear memory | backend authors |
+| [llvm.md](backends/llvm.md) | The experimental LLVM backend: what it lowers, how, and its tests | backend authors |
+| [evaluator.md](backends/evaluator.md) | `conduit-eval`, which runs IR directly, for tests | frontend and pass authors |
+
+## Hosts: [`host/`](host/)
+
+What the code around a module must do to run it.
+
+| Document | What's in it | For |
+|---|---|---|
+| [js.md](host/js.md) | Running in browsers and Node.js: what the engine needs, host values, strings, callbacks, garbage collection, exceptions | embedders and runtime authors |
+| [native.md](host/native.md) | Running natively, through the LLVM backend: building, linking, the C calling convention, host values, callbacks, exceptions, with an example | embedders and runtime authors |
+
+## Internals: [`internals/`](internals/)
+
+How parts of Conduit work inside, for those who change them.
 
 | Document | What's in it |
 |---|---|
-| [internals/wasm-unwinding.md](internals/wasm-unwinding.md) | How the Wasm backend keeps a module's state right when an exception or a trap unwinds through it |
+| [wasm-unwinding.md](internals/wasm-unwinding.md) | How the Wasm backend keeps a module's state right when an exception or a trap unwinds through it |
 
 The test programs, which show most features at work, are described in
 [`tests/programs/README.md`](../tests/programs/README.md).

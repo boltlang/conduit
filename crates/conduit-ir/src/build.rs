@@ -969,7 +969,7 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
     }
 
     /// A ref of `ty` holding `value`. A mutable local of the source
-    /// language is one of these (rule 6 in `docs/ir.md`).
+    /// language is one of these (rule 6 in `docs/ir/ir.md`).
     pub fn ref_new_as(&mut self, ty: Ty, value: impl Into<Atom>) -> Var {
         self.emit1(Op::RefNew, vec![value.into()], Some(Ty::Ref(Box::new(ty))))
     }

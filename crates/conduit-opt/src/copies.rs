@@ -1,5 +1,5 @@
 //! Removes copies: `ArrayClone` ops, and data objects rebuilt from their
-//! own fields. See "Remove copies" in `docs/optimisations.md`.
+//! own fields. See "Remove copies" in `docs/passes/optimisations.md`.
 //!
 //! - **Clones that change nothing.** An `Imm` array cloned to `Imm` can't
 //!   be told apart from the array itself, so the clone is the array, and

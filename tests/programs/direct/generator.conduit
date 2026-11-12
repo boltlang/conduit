@@ -1,4 +1,4 @@
-// The generator from docs/ir.md: `produce` yields 1 and 2 to a handler
+// The generator from docs/ir/effects.md: `produce` yields 1 and 2 to a handler
 // that adds them up in a ref. The handle runs directly, its clause in
 // place of each `perform`, so the ref becomes values, and `sum()` folds
 // to 3.

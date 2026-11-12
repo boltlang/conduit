@@ -1,5 +1,5 @@
 //! Tail calls: a `let` whose results go straight back to the caller. See
-//! "Jumps are tail calls by construction" in `docs/ir.md`.
+//! "Jumps are tail calls by construction" in `docs/ir/ir.md`.
 //!
 //! A call is a tail call when the `jump` after it returns exactly what it
 //! binds, `let %r = call f(..); jump ret(%r)`, or hands it to a join point

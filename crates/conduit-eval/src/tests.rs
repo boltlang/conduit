@@ -1501,7 +1501,7 @@ fn main(%n: i32) -> (i32) {
 /// A host function can throw a host value, which the call of an extern
 /// with `throw` raises, so that a handler for `throw` catches it. One that
 /// nothing catches ends the run with it, and one from an extern without
-/// `throw` is undefined behavior (see docs/exceptions.md).
+/// `throw` is undefined behavior (see docs/ir/exceptions.md).
 #[test]
 fn hosts_can_throw() {
     struct Throws;

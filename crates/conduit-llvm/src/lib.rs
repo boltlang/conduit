@@ -6,7 +6,7 @@
 //! and functions, freeing by reference counting, and handlers whose
 //! clauses are tail-resumptive or aborting (see `handlers`), and says what
 //! it doesn't handle yet: other handlers, which lowering effects removes
-//! first. See `docs/llvm.md`.
+//! first. See `docs/backends/llvm.md`.
 //!
 //! The lowering builds an [`ir::Module`], which printing makes text.
 //!

@@ -43,7 +43,7 @@ collected too.
   immortal object is freed.
 - `undefined` is left uninitialized: LLVM's `undef`, which it may
   optimize as it likes, since nothing may use it, counting included (see
-  "Reference counts" in [ir.md](ir.md)). An undefined reuse token is
+  "Reference counts" in [ir.md](../ir/ir.md)). An undefined reuse token is
   null, a token that holds no memory. `forget` is nothing.
 - Externs with `#[link(c, symbol = "..")]`, called with the C calling
   convention, and exports with `#[export(c, symbol = "..")]`, which get a
@@ -121,73 +121,22 @@ is unique, and a reuse token holds no memory.
 
 ## Host values
 
-How to write a host for a module built this way is in
-[host/native.md](host/native.md). A native host's value is its own pointer, with the functions that keep
-it alive and let it go, as C passes them:
+What a host gives and gets, and who owns what, is in
+[../host/native.md](../host/native.md). Inside the module, a host value is
+a box of 24 bytes, counted like any other object: the header, then the
+host's `value` at 8 and its `ops` at 16. A null `nullable host` is a
+null box, which isn't counted. The box holds one of the host's
+references, and when its count gets to 0 it calls `ops->release(value)`
+and is freed. Counting a `dup` doesn't call the host: it only hears of a
+value when it comes in and when it goes. Without counts, nothing is
+released, as in Wasm.
 
-```c
-typedef struct conduit_host_ops {
-  void (*retain)(void *value);
-  void (*release)(void *value);
-} conduit_host_ops;
-
-typedef struct conduit_host {
-  void *value;                 // null for a null `nullable host`
-  const conduit_host_ops *ops;
-} conduit_host;
-```
-
-Each value brings its own `ops`, so one module can hold values of
-different libraries. Inside the module, a host value is a box of 24
-bytes, counted like any other object: the header, then `value` at 8 and
-`ops` at 16. A null `nullable host` is a null box, which isn't counted.
-The box holds one of the host's references, and when its count gets to 0
-it calls `ops->release(value)` and is freed. Counting a `dup` doesn't call
-the host: it only hears of a value when it comes in and when it goes.
-
-At the boundary:
-
-| Where | As | Who owns it |
-|---|---|---|
-| extern parameter | `void *value` | borrowed for the call: a host that keeps it calls `retain` itself |
-| extern result | `conduit_host` | the host gives Conduit a reference, which goes in a new box; a null where the type is `host` traps |
-| export parameter | `conduit_host`, as its two words | the caller gives Conduit a reference |
-| export result | `conduit_host` | Conduit calls `retain` for the caller, and drops its box |
-
-A host value among the results after the first is written through its
-pointer as a `conduit_host`, with the same ownership as one returned. The
-flat ABI can't pass host values, as in Wasm.
-
-Without counts, nothing is released: every host value Conduit gets stays
-alive, as in Wasm.
-
-### Functions the host calls
-
-`host_function(c)` gives the host a function that calls the closure `c`.
-A C function pointer can't hold a closure, so the host makes the
-function, as JavaScript does in Wasm, from two pointers the module gives
-it:
-
-```c
-conduit_host conduit_host_function(void *trampoline, void *closure);
-```
-
-- `trampoline` is a C function for each signature of closure,
-  `ret t(void *closure, args.., outs..)`, which runs the closure as an
-  export runs its function: it takes and gives host values and results
-  after the first as an export does, with no handlers around it.
-- The host wraps the two in its own callable, a struct of the two, a
-  block, a boxed `FnMut`, and gives it back as a host value with its own
-  `retain` and `release`. Conduit owns the reference it gives back, as an
-  extern's result.
-- The host keeps the closure's reference for as long as it holds the
-  function, and gives it back with `void conduit_release(void
-  *closure)`, which the module defines.
-
-After evidence passing, every closure takes evidence, so `host_function`
-gets an adapter's closure, as in Wasm. A cycle through Conduit and the
-host, like a callback that captures what holds it, leaks, as it does in
-JavaScript.
+`host_function` gives the host a trampoline for each signature of
+closure, which runs the closure as an export runs its function (both are
+made by `c_entry`), and dups the closure first, since applying it takes
+a reference and the host keeps its own. After evidence passing, every
+closure takes evidence, so `host_function` gets an adapter's closure, as
+in Wasm.
 
 ## Handlers
 
@@ -237,7 +186,7 @@ has nothing to drop, has no landing pads.
 **Exceptions from the host,** like a C++ one from an extern, go through
 the same landing pads, which `__gcc_personality_v0` runs for any
 exception (#59). Where one can come from is `throw` in a row (see
-"Exceptions from the host" in [ir.md](ir.md)): each call of an extern
+[exceptions.md](../ir/exceptions.md)): each call of an extern
 with `throw`, and each call and `apply` that can reach one, is an
 `invoke` while the frame owns something. An extern that no extern of its
 symbol says may throw is declared `nounwind`, since its throwing would be
@@ -276,7 +225,7 @@ Not yet:
 
 `crates/conduit-llvm/tests/programs.rs` compiles every test program it can
 lower with `clang -O2`, built for C (see "Host functions" in
-[tests/programs/README.md](../tests/programs/README.md)) and linked with
+[../../tests/programs/README.md](../../tests/programs/README.md)) and linked with
 the test host in `tests/programs/host/c.c`, as written and after the optimizer, after lowering
 its effects when its handlers need it, each without counts, with them, and with
 cycles collected too, and runs

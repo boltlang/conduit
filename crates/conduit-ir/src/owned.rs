@@ -1,6 +1,6 @@
 //! What a frame owns while one of its `let`s runs, in counted code: the
 //! references that "A continuation owns what its frames own" in
-//! `docs/ir.md` is about, which dropping a continuation that's never
+//! `docs/ir/ir.md` is about, which dropping a continuation that's never
 //! resumed drops, and which an abort that unwinds the frame drops on its
 //! way out. The evaluator, the Wasm backend and native code use this one
 //! analysis, so that they drop the same references.

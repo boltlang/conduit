@@ -1,5 +1,5 @@
 //! Exceptions from the host, caught by handlers for `throw`, and `raise`s
-//! that nothing handles, thrown to the host (#64, `docs/exceptions.md`).
+//! that nothing handles, thrown to the host (#64, `docs/ir/exceptions.md`).
 //!
 //! A second module stands in for JavaScript: it exports a tag of one
 //! `externref`, as `WebAssembly.JSTag` is, which `throw`'s link names, and
