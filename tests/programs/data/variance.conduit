@@ -1,0 +1,147 @@
+// Values used at their supertypes where the passes rewrite code (#57,
+// #60): a clause whose continuation and parameters are supertypes of what
+// it's given, run directly and lowered; closures known to be of a
+// function whose signature only fits their type, inlined; data seen
+// through a `ro` view, taken apart by sroa; and rows that only fit.
+
+data W {
+  (i32)
+}
+
+data Holder['m1] {
+  ('m1 [i32], imm fn(i32) -> (ro W))
+}
+
+effect Ask {
+  (imm W) -> (ro W)
+}
+
+effect Log {
+  (i32) -> ()
+}
+
+fn w(%x: i32) -> (imm W) {
+  let %r: imm W = new W.0(%x)
+  jump ret(%r)
+}
+
+// Tail-resumptive: the clause takes `ro W` where `imm W` is given, and a
+// continuation that takes `imm W` where one taking `ro W` is given.
+handler direct for Ask env() ops(answer) ret same
+
+fn answer(%q: ro W, %k: cont(imm W) -> (i32)) -> (i32) {
+  let %x: i32 = get W.0.0(%q)
+  let %y: i32 = add(%x, 1i32)
+  let %a: imm W = call w(%y)
+  let %r: i32 = resume(%k, %a)
+  jump ret(%r)
+}
+
+// Not tail-resumptive, so it's lowered by evidence passing or switching.
+handler general for Ask env() ops(answer_later) ret same
+
+fn answer_later(%q: ro W, %k: cont(imm W) -> (i32)) -> (i32) {
+  let %x: i32 = get W.0.0(%q)
+  let %a: imm W = call w(%x)
+  let %r: i32 = resume(%k, %a)
+  let %s: i32 = add(%r, 100i32)
+  jump ret(%s)
+}
+
+fn same(%r: i32) -> (i32) {
+  jump ret(%r)
+}
+
+fn asks(%x: i32) -> (i32) does Ask {
+  let %q: imm W = call w(%x)
+  let %a: ro W = perform Ask.0(%q)
+  let %r: i32 = get W.0.0(%a)
+  jump ret(%r)
+}
+
+fn handlers(%x: i32) -> (i32) {
+  let %b: imm fn() -> (i32) does Ask = closure asks(%x)
+  let %r: i32 = handle direct(%b)
+  let %b2: imm fn() -> (i32) does Ask = closure asks(%x)
+  let %s: i32 = handle general(%b2)
+  let %t: i32 = add(%r, %s)
+  jump ret(%t)
+}
+
+// A closure of `w` as one that gives `ro W`, kept in data seen as `ro`,
+// then applied: known, so it can be called and inlined.
+fn read(%h: ro Holder[ro]) -> (i32) {
+  let %a: ro [i32] = get Holder.0.0(%h)
+  let %f: imm fn(i32) -> (ro W) = get Holder.0.1(%h)
+  let %x: i32 = array_get(%a, 0i32)
+  let %v: ro W = apply(%f, %x)
+  let %y: i32 = get W.0.0(%v)
+  jump ret(%y)
+}
+
+fn views(%x: i32) -> (i32) {
+  let %a: mut [i32] = array_new(%x)
+  let %f: imm fn(i32) -> (ro W) = closure w()
+  let %h: mut Holder[mut] = new Holder.0(%a, %f)
+  let %r: i32 = call read(%h)
+  let = array_set(%a, 0i32, 7i32)
+  let %s: i32 = call read(%h)
+  let %t: i32 = add(%r, %s)
+  jump ret(%t)
+}
+
+// A closure that does nothing used as one that may log, in an `imm`
+// array, applied under a handler.
+handler logger for Log env(ref i32) ops(log) ret logged
+
+fn log(%total: ref i32, %x: i32, %k: cont() -> (i32)) -> (i32) {
+  let %t: i32 = ref_get(%total)
+  let %t1: i32 = add(%t, %x)
+  let = ref_set(%total, %t1)
+  let %r: i32 = resume(%k)
+  jump ret(%r)
+}
+
+fn logged(%total: ref i32, %r: i32) -> (i32) {
+  jump ret(%r)
+}
+
+fn plus1(%x: i32) -> (i32) {
+  let %r: i32 = add(%x, 1i32)
+  jump ret(%r)
+}
+
+fn logs(%x: i32) -> (i32) does Log {
+  let = perform Log.0(%x)
+  jump ret(%x)
+}
+
+fn apply_all(%fs: imm [imm fn(i32) -> (i32) does Log], %x: i32) -> (i32) does Log {
+  let %f: imm fn(i32) -> (i32) does Log = array_get(%fs, 0i32)
+  let %g: imm fn(i32) -> (i32) does Log = array_get(%fs, 1i32)
+  let %a: i32 = apply(%f, %x)
+  let %b: i32 = apply(%g, %a)
+  jump ret(%b)
+}
+
+fn rows_body(%x: i32) -> (i32) does Log {
+  let %p: imm fn(i32) -> (i32) = closure plus1()
+  let %l: imm fn(i32) -> (i32) does Log = closure logs()
+  let %pure: imm [imm fn(i32) -> (i32)] = array_new(%p, %p)
+  let %a: i32 = call apply_all(%pure, %x)
+  let %mixed: imm [imm fn(i32) -> (i32) does Log] = array_new(%p, %l)
+  let %b: i32 = call apply_all(%mixed, %a)
+  jump ret(%b)
+}
+
+fn rows(%x: i32) -> (i32, i32) {
+  let %total: ref i32 = ref_new(0i32)
+  let %b: imm fn() -> (i32) does Log = closure rows_body(%x)
+  let %r: i32 = handle logger(%total, %b)
+  let %t: i32 = ref_get(%total)
+  jump ret(%r, %t)
+}
+
+//# run handlers(5i32) == 111i32
+//# run views(3i32) == 10i32
+//# run rows(1i32) == (4i32, 4i32)

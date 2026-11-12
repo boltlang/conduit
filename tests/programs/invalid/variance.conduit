@@ -1,0 +1,115 @@
+// Subtypes that would be unsound (#57, #60): each lets code write, or
+// call, something at a type the value doesn't have.
+
+data W {
+  (i32)
+}
+
+effect Log {
+  () -> ()
+}
+
+// A closure's parameter under `ro`, which a `mut` holder would see as
+// taking `mut [i32]`: reading it out and calling it with a `ro` array
+// would hand the closure something it may write.
+data Takes['m1] {
+  (imm fn('m1 [i32]) -> ())
+}
+
+fn fn0(%t: ro Takes[ro]) -> () {
+  jump ret()
+}
+
+fn fn1(%t: mut Takes[mut]) -> () {
+  let = call fn0(%t)
+  jump ret()
+}
+
+// A continuation's parameter under `ro`, the same way round.
+data Resumes['m1] {
+  (cont('m1 [i32]) -> ())
+}
+
+fn fn2(%t: ro Resumes[ro]) -> () {
+  jump ret()
+}
+
+fn fn3(%t: mut Resumes[mut]) -> () {
+  let = call fn2(%t)
+  jump ret()
+}
+
+// A `mut` array of closures: storing one that logs into it would let an
+// alias that expects closures that don't apply it without a handler.
+fn fn4(%fs: mut [imm fn() -> () does Log]) -> () {
+  jump ret()
+}
+
+fn fn5(%fs: mut [imm fn() -> ()]) -> () {
+  let = call fn4(%fs)
+  jump ret()
+}
+
+// A ref of a closure, which can be written.
+fn fn6(%r: ref imm fn() -> (ro W)) -> () {
+  jump ret()
+}
+
+fn fn7(%r: ref imm fn() -> (imm W)) -> () {
+  let = call fn6(%r)
+  jump ret()
+}
+
+// An operation that takes `imm W`, performed with a `ro W`: the clause
+// could keep it as `imm` while someone else writes it.
+effect Give {
+  (imm W) -> ()
+}
+
+handler g for Give env() ops(fn10) ret fn9
+
+fn fn9() -> () {
+  jump ret()
+}
+
+fn fn10(%x: imm W, %k: cont() -> ()) -> () {
+  jump ret()
+}
+
+fn fn11(%x: ro W) -> () does Give {
+  let = perform Give.0(%x)
+  jump ret()
+}
+
+// A closure that may throw used as one that can't.
+fn fn12(%f: imm fn() -> () does throw) -> () {
+  let %g: imm fn() -> () = closure fn13(%f)
+  jump ret()
+}
+
+fn fn13(%f: imm fn() -> () does throw) -> () does throw {
+  let = apply(%f)
+  jump ret()
+}
+
+// An `imm` view with an argument that only fits through a `mut` field.
+data Box['m1] {
+  (mut ['m1 [i32]])
+}
+
+fn fn14(%b: ro Box[ro]) -> () {
+  jump ret()
+}
+
+fn fn15(%b: mut Box[mut]) -> () {
+  let = call fn14(%b)
+  jump ret()
+}
+
+//# verify-error: fn1: call of fn0: value 0 has type mut data1[mut], but should have ro data1[ro]
+//# verify-error: fn3: call of fn2: value 0 has type mut data2[mut], but should have ro data2[ro]
+//# verify-error: fn5: call of fn4: value 0 has type mut [imm fn() -> ()], but should have mut [imm fn() -> () does effect0]
+//# verify-error: fn7: call of fn6: value 0 has type ref imm fn() -> (imm data0), but should have ref imm fn() -> (ro data0)
+//# verify-error: fn11: perform effect1.0: value 0 has type ro data0, but should have imm data0
+//# verify-error: fn12: fn13 does throw, which isn't in the row of fn() -> ()
+//# verify-error: fn15: call of fn14: value 0 has type mut data3[mut], but should have ro data3[ro]
