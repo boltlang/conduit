@@ -322,6 +322,15 @@ pub struct EffectDecl {
     pub ops: Vec<Sig>,
     /// A name to show it by. See [`FuncDebug`].
     pub debug_name: Option<Box<str>>,
+    /// For [`EffectId::THROW`] only: where the host's exceptions come
+    /// from, for the one target the frontend made the module for, as an
+    /// extern's link says where its function does. With one, what the
+    /// host throws is what `raise` gives, and a `raise` that nothing
+    /// handles throws to the host with it: in Wasm, a `wasm` link names
+    /// the imported tag, `WebAssembly.JSTag` in JavaScript. Without one,
+    /// a handler for `throw` only catches what Conduit code raises. See
+    /// `docs/exceptions.md`.
+    pub link: Option<Link>,
 }
 
 impl EffectDecl {
@@ -332,6 +341,7 @@ impl EffectDecl {
         EffectDecl {
             ops: vec![Sig::new(vec![Ty::NullableHost], vec![])],
             debug_name: Some("throw".into()),
+            link: None,
         }
     }
 }

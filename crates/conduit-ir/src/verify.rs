@@ -100,6 +100,12 @@ pub fn verify_module(m: &Module) -> Result<(), Vec<Error>> {
         }
     }
     for (&id, effect) in &m.effects {
+        if id != EffectId::THROW && effect.link.is_some() {
+            errors.push(decl_error(
+                Item::Effect(id),
+                "only throw has a link: no other effect comes from the host".into(),
+            ));
+        }
         if id == EffectId::THROW && effect.ops != EffectDecl::throw().ops {
             errors.push(decl_error(
                 Item::Effect(id),

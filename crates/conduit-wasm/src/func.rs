@@ -12,12 +12,13 @@
 use std::borrow::Cow;
 
 use conduit_ir::{
-    Abi, Atom, Block, CtorId, Func, FuncId, JoinDef, Label, Lit, Op, Prim, Sign, Tag, Tail, Ty, Var,
+    Abi, Atom, Block, CtorId, EffectId, Func, FuncId, JoinDef, Label, Lit, Op, Prim, Sign, Tag,
+    Tail, Ty, Var,
 };
 use wasm_encoder::{BlockType, Ieee32, Ieee64, Instruction as I, MemArg, MemArgTarget, ValType};
 
 use crate::counts::{DropKey, Runtime, is_imm, key_of};
-use crate::{ABORT, Cx, HANDLERS, HEAP, SITE, Storage, layout, shadow, val};
+use crate::{Cx, HANDLERS, HEAP, SITE, Storage, layout, shadow, val};
 
 /// A lowered function: the locals after its parameters, and its code.
 pub(crate) struct Body {
@@ -263,7 +264,7 @@ pub(crate) fn lower_wrapper(
         }
         locals = results;
         code.push(I::LocalGet(0));
-        code.push(I::Throw(ABORT));
+        code.push(I::Throw(cx.abort_tag));
     } else {
         code.push(I::ReturnCall(idx));
     }
@@ -1307,6 +1308,12 @@ impl<'m> FuncCx<'_, 'm> {
         };
         let results: Vec<u32> = sig.results.iter().map(|t| self.new_local(val(t))).collect();
         let n_ops = decl.len();
+        if self.cx.is_switching(h) && self.cx.host_tag.is_some() && decl.handles(EffectId::THROW) {
+            return Err(format!(
+                "{h} handles throw and an effect it switches stacks for, so it can't catch \
+                 what the host throws yet: handle throw in a handler of its own"
+            ));
+        }
         if self.cx.is_switching(h) {
             // A frame with -1 in every clause slot, which `start` links in
             // before it runs the body.
@@ -1425,17 +1432,14 @@ impl<'m> FuncCx<'_, 'm> {
         self.open(I::Block(BlockType::Result(ValType::I32)));
         // A catch's label is counted from outside the `try_table`.
         let mut catches = vec![wasm_encoder::Catch::One {
-            tag: ABORT,
+            tag: self.cx.abort_tag,
             label: 0,
         }];
         if foreign {
             catches.push(wasm_encoder::Catch::AllRef { label: 1 });
         }
         self.open(I::TryTable(BlockType::Empty, Cow::Owned(catches)));
-        self.apply_body(&body[0])?;
-        for &r in results.iter().rev() {
-            self.emit(I::LocalSet(r));
-        }
+        self.body_catching_host(h, frame, saved, &body[0], &results)?;
         self.close();
         // Out to the outermost block, past the foreign exception's.
         let out = 1 + u32::from(foreign);
@@ -1463,7 +1467,7 @@ impl<'m> FuncCx<'_, 'm> {
         self.open(I::If(BlockType::Empty));
         self.release_frame(frame, size);
         self.emit(I::LocalGet(thrown));
-        self.emit(I::Throw(ABORT));
+        self.emit(I::Throw(self.cx.abort_tag));
         self.close();
         if let Some((stack, sp, limit)) = stack {
             self.code.extend(shadow::restore(stack, sp, limit));
@@ -1496,6 +1500,99 @@ impl<'m> FuncCx<'_, 'm> {
         Ok(false)
     }
 
+    /// Applies `body`, setting `results`, of a `handle` of `h` whose frame
+    /// is in local `frame`, with the handler stack outside in `saved`. If
+    /// `h` handles `throw` and the module imports the host's tag, what the
+    /// host throws in the body is caught, boxed, and given to the clause
+    /// for `raise` as a `perform` would, whose abort ends the `handle` as
+    /// any does (see `docs/exceptions.md`).
+    fn body_catching_host(
+        &mut self,
+        h: conduit_ir::HandlerId,
+        frame: u32,
+        saved: u32,
+        body: &Atom,
+        results: &[u32],
+    ) -> Result<(), String> {
+        let decl = &self.cx.m.handlers[&h];
+        let slot = decl.slot(EffectId::THROW, 0);
+        let (Some((tag, hosts)), Some(slot)) = (self.cx.host_tag().zip(self.cx.hosts), slot) else {
+            self.apply_body(body)?;
+            for &r in results.iter().rev() {
+                self.emit(I::LocalSet(r));
+            }
+            return Ok(());
+        };
+        let wrapper = self.cx.wrapper(h, slot as u32)?;
+        let clause = self.cx.clause_sig(EffectId::THROW, 0)?;
+        self.open(I::Block(BlockType::Empty));
+        self.open(I::Block(BlockType::Result(ValType::EXTERNREF)));
+        let catches = vec![wasm_encoder::Catch::One { tag, label: 0 }];
+        self.open(I::TryTable(BlockType::Empty, Cow::Owned(catches)));
+        self.apply_body(body)?;
+        for &r in results.iter().rev() {
+            self.emit(I::LocalSet(r));
+        }
+        self.close();
+        self.emit(I::Br(1));
+        self.close();
+        // What the host threw, as a `nullable host`.
+        let x = self.new_local(ValType::EXTERNREF);
+        self.emit(I::LocalSet(x));
+        let thrown = self.new_local(ValType::I32);
+        self.emit(I::LocalGet(x));
+        self.emit(I::RefIsNull);
+        self.emit(I::If(BlockType::Empty));
+        self.emit(I::I32Const(0));
+        self.emit(I::LocalSet(thrown));
+        self.emit(I::Else);
+        let b = self.new_host(hosts, x);
+        self.emit(I::LocalGet(b));
+        self.emit(I::LocalSet(thrown));
+        self.emit(I::End);
+        // The clause runs under the handlers outside, and aborts to this
+        // `handle`, as for a `perform`.
+        self.emit(I::LocalGet(saved));
+        self.emit(I::GlobalSet(HANDLERS));
+        self.emit(I::LocalGet(frame));
+        self.emit(I::LocalGet(thrown));
+        self.emit(I::I32Const(wrapper as i32));
+        self.call_indirect(clause, false);
+        self.emit(I::Unreachable);
+        self.close();
+        Ok(())
+    }
+
+    /// Throws the `nullable host` in `value` to the host with its tag
+    /// `tag`, as a `raise` that nothing handles does, giving up the box's
+    /// reference.
+    fn throw_to_host(&mut self, tag: u32, value: &Atom) -> Result<(), String> {
+        let hosts = self.cx.hosts.ok_or("no table of host values")?;
+        let p = self.new_local(ValType::I32);
+        let x = self.new_local(ValType::EXTERNREF);
+        self.atom(value);
+        self.emit(I::LocalTee(p));
+        self.emit(I::If(BlockType::Result(ValType::EXTERNREF)));
+        self.emit(I::LocalGet(p));
+        self.emit(load(Storage::I32, 8));
+        self.emit(I::TableGet(hosts.table));
+        self.emit(I::Else);
+        self.emit(I::RefNull(wasm_encoder::HeapType::EXTERN));
+        self.emit(I::End);
+        self.emit(I::LocalSet(x));
+        if let Some(rt) = &self.cx.rt {
+            let drop = rt.drop(&DropKey::Host, is_imm(&Ty::NullableHost));
+            self.emit(I::LocalGet(p));
+            self.emit(I::If(BlockType::Empty));
+            self.emit(I::LocalGet(p));
+            self.emit(I::Call(drop));
+            self.emit(I::End);
+        }
+        self.emit(I::LocalGet(x));
+        self.emit(I::Throw(tag));
+        Ok(())
+    }
+
     /// `perform e.i(args)`: finds the nearest frame of a handler of `e`,
     /// trapping if there's none, and calls its clause with the handler
     /// stack below the frame, so that a `perform` in the clause goes to an
@@ -1516,10 +1613,18 @@ impl<'m> FuncCx<'_, 'm> {
         self.emit(I::LocalSet(found));
         self.open(I::Block(BlockType::Empty));
         self.open(I::Loop(BlockType::Empty));
-        // No frame left: the effect isn't handled.
+        // No frame left: the effect isn't handled, which traps, or for a
+        // `raise`, goes to the host.
         self.emit(I::LocalGet(found));
         self.emit(I::I32Eqz);
-        self.trap_if();
+        match self.cx.host_tag().filter(|_| e == EffectId::THROW) {
+            Some(tag) => {
+                self.open(I::If(BlockType::Empty));
+                self.throw_to_host(tag, &args[0])?;
+                self.close();
+            }
+            None => self.trap_if(),
+        }
         match slot {
             Slot::At(_) => {
                 self.emit(I::LocalGet(found));

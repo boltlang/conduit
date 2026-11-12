@@ -252,9 +252,14 @@ undefined behavior, after which the instance must not be used. Where it
 says so, the frames an exception unwinds drop what they own, and an
 entry point puts the module's state back, so a host that catches the
 exception, even in the middle of a call into the module, can go on using
-the instance. Catching JavaScript exceptions in Conduit, by handling
-`throw`, and throwing them, by performing it, are planned: see
-[`../exceptions.md`](../exceptions.md). Conduit's own exceptions, for
+the instance. Conduit code catches JavaScript exceptions by handling
+`throw`, and throws them by performing it, when the frontend links
+`throw` to a tag the module imports, which the page gives as
+`WebAssembly.JSTag` (see [`../exceptions.md`](../exceptions.md)):
+
+```js
+WebAssembly.instantiate(bytes, { bolt: { js_tag: WebAssembly.JSTag }, ... })
+``` Conduit's own exceptions, for
 aborting handlers, use a tag of their own, which JavaScript code never
 sees.
 

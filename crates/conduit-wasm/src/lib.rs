@@ -101,9 +101,6 @@ const HANDLERS: u32 = 1;
 /// running, under which a `discontinue` in that clause performs.
 pub(crate) const SITE: u32 = 2;
 
-/// The exception an aborting clause throws, holding its handler's frame.
-const ABORT: u32 = 0;
-
 /// How a value is stored in memory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum Storage {
@@ -253,6 +250,14 @@ pub(crate) struct Cx<'m> {
     /// undefined behavior (see "Exceptions from the host" in
     /// `docs/ir.md`).
     pub throws: bool,
+    /// Where the host's exceptions come from, if `throw` has a wasm link:
+    /// the tag the module imports, number 0, which a handler for `throw`
+    /// catches and a `raise` that nothing handles throws (see
+    /// `docs/exceptions.md`).
+    pub host_tag: Option<(&'m str, &'m str)>,
+    /// The tag an aborting clause throws, holding its handler's frame:
+    /// the first the module defines, after the host's if it imports it.
+    pub abort_tag: u32,
 }
 
 /// Closures the host calls, made by `host_function`: in Wasm, a JavaScript
@@ -751,6 +756,11 @@ impl Cx<'_> {
             .ok_or_else(|| format!("no function to discontinue with {e}.{i}"))
     }
 
+    /// The host's tag, if the module imports it.
+    pub fn host_tag(&self) -> Option<u32> {
+        self.host_tag.map(|_| 0)
+    }
+
     pub fn is_aborting(&self, h: HandlerId) -> bool {
         self.aborting.contains(&h)
     }
@@ -888,7 +898,11 @@ pub fn emit_module_with(m: &Module, options: &Options) -> Result<Vec<u8>, Error>
     };
     let clause_wrappers = lower_clause_wrappers(&mut cx, &switching, &plain.funcs)?;
     let switched = lower_switching(&mut cx, &switching)?;
-    // Tag types, after the abort's.
+    // The host's tag's type, which it imports, then the others, after
+    // the abort's.
+    let host_tag_ty = cx
+        .host_tag
+        .map(|_| cx.sig(FnSig::new([ValType::EXTERNREF], [])));
     let disc_tag_ty = cx.disc_tag.map(|_| cx.sig(FnSig::new([ValType::I32], [])));
     let cancel_tag_ty = cx.cancel_tag.map(|_| cx.sig(FnSig::new([], [])));
     let mut control_tag_tys = Vec::new();
@@ -951,6 +965,16 @@ pub fn emit_module_with(m: &Module, options: &Options) -> Result<Vec<u8>, Error>
     let mut import_section = ImportSection::new();
     for &(module, name, sig) in &imports {
         import_section.import(module, name, EntityType::Function(sig));
+    }
+    if let (Some((module, name)), Some(ty)) = (cx.host_tag, host_tag_ty) {
+        import_section.import(
+            module,
+            name,
+            EntityType::Tag(TagType {
+                kind: TagKind::Exception,
+                func_type_idx: ty,
+            }),
+        );
     }
     module.section(&import_section);
     module.section(&functions);
@@ -1131,6 +1155,21 @@ impl<'m> Cx<'m> {
         plain: &PlainClauses,
         thunks: Thunks,
     ) -> Result<Cx<'m>, Error> {
+        let host_tag = match m
+            .effects
+            .get(&EffectId::THROW)
+            .and_then(|e| e.link.as_ref())
+        {
+            None => None,
+            Some(Link::Wasm { module, name }) => Some((&**module, &**name)),
+            Some(other) => {
+                return Err(Error::at(Item::Effect(EffectId::THROW))(format!(
+                    "throw has a {} link, for another target: only a `#[link(wasm, ..)]` \
+                     names a tag to import",
+                    other.kind()
+                )));
+            }
+        };
         // The clauses' wrappers come first in the table.
         let mut wrappers = BTreeMap::new();
         let mut wrapper_slots = 0;
@@ -1172,6 +1211,8 @@ impl<'m> Cx<'m> {
             hosts: None,
             callbacks: None,
             throws: m.funcs.values().any(|f| f.row.throws()),
+            host_tag,
+            abort_tag: u32::from(host_tag.is_some()),
         };
         if options.counts {
             cx.rt = Some(counts::Runtime::new(m, cx.alloc + 1, options.cycles));
@@ -1267,7 +1308,8 @@ fn lay_out_memory(
             .as_ref()
             .is_some_and(|rt| rt.keys.contains(&counts::DropKey::Host))
         || exports.iter().any(|&(f, _)| takes_or_gives_host(m, f))
-        || cx.callbacks.is_some();
+        || cx.callbacks.is_some()
+        || cx.host_tag.is_some();
     if uses_hosts {
         let conts: usize = cx.switches.values().map(|sw| sw.conts.len()).sum();
         let free = cx.rt.is_some().then(|| match (&cx.slot_lists, cx.stack) {
@@ -1926,7 +1968,7 @@ fn plan_switching(cx: &mut Cx<'_>, switching: &BTreeSet<HandlerId>) -> Result<u3
         );
     }
     cx.wrapper_slots = slot;
-    let mut tag = u32::from(!cx.aborts.is_empty());
+    let mut tag = cx.abort_tag + u32::from(!cx.aborts.is_empty());
     if disc {
         cx.disc_tag = Some(tag);
         tag += 1;

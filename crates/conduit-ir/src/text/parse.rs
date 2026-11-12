@@ -544,10 +544,14 @@ impl Parser {
         loop {
             let attrs = self.attrs()?;
             let pos = self.pos();
-            if !attrs.is_empty() && !self.is_keyword("extern") && !self.is_keyword("fn") {
+            if !attrs.is_empty()
+                && !self.is_keyword("extern")
+                && !self.is_keyword("fn")
+                && !self.is_keyword("effect")
+            {
                 return self.error_at(
                     attrs[0].pos,
-                    "only an extern or a function takes attributes, so far",
+                    "only an extern, a function or `effect throw` takes attributes, so far",
                 );
             }
             let name = match self.peek() {
@@ -595,18 +599,46 @@ impl Parser {
                     m.consts.insert(id, decl).map(|_| id.to_string())
                 }
                 "effect" => {
-                    if self.is_keyword("throw") {
-                        return self.error("`throw` is built in: no effect can be named that");
+                    // The built-in one, declared only for its link.
+                    if self.eat_keyword("throw") {
+                        let Some(attr) = attrs.first() else {
+                            return self.error_at(
+                                pos,
+                                "`throw` is built in: it's only declared with a `#[link(..)]`, \
+                                 and no effect can be named that",
+                            );
+                        };
+                        let at = attr.pos;
+                        let (link, abi) = self.link(at, attrs, None)?;
+                        if abi != Abi::Conduit {
+                            return self.error_at(at, "`throw` has no ABI: only a `link`");
+                        }
+                        self.uses_throw = true;
+                        let decl = EffectDecl {
+                            link: Some(link),
+                            ..EffectDecl::throw()
+                        };
+                        let id = EffectId::THROW;
+                        m.effects.insert(id, decl).map(|_| id.to_string())
+                    } else {
+                        if !attrs.is_empty() {
+                            return self
+                                .error_at(attrs[0].pos, "only `effect throw` takes attributes");
+                        }
+                        let (id, debug_name) = self.def("effect")?;
+                        self.punct("{")?;
+                        let mut ops = Vec::new();
+                        while !self.eat_punct("}") {
+                            ops.push(self.sig()?);
+                        }
+                        let id = EffectId(id);
+                        let decl = EffectDecl {
+                            ops,
+                            debug_name,
+                            link: None,
+                        };
+                        m.effects.insert(id, decl).map(|_| id.to_string())
                     }
-                    let (id, debug_name) = self.def("effect")?;
-                    self.punct("{")?;
-                    let mut ops = Vec::new();
-                    while !self.eat_punct("}") {
-                        ops.push(self.sig()?);
-                    }
-                    let id = EffectId(id);
-                    let decl = EffectDecl { ops, debug_name };
-                    m.effects.insert(id, decl).map(|_| id.to_string())
                 }
                 "handler" => {
                     let (id, debug_name) = self.def("handler")?;

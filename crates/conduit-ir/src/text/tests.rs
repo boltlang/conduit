@@ -508,7 +508,7 @@ fn parse_errors() {
         ),
         (
             "#[export(wasm)]\ndata d { () }",
-            "1:3: only an extern or a function takes attributes, so far",
+            "1:3: only an extern, a function or `effect throw` takes attributes, so far",
         ),
         (
             "#[export(wasm)]\n#[export(emu)]\nfn f() -> () { jump ret() }",
@@ -851,6 +851,7 @@ fn effects_named_like_parameters() {
         EffectDecl {
             ops: vec![],
             debug_name: Some("E1".into()),
+            link: None,
         },
     );
     let mut f = Func::new(vec![], vec![]);
@@ -1087,4 +1088,41 @@ fn raises(%e: nullable host) -> () does throw {
     let mut undeclared = m;
     undeclared.effects.clear();
     assert!(verify_module(&undeclared).is_err());
+}
+
+/// `throw` is declared only for its link, where the host's exceptions
+/// come from.
+#[test]
+fn throw_with_a_link() {
+    let text = "#[link(wasm, module = \"js\", name = \"tag\")]
+effect throw
+
+fn raises(%e: nullable host) -> () does throw {
+  let = perform throw.0(%e)
+  jump ret()
+}
+";
+    let m = parse(text).unwrap();
+    assert_eq!(print(&m), text);
+    assert_eq!(
+        m.effects[&EffectId::THROW].link,
+        Some(Link::Wasm {
+            module: "js".into(),
+            name: "tag".into()
+        })
+    );
+    verify_module(&m).unwrap();
+    for (text, error) in [
+        (
+            "effect throw\n",
+            "`throw` is built in: it's only declared with a `#[link(..)]`",
+        ),
+        (
+            "#[link(emu)]\neffect e {\n}\n",
+            "only `effect throw` takes attributes",
+        ),
+    ] {
+        let err = parse(text).unwrap_err().to_string();
+        assert!(err.contains(error), "{err}");
+    }
 }

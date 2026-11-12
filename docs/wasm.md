@@ -80,6 +80,17 @@ aborting without capturing a continuation:
   clause runs its body in a `try_table`, which catches the exception,
   rethrows it if the frame isn't its own, and otherwise gives the frame's
   results.
+- **Exceptions from the host** (see [exceptions.md](exceptions.md)): when
+  `throw` has a `#[link(wasm, module = "..", name = "..")]`, the module
+  imports that tag, of one `externref`, before the tags it defines. In
+  JavaScript it's `WebAssembly.JSTag`, under whatever name the frontend
+  chose. The body of a handler for `throw` runs in a second `try_table`
+  that catches the tag, boxes the `externref` as a host value, and calls
+  the clause for `raise` with it, as a `perform` would, so its abort ends
+  the `handle` as any does. A `perform throw.0(%e)` that finds no handler
+  throws the tag with `%e`'s `externref`, instead of trapping. Without a
+  link, a handler for `throw` catches only `raise`s, and a handler that
+  switches stacks can't handle `throw` when there's a link yet.
 - A tail-resumptive clause that discontinues sets the stack to that of
   the `perform` it handles, which a second global holds while the clause
   runs, and performs. A `perform` sets that global and puts it back after,

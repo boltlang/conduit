@@ -20,7 +20,20 @@ effect throw {
 }
 ```
 
-No module declares it, and no other effect can be named that. It's
+No module declares it, and no other effect can be named that, except to
+say where the host's exceptions come from, for the target the module is
+for, as an extern's link says where its function is:
+
+```
+#[link(wasm, module = "bolt", name = "js_tag")]
+effect throw
+```
+
+In Wasm, that's the tag the module imports, `WebAssembly.JSTag` in
+JavaScript, under the name the frontend chose: no runtime of Conduit's
+provides it. Without a link, a handler for `throw` catches only what
+Conduit code raises, and the host's exceptions unwind as they would
+through any code (rule 4 below). It's
 written like any effect, first in a row: `does throw + Log`, and its
 operation is `throw.0`, called `raise` here. `Any` has it.
 
@@ -92,8 +105,9 @@ throws isn't implemented yet: see below.
    `conduit_host_ops` run from drops, which can't have `throw`.
 
 *Status:* 1, 3, 4 and 5 are implemented, and 2 in the evaluator: a
-`raise` that nothing handles ends its run with `ErrorKind::Uncaught`. In
-Wasm and natively it still traps, as any operation does (#64, #66).
+`raise` that nothing handles ends its run with `ErrorKind::Uncaught`, and
+in Wasm, with a link, is thrown to the host. Natively it still traps, as
+any operation does (#66).
 
 ## How the implementations do it
 
@@ -104,10 +118,10 @@ become a `raise` somewhere:
 - **Directly, or with stack switching:** the exception unwinds Conduit
   frames as the host's, running their cleanups, and the `handle` for
   `throw` catches it: in Wasm, its body runs in a `try_table` that
-  catches JavaScript's tag, `WebAssembly.JSTag`, which the module
-  imports. A `try_table` on a suspended stack still applies after a
-  `resume`, so stack switching changes nothing. A `raise` that Conduit
-  code performs aborts to the handler as any aborting clause does.
+  catches the tag `throw`'s link names. A `try_table` on a suspended
+  stack still applies after a `resume`, so stack switching changes
+  nothing for a `handle` in a switched body. A `raise` that Conduit code
+  performs aborts to the handler as any aborting clause does.
 - **Evidence passing:** a handler's frame doesn't outlive a yield, so a
   host exception must not unwind Conduit frames at all. Each
   `call_extern` with `throw` catches what the host throws and performs
@@ -130,7 +144,9 @@ become a `raise` somewhere:
 the entry points for a `throw` that only unwinds (#59, #40). A `raise`
 from Conduit code is caught by a handler for `throw` everywhere, as an
 aborting clause's operation is, and the evaluator raises what a host
-function throws. Catching what the host throws in Wasm (#64) and
-natively (#66) isn't implemented: a handler for `throw` doesn't see it
-yet, and evidence passing gives every row of a module that throws
-`throw` instead of converting (#65, which would make #62 moot).
+function throws. In Wasm, with a link, a handler for `throw` catches what
+the host throws, and a `raise` nothing handles goes to the host (#64),
+except in a handler that also switches stacks, and in modules lowered by
+evidence passing, which gives every row of a module that throws `throw`
+instead of converting (#65, which would make #62 moot). Natively, what
+the host throws isn't caught yet (#66).

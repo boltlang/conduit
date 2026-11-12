@@ -299,7 +299,26 @@ pub(super) fn module(m: &Module) -> String {
             names.const_value(&decl.value)
         ));
     }
-    // `throw` is built in, so it has no declaration in the text.
+    // `throw` is built in, so it's only declared for its link.
+    if let Some(link) = m
+        .effects
+        .get(&EffectId::THROW)
+        .and_then(|e| e.link.as_ref())
+    {
+        let link = match link {
+            Link::Wasm { module, name } => {
+                format!("wasm, module = {}, name = {}", string(module), string(name))
+            }
+            Link::Emu { name } => format!("emu, name = {}", string(name)),
+            Link::C { symbol, lib } => {
+                let lib = lib
+                    .as_ref()
+                    .map_or(String::new(), |l| format!(", lib = {}", string(l)));
+                format!("c, symbol = {}{lib}", string(symbol))
+            }
+        };
+        items.push(format!("#[link({link})]\neffect throw"));
+    }
     for (id, effect) in m.effects.iter().filter(|(id, _)| **id != EffectId::THROW) {
         let mut s = format!("effect {} {{\n", names.effect(*id));
         for sig in &effect.ops {

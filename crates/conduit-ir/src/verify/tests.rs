@@ -466,6 +466,7 @@ fn handler_module(body: impl FnOnce(&mut Func, Var) -> Block) -> Module {
                 params: vec![Ty::I32],
                 results: vec![],
             }],
+            link: None,
         },
     );
     let mut clause = Func::new(vec![Ty::I32, Ty::Cont(Box::new(unit_sig()))], vec![]);

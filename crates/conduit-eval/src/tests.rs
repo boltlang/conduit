@@ -665,6 +665,7 @@ fn generator(n: i32, clause: impl FnOnce(&mut Func, Var, Var, Var) -> Block) -> 
                 params: vec![Ty::I32],
                 results: vec![],
             }],
+            link: None,
         },
     );
     let acc_ty = Ty::Ref(Box::new(Ty::I32));
