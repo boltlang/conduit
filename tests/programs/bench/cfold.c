@@ -77,6 +77,7 @@ static int32_t cfold(int32_t n) {
 static int32_t run(int32_t k) {
   switch (k) {
   case 0: return cfold(8);
+  case 1: return cfold(18);
   }
   abort();
 }

@@ -37,6 +37,7 @@ fn run(k: i32) -> i32 {
     match k {
         0 => place(6, 0, None),
         1 => place(8, 0, None),
+        2 => place(12, 0, None),
         _ => std::process::abort(),
     }
 }

@@ -1,8 +1,6 @@
-// binarytrees.conduit by hand, in C, for conduit-bench's `c` backend:
-// each tree is built whole, with `malloc`, counted, and freed, which is
-// the work the benchmark is about. (Conduit's optimizer shares the two
-// equal subtrees of `make`, since it's a pure function of its depth, so
-// it builds far fewer nodes than this does.)
+// binarytrees.conduit by hand, in C, for conduit-bench's `c` backend: the
+// same trees, each built whole with `malloc`, checked, and freed.
+// Integers wrap, as in Conduit.
 
 #include <stdint.h>
 #include <stdio.h>
@@ -10,23 +8,26 @@
 
 typedef struct tree {
   struct tree *left, *right;  // both null for a leaf
+  int32_t item;
 } tree;
 
-static tree *make(int32_t d) {
+static tree *make(int32_t item, int32_t d) {
   tree *t = malloc(sizeof *t);
   if (!t) abort();
+  t->item = item;
   if (d == 0) {
     t->left = t->right = NULL;
   } else {
-    t->left = make(d - 1);
-    t->right = make(d - 1);
+    int32_t i2 = (int32_t)((uint32_t)item * 2);
+    t->left = make((int32_t)((uint32_t)i2 - 1), d - 1);
+    t->right = make(i2, d - 1);
   }
   return t;
 }
 
-static int32_t check(const tree *t) {
-  if (!t->left) return 1;
-  return check(t->left) + check(t->right) + 1;
+static uint32_t check(const tree *t) {
+  if (!t->left) return (uint32_t)t->item;
+  return (uint32_t)t->item + check(t->left) - check(t->right);
 }
 
 static void dispose(tree *t) {
@@ -40,8 +41,8 @@ static void dispose(tree *t) {
 static int32_t trees(int32_t d, int32_t n) {
   uint32_t acc = 0;
   for (int32_t i = n; i != 0; i--) {
-    tree *t = make(d);
-    acc += (uint32_t)check(t);
+    tree *t = make(i, d);
+    acc += check(t);
     dispose(t);
   }
   return (int32_t)acc;
@@ -50,6 +51,7 @@ static int32_t trees(int32_t d, int32_t n) {
 static int32_t run(int32_t k) {
   switch (k) {
   case 0: return trees(6, 20);
+  case 1: return trees(16, 20);
   }
   abort();
 }

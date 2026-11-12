@@ -141,7 +141,7 @@ impl Program {
         };
         let mut m = conduit_ir::text::parse(&text).map_err(|e| format!("{}:{e}", self.shown()))?;
         for c in &self.checks {
-            if let CheckKind::Run { func, .. } = &c.kind
+            if let CheckKind::Run { func, .. } | CheckKind::BenchRun { func, .. } = &c.kind
                 && let Ok(id) = conduit_ir::text::find_func(&m, func)
                 && !m.exports.contains_key(&id)
             {
@@ -191,20 +191,35 @@ impl Program {
 
     /// The `run` checks, with their functions found in `m`.
     pub fn runs(&self, m: &Module) -> Result<Vec<Run<'_>>, String> {
+        self.runs_of(m, false)
+    }
+
+    /// The `run` checks and the `bench-run` ones, in the order they're
+    /// written: what `conduit-bench` times.
+    pub fn timed_runs(&self, m: &Module) -> Result<Vec<Run<'_>>, String> {
+        self.runs_of(m, true)
+    }
+
+    fn runs_of(&self, m: &Module, bench: bool) -> Result<Vec<Run<'_>>, String> {
         self.checks
             .iter()
             .filter_map(|c| match &c.kind {
-                CheckKind::Run { func, args, expect } => Some(
-                    conduit_ir::text::find_func(m, func)
-                        .map(|id| Run {
-                            line: c.line,
-                            func: id,
-                            name: func,
-                            args,
-                            expect,
-                        })
-                        .map_err(|e| format!("{}: {e}", self.at(c.line))),
-                ),
+                CheckKind::Run { func, args, expect }
+                | CheckKind::BenchRun { func, args, expect }
+                    if bench || matches!(c.kind, CheckKind::Run { .. }) =>
+                {
+                    Some(
+                        conduit_ir::text::find_func(m, func)
+                            .map(|id| Run {
+                                line: c.line,
+                                func: id,
+                                name: func,
+                                args,
+                                expect,
+                            })
+                            .map_err(|e| format!("{}: {e}", self.at(c.line))),
+                    )
+                }
                 _ => None,
             })
             .collect()

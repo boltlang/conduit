@@ -17,7 +17,9 @@
 //!   memory it has after the call, in 64 KiB pages. Native code has
 //!   neither, and no fuel.
 //!
-//! Each call's results must be what its `run` check says.
+//! Each call's results must be what its `run` check says. When it times,
+//! it also makes the `bench-run` calls, which are too big for the other
+//! tests to make every time; `--fuel` leaves them out.
 //!
 //! ```sh
 //! cargo run --release -p conduit-bench -- [options] [filter]
@@ -357,7 +359,9 @@ fn bench(p: &Program, args: &Args) -> Result<Vec<Measured>, String> {
     // The same order as the program's runs and the configs asked for.
     let runs: Vec<String> = (p.checks.iter())
         .filter_map(|c| match &c.kind {
-            CheckKind::Run { func, args, .. } => Some(call_text(func, args)),
+            CheckKind::Run { func, args, .. } | CheckKind::BenchRun { func, args, .. } => {
+                Some(call_text(func, args))
+            }
             _ => None,
         })
         .collect();
@@ -399,7 +403,12 @@ fn bench_wasm(p: &Program, args: &Args, backend: Backend) -> Result<Vec<Measured
     }
     let first = &compiled[0].1;
     // Passes keep functions' IDs, so the runs are the same in every config.
-    let runs = p.runs(first)?;
+    // Fuel is for what's quick and the same every time: the `run`s.
+    let runs = if args.fuel_only {
+        p.runs(first)?
+    } else {
+        p.timed_runs(first)?
+    };
     let mut out = Vec::new();
     for run in &runs {
         let call = call_text(run.name, run.args);
@@ -462,7 +471,7 @@ fn bench_native(p: &Program, args: &Args) -> Result<Vec<Measured>, String> {
         return Ok(Vec::new());
     }
     let base = prepare_for(p.module_for(Target::C)?, Backend::Native)?;
-    let runs = p.runs(&base)?;
+    let runs = p.timed_runs(&base)?;
     let calls: Vec<native::Run<'_>> = (runs.iter())
         .map(|r| native::Run {
             func: r.func,
@@ -573,7 +582,7 @@ fn bench_by_hand(p: &Program, args: &Args, backend: Backend) -> Result<Vec<Measu
     }
     run(&mut clang)?;
     let base = prepare_for(p.module_for(Target::C)?, backend)?;
-    let runs = p.runs(&base)?;
+    let runs = p.timed_runs(&base)?;
     let exes = vec![(BY_HAND.to_string(), exe)];
     let mut out = Vec::new();
     for (k, r) in runs.iter().enumerate() {

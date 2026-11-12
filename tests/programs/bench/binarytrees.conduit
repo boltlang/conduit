@@ -1,46 +1,54 @@
-// Binary trees: build complete trees and count their nodes, over and over,
-// which is all allocation and freeing.
+// Binary trees, as the benchmarks game has them: build complete trees and
+// check them, over and over, which is all allocation and freeing. Each
+// node holds an item, and its subtrees are built from different ones, so
+// no two calls of `make` are the same, and none can be shared.
 
 data Tree {
-  ()
-  (inherit Tree, inherit Tree)
+  (i32)
+  (inherit Tree, i32, inherit Tree)
 }
 
-fn make(%d: i32) -> (imm Tree) {
+fn make(%item: i32, %d: i32) -> (imm Tree) {
   case %d {
     0 =>
-      let %leaf: imm Tree = new Tree.0()
+      let %leaf: imm Tree = new Tree.0(%item)
       jump ret(%leaf)
     _ =>
       let %d1: i32 = sub(%d, 1i32)
-      let %l: imm Tree = call make(%d1)
-      let %r: imm Tree = call make(%d1)
-      let %t: imm Tree = new Tree.1(%l, %r)
+      let %i2: i32 = mul(%item, 2i32)
+      let %i1: i32 = sub(%i2, 1i32)
+      let %l: imm Tree = call make(%i1, %d1)
+      let %r: imm Tree = call make(%i2, %d1)
+      let %t: imm Tree = new Tree.1(%l, %item, %r)
       jump ret(%t)
   }
 }
 
+// The item, plus the left subtree's check, less the right one's.
 fn check(%t: imm Tree) -> (i32) {
   case %t {
-    Tree.0 => jump ret(1i32)
+    Tree.0 =>
+      let %v: i32 = get Tree.0.0(%t)
+      jump ret(%v)
     Tree.1 =>
       let %l: imm Tree = get Tree.1.0(%t)
-      let %r: imm Tree = get Tree.1.1(%t)
+      let %x: i32 = get Tree.1.1(%t)
+      let %r: imm Tree = get Tree.1.2(%t)
       let %a: i32 = call check(%l)
       let %b: i32 = call check(%r)
-      let %ab: i32 = add(%a, %b)
-      let %n: i32 = add(%ab, 1i32)
-      jump ret(%n)
+      let %xa: i32 = add(%x, %a)
+      let %c: i32 = sub(%xa, %b)
+      jump ret(%c)
   }
 }
 
-// The nodes of n trees of depth d.
+// The checks of n trees of depth d, of items n down to 1.
 fn trees(%d: i32, %n: i32) -> (i32) {
   join rec go(%i: i32, %acc: i32) =
     case %i {
       0 => jump ret(%acc)
       _ =>
-        let %t: imm Tree = call make(%d)
+        let %t: imm Tree = call make(%i, %d)
         let %c: i32 = call check(%t)
         let %acc1: i32 = add(%acc, %c)
         let %i1: i32 = sub(%i, 1i32)
@@ -49,5 +57,6 @@ fn trees(%d: i32, %n: i32) -> (i32) {
   in jump go(%n, 0i32)
 }
 
-//# run trees(6i32, 20i32) == 2540i32
+//# run trees(6i32, 20i32) == 190i32
+//# bench-run trees(16i32, 20i32) == 190i32
 //# bench

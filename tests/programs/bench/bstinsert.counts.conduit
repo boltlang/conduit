@@ -96,3 +96,24 @@ fn bst(%n: i32) -> (i32) {
     }
   in jump go(0i32, %empty)
 }
+
+#[export(emu)]
+fn bst_random(%n: i32) -> (i32) {
+  let %empty: imm Tree = new Tree.0()
+  join rec go(%i: i32, %x: i32, %t: imm Tree) =
+    let %done: i32 = eq(%i, %n)
+    case %done {
+      1 =>
+        let %s: i32 = call sum(%t)
+        let = drop(%t)
+        jump ret(%s)
+      _ =>
+        let %ax: i32 = mul(%x, 1103515245i32)
+        let %x1: i32 = add(%ax, 12345i32)
+        let %k: i32 = and(%x1, 2147483647i32)
+        let %t1: imm Tree = call insert(%t, %k)
+        let %i1: i32 = add(%i, 1i32)
+        jump go(%i1, %x1, %t1)
+    }
+  in jump go(0i32, 1i32, %empty)
+}

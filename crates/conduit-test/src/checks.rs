@@ -19,6 +19,15 @@ pub enum CheckKind {
         args: Vec<Lit>,
         expect: Expect,
     },
+    /// `//# bench-run fn1(5i32) == 120i32`: a call as `run` writes one, which
+    /// only `conduit-bench` makes, when it times, on top of the `run`s:
+    /// one too big for the evaluator and the other tests, which run every
+    /// `run`, to make every time.
+    BenchRun {
+        func: String,
+        args: Vec<Lit>,
+        expect: Expect,
+    },
     /// `//# verify-error: text`: the verifier rejects the program with a
     /// message containing `text`.
     VerifyError(String),
@@ -96,6 +105,10 @@ fn check(s: &str) -> Result<CheckKind, String> {
     };
     match word {
         "run" => run(rest),
+        "bench-run" => match run(rest)? {
+            CheckKind::Run { func, args, expect } => Ok(CheckKind::BenchRun { func, args, expect }),
+            other => Ok(other),
+        },
         "verify-error" => Ok(CheckKind::VerifyError(message(rest)?)),
         "wasm-error" => Ok(CheckKind::WasmError(message(rest)?)),
         "wasm-skip" => Ok(CheckKind::WasmSkip(message(rest)?)),
@@ -110,8 +123,9 @@ fn check(s: &str) -> Result<CheckKind, String> {
             Err(_) => Err("`max-frames` needs a number after `:`, like `max-frames: 100`".into()),
         },
         _ => Err(format!(
-            "unknown check `{word}`: expected `run`, `verify-error`, `wasm-error`, \
-             `wasm-skip`, `wat`, `opt`, `counted`, `counts`, `bench`, `max-frames` or `host`"
+            "unknown check `{word}`: expected `run`, `bench-run`, `verify-error`, \
+             `wasm-error`, `wasm-skip`, `wat`, `opt`, `counted`, `counts`, `bench`, \
+             `max-frames` or `host`"
         )),
     }
 }

@@ -56,6 +56,7 @@ fn cfold(n: i32) -> i32 {
 fn run(k: i32) -> i32 {
     match k {
         0 => cfold(8),
+        1 => cfold(18),
         _ => std::process::abort(),
     }
 }

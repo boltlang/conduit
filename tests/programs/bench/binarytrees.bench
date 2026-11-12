@@ -1,8 +1,8 @@
 trees(6i32, 20i32)
                      steps   allocs    frees   peak  count ops  reused  fresh cycles
-  optimized          13424      140        0    140          0       0      0      0
-  counts             18604      140      140      7       5180       0      0      0
-  +borrows           13564      140      140      7        140       0      0      0
-  +reuse             13564      140      140      7        140       0      0      0
-  +specialized       13564      140      140      7        140       0      0      0
-  +cycles            13564      140      140      7        140       0      0      0
+  optimized          29224     2540        0   2540          0       0      0      0
+  counts             34284     2540     2540    127       5060       0      0      0
+  +borrows           29244     2540     2540    127         20       0      0      0
+  +reuse             29244     2540     2540    127         20       0      0      0
+  +specialized       29244     2540     2540    127         20       0      0      0
+  +cycles            29244     2540     2540    127         20       0      0      0

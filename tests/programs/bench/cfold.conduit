@@ -121,4 +121,5 @@ fn cfold(%n: i32) -> (i32) {
 }
 
 //# run cfold(8i32) == 0i32
+//# bench-run cfold(18i32) == 0i32
 //# bench

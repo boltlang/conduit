@@ -67,4 +67,5 @@ fn queens(%n: i32) -> (i32) {
 
 //# run queens(6i32) == 4i32
 //# run queens(8i32) == 92i32
+//# bench-run queens(12i32) == 14200i32
 //# bench

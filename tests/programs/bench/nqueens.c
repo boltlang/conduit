@@ -35,6 +35,7 @@ static int32_t run(int32_t k) {
   switch (k) {
   case 0: return place(6, 0, NULL);
   case 1: return place(8, 0, NULL);
+  case 2: return place(12, 0, NULL);
   }
   abort();
 }

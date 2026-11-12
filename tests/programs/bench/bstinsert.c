@@ -45,9 +45,22 @@ static int32_t bst(int32_t n) {
   return s;
 }
 
+static int32_t bst_random(int32_t n) {
+  tree *t = NULL;
+  uint32_t x = 1;
+  for (int32_t i = 0; i != n; i++) {
+    x = x * 1103515245u + 12345u;
+    insert(&t, (int32_t)(x & 0x7fffffff));
+  }
+  int32_t s = (int32_t)sum(t);
+  dispose(t);
+  return s;
+}
+
 static int32_t run(int32_t k) {
   switch (k) {
   case 0: return bst(200);
+  case 1: return bst_random(100000);
   }
   abort();
 }

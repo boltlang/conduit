@@ -43,9 +43,20 @@ fn bst(n: i32) -> i32 {
     sum(&t)
 }
 
+fn bst_random(n: i32) -> i32 {
+    let mut t = None;
+    let mut x = 1i32;
+    for _ in 0..n {
+        x = x.wrapping_mul(1103515245).wrapping_add(12345);
+        insert(&mut t, x & 0x7fffffff);
+    }
+    sum(&t)
+}
+
 fn run(k: i32) -> i32 {
     match k {
         0 => bst(200),
+        1 => bst_random(100000),
         _ => std::process::abort(),
     }
 }
