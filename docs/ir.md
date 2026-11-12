@@ -1082,7 +1082,8 @@ let %3: imm fn(i32) -> (i32) does Effect20 = closure fn2()
 
 A host can throw an exception that isn't Conduit's from an extern, as any
 JavaScript function can. Where one can come from is part of the types
-(#59): an extern that may throw has `throw` in its row,
+(#59): an extern that may throw has the built-in effect `throw` in its
+row,
 
 ```
 #[link(wasm, module = "dom", name = "query")]
@@ -1094,25 +1095,10 @@ reach a call of it, and the type of every closure that can. `throw` is
 built in: no `effect` declares it, and no effect can be named that. `Any`
 has it. It's written first in a row: `does throw + Log`.
 
-- **Nothing performs it,** and no handler takes it out of a row: the
-  handler of a body that has `throw` must have it in its own row, so it
-  lets it through, and so does its `handle`. Only code that catches the
-  exception could take it out (#38).
-- **What it unwinds is dropped.** With counts, each frame an exception
-  can unwind drops what it owns when one goes through, as it does for an
-  abort (see "Reference counts"): the calls that get a cleanup are the
-  `call_extern`s with `throw`, and the calls and `apply`s that can reach
-  one (`conduit_ir::owned::may_unwind`). Code that can't reach one pays
-  nothing.
-- **An extern without `throw` that throws is undefined behavior.** Once
-  an exception unwinds Conduit code whose row doesn't have `throw`, the
-  instance's state is unspecified, and the host must not call into it
-  again. That's what lets code that can't throw do without cleanups, a
-  backend declare such calls as not unwinding, and the optimizer move
-  writes across them. A sanitizer could check it (#61).
-- **Callbacks:** an extern that can call back into an export which can
-  throw can throw too, so it needs `throw` in its row. Making sure it has
-  is the frontend's job.
+The rules, what catching and throwing from Conduit code are, and how
+each implementation does them, are in [exceptions.md](exceptions.md). In
+short: an extern without `throw` that throws is undefined behavior, and
+with counts, what an exception unwinds is dropped.
 
 Polymorphism over effects is what effect parameters are for. A handler
 that runs a body which can also perform other effects passes those on.

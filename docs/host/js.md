@@ -246,14 +246,21 @@ A frontend avoids such cycles rather than collect them:
 ## Exceptions and traps
 
 A JavaScript exception from an extern call unwinds through Conduit's
-frames to whoever called the module, as a trap does, and nothing in
-Conduit can catch it yet: #38 plans `#[throws]` externs that give the
-exception as a result. Conduit's own exceptions, for aborting handlers,
-use a tag of their own, which JavaScript code never sees.
+frames to whoever called the module, as a trap does. An extern that may
+throw must say so, with `does throw`: one that throws without it is
+undefined behavior, after which the instance must not be used. Where it
+says so, the frames an exception unwinds drop what they own, and an
+entry point puts the module's state back, so a host that catches the
+exception, even in the middle of a call into the module, can go on using
+the instance. Catching JavaScript exceptions in Conduit, by handling
+`throw`, and throwing them, by performing it, are planned: see
+[`../exceptions.md`](../exceptions.md). Conduit's own exceptions, for
+aborting handlers, use a tag of their own, which JavaScript code never
+sees.
 
-A host that catches such an exception, or a trap, and keeps using the
-instance, gets one whose handler stack and shadow stack weren't put back,
-and the objects the unwound frames held leak: #40.
+A trap leaves the module's shadow stack where it was: a host that keeps
+using the instance after one calls `conduit_reset` first (see
+[`../internals/wasm-unwinding.md`](../internals/wasm-unwinding.md)).
 
 ## The evaluator
 
@@ -280,8 +287,8 @@ evaluator and in Wasmtime alike.
 
 - #35: keep host values that are never stored in Wasm locals, without a
   slot, for code that makes many short-lived strings.
-- #38: catch JavaScript exceptions from extern calls as results.
+- #38, #63: catch JavaScript exceptions, by handling `throw`, and throw
+  them, by performing it (see [`../exceptions.md`](../exceptions.md)).
 - #39: imported string constants for string literals.
-- #40: put the instance's state back after an exception or trap.
 - Externs that suspend, for promises, through JSPI: an open question of
   the effect system.

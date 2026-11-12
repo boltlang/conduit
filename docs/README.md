@@ -7,6 +7,7 @@
 | [text.md](text.md) | The text format that `conduit_ir::text` reads and prints, which tests and error messages use | everyone |
 | [verify.md](verify.md) | What the verifier checks, rule by rule | frontend and pass authors |
 | [optimisations.md](optimisations.md) | The optimizer's passes, one by one, and the few rewrites they're made of | pass authors |
+| [exceptions.md](exceptions.md) | Exceptions the host throws and Conduit catches or throws: the `throw` effect and its rules | frontend, backend and runtime authors |
 | [lowerings.md](lowerings.md) | Evidence passing, which removes effect handlers, and reference counting, which makes counts explicit | frontend and backend authors |
 | [wasm.md](wasm.md) | The Wasm backend: its options, how it lowers control flow and handlers, and how values live in linear memory | backend authors |
 | [llvm.md](llvm.md) | The experimental LLVM backend: what it lowers, how, and its tests | backend authors |
