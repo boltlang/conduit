@@ -200,7 +200,13 @@ fn sub<P: Program + ?Sized>(p: &P, a: &Ty, b: &Ty, assumed: &mut Assumed) -> boo
 }
 
 /// Whether a closure or continuation of signature `a` can be used where
-/// one of `b` is expected.
+/// one of `b` is expected: it takes what fits its parameters, gives what
+/// fits `b`'s results, and does what's in `b`'s row. Also what a function
+/// must be to make a closure, a constant closure or a clause of type `b`.
+pub fn is_sub_sig<P: Program + ?Sized>(p: &P, a: &Sig, b: &Sig) -> bool {
+    sig_sub(p, a, b, &mut Vec::new())
+}
+
 fn sig_sub<P: Program + ?Sized>(p: &P, a: &Sig, b: &Sig, assumed: &mut Assumed) -> bool {
     a.params.len() == b.params.len()
         && a.results.len() == b.results.len()

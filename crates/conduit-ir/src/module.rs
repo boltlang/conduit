@@ -417,7 +417,7 @@ pub enum ConstValue {
     /// other in a cycle.
     Const(ConstId),
     /// A closure of this function, with no captures, of a type
-    /// `imm fn(..)` that is the function's signature: a function as a
+    /// `imm fn(..)` that the function's signature fits: a function as a
     /// value, which nothing allocates. The function has no mutability or
     /// effect parameters.
     Closure(FuncId),
@@ -454,4 +454,30 @@ pub fn const_refs(value: &ConstValue) -> Vec<ConstId> {
         }
     }
     refs
+}
+
+/// The functions made into closures: by a `closure` op, or as a constant
+/// closure, in any constant. Their callers are `apply`s, which don't know
+/// whom they call.
+pub fn closure_funcs(m: &Module) -> BTreeSet<FuncId> {
+    let mut funcs = BTreeSet::new();
+    for f in m.funcs.values() {
+        for l in f.body.all_lets() {
+            if let crate::Op::Closure(g, ..) = l.op {
+                funcs.insert(g);
+            }
+        }
+    }
+    let mut todo: Vec<&ConstValue> = m.consts.values().map(|c| &c.value).collect();
+    while let Some(v) = todo.pop() {
+        match v {
+            ConstValue::Closure(g) => {
+                funcs.insert(*g);
+            }
+            ConstValue::Array(parts) | ConstValue::New(_, parts) => todo.extend(parts),
+            ConstValue::Box(_, inner) => todo.push(inner),
+            ConstValue::Lit(_) | ConstValue::Const(_) => {}
+        }
+    }
+    funcs
 }

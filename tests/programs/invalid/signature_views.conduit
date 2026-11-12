@@ -1,0 +1,71 @@
+// What a function's signature still has to fit (#57): a closure, a
+// constant closure, a clause or a handled body can't take less than
+// it's given, or give more than is expected of it.
+
+data W {
+  (i32)
+}
+
+fn takes_imm(%v: imm W) -> (i32) {
+  let %x: i32 = get W.0.0(%v)
+  jump ret(%x)
+}
+
+fn gives_ro(%v: ro W) -> (ro W) {
+  jump ret(%v)
+}
+
+// A closure that only takes `imm W` as one taking `ro W`.
+fn fn1() -> () {
+  let %f: imm fn(ro W) -> (i32) = closure takes_imm()
+  jump ret()
+}
+
+// A constant closure giving `ro W` as one giving `imm W`.
+const c: imm fn(ro W) -> (imm W) = closure gives_ro
+
+effect Ask {
+  (ro W) -> (i32)
+}
+
+// The clause takes `imm W`, but the operation gives `ro W`.
+handler asker for Ask env() ops(answer) ret finish
+
+fn answer(%q: imm W, %k: cont(i32) -> (i32)) -> (i32) {
+  let %r: i32 = resume(%k, 1i32)
+  jump ret(%r)
+}
+
+fn finish(%v: imm W) -> (i32) {
+  jump ret(1i32)
+}
+
+fn body() -> (ro W) does Ask {
+  let %w: imm W = new W.0(1i32)
+  jump ret(%w)
+}
+
+// The body gives `ro W`, but the return clause takes `imm W`.
+fn fn2() -> (i32) {
+  let %b: imm fn() -> (ro W) does Ask = closure body()
+  let %r: i32 = handle asker(%b)
+  jump ret(%r)
+}
+
+// The return clause takes the environment as `imm W` where it's `ro W`.
+handler env_ro for Ask env(ro W) ops(answer_env) ret finish_env
+
+fn answer_env(%e: ro W, %q: ro W, %k: cont(i32) -> (i32)) -> (i32) {
+  let %r: i32 = resume(%k, 1i32)
+  jump ret(%r)
+}
+
+fn finish_env(%e: imm W, %r: i32) -> (i32) {
+  jump ret(%r)
+}
+
+//# verify-error: fn1: fn0 has type (imm data0) -> (i32), which after its captures doesn't fit fn(ro data0) -> (i32)
+//# verify-error: c (const0): fn3 has type (ro data0) -> (ro data0), not fn(ro data0) -> (imm data0)
+//# verify-error: asker (handler0): clause fn4 for effect0.0 has type (imm data0, cont(i32) -> (i32)) -> (i32), but should have (ro data0, cont(i32) -> (i32)) -> (i32)
+//# verify-error: fn2: the body of handle handler0 has type fn() -> (ro data0) does effect0, but should have fn() -> (imm data0)
+//# verify-error: env_ro (handler1): return clause fn8 has type (imm data0, i32) -> (i32), which doesn't take the environment first

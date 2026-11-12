@@ -247,7 +247,7 @@ fn fn90(%0: i32) -> (i32) {
 //# verify-error: fn1: unknown extern extern99
 //# verify-error: fn2: unknown function fn99
 //# verify-error: fn3: closure of fn90 must bind one closure
-//# verify-error: fn4: fn90 has type (i32) -> (i32), which doesn't end with () -> (i64)
+//# verify-error: fn4: fn90 has type (i32) -> (i32), which after its captures doesn't fit fn() -> (i64)
 //# verify-error: fn5: apply needs a closure as its first argument
 //# verify-error: fn6: new data0.0 binds a imm data1
 //# verify-error: fn7: data0.0 has 2 fields, but new gives 1

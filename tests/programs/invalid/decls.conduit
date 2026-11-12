@@ -38,7 +38,7 @@ fn fn2(%0: imm data97) -> (inherit data0) {
 //# verify-error: effect20: operation 0: unknown data type data98
 //# verify-error: handler30: unknown effect effect99
 //# verify-error: handler31: unknown return clause fn99
-//# verify-error: handler32: return clause fn1 has type () -> (), which doesn't start with the environment
+//# verify-error: handler32: return clause fn1 has type () -> (), which doesn't take the environment first
 //# verify-error: handler33: has 1 clauses for effect21, but effect21 has 2 operations
 //# verify-error: handler34: unknown clause fn99 for effect21.0
 //# verify-error: handler34: clause fn1 for effect21.1 has type () -> (), but should have (cont() -> ()) -> ()

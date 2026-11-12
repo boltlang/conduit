@@ -1306,6 +1306,35 @@ impl Lower {
         id
     }
 
+    /// `v` with each closure of a function made one of its version that
+    /// takes evidence.
+    fn const_closures(&mut self, v: &ConstValue) -> ConstValue {
+        match v {
+            ConstValue::Closure(g) => {
+                let id = match (self.internal.get(g), self.ev_wrappers.get(g)) {
+                    (Some(&id), _) | (None, Some(&id)) => id,
+                    (None, None) => {
+                        let id = self.fresh_func();
+                        self.make_ev_version(id, *g);
+                        self.ev_wrappers.insert(*g, id);
+                        id
+                    }
+                };
+                ConstValue::Closure(id)
+            }
+            ConstValue::Array(xs) => {
+                ConstValue::Array(xs.iter().map(|x| self.const_closures(x)).collect())
+            }
+            ConstValue::New(c, xs) => {
+                ConstValue::New(*c, xs.iter().map(|x| self.const_closures(x)).collect())
+            }
+            ConstValue::Box(ty, x) => {
+                ConstValue::Box(self.ty(ty), Box::new(self.const_closures(x)))
+            }
+            ConstValue::Lit(_) | ConstValue::Const(_) => v.clone(),
+        }
+    }
+
     fn make_ev_version(&mut self, id: FuncId, g: FuncId) {
         let decls = Rc::clone(&self.decls);
         let src = self.src.funcs[&g].without_body();
@@ -1617,6 +1646,14 @@ impl Lower {
         }
         self.decls = Rc::new(self.declarations());
         self.runtime_funcs();
+        // A constant closure's type takes evidence now, so its function
+        // must too, as for a `closure` op.
+        let consts: Vec<ConstId> = self.src.consts.keys().copied().collect();
+        for c in consts {
+            let value = self.out.consts[&c].value.clone();
+            let value = self.const_closures(&value);
+            self.out.consts.get_mut(&c).unwrap().value = value;
+        }
         for h in self.src.handlers.keys().copied().collect::<Vec<_>>() {
             self.handler_funcs(h);
         }

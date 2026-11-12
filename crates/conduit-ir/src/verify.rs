@@ -186,14 +186,7 @@ pub fn verify_func<P: Program + ?Sized>(p: &P, id: FuncId, f: &Func) -> Result<(
 /// whose callers, `apply`, `perform`, `handle` and the host, give away
 /// what they pass.
 fn borrows_ok(m: &Module, errors: &mut Vec<Error>) {
-    let mut unknown_callers = BTreeSet::new();
-    for f in m.funcs.values() {
-        for l in f.body.all_lets() {
-            if let Op::Closure(g, ..) = l.op {
-                unknown_callers.insert(g);
-            }
-        }
-    }
+    let mut unknown_callers = crate::closure_funcs(m);
     for h in m.handlers.values() {
         unknown_callers.extend(h.clauses().map(|(_, _, c)| c));
         unknown_callers.insert(h.ret);
@@ -294,9 +287,12 @@ fn check_handler<P: Program + ?Sized>(
             h.ret, ret.row, h.row
         ));
     }
-    if !ret.params.starts_with(&h.env) {
+    // It's called with the environment first, so it can take what that
+    // fits.
+    let n = h.env.len();
+    if ret.params.len() < n || fits(p, &h.env, &ret.params[..n]).is_err() {
         err(format!(
-            "return clause {} has type {ret}, which doesn't start with the environment",
+            "return clause {} has type {ret}, which doesn't take the environment first",
             h.ret
         ));
     }
@@ -338,7 +334,15 @@ fn check_handler<P: Program + ?Sized>(
                 params,
                 results: ret.results.clone(),
             };
-            if sig.params != expected.params || sig.results != expected.results {
+            // The clause is called with what the handler and the
+            // operation give, and what it gives is what `handle` gives;
+            // its row is checked below.
+            let types = Sig {
+                row: expected.row.clone(),
+                params: sig.params.clone(),
+                results: sig.results.clone(),
+            };
+            if !crate::types::is_sub_sig(p, &types, &expected) {
                 err(format!(
                     "clause {clause} for {e}.{i} has type {sig}, but should have {expected}"
                 ));
@@ -428,8 +432,7 @@ fn const_value_ok<P: Program + ?Sized>(p: &P, value: &ConstValue, ty: &Ty) -> Re
                     "{f} has mutability or effect parameters, which a constant closure can't give"
                 ));
             }
-            if fsig.params != sig.params || fsig.results != sig.results || !fsig.row.is_in(&sig.row)
-            {
+            if !crate::types::is_sub_sig(p, &fsig, sig) {
                 return Err(format!("{f} has type {fsig}, not fn{sig}"));
             }
             Ok(())

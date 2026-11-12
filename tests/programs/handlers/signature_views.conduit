@@ -1,0 +1,71 @@
+// A function fits where its signature's subtype is expected: a closure,
+// a constant closure, a handler's clauses and the body of a `handle` take
+// what fits their parameters and give what fits their results, as with
+// values passed to calls (#57).
+
+data W {
+  (i32)
+}
+
+fn w(%x: i32) -> (imm W) {
+  let %r: imm W = new W.0(%x)
+  jump ret(%r)
+}
+
+fn three() -> (imm W) {
+  let %r: imm W = call w(3i32)
+  jump ret(%r)
+}
+
+// A constant closure giving `ro W` of a function giving `imm W`.
+const c: imm fn() -> (ro W) = closure three
+
+// A closure giving `ro W` of a function giving `imm W`.
+fn closures(%x: i32) -> (i32) {
+  let %f: imm fn(i32) -> (ro W) = closure w()
+  let %a: ro W = apply(%f, %x)
+  let %g: imm fn() -> (ro W) = const c()
+  let %b: ro W = apply(%g)
+  let %y: i32 = get W.0.0(%a)
+  let %z: i32 = get W.0.0(%b)
+  let %r: i32 = add(%y, %z)
+  jump ret(%r)
+}
+
+effect Ask {
+  (imm W) -> (i32)
+}
+
+// The clauses take `ro W` where the handler gives `imm W`.
+handler asker for Ask env(imm W) ops(answer) ret finish
+
+fn answer(%e: ro W, %q: ro W, %k: cont(i32) -> (i32)) -> (i32) {
+  let %x: i32 = get W.0.0(%e)
+  let %y: i32 = get W.0.0(%q)
+  let %s: i32 = add(%x, %y)
+  let %r: i32 = resume(%k, %s)
+  jump ret(%r)
+}
+
+fn finish(%e: ro W, %v: ro W) -> (i32) {
+  let %x: i32 = get W.0.0(%v)
+  jump ret(%x)
+}
+
+// A body giving `imm W` where the return clause takes `ro W`.
+fn asks(%x: i32) -> (imm W) does Ask {
+  let %q: imm W = call w(%x)
+  let %a: i32 = perform Ask.0(%q)
+  let %r: imm W = call w(%a)
+  jump ret(%r)
+}
+
+fn handled(%x: i32) -> (i32) {
+  let %e: imm W = call w(10i32)
+  let %body: imm fn() -> (imm W) does Ask = closure asks(%x)
+  let %r: i32 = handle asker(%e, %body)
+  jump ret(%r)
+}
+
+//# run closures(4i32) == 7i32
+//# run handled(5i32) == 15i32

@@ -4,7 +4,9 @@
 use super::{Allowed, Checked, fits, instantiate, object_mutability, prim_results, row_ok, ty_ok};
 use crate::text::print::op_name;
 use crate::ty::list;
-use crate::types::{at_most, elem_ty, inherit, is_subtype, resolve, subst_rows, subst_sig_rows};
+use crate::types::{
+    at_most, elem_ty, inherit, is_sub_sig, is_subtype, resolve, subst_rows, subst_sig_rows,
+};
 use crate::*;
 
 /// The types an op gives. For ops whose result type the IR doesn't
@@ -43,12 +45,19 @@ pub(crate) fn op_results<P: Program + ?Sized>(
             };
             object_mutability(*m)?;
             let captures = sig.params.len().checked_sub(fn_sig.params.len());
+            // What's left once the captures are given fits the closure's
+            // type; its row is checked below.
             let ok = captures.is_some_and(|n| {
-                sig.params[n..] == fn_sig.params[..] && sig.results == fn_sig.results
+                let rest = Sig {
+                    row: fn_sig.row.clone(),
+                    params: sig.params[n..].to_vec(),
+                    results: sig.results.clone(),
+                };
+                is_sub_sig(p, &rest, fn_sig)
             });
             let Some(n) = captures.filter(|_| ok) else {
                 return Err(format!(
-                    "{f} has type {sig}, which doesn't end with {fn_sig}"
+                    "{f} has type {sig}, which after its captures doesn't fit fn{fn_sig}"
                 ));
             };
             fits(p, tys, &sig.params[..n]).map_err(|m| format!("captures of {f}: {m}"))?;
@@ -375,7 +384,8 @@ pub(crate) fn op_results<P: Program + ?Sized>(
             };
             fits(p, env, &env_tys).map_err(|m| format!("environment of {h}: {m}"))?;
             let returns = ret.params.get(n..).unwrap_or_default();
-            if !body.params.is_empty() || body.results != returns {
+            // What the body gives goes to the return clause.
+            if !body.params.is_empty() || fits(p, &body.results, returns).is_err() {
                 return Err(format!(
                     "the body of handle {h} has type fn{body}, but should have fn() -> ({})",
                     list(returns)

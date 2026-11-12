@@ -31,7 +31,7 @@ pub use id::{
 };
 pub use module::{
     Abi, ConstDecl, ConstValue, DataDecl, EffectDecl, Export, Extern, Func, FuncDebug, HandlerDecl,
-    Link, Module, MutParams, const_refs, const_value,
+    Link, Module, MutParams, closure_funcs, const_refs, const_value,
 };
 pub use op::{Effects, Memory, Op, Prim, Sign};
 pub use row::Row;

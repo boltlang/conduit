@@ -65,10 +65,12 @@ Others are checked at run time:
 - **Handlers:**
   - The effect and the return clause exist.
   - The environment's types are well formed.
-  - The return clause's parameters start with the environment.
+  - The return clause takes the environment first: its first parameters
+    are what the environment's types fit.
   - There's one clause per operation of the effect. Clause `i` exists and
-    has the type `fn(env.., op params.., cont(op results) -> (R)) -> (R)`,
-    where `R` is what the return clause gives.
+    its type fits `fn(env.., op params.., cont(op results) -> (R)) -> (R)`,
+    where `R` is what the return clause gives: it can take more than it's
+    given and give less than `R` (see "Subtyping").
   - No clause has mutability parameters, since nothing would give them
     arguments.
 - **Constants:**
@@ -76,8 +78,9 @@ Others are checked at run time:
     `imm` all the way down, since every use shares the one object.
   - The value is of that type: a literal of a number type, an array of
     values of its element type, `C(..)` with a value per field of `C`, as
-    the type's mutability arguments make them, or another constant whose
-    type is a subtype.
+    the type's mutability arguments make them, a closure of a function
+    whose signature fits the type, or another constant whose type is a
+    subtype.
   - No constant refers to itself, through the constants it's made of.
 
 ## Types
@@ -217,8 +220,11 @@ can always be written, so what it holds must be equal.
 
 Subtyping applies to the arguments of `call`, `call_extern`, `apply`,
 `perform`, `resume`, `jump` and `handle`, to fields and elements stored by
-`new`, `set`, the array ops and `ref_new`/`ref_set`, and to what a `let`
-binds. Nothing else converts between mutabilities.
+`new`, `set`, the array ops and `ref_new`/`ref_set`, to what a `let`
+binds, and to functions used as values: a `closure`'s or a constant
+closure's type, a handler's clauses and return clause, and a handled
+body's results, each as a closure of the function's signature would fit
+there. Nothing else converts between mutabilities.
 
 ## Mutability
 
@@ -315,14 +321,16 @@ of their own.
 
 **Calls and closures.** Effect arguments are rows, checked like those
 written in types. `closure f[args]` binds a `fn` whose row has `f`'s row in
-it, with the arguments in place.
+it, with the arguments in place, and whose signature `f`'s fits once the
+captures are taken off (see "Subtyping").
 
 **Subtyping.** A closure or continuation type fits where one with a bigger
 row is expected: `fn() -> () does Effect20` fits where
 `fn() -> () does Effect20 + Effect21` is expected, and everything fits a
-row of `Any`. Mutability is unchanged. Only the type's own row can be
-bigger: rows inside it, in its parameters or results or in a data type's
-arguments, must be equal, like mutability arguments.
+row of `Any`. Rows inside a type follow the rules of "Subtyping": in a
+closure's results they can be smaller, in its parameters bigger, and in
+a data type's arguments they can differ under `ro` and `imm` where its
+fields fit; under `mut` and in refs they must be equal.
 
 **Handlers.** A handler `H` for effects `E` (one or more, each once, with
 a clause for each of their operations) declares a row `R`, the effects
@@ -332,7 +340,9 @@ its clauses can perform.
   in the same order, which `handle` gives them, and a row that's in `R`.
 - The continuation a clause gets has the row `R`, since resuming it runs
   the rest of the body, which is still handled by `H`.
-- `handle H[args](env.., body)` needs the body's row to be in `E + R`.
+- `handle H[args](env.., body)` needs the body's row to be in `E + R`,
+  and what the body gives to fit what the return clause takes after the
+  environment.
 
 So `handle` takes the effects in `E` out of what the body performs, and puts back what
 the clauses perform.

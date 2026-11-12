@@ -31,10 +31,11 @@ impl Borrows {
 ///
 /// Two more rules keep parameters owned:
 ///
-/// - A function that's made into a closure, is a handler's clause, or is
-///   exported, keeps every parameter owned: `apply` and `perform` don't
-///   know whom they call, and a caller from outside the module isn't
-///   counted with the module, so they always give their arguments away.
+/// - A function that's made into a closure (a constant one too), is a
+///   handler's clause, or is exported, keeps every parameter owned:
+///   `apply` and `perform` don't know whom they call, and a caller from
+///   outside the module isn't counted with the module, so they always
+///   give their arguments away.
 /// - A recursive tail call keeps being one: a call `f(.., y, ..)` whose
 ///   results the caller returns (see `conduit_ir::tail`), where `f` can
 ///   call the caller back, makes `f`'s parameter owned if `y` is, since
@@ -45,14 +46,7 @@ impl Borrows {
 ///   calls can lose that: one frame more is cheaper than counting in every
 ///   call of `f`.
 pub fn borrows(m: &Module) -> Borrows {
-    let mut always_owned: BTreeSet<FuncId> = BTreeSet::new();
-    for f in m.funcs.values() {
-        for l in f.body.all_lets() {
-            if let Op::Closure(g, ..) = l.op {
-                always_owned.insert(g);
-            }
-        }
-    }
+    let mut always_owned: BTreeSet<FuncId> = conduit_ir::closure_funcs(m);
     for h in m.handlers.values() {
         always_owned.extend(h.clauses().map(|(_, _, c)| c));
         always_owned.insert(h.ret);
@@ -136,14 +130,7 @@ pub(super) fn lent_vars(id: FuncId, f: &Func, b: &Borrows) -> Set {
 /// any clause: `perform` runs one, `resume` and `discontinue` run code that
 /// can perform, and `handle` runs a body that can, and a return clause.
 pub(super) fn reaches(m: &Module) -> BTreeMap<FuncId, BTreeSet<FuncId>> {
-    let mut closures = BTreeSet::new();
-    for f in m.funcs.values() {
-        for l in f.body.all_lets() {
-            if let Op::Closure(g, ..) = l.op {
-                closures.insert(g);
-            }
-        }
-    }
+    let closures = conduit_ir::closure_funcs(m);
     let mut clauses: BTreeSet<FuncId> = closures.clone();
     for h in m.handlers.values() {
         clauses.extend(h.clauses().map(|(_, _, c)| c));
