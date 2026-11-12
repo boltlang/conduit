@@ -453,7 +453,16 @@ pub fn lower_module_with(m: &Module, options: &Options) -> Result<ir::Module, Er
         }
     }
     // Externs that link to the same symbol share its declaration, so
-    // they must agree on its signature.
+    // they must agree on its signature. One that none of them says may
+    // throw doesn't unwind: if it did, that would be undefined behavior.
+    let mut throwing: BTreeSet<&str> = BTreeSet::new();
+    for ext in m.externs.values() {
+        if let Link::C { symbol, .. } = &ext.link
+            && ext.sig.row.throws()
+        {
+            throwing.insert(symbol);
+        }
+    }
     let mut declared: BTreeMap<&str, (ExternId, (Type, Vec<Type>))> = BTreeMap::new();
     for (&id, ext) in &m.externs {
         let Link::C { symbol, .. } = &ext.link else {
@@ -472,7 +481,15 @@ pub fn lower_module_with(m: &Module, options: &Options) -> Result<ir::Module, Er
             }
             Some(_) => {}
             None => {
-                out.push(Declare::new(sig.0.clone(), symbol.clone(), sig.1.clone()));
+                let attrs = if throwing.contains(&**symbol) {
+                    vec![]
+                } else {
+                    vec!["nounwind"]
+                };
+                out.push(Declare {
+                    attrs,
+                    ..Declare::new(sig.0.clone(), symbol.clone(), sig.1.clone())
+                });
                 declared.insert(symbol, (id, sig));
             }
         }
@@ -529,7 +546,7 @@ pub fn lower_module_with(m: &Module, options: &Options) -> Result<ir::Module, Er
     // What the host calls the closures of `host_function` through, and
     // lets go of them with.
     for (k, (params, results)) in callbacks.iter().enumerate() {
-        let tramp = trampoline(k, params, results, options.counts, !m.effects.is_empty());
+        let tramp = trampoline(k, params, results, options.counts, Handlers::of(m));
         out.push(tramp.map_err(|message| err(None, message))?);
     }
     if !callbacks.is_empty() {
@@ -559,7 +576,7 @@ pub fn lower_module_with(m: &Module, options: &Options) -> Result<ir::Module, Er
             continue;
         };
         let f = &m.funcs[&id];
-        let wrapper = export_fn(f, id, symbol, options.counts, !m.effects.is_empty());
+        let wrapper = export_fn(f, id, symbol, options.counts, Handlers::of(m));
         out.push(wrapper.map_err(|message| err(Some(id), message))?);
     }
     Ok(out)
@@ -571,7 +588,7 @@ fn export_fn(
     id: FuncId,
     symbol: &str,
     counts: bool,
-    handlers: bool,
+    handlers: Handlers,
 ) -> Result<ir::Function, String> {
     let call = |_: &mut FnBuilder, ret: Type, args| Call::tailcc(ret, self::symbol(id), args);
     c_entry(
@@ -595,7 +612,7 @@ fn trampoline(
     params: &[Ty],
     results: &[Ty],
     counts: bool,
-    handlers: bool,
+    handlers: Handlers,
 ) -> Result<ir::Function, String> {
     let call = |b: &mut FnBuilder, ret: Type, args: Vec<Typed>| {
         let c = args[0].1.clone();
@@ -642,14 +659,15 @@ fn release_fn(counts: bool) -> ir::Function {
 /// box; one going out is retained for the caller, and its box dropped.
 /// `call` makes the call, of what returns `Type`, with the arguments as
 /// Conduit has them. With `handlers`, it saves the handler stack, runs
-/// with none, and puts it back.
+/// with none, and puts it back, also when an exception unwinds it, if the
+/// module [throws](Handlers::throws).
 fn c_entry(
     name: &str,
     lead: usize,
     tys: &[Ty],
     results: &[Ty],
     counts: bool,
-    handlers: bool,
+    handlers: Handlers,
     call: impl FnOnce(&mut FnBuilder, Type, Vec<Typed>) -> Call,
 ) -> Result<ir::Function, String> {
     let mut params: Vec<(Type, String)> = (0..lead).map(|i| (Type::Ptr, format!("c{i}"))).collect();
@@ -684,7 +702,7 @@ fn c_entry(
     // It runs with no handlers, the host's caller's being out of reach,
     // and puts theirs back after.
     let stack = handlers::handlers_global();
-    let saved = handlers.then(|| {
+    let saved = handlers.any.then(|| {
         let saved = b.load(Type::Ptr, &stack);
         b.store(Type::Ptr, Value::Null, &stack);
         saved
@@ -694,9 +712,21 @@ fn c_entry(
         b.return_call(call);
         return Ok(b.finish());
     }
-    let r = b.call(call);
-    if let Some(saved) = saved {
-        b.store(Type::Ptr, saved, &stack);
+    // In a module that throws, the host may catch an exception that
+    // unwinds this, and go on: it gets its handler stack back then too.
+    let pad = saved
+        .as_ref()
+        .filter(|_| handlers.throws)
+        .map(|saved| (b.new_block(), saved.clone()));
+    let r = match &pad {
+        Some((pad, _)) => {
+            b.personality(Value::global(handlers::PERSONALITY));
+            b.invoke(call, pad)
+        }
+        None => b.call(call),
+    };
+    if let Some(saved) = &saved {
+        b.store(Type::Ptr, saved.clone(), &stack);
     }
     let mut gave = Vec::with_capacity(results.len());
     for (i, t) in results.iter().enumerate() {
@@ -722,7 +752,35 @@ fn c_entry(
         Some(v) => b.ret(Some(ret.val(v))),
         None => b.ret_void(),
     }
+    if let Some((pad, saved)) = pad {
+        b.start(&pad);
+        let landed = b.landing_pad();
+        b.store(Type::Ptr, saved, &stack);
+        b.resume(landed);
+    }
     Ok(b.finish())
+}
+
+/// What an entry point of the host's must do about handlers.
+#[derive(Clone, Copy)]
+struct Handlers {
+    /// Whether the module has any: then it runs with none, and puts the
+    /// caller's back.
+    any: bool,
+    /// Whether an exception from the host can unwind the module's code:
+    /// some function has `throw` in its row. Otherwise one that unwinds an
+    /// entry point is undefined behavior, so it needn't put things back
+    /// then.
+    throws: bool,
+}
+
+impl Handlers {
+    fn of(m: &Module) -> Handlers {
+        Handlers {
+            any: !m.effects.is_empty(),
+            throws: m.funcs.values().any(|f| f.row.throws()),
+        }
+    }
 }
 
 /// The signatures of the closures that `host_function`s in `m` take, as

@@ -220,16 +220,27 @@ has its own (see `crates/conduit-llvm/src/handlers.rs`):
 - A tail-resumptive clause that discontinues performs under the handlers
   of the `perform` it handles, which `@conduit_site` holds.
 - An export, or a trampoline of `host_function`, runs with no handlers,
-  and puts its caller's back when it returns.
+  and puts its caller's back when it returns, and, in a module where some
+  function has `throw`, also when an exception unwinds it: the call is an
+  `invoke` whose landing pad puts them back and resumes.
 
 When counting, an abort drops what the IR says dropping the
 continuation would (#56): what the frames it skips own, and the
 environments of the handlers it passes and of the one it aborts to.
-Each call that may perform, in a function whose row isn't empty, while
-the frame owns something (see `conduit_ir::owned`), is an `invoke` whose
-cleanup landing pad drops that and resumes, and a `handle`'s landing pad
-drops its environment. Code that can't perform, or has nothing to drop,
-has no landing pads.
+Each call that may perform, in a function whose row has an effect with
+operations, while the frame owns something (see `conduit_ir::owned`), is
+an `invoke` whose cleanup landing pad drops that and resumes, and a
+`handle`'s landing pad drops its environment. Code that can't perform, or
+has nothing to drop, has no landing pads.
+
+**Exceptions from the host,** like a C++ one from an extern, go through
+the same landing pads, which `__gcc_personality_v0` runs for any
+exception (#59). Where one can come from is `throw` in a row (see
+"Exceptions from the host" in [ir.md](ir.md)): each call of an extern
+with `throw`, and each call and `apply` that can reach one, is an
+`invoke` while the frame owns something. An extern that no extern of its
+symbol says may throw is declared `nounwind`, since its throwing would be
+undefined behavior.
 
 A `handle` that nothing aborts to costs no more than one of a handler
 that doesn't abort, and an abort costs an unwinding, which reads the
@@ -281,4 +292,6 @@ itself, and the C host
 must hold as many host values as the evaluator has boxes of them. 123
 of the 148 test programs run this way: all that have `run` checks.
 `tests/host_exports.rs` calls exports that take and give host values from
-C, checking each `retain` and `release`.
+C, checking each `retain` and `release`, and, from C++, exports whose
+externs throw: what the frames it unwinds own is dropped, and a handler
+around an extern that calls a throwing export is still there after.

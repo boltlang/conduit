@@ -3,7 +3,8 @@
 //! given to Conduit is Conduit's reference, one given back is retained for
 //! the caller, and every box is released and freed once nothing holds it.
 //! Results after the first, of externs and exports, go through pointers.
-//! Skipped, with a note, when `clang` isn't installed.
+//! A C++ host's exceptions unwind what has `throw`, which drops what it
+//! owns. Skipped, with a note, when `clang` isn't installed.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -297,9 +298,20 @@ int main(void) {
 /// runs it, which must succeed. Does nothing but say so if `clang` isn't
 /// installed.
 fn run(name: &str, module: &str, main: &str) {
-    let clang = Command::new("clang").arg("--version").output();
-    if !clang.is_ok_and(|o| o.status.success()) {
-        eprintln!("skipped, since clang isn't installed");
+    run_with("clang", "c", name, module, main);
+}
+
+/// [`run`], for a `main` in C++, which can throw exceptions.
+fn run_cpp(name: &str, module: &str, main: &str) {
+    run_with("clang++", "cpp", name, module, main);
+}
+
+/// Compiles `module` and `main`, a program in `ext`'s language, with
+/// `compiler`, and runs it.
+fn run_with(compiler: &str, ext: &str, name: &str, module: &str, main: &str) {
+    let found = Command::new(compiler).arg("--version").output();
+    if !found.is_ok_and(|o| o.status.success()) {
+        eprintln!("skipped, since {compiler} isn't installed");
         return;
     }
     let mut m = conduit_ir::text::parse(module).unwrap();
@@ -314,12 +326,12 @@ fn run(name: &str, module: &str, main: &str) {
     std::fs::create_dir_all(&dir).unwrap();
     let (ll_path, c_path, exe) = (
         dir.join(format!("{name}.ll")),
-        dir.join(format!("{name}.c")),
+        dir.join(format!("{name}.{ext}")),
         dir.join(name),
     );
     std::fs::write(&ll_path, ll).unwrap();
     std::fs::write(&c_path, main).unwrap();
-    let out = Command::new("clang")
+    let out = Command::new(compiler)
         .args(["-O2", "-Wno-override-module", "-o"])
         .args([&exe, &ll_path, &c_path])
         .output()
@@ -337,3 +349,115 @@ fn run(name: &str, module: &str, main: &str) {
         String::from_utf8_lossy(&run.stderr)
     );
 }
+
+/// Frames that own objects while a C++ extern throws (#59): the one that
+/// calls it, and one whose row has nothing but `throw`, drop what they own
+/// as the exception goes through, and an export the host calls from
+/// inside an extern, which throws, gives back the handler stack it found.
+#[test]
+fn exceptions_from_the_host() {
+    run_cpp("exceptions_from_the_host", THROWING, THROWING_MAIN);
+}
+
+const THROWING: &str = r#"
+data Pair {
+  (i32, i32)
+}
+
+effect Ask {
+  () -> (i32)
+}
+
+handler answer for Ask env() ops(ask) ret same
+
+fn ask(%k: cont(i32) -> (i32)) -> (i32) {
+  let %r: i32 = resume(%k, 42i32)
+  jump ret(%r)
+}
+
+fn same(%r: i32) -> (i32) {
+  jump ret(%r)
+}
+
+#[link(c, symbol = "boom")]
+extern boom(i32) -> () does throw
+
+// Calls `owning`, and catches what it throws: 1 if it threw.
+#[link(c, symbol = "call_back")]
+extern call_back() -> (i32)
+
+fn middle(%n: i32) -> (i32) does throw {
+  let %p: mut Pair = new Pair.0(%n, %n)
+  let = call_extern boom(%n)
+  let %x: i32 = get Pair.0.0(%p)
+  jump ret(%x)
+}
+
+#[export(c, symbol = "owning")]
+fn owning(%n: i32) -> (i32) does throw {
+  let %q: mut Pair = new Pair.0(%n, %n)
+  let %x: i32 = call middle(%n)
+  let %y: i32 = get Pair.0.1(%q)
+  let %r: i32 = add(%x, %y)
+  jump ret(%r)
+}
+
+fn body() -> (i32) does Ask {
+  let %threw: i32 = call_extern call_back()
+  let %a: i32 = perform Ask.0()
+  let %r: i32 = add(%a, %threw)
+  jump ret(%r)
+}
+
+#[export(c, symbol = "outer")]
+fn outer() -> (i32) {
+  let %b: imm fn() -> (i32) does Ask = closure body()
+  let %r: i32 = handle answer(%b)
+  jump ret(%r)
+}
+"#;
+
+const THROWING_MAIN: &str = r#"
+#include <cstdint>
+#include <cstdio>
+
+extern "C" {
+extern int64_t conduit_live;
+int32_t owning(int32_t);
+int32_t outer(void);
+
+void boom(int32_t n) {
+  if (n) throw n;
+}
+
+int32_t call_back(void) {
+  try {
+    owning(1);
+  } catch (int32_t) {
+    return 1;
+  }
+  return 0;
+}
+}
+
+#define CHECK(c) do { if (!(c)) { printf("line %d: %s, live %lld\n", __LINE__, #c, (long long)conduit_live); return 1; } } while (0)
+
+int main(void) {
+  CHECK(owning(0) == 0);
+  CHECK(conduit_live == 0);
+  for (int i = 0; i < 100; i++) {
+    try {
+      owning(1);
+      CHECK(false);
+    } catch (int32_t n) {
+      CHECK(n == 1);
+    }
+  }
+  CHECK(conduit_live == 0);
+  for (int i = 0; i < 100; i++) {
+    CHECK(outer() == 43);
+  }
+  CHECK(conduit_live == 0);
+  return 0;
+}
+"#;
