@@ -28,7 +28,11 @@
 //!   `counts`, `+borrows`, `+reuse`, `+specialized`, `+cycles`.
 //! - `--backend NAME,..`: the backends to run on: `wasm`, the default,
 //!   `wasm-switch` and `native`. Results show each backend's time next to
-//!   Wasm's, as a ratio.
+//!   Wasm's, as a ratio. And `c` and `rust`, which aren't Conduit: a
+//!   program written by hand in C or Rust next to the benchmark, as
+//!   `<name>.c` or `<name>.rs`, with the same runs, as the floor to compare
+//!   with, compiled with `clang -O2` or `rustc -C opt-level=3` and timed as
+//!   native code is, in a row `hand-written`.
 //! - `--fuel`: no times, which is quick and the same every time, and only
 //!   Wasm, which counts fuel.
 //! - `--time MS`: how long to time each call for, 300 by default.
@@ -346,6 +350,7 @@ fn bench(p: &Program, args: &Args) -> Result<Vec<Measured>, String> {
         let measured = match backend {
             Backend::Wasm | Backend::WasmSwitch => bench_wasm(p, args, backend),
             Backend::Native => bench_native(p, args),
+            Backend::C | Backend::Rust => bench_by_hand(p, args, backend),
         };
         out.extend(measured.map_err(|e| format!("{}: {e}", backend.name()))?);
     }
@@ -357,7 +362,9 @@ fn bench(p: &Program, args: &Args) -> Result<Vec<Measured>, String> {
         })
         .collect();
     let at = |list: &[String], x: &String| list.iter().position(|y| y == x);
-    out.sort_by_key(|r| (at(&runs, &r.run), at(&args.configs, &r.config), r.backend));
+    // What's written by hand, which has no config, after Conduit's.
+    let config = |r: &Measured| at(&args.configs, &r.config).unwrap_or(usize::MAX);
+    out.sort_by_key(|r| (at(&runs, &r.run), config(r), r.backend));
     Ok(out)
 }
 
@@ -509,6 +516,80 @@ fn bench_native(p: &Program, args: &Args) -> Result<Vec<Measured>, String> {
                 pages: None,
             });
         }
+    }
+    Ok(out)
+}
+
+/// The config of what's written by hand, which isn't compiled by Conduit.
+const BY_HAND: &str = "hand-written";
+
+/// `p` written by hand, in C or in Rust, next to it as `<name>.c` or
+/// `<name>.rs`, with `conduit_print_run(k)` and `conduit_bench_run(k)` for
+/// its runs, in order, as `conduit_llvm::native` makes them: compiled,
+/// checked and timed as native code is. A program with no such file is
+/// skipped.
+fn bench_by_hand(p: &Program, args: &Args, backend: Backend) -> Result<Vec<Measured>, String> {
+    if args.fuel_only || !native::clang() {
+        return Ok(Vec::new());
+    }
+    let ext = if backend == Backend::C { "c" } else { "rs" };
+    let source = conduit_test::programs_dir().join(format!("{}.{ext}", p.name));
+    if !source.exists() {
+        return Ok(Vec::new());
+    }
+    let dir = conduit_test::programs_dir().join("../../target/conduit-bench/native");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let timer = dir.join("timer.c");
+    std::fs::write(&timer, native::TIMER).map_err(|e| e.to_string())?;
+    let stem = format!("{}_{}", p.name.replace('/', "_"), backend.name());
+    let exe = dir.join(&stem);
+    let run = |cmd: &mut std::process::Command| -> Result<(), String> {
+        let out = cmd.output().map_err(|e| format!("{cmd:?}: {e}"))?;
+        if out.status.success() {
+            Ok(())
+        } else {
+            Err(format!(
+                "{cmd:?}:\n{}",
+                String::from_utf8_lossy(&out.stderr)
+            ))
+        }
+    };
+    let mut clang = std::process::Command::new("clang");
+    clang.args(["-O2", "-o"]).arg(&exe).arg(&timer);
+    if backend == Backend::C {
+        clang.arg(&source);
+    } else {
+        let lib = dir.join(format!("lib{stem}.a"));
+        run(std::process::Command::new("rustc")
+            .args(["--edition", "2024", "--crate-type", "staticlib"])
+            .args(["-C", "opt-level=3", "-C", "panic=abort", "-o"])
+            .arg(&lib)
+            .arg(&source))?;
+        // What Rust's standard library needs, as `rustc --print
+        // native-static-libs` says on Linux.
+        clang
+            .arg(&lib)
+            .args(["-lgcc_s", "-lutil", "-lrt", "-lpthread", "-lm", "-ldl"]);
+    }
+    run(&mut clang)?;
+    let base = prepare_for(p.module_for(Target::C)?, backend)?;
+    let runs = p.runs(&base)?;
+    let exes = vec![(BY_HAND.to_string(), exe)];
+    let mut out = Vec::new();
+    for (k, r) in runs.iter().enumerate() {
+        let results = &base.funcs[&r.func].results;
+        r.check(p, native_check(&exes[0].1, k, results))?;
+        let times = time_native(&exes, k, args.time)?;
+        out.push(Measured {
+            program: p.name.clone(),
+            run: call_text(r.name, r.args),
+            config: BY_HAND.to_string(),
+            backend,
+            fuel: None,
+            time: Some(times[0]),
+            code: None,
+            pages: None,
+        });
     }
     Ok(out)
 }

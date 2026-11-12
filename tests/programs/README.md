@@ -86,7 +86,11 @@ cargo run --release -p conduit-bench -- --compare before.json
 ```
 
 `--fuel` skips the timing, `--config optimized,+reuse` picks the ways of
-compiling, and a word picks the programs, like `nqueens`. CI does this for
+compiling, and a word picks the programs, like `nqueens`. The benchmarks
+of data structures also have versions written by hand, `<name>.c` and
+`<name>.rs`, the same work with memory managed by hand, which
+`--backend native,c,rust` times next to Conduit's native code as the
+floor to compare with. CI does this for
 each pull request (`.github/workflows/bench.yml`): it compares the fuel
 with the base's, shows what changed in the job's summary
 (`--markdown`), and fails if any went up by more than 2% (`--check 2`),

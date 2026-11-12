@@ -30,17 +30,32 @@ pub enum Backend {
     /// Native code, from the LLVM backend, compiled with `clang`, with
     /// handlers that need it lowered by evidence passing, as for Wasm.
     Native,
+    /// Not Conduit: the program written by hand in C, `<name>.c` next to
+    /// it, with the same runs, compiled with `clang -O2` and timed as
+    /// native code is, as the floor to compare with.
+    C,
+    /// The same, written by hand in Rust, `<name>.rs`, compiled with
+    /// `rustc -C opt-level=3`.
+    Rust,
 }
 
 impl Backend {
     /// Every backend, in the order results show them.
-    pub const ALL: [Backend; 3] = [Backend::Wasm, Backend::WasmSwitch, Backend::Native];
+    pub const ALL: [Backend; 5] = [
+        Backend::Wasm,
+        Backend::WasmSwitch,
+        Backend::Native,
+        Backend::C,
+        Backend::Rust,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
             Backend::Wasm => "wasm",
             Backend::WasmSwitch => "wasm-switch",
             Backend::Native => "native",
+            Backend::C => "c",
+            Backend::Rust => "rust",
         }
     }
 
@@ -56,7 +71,7 @@ impl Backend {
 /// switching.
 pub fn prepare_for(mut m: Module, backend: Backend) -> Result<Module, String> {
     match backend {
-        Backend::Wasm | Backend::Native => prepare(m),
+        Backend::Wasm | Backend::Native | Backend::C | Backend::Rust => prepare(m),
         Backend::WasmSwitch => {
             conduit_opt::optimize_module(&mut m);
             Ok(m)
