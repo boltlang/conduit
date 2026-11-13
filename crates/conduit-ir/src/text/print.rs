@@ -185,6 +185,7 @@ impl Items {
             Op::Prim(p) => prim_name(p),
             Op::Call(f, margs, rows) => format!("call {}{}", self.func(*f), self.args(margs, rows)),
             Op::CallExtern(e) => format!("call_extern {}", self.extern_(*e)),
+            Op::CatchExtern(e) => format!("catch_extern {}", self.extern_(*e)),
             Op::Closure(f, margs, rows) => {
                 format!("closure {}{}", self.func(*f), self.args(margs, rows))
             }

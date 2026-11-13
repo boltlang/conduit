@@ -1549,6 +1549,12 @@ impl<'m> Lower<'m> {
                 self.bind_results(Call::tailcc(ret, symbol(*g), args), binds)?;
             }
             Op::CallExtern(e) => self.call_extern(*e, args, binds)?,
+            // C's personality can't catch (docs/ir/exceptions.md).
+            Op::CatchExtern(e) => {
+                return Err(format!(
+                    "catch_extern of {e}: native code can't catch what the host throws yet (#66)"
+                ));
+            }
             Op::Handle(h, _) => self.handle(*h, args, binds)?,
             Op::Perform(e, i) => self.perform(*e, *i, args, binds)?,
             // In a tail-resumptive clause, without its continuation: the

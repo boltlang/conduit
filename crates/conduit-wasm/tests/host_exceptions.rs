@@ -1,5 +1,7 @@
 //! Exceptions from the host, caught by handlers for `throw`, and `raise`s
-//! that nothing handles, thrown to the host (#64, `docs/ir/exceptions.md`).
+//! that nothing handles, thrown to the host (#64, `docs/ir/exceptions.md`),
+//! with handlers lowered directly, and by evidence passing, which catches
+//! what the host throws at the externs that throw (#65).
 //!
 //! A second module stands in for JavaScript: it exports a tag of one
 //! `externref`, as `WebAssembly.JSTag` is, which `throw`'s link names, and
@@ -95,9 +97,24 @@ fn through_the_host(%n: i32) -> (i32) {
 }
 "#;
 
-fn instantiate(options: Options) -> (Store<()>, Instance) {
+fn instantiate(way: Way) -> (Store<()>, Instance) {
+    let Way { options, lowered } = way;
     let mut m: Module = conduit_ir::text::parse(MODULE).unwrap();
     conduit_ir::verify::verify_module(&m).unwrap();
+    if lowered {
+        conduit_effects::lower_effects(&mut m).unwrap();
+        if let Err(errors) = conduit_ir::verify::verify_module(&m) {
+            let errors: Vec<String> = errors.iter().map(|e| e.named(&m)).collect();
+            panic!("{}\n\n{}", errors.join("\n"), conduit_ir::text::print(&m));
+        }
+        assert!(
+            !m.funcs.values().any(|f| f.body.all_lets().any(|l| matches!(
+                l.op,
+                conduit_ir::Op::CallExtern(e) if m.externs[&e].sig.row.throws()
+            ))),
+            "a throwing extern is still called without catching"
+        );
+    }
     if options.counts {
         conduit_opt::ownership::insert_counts(&mut m).unwrap();
     }
@@ -156,48 +173,55 @@ fn func<P: wasmtime::WasmParams, R: wasmtime::WasmResults>(
     instance.get_typed_func(&mut *store, name).unwrap()
 }
 
-/// Each way the module can be lowered: with counts or not, objects on the
-/// heap so that `conduit_live` counts them.
-fn options() -> Vec<Options> {
-    [false, true]
-        .into_iter()
-        .map(|counts| Options {
-            counts,
-            stack_objects: false,
-            ..Options::default()
-        })
-        .collect()
+/// A way to lower the module.
+#[derive(Clone, Copy, Debug)]
+struct Way {
+    options: Options,
+    /// Whether its effects are lowered by evidence passing first.
+    lowered: bool,
+}
+
+/// Each way the module can be lowered: with counts or not, by evidence
+/// passing or not, objects on the heap so that `conduit_live` counts them.
+fn options() -> Vec<Way> {
+    let mut ways = Vec::new();
+    for lowered in [false, true] {
+        for counts in [false, true] {
+            let options = Options {
+                counts,
+                stack_objects: false,
+                ..Options::default()
+            };
+            ways.push(Way { options, lowered });
+        }
+    }
+    ways
 }
 
 #[test]
 fn a_handler_for_throw_catches_what_the_host_throws() {
-    for options in options() {
-        let counts = options.counts;
-        let (mut store, instance) = instantiate(options);
+    for way in options() {
+        let (mut store, instance) = instantiate(way);
         let catching = func::<i32, i32>(&mut store, &instance, "catching");
-        assert_eq!(catching.call(&mut store, 0).unwrap(), 0);
-        assert_eq!(
-            catching.call(&mut store, 5).unwrap(),
-            -5,
-            "counts: {counts}"
-        );
-        if counts {
+        assert_eq!(catching.call(&mut store, 0).unwrap(), 0, "{way:?}");
+        assert_eq!(catching.call(&mut store, 5).unwrap(), -5, "{way:?}");
+        if way.options.counts {
             let live = instance.get_global(&mut store, "conduit_live").unwrap();
             let before = live.get(&mut store).i32().unwrap();
             for _ in 0..100 {
                 assert_eq!(catching.call(&mut store, 5).unwrap(), -5);
             }
-            assert_eq!(live.get(&mut store).i32().unwrap(), before);
+            assert_eq!(live.get(&mut store).i32().unwrap(), before, "{way:?}");
         }
     }
 }
 
 #[test]
 fn a_raise_that_nothing_handles_goes_to_the_host() {
-    for options in options() {
-        let (mut store, instance) = instantiate(options);
+    for way in options() {
+        let (mut store, instance) = instantiate(way);
         let raising = func::<i32, i32>(&mut store, &instance, "raising");
-        assert!(raising.call(&mut store, 7).is_err());
+        assert!(raising.call(&mut store, 7).is_err(), "{way:?}");
         let exn = store.take_pending_exception().expect("an exception");
         let Val::ExternRef(Some(r)) = exn.field(&mut store, 0).unwrap() else {
             panic!("the exception doesn't hold a host value");
@@ -212,9 +236,9 @@ fn a_raise_that_nothing_handles_goes_to_the_host() {
 
 #[test]
 fn an_exception_goes_through_the_host_and_back() {
-    for options in options() {
-        let (mut store, instance) = instantiate(options);
+    for way in options() {
+        let (mut store, instance) = instantiate(way);
         let through = func::<i32, i32>(&mut store, &instance, "through_the_host");
-        assert_eq!(through.call(&mut store, 4).unwrap(), -4);
+        assert_eq!(through.call(&mut store, 4).unwrap(), -4, "{way:?}");
     }
 }

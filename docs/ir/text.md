@@ -139,7 +139,8 @@ fn fn1(%0: i32) -> (i32) {
   `labels N` when the function has more labels than its body defines.
 - **Ops** are a name, what the op takes in its name, and the arguments:
   `add`, `div.s`, `lt.u`, `convert.s[i64]`, `reinterpret[f32]`,
-  `call fn2(..)`, `call_extern extern1(..)`, `closure fn2(..)`, `apply(..)`,
+  `call fn2(..)`, `call_extern extern1(..)`, `catch_extern extern1(..)`,
+  `closure fn2(..)`, `apply(..)`,
   `new data10.0(..)`, `const const40()`, `undefined()`, `forget(..)`,
   `get data10.0.1(..)`,
   `set data10.0.1(..)`,

@@ -1434,6 +1434,7 @@ impl Parser {
                 Op::Call(f, margs, rows)
             }
             "call_extern" => Op::CallExtern(ExternId(self.item("extern")?)),
+            "catch_extern" => Op::CatchExtern(ExternId(self.item("extern")?)),
             "closure" => {
                 let f = FuncId(self.item("fn")?);
                 let (margs, rows) = self.margs()?;

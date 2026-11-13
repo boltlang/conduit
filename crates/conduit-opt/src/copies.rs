@@ -331,6 +331,7 @@ impl RegionCx<'_> {
             Op::Const(_)
             | Op::Call(..)
             | Op::CallExtern(_)
+            | Op::CatchExtern(_)
             | Op::Apply
             | Op::Handle(..)
             | Op::Perform(..)

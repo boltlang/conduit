@@ -72,6 +72,8 @@ pub fn may_unwind(m: &Module, f: &Func, l: &Let) -> bool {
         Op::Perform(..) | Op::Discontinue(..) | Op::Resume | Op::Handle(..) => true,
         Op::Call(g, ..) => m.funcs.get(g).is_none_or(|g| unwinds(m, &g.row)),
         Op::CallExtern(e) => m.externs.get(e).is_none_or(|e| e.sig.row.throws()),
+        // It catches what the host throws.
+        Op::CatchExtern(_) => false,
         Op::Apply => match l.args.first().map(|a| f.atom_ty(a)) {
             Some(Ty::Fn(sig, _)) => unwinds(m, &sig.row),
             _ => true,

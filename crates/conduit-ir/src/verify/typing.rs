@@ -38,6 +38,15 @@ pub(crate) fn op_results<P: Program + ?Sized>(
             fits(p, tys, &ext.sig.params).map_err(|m| format!("call of {e}: {m}"))?;
             Ok(ext.sig.results.clone())
         }
+        Op::CatchExtern(e) => {
+            let ext = p
+                .extern_fn(*e)
+                .ok_or_else(|| format!("unknown extern {e}"))?;
+            fits(p, tys, &ext.sig.params).map_err(|m| format!("catch_extern of {e}: {m}"))?;
+            let mut results = vec![Ty::I32, Ty::NullableHost];
+            results.extend(ext.sig.results.iter().cloned());
+            Ok(results)
+        }
         Op::Closure(f, margs, rows) => {
             let sig = instantiate(p, mp, effects, "closure", *f, margs, rows)?;
             let [Ty::Fn(fn_sig, m)] = out else {

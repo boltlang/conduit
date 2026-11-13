@@ -753,6 +753,10 @@ impl<'m> FuncCx<'_, 'm> {
                     self.call(idx, tail);
                     return Ok(self.bind(binds, tail));
                 }
+                Op::CatchExtern(e) => {
+                    self.catch_extern(*e, args, binds)?;
+                    return Ok(self.bind(binds, false));
+                }
                 Op::Closure(f, ..) => {
                     let slot = self.cx.entry(*f, args.len());
                     let p = self.new_closure(slot, args);
@@ -2022,6 +2026,84 @@ impl<'m> FuncCx<'_, 'm> {
                 }
                 _ => self.emit(I::LocalGet(l)),
             }
+        }
+        Ok(())
+    }
+
+    /// The call of extern `e` with what `catch_extern` binds on the
+    /// stack: whether the host threw, what it threw, a `nullable host`, and
+    /// the extern's results, zeros if it threw. The call runs in a
+    /// `try_table` that catches the host's tag.
+    fn catch_extern(
+        &mut self,
+        e: conduit_ir::ExternId,
+        args: &[Atom],
+        binds: &[Var],
+    ) -> Result<(), String> {
+        let tag = self.cx.host_tag().ok_or(
+            "catch_extern needs to know the host's tag: link throw to it, with \
+             `#[link(wasm, module = .., name = ..)] effect throw`",
+        )?;
+        let hosts = self.cx.hosts.ok_or("no table of host values")?;
+        let idx = self.cx.extern_index(e)?;
+        let ext = self.cx.m.externs.get(&e).ok_or("unknown extern")?;
+        let Some(rest) = binds.get(2..) else {
+            return Err("catch_extern binds whether it threw and what".into());
+        };
+        let threw = self.new_local(ValType::I32);
+        let thrown = self.new_local(ValType::I32);
+        let results: Vec<u32> = (ext.sig.results.iter())
+            .map(|t| self.new_local(val(t)))
+            .collect();
+        self.open(I::Block(BlockType::Empty));
+        self.open(I::Block(BlockType::Result(ValType::EXTERNREF)));
+        let catches = vec![wasm_encoder::Catch::One { tag, label: 0 }];
+        self.open(I::TryTable(BlockType::Empty, Cow::Owned(catches)));
+        if ext.abi == Abi::Flat {
+            self.call_flat(idx, ext, args)?;
+        } else if (ext.sig.params.iter())
+            .chain(&ext.sig.results)
+            .any(Ty::is_host)
+        {
+            self.call_with_hosts(idx, ext, args, rest)?;
+        } else {
+            self.atoms(args);
+            self.call(idx, false);
+        }
+        for &r in results.iter().rev() {
+            self.emit(I::LocalSet(r));
+        }
+        self.close();
+        self.emit(I::I32Const(0));
+        self.emit(I::LocalSet(threw));
+        self.emit(I::I32Const(0));
+        self.emit(I::LocalSet(thrown));
+        self.emit(I::Br(1));
+        self.close();
+        // What the host threw, as a `nullable host`, and undefined results.
+        let x = self.new_local(ValType::EXTERNREF);
+        self.emit(I::LocalSet(x));
+        self.emit(I::I32Const(1));
+        self.emit(I::LocalSet(threw));
+        self.emit(I::LocalGet(x));
+        self.emit(I::RefIsNull);
+        self.emit(I::If(BlockType::Empty));
+        self.emit(I::I32Const(0));
+        self.emit(I::LocalSet(thrown));
+        self.emit(I::Else);
+        let b = self.new_host(hosts, x);
+        self.emit(I::LocalGet(b));
+        self.emit(I::LocalSet(thrown));
+        self.emit(I::End);
+        for (&r, t) in results.iter().zip(&ext.sig.results) {
+            self.emit(zero(val(t)));
+            self.emit(I::LocalSet(r));
+        }
+        self.close();
+        self.emit(I::LocalGet(threw));
+        self.emit(I::LocalGet(thrown));
+        for &r in &results {
+            self.emit(I::LocalGet(r));
         }
         Ok(())
     }

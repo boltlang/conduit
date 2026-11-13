@@ -798,6 +798,19 @@ impl<'p, P: Program + ?Sized, H: Host> Machine<'p, P, H> {
                 // What it threw is raised where it was called.
                 Err(thrown) => return self.perform(EffectId::THROW, 0, vec![thrown], binds, next),
             },
+            Op::CatchExtern(e) => {
+                let n = self.p.extern_fn(*e).map_or(0, |x| x.sig.results.len());
+                match self.call_extern(*e, args)? {
+                    Ok(results) => [Value::I32(0), Value::Null]
+                        .into_iter()
+                        .chain(results)
+                        .collect(),
+                    Err(thrown) => [Value::I32(1), thrown]
+                        .into_iter()
+                        .chain(std::iter::repeat_n(Value::Unset, n))
+                        .collect(),
+                }
+            }
             Op::Closure(f, margs, _) => {
                 let is_mut = self.binds_mut(binds)?;
                 let margs = self.concrete_all(margs)?;

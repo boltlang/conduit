@@ -90,7 +90,9 @@ aborting without capturing a continuation:
   the `handle` as any does. A `perform throw.0(%e)` that finds no handler
   throws the tag with `%e`'s `externref`, instead of trapping. Without a
   link, a handler for `throw` catches only `raise`s, and a handler that
-  switches stacks can't handle `throw` when there's a link yet.
+  switches stacks can't handle `throw` when there's a link yet. A
+  `catch_extern`, which evidence passing makes, runs its call in a
+  `try_table` that catches the tag, and needs the link.
 - A tail-resumptive clause that discontinues sets the stack to that of
   the `perform` it handles, which a second global holds while the clause
   runs, and performs. A `perform` sets that global and puts it back after,

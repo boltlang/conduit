@@ -143,6 +143,7 @@ an array, and `ref_new`.
 | `reinterpret[to]` | a number; `to` of the same size, an integer for a float or a float for an integer | `to` |
 | `call f[margs]` | what `f` takes, with `margs` | what `f` gives |
 | `call_extern e` | what `e` takes | what `e` gives |
+| `catch_extern e` | what `e` takes | `i32`, whether it threw, `nullable host`, what it threw, then what `e` gives |
 | `closure f[margs]` | the first values `f` takes, as captures | the `fn` it binds, which takes and gives the rest of `f`'s signature |
 | `apply` | a closure, then what it takes | what it gives |
 | `new C` | a value per field of `C` | the data type it binds, of `C`'s type |
@@ -313,7 +314,9 @@ whole row `Any` if one of them is `Any`.
 | `resume(k, ..)` | the row of `k`'s type |
 | `discontinue F.i(k, ..)` | the row of `k`'s type, and `F` |
 | `handle H[args](..)` | the row of `H`, with the arguments in place |
-| `call_extern` and every other op | `Nothing` |
+| `call_extern e` | `e`'s row |
+| `catch_extern e` | `e`'s row without `throw` |
+| every other op | `Nothing` |
 
 **Functions.** The row of each op in a function's body is in the
 function's row. Join points are part of the function, so they need no rule
@@ -327,7 +330,7 @@ captures are taken off (see "Subtyping").
 **`throw`.** The built-in effect of exceptions from the host (see
 [exceptions.md](exceptions.md)) is checked as any effect is: a
 `call_extern` of an extern with `throw` may perform it, and only a
-handler for it takes it out. A module that uses it must have its
+handler for it, or a `catch_extern`, takes it out. A module that uses it must have its
 built-in declaration, under `EffectId::THROW`, and no clause for
 `throw.0` may resume its continuation: it must be aborting.
 

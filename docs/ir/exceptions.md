@@ -123,11 +123,19 @@ become a `raise` somewhere:
   nothing for a `handle` in a switched body. A `raise` that Conduit code
   performs aborts to the handler as any aborting clause does.
 - **Evidence passing:** a handler's frame doesn't outlive a yield, so a
-  host exception must not unwind Conduit frames at all. Each
-  `call_extern` with `throw` catches what the host throws and performs
-  `raise` with it, which then yields like any operation. After lowering,
-  no exception from the host unwinds a frame, and `throw` needn't be in
-  any row (#62).
+  host exception must not unwind Conduit frames at all. Where `throw` has
+  a link, each extern with `throw` is called through a wrapper that
+  calls it with `catch_extern`, which catches what the host throws, and
+  performs `raise` with it, which then yields like any operation. So the
+  handler that gets it is the one evidence finds, even for a
+  tail-resumptive clause, which runs where it's performed but outside its
+  handler. After lowering, no exception from the host unwinds a frame,
+  and only entry points keep `throw` in their row: a `raise` that nothing
+  handles yields to them, and they raise it again, to the host (see
+  "Evidence passing" in
+  [`../passes/lowerings.md`](../passes/lowerings.md)). Without a link,
+  the host's exceptions unwind lowered code, and every row of a module
+  that throws gets `throw` back (#62).
 - **Entry points** (exports and trampolines of `host_function`): a
   `raise` that reaches one is thrown to the host, as JavaScript's
   exception in Wasm. In a module where nothing has `throw`, entry points
@@ -147,6 +155,5 @@ aborting clause's operation is, and the evaluator raises what a host
 function throws. In Wasm, with a link, a handler for `throw` catches what
 the host throws, and a `raise` nothing handles goes to the host (#64),
 except in a handler that also switches stacks, and in modules lowered by
-evidence passing, which gives every row of a module that throws `throw`
-instead of converting (#65, which would make #62 moot). Natively, what
-the host throws isn't caught yet (#66).
+evidence passing too (#65). Natively, what the host throws isn't caught
+yet (#66).

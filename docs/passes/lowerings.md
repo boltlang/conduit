@@ -63,12 +63,29 @@ can run on it.
   the handlers there. A flag makes a second use trap. A node's link to the
   evidence outside is set each time it runs, so a continuation resumed
   somewhere else runs under the handlers there.
-- **`throw` stays.** Every row is gone afterwards, but in a module where
-  some function has `throw`, every row, closure type and continuation of
-  the lowered module gets it back, so that the backends still put
-  cleanups where an exception from the host can unwind. That doesn't
-  follow where it went, so it costs a cleanup at calls that don't need
-  one, but only in modules that both throw and are lowered.
+- **What the host throws becomes a `raise`** where `throw` has a link,
+  so that the host's exceptions can be caught (#65). A handler's frame
+  doesn't outlive a yield, so no exception may unwind lowered code: each
+  extern with `throw` that's called gets a wrapper, `<name>_catching`,
+  which calls it with `catch_extern` and performs `throw.0` with what it
+  threw, and every `call_extern` of it calls the wrapper. Then `raise`
+  yields like any operation of an aborting clause. Entry points (exports'
+  wrappers, and the adapters of `host_function`) whose row has `throw`
+  put a node for `raise` outermost in their evidence: a `raise` that
+  nothing handles yields to it, and the entry point, once what the frames
+  in between own is dropped, performs `throw.0` again, which goes to the
+  host. That `perform`, and `throw` in those entry points' rows and in
+  the externs', are all that's left of `throw`: nothing else needs a
+  cleanup for it.
+- **Otherwise `throw` stays.** Without a link, the host's exceptions
+  unwind as through any code. Every row is gone afterwards, but in a
+  module where some function has `throw`, every row, closure type and
+  continuation of the lowered module gets it back, so that the backends
+  still put cleanups where an exception from the host can unwind. That
+  doesn't follow where it went, so it costs a cleanup at calls that don't
+  need one, but only in modules that both throw and are lowered (#62).
+  Natively, `throw` has no link yet, since native code can't catch
+  (#66).
 
 The test programs run after it in the evaluator, after the optimizer, and
 in Wasm without stack switching.

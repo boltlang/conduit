@@ -292,9 +292,8 @@ evaluator and in Wasmtime alike.
 
 - #35: keep host values that are never stored in Wasm locals, without a
   slot, for code that makes many short-lived strings.
-- #64, #65: catch JavaScript exceptions in a handler that also switches
-  stacks, and in modules lowered by evidence passing (see
-  [exceptions.md](../ir/exceptions.md)).
+- #64: catch JavaScript exceptions in a handler that also switches
+  stacks (see [exceptions.md](../ir/exceptions.md)).
 - #39: imported string constants for string literals.
 - Externs that suspend, for promises, through JSPI: an open question of
   the effect system.

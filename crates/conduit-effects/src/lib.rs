@@ -29,9 +29,17 @@
 //!   them. Which calls may yield comes from rows: an effect yields if one
 //!   of its handlers has a clause that isn't tail-resumptive, or performs
 //!   one that does.
-//! - **`throw`** is the one effect left, in modules where some function
-//!   has it: every row of the lowered module gets it (see
-//!   `throw_everywhere`).
+//! - **`throw`.** Where the host's exceptions can be caught, because
+//!   `throw` has a link, each `call_extern` of an extern with `throw`
+//!   calls a wrapper instead, which catches what the host throws with
+//!   `catch_extern` and raises it (see `catch_at_externs`). So no
+//!   exception from the host unwinds lowered code, and `raise` yields
+//!   like any operation. A `raise` that nothing handles yields to a node
+//!   that entry points put outermost, and the entry point raises it again,
+//!   to the host: the one `perform` left. Without a link, the host's
+//!   exceptions unwind as they would through any code, so in modules
+//!   where some function has `throw`, every row of the lowered module gets
+//!   it (see `throw_everywhere`).
 //! - **Continuations** are closures that take a closure giving what the
 //!   `perform` gives: `resume` passes one giving the values, and
 //!   `discontinue` one that performs its operation there. A flag in each
@@ -45,8 +53,8 @@ use conduit_ir::build::{BlockRef, FuncBuilder, JoinPoint};
 use conduit_ir::clause::{discontinues, plain_call};
 use conduit_ir::{
     Atom, Block, ConstDecl, ConstId, ConstValue, CtorDecl, CtorId, DataDecl, DataId, EffectId,
-    Func, FuncId, HandlerId, JoinDef, Label, Let, Lit, Module, MutParams, Mutability, Op, Row, Sig,
-    Tail, Ty, Var,
+    ExternId, Func, FuncId, HandlerId, JoinDef, Label, Let, Lit, Module, MutParams, Mutability, Op,
+    Row, Sig, Tail, Ty, Var,
 };
 
 /// Removes effect handlers from `m`. See the module's documentation.
@@ -55,15 +63,90 @@ pub fn lower_effects(m: &mut Module) -> Result<(), String> {
         return Ok(());
     }
     let throws = may_throw(m);
-    let mut cx = Lower::new(m)?;
+    let catches = throws && catches_host(m);
+    let mut src = m.clone();
+    if catches {
+        catch_at_externs(&mut src)?;
+    }
+    let mut cx = Lower::new(&src, catches)?;
     cx.prepare()?;
     cx.emit()?;
     if !cx.errors.is_empty() {
         return Err(cx.errors.join("\n"));
     }
     *m = cx.out;
-    if throws {
+    if throws && !catches {
         throw_everywhere(m);
+    }
+    Ok(())
+}
+
+/// Whether what the host throws can be caught: `throw` has a link, which
+/// says where the host's exceptions come from (see `docs/ir/exceptions.md`).
+fn catches_host(m: &Module) -> bool {
+    m.effects
+        .get(&EffectId::THROW)
+        .is_some_and(|d| d.link.is_some())
+}
+
+/// Gives each extern with `throw` that some function calls a wrapper,
+/// which calls it with `catch_extern` and raises what it threw, and makes
+/// every `call_extern` of it a call of the wrapper. Then what the host
+/// throws enters Conduit as a `raise`, which yields like any operation, so
+/// it never unwinds a frame of the lowered code, whose handlers' frames
+/// don't outlive a yield.
+fn catch_at_externs(m: &mut Module) -> Result<(), String> {
+    let throwing = |e: &ExternId| m.externs.get(e).is_some_and(|x| x.sig.row.throws());
+    let mut called = BTreeSet::new();
+    for f in m.funcs.values() {
+        for l in f.body.all_lets() {
+            if let Op::CallExtern(e) = &l.op
+                && throwing(e)
+            {
+                called.insert(*e);
+            }
+        }
+    }
+    if called.is_empty() {
+        return Ok(());
+    }
+    let first = next_id(&m.funcs, |f| f.0);
+    let mut wrappers = BTreeMap::new();
+    for (id, e) in (first..).map(FuncId).zip(called) {
+        let ext = &m.externs[&e];
+        let name = ext
+            .debug_name
+            .as_deref()
+            .map_or(e.to_string(), str::to_string);
+        let mut b = FuncBuilder::new(&*m, ext.sig.params.clone(), ext.sig.results.clone());
+        b.set_name(format!("{name}_catching"));
+        b.set_row(ext.sig.row.clone());
+        let params = b.param_vars().to_vec();
+        let out = b.catch_extern(e, params);
+        let (fine, threw) = case_zero(&mut b, out[0]);
+        b.switch_to(fine);
+        b.ret(&out[2..]);
+        b.switch_to(threw);
+        forget(&mut b, &out[2..]);
+        b.perform(EffectId::THROW, 0, [out[1]]);
+        b.unreachable();
+        let f = b.finish().map_err(|errors| {
+            let errors: Vec<String> = errors.iter().map(ToString::to_string).collect();
+            format!("{name}_catching: {}", errors.join("; "))
+        })?;
+        m.funcs.insert(id, f);
+        wrappers.insert(e, id);
+    }
+    for f in m.funcs.values_mut() {
+        f.body.for_each_mut(|b| {
+            for l in &mut b.lets {
+                if let Op::CallExtern(e) = l.op
+                    && let Some(&w) = wrappers.get(&e)
+                {
+                    l.op = Op::Call(w, Vec::new(), Vec::new());
+                }
+            }
+        });
     }
     Ok(())
 }
@@ -288,8 +371,8 @@ struct Lower {
     /// `const(vals.., ev) -> vals`, by the types of the values.
     consts: HashMap<Vec<Ty>, FuncId>,
     /// The adapter of `host_function` for each signature, by its
-    /// parameters and results before lowering.
-    host_adapters: HashMap<(Vec<Ty>, Vec<Ty>), FuncId>,
+    /// parameters and results before lowering, and whether it throws.
+    host_adapters: HashMap<(Vec<Ty>, Vec<Ty>, bool), FuncId>,
     /// The adapter of a `perform`'s continuation, by effect and operation.
     force: BTreeMap<(EffectId, u32), FuncId>,
     /// Tuples to box several values in, by their types.
@@ -301,6 +384,12 @@ struct Lower {
     decls: Rc<Module>,
     /// Mistakes the builders found, which are lowering's.
     errors: Vec<String>,
+    /// Whether what the host throws is caught, at the externs that throw:
+    /// see `catch_at_externs`.
+    catches: bool,
+    /// When it is, the table of the node for `raise` that entry points
+    /// put outermost, which only handles `throw`.
+    host_starts: Option<ConstId>,
 }
 
 // ---------------------------------------------------------------------
@@ -378,7 +467,7 @@ fn defined_labels(b: &Block) -> BTreeSet<Label> {
 // Setting up.
 
 impl Lower {
-    fn new(m: &Module) -> Result<Lower, String> {
+    fn new(m: &Module, catches: bool) -> Result<Lower, String> {
         let next_func = next_id(&m.funcs, |f| f.0);
         let next_data = next_id(&m.data, |d| d.0);
         let next_const = next_id(&m.consts, |c| c.0);
@@ -412,6 +501,8 @@ impl Lower {
             sites: HashMap::new(),
             decls: Rc::default(),
             errors: Vec::new(),
+            catches,
+            host_starts: None,
         };
         cx.runtime_data();
         Ok(cx)
@@ -513,6 +604,29 @@ impl Lower {
         id
     }
 
+    /// The table of the node for `raise` that entry points put outermost:
+    /// it handles `throw`, with one clause.
+    fn host_starts_table(&mut self) -> ConstId {
+        let mut starts = vec![-1; self.src.effects.len() + 1];
+        starts[self.effect_number(EffectId::THROW) as usize] = 0;
+        let next = next_id(&self.src.consts, |c| c.0).max(next_id(&self.out.consts, |c| c.0));
+        let id = ConstId(next);
+        self.out.consts.insert(
+            id,
+            ConstDecl {
+                ty: Ty::Array(Box::new(Ty::I32), Mutability::Imm),
+                value: ConstValue::Array(
+                    starts
+                        .into_iter()
+                        .map(|s| ConstValue::Lit(Lit::I32(s)))
+                        .collect(),
+                ),
+                debug_name: Some("host_starts".into()),
+            },
+        );
+        id
+    }
+
     /// Whether code that performs `row` may yield.
     fn row_yields(&self, row: &Row) -> bool {
         row.is_any()
@@ -529,6 +643,11 @@ impl Lower {
     }
 
     fn prepare(&mut self) -> Result<(), String> {
+        // A `raise` yields, to a handler or, through the node entry points
+        // put outermost, to the host.
+        if self.catches {
+            self.yields.insert(EffectId::THROW);
+        }
         // Which effects may yield: those with a clause that isn't
         // tail-resumptive, and those whose clauses may perform one that
         // yields.
@@ -1079,6 +1198,7 @@ impl Lower {
     fn declarations(&self) -> Module {
         let mut m = Module {
             data: self.out.data.clone(),
+            effects: self.out.effects.clone(),
             externs: self.out.externs.clone(),
             consts: self.out.consts.clone(),
             ..Module::default()
@@ -1705,8 +1825,18 @@ impl Lower {
         self.out.externs = self.src.externs.clone();
         // An exported function keeps its ID, wrapped if it takes evidence.
         self.out.exports = self.src.exports.clone();
+        // Where the host's exceptions are caught, `throw` stays, for the
+        // `catch_extern`s and the `raise` of entry points.
+        if self.catches {
+            let decl = self.src.effects[&EffectId::THROW].clone();
+            self.out.effects.insert(EffectId::THROW, decl);
+        }
         for ext in self.out.externs.values_mut() {
-            ext.sig.row = Row::NOTHING;
+            let throws = self.catches && ext.sig.row.throws();
+            ext.sig.row = Row::NOTHING.with_throw(throws);
+        }
+        if self.catches {
+            self.host_starts = Some(self.host_starts_table());
         }
         for (&c, decl) in &self.src.consts {
             let mut decl = decl.clone();
@@ -1770,8 +1900,9 @@ impl Lower {
 
     /// The function at the old ID of `src`, which takes evidence as
     /// `internal`: it makes new evidence and calls `internal`. A yield
-    /// that gets this far has no handler, which can't happen, since
-    /// `perform` traps first.
+    /// that gets this far is a `raise` that nothing handles, to the node
+    /// `entry_ev` put outermost, since `perform` traps first for any
+    /// other operation.
     fn entry_wrapper(&mut self, id: FuncId, src: &Func, internal: FuncId) {
         let decls = Rc::clone(&self.decls);
         let sig = self.lowered_sig(src);
@@ -1780,23 +1911,60 @@ impl Lower {
             b.set_name(name.clone());
         }
         b.set_mut_params(src.mut_params.clone());
-        let (ev, st) = self.fresh_ev(&mut b);
+        let raises = self.raises_to_host(&src.row);
+        let (ev, st) = self.entry_ev(&mut b, raises);
         let mut args = vs(b.param_vars());
         args.push(ev.into());
         let rs = b.call_at(internal, same_margs(src), args);
-        let marker = b.get(Runtime::ctor(self.rt.yield_d, 0), 0, st);
-        let (done, yielding) = case_zero(&mut b, marker);
-        b.switch_to(done);
-        b.ret(rs);
-        b.switch_to(yielding);
-        b.unreachable();
+        self.after_entry(&mut b, st, rs, raises);
         self.finish(id, b);
+    }
+
+    /// Whether code of row `row` that the host calls may raise to it: it
+    /// may throw, and what the host throws is caught.
+    fn raises_to_host(&self, row: &Row) -> bool {
+        self.catches && row.throws()
+    }
+
+    /// Ends the function of an entry point, whose call gave `rs` with
+    /// yield state `st`: it gives `rs`, unless the call yielded, which
+    /// only a `raise` that nothing handles can, if `raises`, and which it
+    /// raises again, to the host.
+    fn after_entry(&self, b: &mut B<'_>, st: Var, rs: Vec<Var>, raises: bool) {
+        let yc = Runtime::ctor(self.rt.yield_d, 0);
+        let marker = b.get(yc, 0, st);
+        let (done, yielding) = case_zero(b, marker);
+        b.switch_to(done);
+        b.ret(rs.clone());
+        b.switch_to(yielding);
+        if !raises {
+            b.unreachable();
+            return;
+        }
+        forget(b, &rs);
+        let args = b.get(yc, 2, st);
+        let thrown = b.unbox(Ty::NullableHost, args);
+        // The state lets go of the continuation, whose closures hold the
+        // evidence, which holds the state: see `drive`.
+        b.set(yc, 0, st, 0i32);
+        let no_args = self.no_args(b);
+        b.set(yc, 2, st, no_args);
+        let no_cont = self.no_cont(b);
+        b.set(yc, 3, st, no_cont);
+        b.set_row(Row::throw());
+        b.perform(EffectId::THROW, 0, [thrown]);
+        b.unreachable();
     }
 
     /// Evidence for code the host calls: no handlers, and nothing
     /// yielding. Gives the evidence and its yield state, whose marker is 0
     /// unless the code performed an operation that nothing handles.
     fn fresh_ev(&self, b: &mut B<'_>) -> (Var, Var) {
+        self.fresh_ev_from(b, 1)
+    }
+
+    /// [`fresh_ev`](Self::fresh_ev), whose next marker is `next`.
+    fn fresh_ev_from(&self, b: &mut B<'_>, next: i32) -> (Var, Var) {
         let yc = Runtime::ctor(self.rt.yield_d, 0);
         let zero = b.boxed(Ty::I32, 0i32);
         let no_cont = self.no_cont(b);
@@ -1805,10 +1973,36 @@ impl Lower {
             0i32.into(),
             zero.into(),
             no_cont.into(),
-            1i32.into(),
+            next.into(),
         ];
         let st = b.new_object(yc, Mutability::Mut, fields);
         let hs = b.new_object(Runtime::ctor(self.rt.hs_d, 0), Mutability::Mut, ());
+        let ev = b.new_object(Runtime::ctor(self.rt.ev_d, 0), Mutability::Mut, [st, hs]);
+        (ev, st)
+    }
+
+    /// Evidence for an entry point: [`fresh_ev`](Self::fresh_ev), or if
+    /// it `raises`, evidence whose one handler is a node for `raise`,
+    /// with marker 1, whose clause yields to the entry point, which then
+    /// raises to the host.
+    fn entry_ev(&self, b: &mut B<'_>, raises: bool) -> (Var, Var) {
+        let Some(starts) = self.host_starts.filter(|_| raises) else {
+            return self.fresh_ev(b);
+        };
+        let (outer, st) = self.fresh_ev_from(b, 2);
+        let starts = b.constant(starts);
+        let kinds = b.array_new(Ty::I32, Mutability::Mut, [0i32]);
+        let none = box_any(b, Ty::I32, 0i32);
+        let closures = b.array_new(any(), Mutability::Mut, [none]);
+        let fields: [Atom; 5] = [
+            starts.into(),
+            1i32.into(),
+            kinds.into(),
+            closures.into(),
+            outer.into(),
+        ];
+        let node = b.new_object(self.rt.node(), Mutability::Mut, fields);
+        let hs = b.new_object(Runtime::ctor(self.rt.hs_d, 1), Mutability::Mut, [node]);
         let ev = b.new_object(Runtime::ctor(self.rt.ev_d, 0), Mutability::Mut, [st, hs]);
         (ev, st)
     }
@@ -1820,7 +2014,7 @@ impl Lower {
     /// the host gets takes only what the host gives. `b` is then told about
     /// it.
     fn host_adapter(&mut self, b: &mut B<'_>, sig: &Sig) -> FuncId {
-        let key = (sig.params.clone(), sig.results.clone());
+        let key = (sig.params.clone(), sig.results.clone(), sig.row.throws());
         let id = match self.host_adapters.get(&key) {
             Some(&id) => id,
             None => {
@@ -1842,17 +2036,13 @@ impl Lower {
         params.extend(self.tys(&sig.params));
         let adapter = Sig::new(params, self.tys(&sig.results));
         let mut b = builder(&decls, &adapter, "host_adapter");
-        let (ev, st) = self.fresh_ev(&mut b);
+        let raises = self.raises_to_host(&sig.row);
+        let (ev, st) = self.entry_ev(&mut b, raises);
         let (c, args) = b.param_vars().split_first().unwrap();
         let (c, mut args) = (*c, vs(args));
         args.push(ev.into());
         let rs = b.apply(c, args);
-        let marker = b.get(Runtime::ctor(self.rt.yield_d, 0), 0, st);
-        let (done, yielding) = case_zero(&mut b, marker);
-        b.switch_to(done);
-        b.ret(rs);
-        b.switch_to(yielding);
-        b.unreachable();
+        self.after_entry(&mut b, st, rs, raises);
         self.finish(id, b);
     }
 

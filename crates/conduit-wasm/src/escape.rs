@@ -198,6 +198,7 @@ fn kept(op: &Op, p: usize, keeps: &BTreeMap<FuncId, Vec<bool>>) -> bool {
         | Op::ArrayCopy
         | Op::Unbox(_)
         | Op::CallExtern(_)
+        | Op::CatchExtern(_)
         | Op::Dup
         | Op::Drop
         | Op::Free

@@ -15,6 +15,15 @@ pub enum Op {
     Call(FuncId, Vec<Mutability>, Vec<Row>),
     /// A call of a host function.
     CallExtern(ExternId),
+    /// A call of a host function that catches what the host throws, so
+    /// that the exception unwinds no Conduit frame: it binds whether the
+    /// host threw, an `i32`, 1 if it did, what it threw, a `NullableHost`,
+    /// null if it didn't, then the extern's results, which are `Undefined`
+    /// if it threw. Its row is the extern's without `throw`. What evidence
+    /// passing turns a throwing `CallExtern` into (see "How the
+    /// implementations do it" in `docs/ir/exceptions.md`). Args: the
+    /// extern's.
+    CatchExtern(ExternId),
     /// A closure of a lifted function, with an argument for each of its
     /// mutability parameters and a row for each of its effect parameters.
     /// Args: the captured values, which come first among the function's
@@ -274,6 +283,9 @@ impl Op {
                 .func_sig(*f)
                 .map_or(Row::NOTHING, |sig| sig.row.subst(rows)),
             Op::CallExtern(e) => p.extern_fn(*e).map_or(Row::NOTHING, |x| x.sig.row.clone()),
+            Op::CatchExtern(e) => p
+                .extern_fn(*e)
+                .map_or(Row::NOTHING, |x| x.sig.row.without(EffectId::THROW)),
             Op::Apply | Op::Resume => first(),
             Op::Discontinue(e, _) => first().union(&Row::one(*e)),
             Op::Handle(h, rows) => p
@@ -311,7 +323,7 @@ impl Op {
             Op::Reuse(_) => (Writes, false),
             Op::IsUnique => (Reads, false),
             Op::ArraySet | Op::ArrayStore | Op::ArrayCopy => (Writes, true),
-            Op::Call(..) | Op::CallExtern(_) | Op::Apply => (Unknown, true),
+            Op::Call(..) | Op::CallExtern(_) | Op::CatchExtern(_) | Op::Apply => (Unknown, true),
             Op::Handle(..) | Op::Perform(..) | Op::Resume | Op::Discontinue(..) => (Unknown, true),
         };
         Effects::new(memory, may_trap)

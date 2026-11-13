@@ -179,6 +179,7 @@ in [verify.md](verify.md).
 | `add(%x, %y)` and the other prims | none | `div.s`, `convert` | — |
 | `call fn1(..)` | anything | yes | the arguments the callee doesn't borrow |
 | `call_extern extern1(..)` | anything | yes | — (it borrows) |
+| `catch_extern extern1(..)` | anything | yes | — (it borrows) |
 | `closure fn1(..)` | none | no | the captures |
 | `apply(%c, ..)` | anything | yes | all |
 | `new data10.0(..)` | none | no | the fields |

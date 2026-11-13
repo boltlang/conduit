@@ -757,6 +757,12 @@ impl<'p, P: Program + ?Sized> FuncBuilder<'p, P> {
         self.emit(Op::CallExtern(e), args.atoms(), None)
     }
 
+    /// A call of a host function that catches what it throws: whether it
+    /// threw, what it threw, then its results (see [`Op::CatchExtern`]).
+    pub fn catch_extern(&mut self, e: ExternId, args: impl Atoms) -> Vec<Var> {
+        self.emit(Op::CatchExtern(e), args.atoms(), None)
+    }
+
     /// A call of a host function with one result.
     pub fn call_extern1(&mut self, e: ExternId, args: impl Atoms) -> Var {
         self.emit1(Op::CallExtern(e), args.atoms(), None)
