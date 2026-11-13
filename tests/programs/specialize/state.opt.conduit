@@ -1,0 +1,90 @@
+effect State {
+  () -> (i32)
+  (i32) -> ()
+}
+
+handler counter for State env(ref i32) ops(get, set) ret done
+
+fn get(%r: ref i32, %k: cont(i32) -> (i32)) -> (i32) {
+  let %x: i32 = ref_get(%r)
+  let %y: i32 = resume(%k, %x)
+  jump ret(%y)
+}
+
+fn set(%r: ref i32, %v: i32, %k: cont() -> (i32)) -> (i32) {
+  let = ref_set(%r, %v)
+  let %y: i32 = resume(%k)
+  jump ret(%y)
+}
+
+fn done(%r: ref i32, %x: i32) -> (i32) {
+  let %s: i32 = ref_get(%r)
+  let %t: i32 = mul(%s, 1000i32)
+  let %y: i32 = add(%t, %x)
+  jump ret(%y)
+}
+
+fn add_all(%n: i32) -> (i32) does State {
+  let %zero: i32 = eq(%n, 0i32)
+  case %zero {
+    0 =>
+      let %s: i32 = perform State.0()
+      let %t: i32 = add(%s, %n)
+      let = perform State.1(%t)
+      let %m: i32 = sub(%n, 1i32)
+      let %r: i32 = call add_all(%m)
+      jump ret(%r)
+    _ =>
+      let %last: i32 = perform State.0()
+      jump ret(%last)
+  }
+}
+
+fn start(%n: i32) -> (i32) does State {
+  let = perform State.1(7i32)
+  let %r: i32 = call add_all(%n)
+  jump ret(%r)
+}
+
+#[export(emu)]
+fn main(%n: i32) -> (i32) {
+  let %r#1: ref i32 = ref_new(0i32)
+  let = ref_set(%r#1, 7i32)
+  let %r#2: i32 = call add_all_counter(%n, %r#1)
+  let %s: i32 = ref_get(%r#1)
+  let %t: i32 = mul(%s, 1000i32)
+  let %y: i32 = add(%t, %r#2)
+  jump ret(%y)
+}
+
+fn start_counter(%n: i32, %r#1: ref i32) -> (i32) {
+  let = ref_set(%r#1, 7i32)
+  let %r#2: i32 = call add_all_counter(%n, %r#1)
+  jump ret(%r#2)
+}
+
+fn add_all_counter(%n: i32, %r#1: ref i32) -> (i32) {
+  let %zero: i32 = eq(%n, 0i32)
+  case %zero {
+    0 =>
+      let %x#3: i32 = ref_get(%r#1)
+      let %t: i32 = add(%x#3, %n)
+      let = ref_set(%r#1, %t)
+      let %m: i32 = sub(%n, 1i32)
+      let %r#6: i32 = call add_all_counter(%m, %r#1)
+      jump ret(%r#6)
+    _ =>
+      let %x#7: i32 = ref_get(%r#1)
+      jump ret(%x#7)
+  }
+}
+
+fn get_plain(%r: ref i32) -> (i32) vars(%k: i32, %y#3: i32) {
+  let %x: i32 = ref_get(%r)
+  jump ret(%x)
+}
+
+fn set_plain(%r: ref i32, %v: i32) -> () vars(%k: i32, %y: i32) {
+  let = ref_set(%r, %v)
+  jump ret()
+}

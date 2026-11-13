@@ -24,6 +24,7 @@ pub mod joins;
 pub mod ownership;
 pub mod promote;
 pub mod simplify;
+pub mod specialize;
 pub mod sroa;
 
 use conduit_ir::{Func, FuncId, Module, Program};
@@ -112,10 +113,16 @@ pub fn run_passes(passes: &[&dyn Pass], p: &dyn Program, id: FuncId, f: &mut Fun
 }
 
 /// Runs [`optimize_func`] on every function of `m`, in order of their IDs,
-/// so each function sees the ones before it already optimized. Returns
-/// whether anything changed.
+/// so each function sees the ones before it already optimized, then
+/// specializes code to its handlers ([`specialize`]), and if that changed
+/// anything, runs the passes again. Returns whether anything changed.
 pub fn optimize_module(m: &mut Module) -> bool {
-    run_passes_on_module(PASSES, m)
+    let mut changed = run_passes_on_module(PASSES, m);
+    if specialize::specialize(m) {
+        run_passes_on_module(PASSES, m);
+        changed = true;
+    }
+    changed
 }
 
 /// The pass in [`PASSES`] with this [`Pass::name`].

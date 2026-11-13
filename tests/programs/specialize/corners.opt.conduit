@@ -1,0 +1,198 @@
+effect Log {
+  (i32) -> ()
+}
+
+handler sum for Log env(ref i32) ops(add_log) ret sum_done
+
+handler tens for Log does Log env() ops(times_ten) ret tens_done
+
+fn add_log(%r: ref i32, %x: i32, %k: cont() -> (i32)) -> (i32) {
+  let %old: i32 = ref_get(%r)
+  let %new: i32 = add(%old, %x)
+  let = ref_set(%r, %new)
+  let %y: i32 = resume(%k)
+  jump ret(%y)
+}
+
+fn sum_done(%r: ref i32, %x: i32) -> (i32) {
+  let %s: i32 = ref_get(%r)
+  let %y: i32 = add(%s, %x)
+  jump ret(%y)
+}
+
+fn times_ten(%x: i32, %k: cont() -> (i32) does Log) -> (i32) does Log {
+  let %y: i32 = mul(%x, 10i32)
+  let = perform Log.0(%y)
+  let %r: i32 = resume(%k)
+  jump ret(%r)
+}
+
+fn tens_done(%x: i32) -> (i32) {
+  jump ret(%x)
+}
+
+fn log_down(%n: i32) -> (i32) does Log {
+  let %zero: i32 = eq(%n, 0i32)
+  case %zero {
+    0 =>
+      let = perform Log.0(%n)
+      let %m: i32 = sub(%n, 1i32)
+      let %r: i32 = call log_down(%m)
+      jump ret(%r)
+    _ => jump ret(0i32)
+  }
+}
+
+fn tens_of(%n: i32) -> (i32) does Log {
+  let %1: i32 = call log_down_tens(%n)
+  jump ret(%1)
+}
+
+fn mixed(%n: i32) -> (i32) does Log {
+  let = perform Log.0(1i32)
+  let %1: i32 = call log_down_tens(%n)
+  let = perform Log.0(2i32)
+  jump ret(%1)
+}
+
+#[export(emu)]
+fn forwarded(%n: i32) -> (i32) {
+  let %s: ref i32 = ref_new(0i32)
+  let = ref_set(%s, 1i32)
+  let %2: i32 = call log_down_tens_sum(%n, %s)
+  let %old: i32 = ref_get(%s)
+  let %new: i32 = add(%old, 2i32)
+  let = ref_set(%s, %new)
+  let %y: i32 = add(%new, %2)
+  jump ret(%y)
+}
+
+fn apply_it(%c: imm fn() -> (i32) does Log) -> (i32) does Log {
+  let %r: i32 = apply(%c)
+  jump ret(%r)
+}
+
+fn through_closure(%n: i32) -> (i32) does Log {
+  let = perform Log.0(%n)
+  let %r: i32 = call log_down(%n)
+  jump ret(%r)
+}
+
+#[export(emu)]
+fn applied(%n: i32) -> (i32) {
+  let %s#1: ref i32 = ref_new(0i32)
+  let = ref_set(%s#1, %n)
+  let %r: i32 = call log_down_sum(%n, %s#1)
+  let %s#3: i32 = ref_get(%s#1)
+  let %y: i32 = add(%s#3, %r)
+  jump ret(%y)
+}
+
+fn apply_n(%c: imm fn() -> (i32) does Log, %n: i32) -> (i32) does Log {
+  let %zero: i32 = eq(%n, 0i32)
+  case %zero {
+    0 =>
+      let %x: i32 = apply(%c)
+      let %m: i32 = sub(%n, 1i32)
+      let %r: i32 = call apply_n(%c, %m)
+      jump ret(%r)
+    _ => jump ret(0i32)
+  }
+}
+
+fn through_unknown(%n: i32) -> (i32) does Log {
+  let = perform Log.0(%n)
+  let %c: imm fn() -> (i32) does Log = closure log_down(%n)
+  let %r: i32 = call apply_n(%c, 2i32)
+  jump ret(%r)
+}
+
+#[export(emu)]
+fn applied_unknown(%n: i32) -> (i32) {
+  let %s: ref i32 = ref_new(0i32)
+  let %b: imm fn() -> (i32) does Log = closure through_unknown(%n)
+  let %r: i32 = handle sum(%s, %b)
+  jump ret(%r)
+}
+
+fn log_down_tens(%n: i32) -> (i32) does Log {
+  let %zero: i32 = eq(%n, 0i32)
+  case %zero {
+    0 =>
+      let %y: i32 = mul(%n, 10i32)
+      let = perform Log.0(%y)
+      let %m: i32 = sub(%n, 1i32)
+      let %r: i32 = call log_down_tens(%m)
+      jump ret(%r)
+    _ => jump ret(0i32)
+  }
+}
+
+fn times_ten_plain(%x: i32) -> () does Log vars(%k: i32, %r#3: i32) {
+  let %y: i32 = mul(%x, 10i32)
+  let = perform Log.0(%y)
+  jump ret()
+}
+
+fn mixed_sum(%n: i32, %r: ref i32) -> (i32) {
+  let %old#2: i32 = ref_get(%r)
+  let %new#3: i32 = add(%old#2, 1i32)
+  let = ref_set(%r, %new#3)
+  let %4: i32 = call log_down_tens_sum(%n, %r)
+  let %old#5: i32 = ref_get(%r)
+  let %new#6: i32 = add(%old#5, 2i32)
+  let = ref_set(%r, %new#6)
+  jump ret(%4)
+}
+
+fn log_down_tens_sum(%n: i32, %r#1: ref i32) -> (i32) {
+  let %zero: i32 = eq(%n, 0i32)
+  case %zero {
+    0 =>
+      let %y: i32 = mul(%n, 10i32)
+      let %old: i32 = ref_get(%r#1)
+      let %new: i32 = add(%old, %y)
+      let = ref_set(%r#1, %new)
+      let %m: i32 = sub(%n, 1i32)
+      let %r#7: i32 = call log_down_tens_sum(%m, %r#1)
+      jump ret(%r#7)
+    _ => jump ret(0i32)
+  }
+}
+
+fn times_ten_plain_sum(%x: i32, %r: ref i32) -> () {
+  let %y: i32 = mul(%x, 10i32)
+  let %old: i32 = ref_get(%r)
+  let %new: i32 = add(%old, %y)
+  let = ref_set(%r, %new)
+  jump ret()
+}
+
+fn add_log_plain(%r: ref i32, %x: i32) -> () vars(%k: i32, %y#5: i32) {
+  let %old: i32 = ref_get(%r)
+  let %new: i32 = add(%old, %x)
+  let = ref_set(%r, %new)
+  jump ret()
+}
+
+fn through_closure_sum(%n: i32, %r#1: ref i32) -> (i32) {
+  let %old: i32 = ref_get(%r#1)
+  let %new: i32 = add(%old, %n)
+  let = ref_set(%r#1, %new)
+  let %r#4: i32 = call log_down_sum(%n, %r#1)
+  jump ret(%r#4)
+}
+
+fn log_down_sum(%n: i32, %r#1: ref i32) -> (i32) {
+  let %zero: i32 = eq(%n, 0i32)
+  case %zero {
+    0 =>
+      let %old: i32 = ref_get(%r#1)
+      let %new: i32 = add(%old, %n)
+      let = ref_set(%r#1, %new)
+      let %m: i32 = sub(%n, 1i32)
+      let %r#6: i32 = call log_down_sum(%m, %r#1)
+      jump ret(%r#6)
+    _ => jump ret(0i32)
+  }
+}

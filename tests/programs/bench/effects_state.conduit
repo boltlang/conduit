@@ -1,8 +1,10 @@
 // A state handler, whose clauses are tail-resumptive, around a recursive
-// function that gets and puts the state each round: the cost of a
-// `perform` that's a call of its clause, through the handler frames of
-// the Wasm backend and of native code. The function calls
-// itself, so the handler can't be run directly, and each `perform` stays.
+// function that gets and puts the state each round. The function calls
+// itself, so the handler can't be run directly, but `specialize` copies
+// it for the handler, so after the optimizer each `perform` is a read or
+// a write of the ref, and the handler is gone. As written, without the
+// optimizer, it's the cost of a `perform` that's a call of its clause,
+// through the handler frames of the Wasm backend and of native code.
 
 effect State {
   () -> (i32)

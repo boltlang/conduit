@@ -1,0 +1,130 @@
+// Where `specialize` must keep the meaning of handlers: a clause that
+// performs the effect its handler handles, which goes to the handler
+// outside; a handler of the same effect inside a callee, which handles
+// what's performed in its own body; and a closure that performs, applied
+// in a callee, which stops the pass.
+effect Log {
+  (i32) -> ()
+}
+
+// Adds what's logged to the ref.
+handler sum for Log env(ref i32) ops(add_log) ret sum_done
+
+// Logs 10 times what's logged, to the Log outside.
+handler tens for Log does Log env() ops(times_ten) ret tens_done
+
+fn add_log(%r: ref i32, %x: i32, %k: cont() -> (i32)) -> (i32) {
+  let %old: i32 = ref_get(%r)
+  let %new: i32 = add(%old, %x)
+  let = ref_set(%r, %new)
+  let %y: i32 = resume(%k)
+  jump ret(%y)
+}
+
+fn sum_done(%r: ref i32, %x: i32) -> (i32) {
+  let %s: i32 = ref_get(%r)
+  let %y: i32 = add(%s, %x)
+  jump ret(%y)
+}
+
+fn times_ten(%x: i32, %k: cont() -> (i32) does Log) -> (i32) does Log {
+  let %y: i32 = mul(%x, 10i32)
+  let = perform Log.0(%y)
+  let %r: i32 = resume(%k)
+  jump ret(%r)
+}
+
+fn tens_done(%x: i32) -> (i32) {
+  jump ret(%x)
+}
+
+// Logs n, n - 1, .. 1, in a loop that calls itself.
+fn log_down(%n: i32) -> (i32) does Log {
+  let %zero: i32 = eq(%n, 0i32)
+  case %zero {
+    0 =>
+      let = perform Log.0(%n)
+      let %m: i32 = sub(%n, 1i32)
+      let %r: i32 = call log_down(%m)
+      jump ret(%r)
+    _ => jump ret(0i32)
+  }
+}
+
+fn tens_of(%n: i32) -> (i32) does Log {
+  let %b: imm fn() -> (i32) does Log = closure log_down(%n)
+  let %r: i32 = handle tens(%b)
+  jump ret(%r)
+}
+
+// Logs 1, then 10 times 1 to n through `tens`, then 2.
+fn mixed(%n: i32) -> (i32) does Log {
+  let = perform Log.0(1i32)
+  let %r: i32 = call tens_of(%n)
+  let = perform Log.0(2i32)
+  jump ret(%r)
+}
+
+// 1 + 10 * 6 + 2, for n = 3.
+fn forwarded(%n: i32) -> (i32) {
+  let %s: ref i32 = ref_new(0i32)
+  let %b: imm fn() -> (i32) does Log = closure mixed(%n)
+  let %r: i32 = handle sum(%s, %b)
+  jump ret(%r)
+}
+
+// Applies what it's given, which logs.
+fn apply_it(%c: imm fn() -> (i32) does Log) -> (i32) does Log {
+  let %r: i32 = apply(%c)
+  jump ret(%r)
+}
+
+fn through_closure(%n: i32) -> (i32) does Log {
+  let = perform Log.0(%n)
+  let %c: imm fn() -> (i32) does Log = closure log_down(%n)
+  let %r: i32 = call apply_it(%c)
+  jump ret(%r)
+}
+
+// 3 + (3 + 2 + 1), where the closure is applied in a callee.
+fn applied(%n: i32) -> (i32) {
+  let %s: ref i32 = ref_new(0i32)
+  let %b: imm fn() -> (i32) does Log = closure through_closure(%n)
+  let %r: i32 = handle sum(%s, %b)
+  jump ret(%r)
+}
+
+// Applies what it's given n times, calling itself, so that inlining
+// can't see the closure.
+fn apply_n(%c: imm fn() -> (i32) does Log, %n: i32) -> (i32) does Log {
+  let %zero: i32 = eq(%n, 0i32)
+  case %zero {
+    0 =>
+      let %x: i32 = apply(%c)
+      let %m: i32 = sub(%n, 1i32)
+      let %r: i32 = call apply_n(%c, %m)
+      jump ret(%r)
+    _ => jump ret(0i32)
+  }
+}
+
+fn through_unknown(%n: i32) -> (i32) does Log {
+  let = perform Log.0(%n)
+  let %c: imm fn() -> (i32) does Log = closure log_down(%n)
+  let %r: i32 = call apply_n(%c, 2i32)
+  jump ret(%r)
+}
+
+// 3 + 2 * (3 + 2 + 1): the `handle` stays, since its body applies a
+// closure that logs where the pass can't see it.
+fn applied_unknown(%n: i32) -> (i32) {
+  let %s: ref i32 = ref_new(0i32)
+  let %b: imm fn() -> (i32) does Log = closure through_unknown(%n)
+  let %r: i32 = handle sum(%s, %b)
+  jump ret(%r)
+}
+
+//# run forwarded(3i32) == 63i32
+//# run applied_unknown(3i32) == 15i32
+//# run applied(3i32) == 9i32
+//# opt

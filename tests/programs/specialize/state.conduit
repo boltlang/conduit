@@ -1,0 +1,64 @@
+// A handler whose `perform`s are in a recursive callee, which inlining
+// can't bring into the body's function: `specialize` copies the callee for
+// the handler, with its environment as parameters, so that each `perform`
+// calls its clause directly, which `inline` then inlines.
+effect State {
+  () -> (i32)
+  (i32) -> ()
+}
+
+handler counter for State env(ref i32) ops(get, set) ret done
+
+fn get(%r: ref i32, %k: cont(i32) -> (i32)) -> (i32) {
+  let %x: i32 = ref_get(%r)
+  let %y: i32 = resume(%k, %x)
+  jump ret(%y)
+}
+
+fn set(%r: ref i32, %v: i32, %k: cont() -> (i32)) -> (i32) {
+  let = ref_set(%r, %v)
+  let %y: i32 = resume(%k)
+  jump ret(%y)
+}
+
+fn done(%r: ref i32, %x: i32) -> (i32) {
+  let %s: i32 = ref_get(%r)
+  let %t: i32 = mul(%s, 1000i32)
+  let %y: i32 = add(%t, %x)
+  jump ret(%y)
+}
+
+// Adds 1 to n to the state, and gives what it was at the start.
+fn add_all(%n: i32) -> (i32) does State {
+  let %zero: i32 = eq(%n, 0i32)
+  case %zero {
+    0 =>
+      let %s: i32 = perform State.0()
+      let %t: i32 = add(%s, %n)
+      let = perform State.1(%t)
+      let %m: i32 = sub(%n, 1i32)
+      let %r: i32 = call add_all(%m)
+      jump ret(%r)
+    _ =>
+      let %last: i32 = perform State.0()
+      jump ret(%last)
+  }
+}
+
+fn start(%n: i32) -> (i32) does State {
+  let = perform State.1(7i32)
+  let %r: i32 = call add_all(%n)
+  jump ret(%r)
+}
+
+// 1000 times the final state, 7 + 55, plus what add_all gave, also 62.
+fn main(%n: i32) -> (i32) {
+  let %r: ref i32 = ref_new(0i32)
+  let %b: imm fn() -> (i32) does State = closure start(%n)
+  let %x: i32 = handle counter(%r, %b)
+  jump ret(%x)
+}
+
+//# run main(10i32) == 62062i32
+//# run main(0i32) == 7007i32
+//# opt

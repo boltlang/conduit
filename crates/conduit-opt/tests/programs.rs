@@ -39,7 +39,7 @@ fn test(p: &Program) -> Result<(), String> {
         }
     }
 
-    let all = optimized(p, conduit_opt::PASSES)?;
+    let all = optimized(p, None)?;
     let mut sections = Vec::new();
     for (_, passes) in &opts {
         let (header, module) = match passes {
@@ -49,7 +49,7 @@ fn test(p: &Program) -> Result<(), String> {
                     .iter()
                     .map(|n| conduit_opt::pass(n).ok_or_else(|| unknown_pass(n)))
                     .collect::<Result<Vec<_>, _>>()?;
-                (names.join(", "), text::print(&optimized(p, &passes)?))
+                (names.join(", "), text::print(&optimized(p, Some(&passes))?))
             }
         };
         sections.push((header, module));
@@ -69,13 +69,21 @@ fn test(p: &Program) -> Result<(), String> {
     Ok(())
 }
 
-/// The program after `passes`, once it's checked that it verifies and
-/// passes the `run` checks.
-fn optimized(p: &Program, passes: &[&dyn Pass]) -> Result<Module, String> {
+/// The program after `passes`, or the whole optimizer, `optimize_module`,
+/// once it's checked that it verifies and passes the `run` checks.
+fn optimized(p: &Program, passes: Option<&[&dyn Pass]>) -> Result<Module, String> {
     let mut m = p.module()?;
-    conduit_opt::run_passes_on_module(passes, &mut m);
-    let names: Vec<&str> = passes.iter().map(|p| p.name()).collect();
-    let after = format!("after {}", names.join(", "));
+    let after = match passes {
+        Some(passes) => {
+            conduit_opt::run_passes_on_module(passes, &mut m);
+            let names: Vec<&str> = passes.iter().map(|p| p.name()).collect();
+            format!("after {}", names.join(", "))
+        }
+        None => {
+            conduit_opt::optimize_module(&mut m);
+            "after optimizing".to_string()
+        }
+    };
     if let Err(errors) = verify_module(&m) {
         let errors: Vec<String> = errors.iter().map(|e| e.named(&m)).collect();
         return Err(format!(

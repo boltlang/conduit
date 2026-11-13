@@ -196,6 +196,42 @@ too, keeps its handler, as does a clause that discontinues or does more
 after resuming. The body and the clauses must be small, as `inline`'s
 callees, and the handler can't have effect parameters.
 
+## Code specialized to its handler (`specialize`)
+
+Not a pass on one function: it adds functions, so `optimize_module` runs
+it over the whole module once the passes above are done, and runs them
+again on what it changed. A `let rs = handle H(env.., c)` whose body `c`
+is a known closure of `f`, of a handler whose clauses are all
+tail-resumptive without `discontinue`, becomes
+
+```text
+let xs = call f_H(caps.., env..)
+let rs = call H.ret(env.., xs..)
+```
+
+where `f_H` is a copy of `f` that takes `H`'s environment as extra
+parameters, as is each function it reaches through a call whose row has an
+effect `H` handles, copied once per handler, recursion included. In the
+copies, each `perform` of a handled effect is a call of its clause as a
+plain function, with the environment, and each such call is a call of the
+callee's copy. So a `perform` deep in callees finds its handler without a
+frame or a lookup, and `inline` can then inline the clause: a state
+handler around a recursive function becomes a ref the copies are given
+(`tests/programs/specialize`, and `bench/effects_state`, which no longer
+allocates per round). The clauses run under the handlers outside `H`, as
+they must: nothing runs between them and the `perform`s.
+
+It stops for a `handle` when the code it would copy reaches a handled
+effect any other way: an `apply`, `handle`, `resume` or `discontinue`
+whose row has one, or a call whose rows name one, since the effect then
+comes in through a parameter. It also stops when anything in the module
+discontinues a handled effect, which could inject a `perform` of it into
+a continuation that holds the `handle`, when the handler has effect
+parameters, and when the copies would be bigger than `MAX_COPIED`. An
+aborting clause would need the `handle` to unwind to, so a handler with
+one isn't specialized: #68 would return its results instead. A handler
+whose clauses don't resume in tail position keeps its continuations.
+
 ## Scalar replacement (`sroa`)
 
 Like LLVM's SROA. A `mut` object made by `new` whose only uses are `get`
@@ -297,14 +333,8 @@ so code only dead code uses goes too.
 
 ## Not done yet
 
-- Handlers whose clauses are called directly when the `perform` isn't in
-  the body's own function. The body of a `handle` is always a closure, so
-  a `perform` is never in the same function as its `handle`: `direct`
-  handles the case where inlining makes the body's function perform
-  itself. Otherwise, calling the clause directly needs a copy of the
-  body's function, and of what it calls, specialized to the handler. The
-  passes rewrite one function at a time and can't add functions, so this
-  needs a pass over the whole module.
+- Specializing to handlers with aborting clauses, by returning a flag
+  instead of unwinding (#68).
 - Freezing data objects in place, as `copies` does for arrays (#9).
 - Narrowing variables' types after inlining, so that `copies` and the
   rebuild rule see `imm` where a callee's parameter was `ro` (#22).
